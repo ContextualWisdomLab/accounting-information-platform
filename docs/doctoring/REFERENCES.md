@@ -30,6 +30,8 @@ Korea Legislation Research Institute. (2024b). *Income Tax Act* [Unofficial tran
 
 Korea Legislation Research Institute. (2024a). *Value-Added Tax Act* [Unofficial translation]. https://elaw.klri.re.kr/eng_service/lawView.do?hseq=53110&lang=ENG
 
+PostgreSQL Global Development Group. (n.d.). *Numeric types*. https://www.postgresql.org/docs/18/datatype-numeric.html
+
 PostgreSQL Global Development Group. (2026). *PostgreSQL 18.4 release notes*. https://www.postgresql.org/docs/release/18.4/
 
 World Wide Web Consortium. (2013). *PROV-O: The PROV ontology*. https://www.w3.org/TR/prov-o/

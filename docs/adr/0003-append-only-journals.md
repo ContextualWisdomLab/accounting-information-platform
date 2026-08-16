@@ -2,6 +2,15 @@
 
 **Status:** Accepted
 
+## Context
+
+Posted journals are legal-book facts. Updating or deleting one would destroy
+the evidence path from trial balance through journal lines, posting receipts,
+source proposals, and payload hashes. Corrections must remain reconstructable:
+the original journal stays an entity, a reversal is a later activity, and a
+replacement is separately approved and attributed (World Wide Web Consortium,
+2013).
+
 ## Decision
 
 A posted general journal is immutable. Correction creates a linked equal-and-opposite reversal and, when necessary, a separately approved replacement.
@@ -21,3 +30,7 @@ Second, deferred constraint triggers on `general_journal` and `journal_entry_lin
 ## Consequences
 
 Historical audit evidence remains intact. APIs, database permissions, migrations, and runtime roles must not expose an ungoverned journal mutation or close-bypass path. Reporting reconstructs effects from the complete population. A later command that reuses a posted `proposal_id` with a new idempotency key must reverse the existing journal, then post a replacement. Database migration tests and real PostgreSQL integration tests must prove both balance enforcement and soft-close authorization before this decision is considered release-ready.
+
+## References
+
+World Wide Web Consortium. (2013). *PROV-O: The PROV ontology*. https://www.w3.org/TR/prov-o/
