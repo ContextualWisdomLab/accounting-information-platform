@@ -1,0 +1,33 @@
+# Test Strategy
+
+## Test layers
+
+1. **Value contracts:** decimal, currency, codes, references, hashes, line sidedness.
+2. **Proposal invariants:** minimum lines, unique line numbers, exact balance.
+3. **Policy resolution:** tenant, legal entity, book role, period, currency, and account mapping.
+4. **Posting behavior:** idempotent replay, hash conflict, immutable receipt and journal.
+5. **Reversal behavior:** original preservation, equal-and-opposite lines, duplicate reversal idempotency.
+6. **Trial balance:** scope and date filters, exact debit/credit equality, reversal net-zero fixture.
+7. **Persistence:** clean migration, upgrade rehearsal, concurrent idempotency, transaction rollback, RLS.
+8. **Contracts:** producer and consumer fixtures for proposal, policy, receipt, and outbox events.
+9. **Security:** cross-tenant references, oversized payloads, malformed decimals, replay storms, unauthorized close or reversal.
+
+## Merge gates
+
+- Production statement coverage: 100%.
+- Production branch coverage: 100%.
+- Public API docstrings: 100% through `-Werror` documentation and package inspection.
+- No skipped required test evidence.
+- Exact-head CI, SAST, secret scan, dependency policy, SBOM, and provenance.
+- PostgreSQL integration test for proposal-to-receipt atomicity before the persistence milestone merges.
+
+## Required real-world fixtures
+
+- Billing invoice with receivable, revenue, and tax.
+- Prepaid credit producing contract liability rather than immediate revenue.
+- Provider payout with cash clearing and provider fee.
+- Refund and chargeback correction.
+- Closed-period hold and next-period adjustment.
+- Duplicate proposal replay and conflicting payload reuse.
+- Reversal and replacement.
+- Cross-tenant account mapping attempt.

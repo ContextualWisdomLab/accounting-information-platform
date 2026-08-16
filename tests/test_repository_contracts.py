@@ -1,0 +1,257 @@
+"""Repository-level contract and supply-chain tests."""
+
+from __future__ import annotations
+
+import io
+import json
+import shutil
+import sys
+import tempfile
+import unittest
+from contextlib import redirect_stdout
+from unittest import mock
+from pathlib import Path
+
+from scripts.validate_repository import (
+    main,
+    find_mutable_action_references,
+    find_placeholder_tokens,
+    validate_public_docstrings,
+    validate_repository,
+    validate_sql_object_names,
+)
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class RepositoryContractTests(unittest.TestCase):
+    """Verify checked-in architecture, SQL, schemas, and CI contracts."""
+
+    def test_repository_contracts_are_valid(self) -> None:
+        """The complete initial repository must satisfy every deterministic gate."""
+        self.assertEqual(validate_repository(ROOT), ())
+
+    def test_missing_files_are_reported(self) -> None:
+        """A partial checkout produces an actionable missing-file error."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            errors = validate_repository(Path(temporary_directory))
+        self.assertIn("missing required file: README.md", errors)
+
+    def test_mutable_action_reference_is_rejected(self) -> None:
+        """Mutable action tags cannot represent exact-head evidence."""
+        self.assertEqual(
+            find_mutable_action_references("- uses: actions/checkout@v4\n"),
+            ("actions/checkout@v4",),
+        )
+        self.assertEqual(
+            find_mutable_action_references(
+                "- uses: actions/checkout@631c942040754b6e095e929c1677c07e10ed4f87\n"
+            ),
+            (),
+        )
+
+    def test_single_word_sql_objects_are_rejected(self) -> None:
+        """Schemas, tables, and columns require two-word snake_case names."""
+        sql = """
+        CREATE SCHEMA finance;
+        CREATE TABLE finance.journal (
+            journal_id uuid,
+            status text
+        );
+        """
+        self.assertEqual(
+            validate_sql_object_names(sql),
+            (
+                "schema name must contain at least two snake_case words: finance",
+                "table name must contain at least two snake_case words: journal",
+                "column name must contain at least two snake_case words: status",
+            ),
+        )
+
+    def test_placeholders_are_rejected(self) -> None:
+        """Accepted architecture and plans cannot retain unresolved placeholders."""
+        self.assertEqual(
+            find_placeholder_tokens("Complete.\nTO" + "DO: later.\n"),
+            ("TODO",),
+        )
+
+    def test_schema_authority_and_status_contracts_are_explicit(self) -> None:
+        """The platform consumes proposals and owns only posting receipts."""
+        proposal = self._schema("accounting-journal-proposal.schema.json")
+        receipt = self._schema("accounting-posting-receipt.schema.json")
+        policy = self._schema("accounting-policy-manifest.schema.json")
+
+        self.assertEqual(proposal["x-cwl-authority"], "metering-billing-platform")
+        self.assertEqual(receipt["x-cwl-authority"], "accounting-information-platform")
+        self.assertEqual(policy["x-cwl-authority"], "accounting-information-platform")
+        self.assertNotIn(
+            "posted", proposal["properties"]["proposal_status_code"]["enum"]
+        )
+        self.assertEqual(
+            set(receipt["properties"]["posting_status_code"]["enum"]),
+            {"posted", "held", "rejected", "reversed"},
+        )
+
+    def test_repository_reports_integrated_violations(self) -> None:
+        """The aggregate validator reports mutable CI, placeholders, and SQL drift."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            copied_root = Path(temporary_directory) / "repository"
+            shutil.copytree(ROOT, copied_root)
+            readme = copied_root / "README.md"
+            readme.write_text(
+                readme.read_text(encoding="utf-8") + "\nTO" + "DO: later.\n",
+                encoding="utf-8",
+            )
+            workflow = copied_root / ".github/workflows/ci.yml"
+            workflow.write_text(
+                workflow.read_text(encoding="utf-8")
+                + "\n# uses: actions/checkout@v4\n",
+                encoding="utf-8",
+            )
+            migration = copied_root / "database/migrations/0001_accounting_foundation.sql"
+            migration.write_text(
+                migration.read_text(encoding="utf-8")
+                + "\nCREATE TABLE accounting_core.bad (\n    status text\n);\n",
+                encoding="utf-8",
+            )
+            errors = validate_repository(copied_root)
+        self.assertIn("unresolved placeholder in README.md: TODO", errors)
+        self.assertIn(
+            "mutable GitHub Action reference in .github/workflows/ci.yml: actions/checkout@v4",
+            errors,
+        )
+        self.assertIn(
+            "table name must contain at least two snake_case words: bad", errors
+        )
+        self.assertIn(
+            "column name must contain at least two snake_case words: status", errors
+        )
+
+    def test_schema_metadata_failures_are_reported(self) -> None:
+        """Malformed or open schema roots fail closed with stable diagnostics."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            schemas = root / "schemas"
+            schemas.mkdir()
+            (schemas / "invalid.schema.json").write_text("{", encoding="utf-8")
+            (schemas / "open.schema.json").write_text(
+                json.dumps(
+                    {
+                        "$schema": "https://example.invalid/draft",
+                        "$id": "http://schemas.invalid/open",
+                        "type": "array",
+                        "additionalProperties": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            errors = validate_repository(root)
+        joined = "\n".join(errors)
+        self.assertIn("invalid JSON in invalid.schema.json", joined)
+        self.assertIn("schema must declare Draft 2020-12: open.schema.json", errors)
+        self.assertIn("schema must have an HTTPS $id: open.schema.json", errors)
+        self.assertIn("schema root must be an object: open.schema.json", errors)
+        self.assertIn(
+            "schema root must reject additional properties: open.schema.json", errors
+        )
+
+    def test_public_docstring_contract_rejects_undocumented_symbols(self) -> None:
+        """Every shipped public module, class, method, and function is documented."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_root = Path(temporary_directory) / "src"
+            package = source_root / "sample_package"
+            package.mkdir(parents=True)
+            (package / "module.py").write_text(
+                '"""Documented module."""\n\ndef undocumented():\n    return 1\n',
+                encoding="utf-8",
+            )
+            (package / "missing_module_doc.py").write_text(
+                'def documented():\n    """Documented function."""\n    return 1\n',
+                encoding="utf-8",
+            )
+            errors = validate_public_docstrings(source_root)
+            missing_root_errors = validate_public_docstrings(
+                Path(temporary_directory) / "absent"
+            )
+        self.assertEqual(
+            errors,
+            (
+                "missing module docstring: sample_package/missing_module_doc.py",
+                "missing public docstring: sample_package/module.py:undocumented",
+            ),
+        )
+        self.assertEqual(missing_root_errors, ())
+
+    def test_repository_reports_destructive_sql_and_unhashed_dependency(self) -> None:
+        """Destructive journal SQL and mutable quality resolution fail closed."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            copied_root = Path(temporary_directory) / "repository"
+            shutil.copytree(ROOT, copied_root)
+            migration = copied_root / "database/migrations/0001_accounting_foundation.sql"
+            migration.write_text(
+                migration.read_text(encoding="utf-8")
+                + "\nDELETE FROM accounting_core.general_journal;\n",
+                encoding="utf-8",
+            )
+            (copied_root / "requirements-quality.txt").write_text(
+                "coverage==7.15.4\n", encoding="utf-8"
+            )
+            errors = validate_repository(copied_root)
+        self.assertIn(
+            "accounting migrations must not define destructive journal deletion", errors
+        )
+        self.assertIn("quality dependencies must be hash locked", errors)
+
+    def test_duplicate_schema_identity_is_rejected(self) -> None:
+        """Two checked-in schemas cannot claim the same global contract identity."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            schemas = root / "schemas"
+            schemas.mkdir()
+            schema = {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "https://schemas.example.test/duplicate",
+                "type": "object",
+                "additionalProperties": False,
+            }
+            (schemas / "first.schema.json").write_text(
+                json.dumps(schema), encoding="utf-8"
+            )
+            (schemas / "second.schema.json").write_text(
+                json.dumps(schema), encoding="utf-8"
+            )
+            errors = validate_repository(root)
+        self.assertIn(
+            "duplicate schema $id: https://schemas.example.test/duplicate", errors
+        )
+
+    def test_command_entrypoint_returns_process_status(self) -> None:
+        """The CLI prints clean evidence or actionable contract failures."""
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(main([str(ROOT)]), 0)
+        self.assertIn("repository contracts valid", output.getvalue())
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(main([temporary_directory]), 1)
+        self.assertIn("missing required file: README.md", output.getvalue())
+
+        output = io.StringIO()
+        with mock.patch.object(sys, "argv", ["validate_repository", str(ROOT)]):
+            with redirect_stdout(output):
+                self.assertEqual(main(None), 0)
+
+        output = io.StringIO()
+        with mock.patch("scripts.validate_repository.Path.cwd", return_value=ROOT):
+            with redirect_stdout(output):
+                self.assertEqual(main([]), 0)
+
+    def _schema(self, name: str) -> dict[str, object]:
+        return json.loads((ROOT / "schemas" / name).read_text(encoding="utf-8"))
+
+
+if __name__ == "__main__":
+    unittest.main()

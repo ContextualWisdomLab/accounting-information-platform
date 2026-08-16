@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.contextualwisdomlab.org/metering-billing/accounting-journal-proposal/v1",
+  "title": "Accounting Journal Proposal",
+  "description": "A balanced commercial-source proposal consumed by the Accounting Information Platform. It is not a posted journal.",
+  "x-cwl-authority": "metering-billing-platform",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "proposal_id",
+    "proposal_contract_version",
+    "idempotency_key",
+    "tenant_reference",
+    "legal_entity_reference",
+    "intended_book_role_code",
+    "transaction_currency",
+    "transaction_date",
+    "accounting_date",
+    "source_payload_hash",
+    "proposed_at",
+    "proposal_status_code",
+    "source_event_references",
+    "lines"
+  ],
+  "properties": {
+    "proposal_id": {"type": "string", "format": "uuid"},
+    "proposal_contract_version": {"type": "integer", "minimum": 1},
+    "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 256},
+    "tenant_reference": {"type": "string", "pattern": "^urn:cwl:"},
+    "legal_entity_reference": {"type": "string", "pattern": "^urn:cwl:"},
+    "intended_book_role_code": {"type": "string", "pattern": "^[a-z][a-z0-9_]{1,63}$"},
+    "transaction_currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
+    "transaction_date": {"type": "string", "format": "date"},
+    "accounting_date": {"type": "string", "format": "date"},
+    "source_payload_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "proposed_at": {"type": "string", "format": "date-time"},
+    "proposal_status_code": {
+      "type": "string",
+      "enum": ["draft", "validated", "exported", "rejected"]
+    },
+    "source_event_references": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^urn:cwl:"}
+    },
+    "lines": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 1024,
+      "items": {"$ref": "#/$defs/journal_line"}
+    }
+  },
+  "$defs": {
+    "positive_decimal": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*(\\.[0-9]{1,6})?$|^0\\.[0-9]{0,5}[1-9][0-9]*$",
+      "maxLength": 39
+    },
+    "non_negative_decimal": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]{1,6})?$",
+      "maxLength": 39
+    },
+    "journal_line": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["line_number", "account_role_code", "debit_amount", "credit_amount"],
+      "properties": {
+        "line_number": {"type": "integer", "minimum": 1},
+        "account_role_code": {"type": "string", "pattern": "^[a-z][a-z0-9_]{1,63}$"},
+        "debit_amount": {"$ref": "#/$defs/non_negative_decimal"},
+        "credit_amount": {"$ref": "#/$defs/non_negative_decimal"},
+        "cost_center_reference": {"type": "string", "pattern": "^urn:cwl:"},
+        "project_reference": {"type": "string", "pattern": "^urn:cwl:"}
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "debit_amount": {"$ref": "#/$defs/positive_decimal"},
+            "credit_amount": {"const": "0"}
+          }
+        },
+        {
+          "properties": {
+            "debit_amount": {"const": "0"},
+            "credit_amount": {"$ref": "#/$defs/positive_decimal"}
+          }
+        }
+      ]
+    }
+  }
+}

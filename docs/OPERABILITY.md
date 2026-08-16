@@ -1,0 +1,25 @@
+# Operability Baseline
+
+## Initial service objectives
+
+- Proposal intake preserves every accepted source hash and idempotency decision.
+- Posting and outbox publication are atomic.
+- Trial-balance totals tie exactly to the selected journal population.
+- No ordinary posting enters a hard-closed period.
+- Every receipt is traceable to policy, rule, mapping, fiscal period, journal, and source proposal versions.
+
+## Telemetry
+
+Record OpenTelemetry-compatible traces and metrics for proposal validation, idempotent replay, policy resolution, hold and rejection reason, posting latency, outbox lag, reversal, period close, and trial-balance generation. Never place account secrets, raw PII, or complete source payloads in telemetry.
+
+## Recovery
+
+- PostgreSQL point-in-time recovery and object-store versioning.
+- Periodic restore rehearsal into an isolated environment.
+- Journal and receipt hash reconciliation after restore.
+- Outbox replay by event identity without duplicate posting.
+- No recovery procedure rewrites a posted journal; corrections retain reversal lineage.
+
+## Incident response
+
+High-severity events include duplicate posting, unbalanced persisted journal, cross-tenant access, closed-period posting, missing source lineage, trial-balance mismatch, or receipt without committed journal. The immediate action is to stop the affected posting route, preserve evidence, reconcile the population, and issue explicit reversals or compensating entries after controller approval.

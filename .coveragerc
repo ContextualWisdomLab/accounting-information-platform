@@ -1,0 +1,12 @@
+[run]
+branch = True
+source =
+    src/accounting_information_platform
+    scripts
+
+[report]
+fail_under = 100
+show_missing = True
+skip_covered = False
+exclude_lines =
+    pragma: no cover

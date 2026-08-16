@@ -1,0 +1,64 @@
+name: Accounting Foundation CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: accounting-foundation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  accounting-foundation:
+    name: Accounting foundation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact head
+        uses: actions/checkout@631c942040754b6e095e929c1677c07e10ed4f87
+        with:
+          persist-credentials: false
+      - name: Install pinned Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-quality.txt
+      - name: Install hash-locked quality dependency
+        run: >-
+          python -m pip install
+          --disable-pip-version-check
+          --only-binary=:all:
+          --require-hashes
+          -r requirements-quality.txt
+      - name: Run behavior and repository tests
+        env:
+          PYTHONPATH: src:.
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Run complete production branch coverage
+        env:
+          PYTHONPATH: src:.
+        run: python -m coverage run --branch -m unittest discover -s tests -p 'test_*.py'
+      - name: Enforce complete statement and branch coverage
+        run: python -m coverage report --fail-under=100 --show-missing
+      - name: Validate repository contracts
+        run: python scripts/validate_repository.py .
+      - name: Compile production and test modules
+        run: python -m compileall -q src scripts tests
+      - name: Install source package without network resolution
+        run: python -m pip install --no-deps --no-build-isolation -e .
+      - name: Smoke-test installed public API
+        run: python -c "import accounting_information_platform as aip; assert aip.PostingLedger.__name__ == 'PostingLedger'"
+      - name: Build and install wheel
+        run: |
+          python -m pip wheel --no-deps --no-build-isolation -w dist .
+          python -m pip install --no-index --no-deps --force-reinstall dist/*.whl
+          cd "${RUNNER_TEMP}"
+          python -c "import accounting_information_platform as aip; assert aip.PostingLedger.__name__ == 'PostingLedger'"
+      - name: Verify typing marker is packaged
+        run: python -c "import zipfile, glob; wheel=glob.glob('dist/*.whl')[0]; names=zipfile.ZipFile(wheel).namelist(); assert 'accounting_information_platform/py.typed' in names"
