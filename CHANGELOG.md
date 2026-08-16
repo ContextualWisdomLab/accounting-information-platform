@@ -2,8 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Rewrote the README as a customer and operator page; moved local validation to `CONTRIBUTING.md` and the next durable-intake increment to `docs/doctoring/IMPLEMENTATION_SEQUENCE.md`.
+- Expanded ADRs 0001–0005 with Context and APA 7th References grounded in already claimed standards.
+
 ### Added
 
+- ADR 0006 for reporting taxonomy as a versioned projection of the journal core.
+- PostgreSQL `numeric` types citation in the standards bibliography.
 - Initial Accounting Information Platform product and authority baseline.
 - Executable exact-decimal journal proposal, posting, reversal, and trial-balance reference core.
 - Consumer contract for Metering Billing Platform journal proposals.
