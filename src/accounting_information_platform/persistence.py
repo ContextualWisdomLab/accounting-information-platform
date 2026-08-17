@@ -7,7 +7,7 @@ import importlib
 import json
 import uuid
 from contextlib import contextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Iterator
@@ -30,7 +30,7 @@ from .core import (
 
 
 class PostgresPostingLedger:
-    """Authoritative posting, reversal, trial balance, and period close against PostgreSQL 18."""
+    """Authoritative posting, catalog policy resolution, close, and trial balance on PostgreSQL 18."""
 
     def __init__(self, database_url: str, tenant_reference: str) -> None:
         """Bind one tenant to a PostgreSQL 18 database URL."""
@@ -58,7 +58,23 @@ class PostgresPostingLedger:
         return int(row[0])
 
     def post(self, proposal: JournalProposal, policy: AccountingPolicy) -> PostingReceipt:
-        """Resolve and persist *proposal* or return its prior idempotent receipt."""
+        """Persist *proposal* using a caller-supplied policy, or return its prior receipt."""
+        return self._persist_proposal(proposal, policy)
+
+    def post_proposal(self, proposal: JournalProposal) -> PostingReceipt:
+        """Resolve AIS catalog policy and persist *proposal*, or return its prior receipt."""
+        return self._persist_proposal(proposal, None)
+
+    def resolve_accounting_policy(self, proposal: JournalProposal) -> AccountingPolicy:
+        """Load the effective catalog policy for *proposal* without posting."""
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            return self._resolve_accounting_policy(connection, tenant_id, proposal)
+
+    def _persist_proposal(
+        self, proposal: JournalProposal, policy: AccountingPolicy | None
+    ) -> PostingReceipt:
+        """Resolve optional catalog policy and persist *proposal* in one transaction."""
         proposal_uuid = _require_proposal_uuid(proposal.proposal_id)
         with self._session() as connection:
             tenant_id = self._require_tenant(connection)
@@ -76,6 +92,8 @@ class PostgresPostingLedger:
                         "idempotency key was already used with a different payload"
                     )
                 return self._receipt_for_idempotency_key(connection, tenant_id, proposal)
+            if policy is None:
+                policy = self._resolve_accounting_policy(connection, tenant_id, proposal)
             PostingLedger._validate_policy_scope(proposal, policy)
             resolved_lines = tuple(
                 PostingLedger._resolve_line(line, policy) for line in proposal.lines
@@ -468,9 +486,18 @@ class PostgresPostingLedger:
         legal_entity_reference: str,
         next_action: str = "posting",
     ) -> UUID:
+        return self._load_legal_entity(connection, tenant_id, legal_entity_reference, next_action)[0]
+
+    def _load_legal_entity(
+        self,
+        connection: object,
+        tenant_id: UUID,
+        legal_entity_reference: str,
+        next_action: str = "posting",
+    ) -> tuple[UUID, str]:
         row = connection.execute(
             """
-            SELECT legal_entity_id
+            SELECT legal_entity_id, functional_currency_code
             FROM accounting_core.legal_entity_record
             WHERE tenant_account_id = %s AND legal_entity_code = %s AND valid_to IS NULL
             """,
@@ -481,7 +508,7 @@ class PostgresPostingLedger:
                 f"Legal entity {legal_entity_reference} is not recorded for this tenant. "
                 f"Create the legal_entity_record row, then retry {next_action}."
             )
-        return row[0]
+        return row[0], row[1]
 
     def _require_book(
         self,
@@ -512,9 +539,15 @@ class PostgresPostingLedger:
     def _require_open_period(
         self, connection: object, tenant_id: UUID, accounting_date: date
     ) -> UUID:
+        return self._require_open_period_bounds(connection, tenant_id, accounting_date)[0]
+
+    def _require_open_period_bounds(
+        self, connection: object, tenant_id: UUID, accounting_date: date
+    ) -> tuple[UUID, date, date]:
         row = connection.execute(
             """
-            SELECT fiscal_period_id, period_code, period_status_code
+            SELECT fiscal_period_id, period_code, period_status_code,
+                   period_start_date, period_end_date
             FROM accounting_core.fiscal_period
             WHERE tenant_account_id = %s
               AND period_start_date <= %s
@@ -532,7 +565,134 @@ class PostgresPostingLedger:
                 f"Fiscal period {row[1]} is {row[2]}. Open that period or post into an open period; "
                 "no journal was written."
             )
-        return row[0]
+        return row[0], row[3], row[4]
+
+    def _resolve_accounting_policy(
+        self, connection: object, tenant_id: UUID, proposal: JournalProposal
+    ) -> AccountingPolicy:
+        if proposal.tenant_reference != self._tenant_reference:
+            raise AccountingValidationError(
+                "proposal tenant scope does not match this ledger. "
+                "Open a PostgresPostingLedger for that tenant, then retry posting."
+            )
+        legal_entity_id, functional_currency = self._load_legal_entity(
+            connection, tenant_id, proposal.legal_entity_reference
+        )
+        book_id, book_name = self._require_book_for_role(
+            connection,
+            tenant_id,
+            legal_entity_id,
+            proposal.intended_book_role_code,
+        )
+        _period_id, period_start, period_end = self._require_open_period_bounds(
+            connection, tenant_id, proposal.accounting_date
+        )
+        mapping, policy_version, rule_version = self._load_role_mapping(
+            connection, tenant_id, book_id, proposal
+        )
+        return AccountingPolicy(
+            tenant_reference=proposal.tenant_reference,
+            legal_entity_reference=proposal.legal_entity_reference,
+            accounting_book_reference=book_name,
+            intended_book_role_code=proposal.intended_book_role_code,
+            transaction_currency=proposal.transaction_currency,
+            functional_currency=functional_currency,
+            open_period_start=period_start,
+            open_period_end=period_end,
+            chart_account_mapping=mapping,
+            accounting_policy_version=policy_version,
+            posting_rule_version=rule_version,
+        )
+
+    def _require_book_for_role(
+        self,
+        connection: object,
+        tenant_id: UUID,
+        legal_entity_id: UUID,
+        book_role_code: str,
+    ) -> tuple[UUID, str]:
+        row = connection.execute(
+            """
+            SELECT accounting_book_id, book_name
+            FROM accounting_core.accounting_book
+            WHERE tenant_account_id = %s
+              AND legal_entity_id = %s
+              AND book_role_code = %s
+              AND valid_to IS NULL
+            """,
+            (tenant_id, legal_entity_id, book_role_code),
+        ).fetchone()
+        if row is None:
+            raise AccountingValidationError(
+                f"Accounting book for role {book_role_code} is not recorded for this legal entity. "
+                "Create the accounting_book row, then retry posting."
+            )
+        return row[0], row[1]
+
+    def _load_role_mapping(
+        self,
+        connection: object,
+        tenant_id: UUID,
+        book_id: UUID,
+        proposal: JournalProposal,
+    ) -> tuple[dict[str, str], str, str]:
+        role_codes = tuple(dict.fromkeys(line.account_role_code for line in proposal.lines))
+        as_of = datetime.combine(
+            proposal.accounting_date, datetime.min.time(), tzinfo=timezone.utc
+        )
+        placeholders = ", ".join(["%s"] * len(role_codes))
+        rows = connection.execute(
+            f"""
+            SELECT account_role_mapping.account_role_code,
+                   chart_account.chart_account_code,
+                   account_role_mapping.accounting_policy_version,
+                   account_role_mapping.posting_rule_version
+            FROM accounting_core.account_role_mapping
+            JOIN accounting_core.chart_account
+              ON chart_account.tenant_account_id = account_role_mapping.tenant_account_id
+             AND chart_account.chart_account_id = account_role_mapping.chart_account_id
+            WHERE account_role_mapping.tenant_account_id = %s
+              AND account_role_mapping.accounting_book_id = %s
+              AND account_role_mapping.account_role_code IN ({placeholders})
+              AND account_role_mapping.valid_from <= %s
+              AND (
+                    account_role_mapping.valid_to IS NULL
+                    OR account_role_mapping.valid_to > %s
+                  )
+            """,
+            (tenant_id, book_id, *role_codes, as_of, as_of),
+        ).fetchall()
+        if not rows:
+            raise AccountingValidationError(
+                "No account_role_mapping is effective for this book and accounting date. "
+                "Create the account_role_mapping rows, then retry posting."
+            )
+        seen_roles: dict[str, tuple[str, str, str]] = {}
+        for role_code, account_code, policy_version, rule_version in rows:
+            if role_code in seen_roles:
+                raise AccountingValidationError(
+                    f"More than one effective account_role_mapping applies for role {role_code}. "
+                    "Close the superseded mapping, then retry posting."
+                )
+            seen_roles[role_code] = (account_code, policy_version, rule_version)
+        missing_roles = [role_code for role_code in role_codes if role_code not in seen_roles]
+        if missing_roles:
+            raise AccountingValidationError(
+                f"Account role {missing_roles[0]} is not mapped on this book. "
+                "Create the account_role_mapping row, then retry posting."
+            )
+        versions = {(policy_version, rule_version) for _code, policy_version, rule_version in seen_roles.values()}
+        if len(versions) != 1:
+            raise AccountingValidationError(
+                "Account role mappings use more than one policy version. "
+                "Approve a single effective mapping set, then retry posting."
+            )
+        policy_version, rule_version = next(iter(versions))
+        return (
+            {role_code: account_code for role_code, (account_code, _, _) in seen_roles.items()},
+            policy_version,
+            rule_version,
+        )
 
     def _require_book_for_close(
         self,

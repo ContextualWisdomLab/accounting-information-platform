@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import unittest
 import uuid
@@ -18,6 +19,7 @@ from accounting_information_platform import (
     JournalProposal,
     PeriodCloseReceipt,
     PostgresPostingLedger,
+    ingest_journal_proposal,
 )
 import psycopg
 
@@ -483,6 +485,122 @@ class PostgresPostingTests(unittest.TestCase):
                 snapshot_currency_code="KRW",
             )
 
+    def test_post_proposal_resolves_catalog_policy_from_billing_ingest(self) -> None:
+        """A Billing validated proposal posts with AIS catalog mapping and versions."""
+        payload = self._billing_validated_payload()
+        proposal = ingest_journal_proposal(payload)
+
+        policy = self.ledger.resolve_accounting_policy(proposal)
+        receipt = self.ledger.post_proposal(proposal)
+        replayed = self.ledger.post_proposal(proposal)
+        line_accounts = self._posted_chart_accounts()
+
+        self.assertEqual(policy.chart_account_mapping["accounts_receivable"], "110100")
+        self.assertEqual(policy.chart_account_mapping["usage_revenue"], "410100")
+        self.assertEqual(policy.accounting_policy_version, "ifrs-v1")
+        self.assertEqual(policy.posting_rule_version, "billing-issued-v1")
+        self.assertEqual(policy.accounting_book_reference, self.policy.accounting_book_reference)
+        self.assertNotIn("110100", json.dumps(payload["lines"]))
+        self.assertEqual(receipt.accounting_policy_version, "ifrs-v1")
+        self.assertEqual(receipt.posting_rule_version, "billing-issued-v1")
+        self.assertEqual(receipt.accounting_book_reference, self.policy.accounting_book_reference)
+        self.assertEqual(receipt, replayed)
+        self.assertEqual(self.ledger.journal_count, 1)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), 1)
+        self.assertEqual(line_accounts, {"110100", "410100"})
+
+    def test_post_proposal_catalog_misses_write_zero_rows(self) -> None:
+        """Unmapped roles, missing books, and closed periods write no durable rows."""
+        with self.assertRaisesRegex(AccountingValidationError, "Create the account_role_mapping row"):
+            self.ledger.post_proposal(
+                ingest_journal_proposal(
+                    self._billing_validated_payload(
+                        lines=[
+                            {
+                                "line_number": 1,
+                                "account_role_code": "accounts_receivable",
+                                "debit_amount": "25000",
+                                "credit_amount": "0",
+                            },
+                            {
+                                "line_number": 2,
+                                "account_role_code": "tax_payable",
+                                "debit_amount": "0",
+                                "credit_amount": "25000",
+                            },
+                        ]
+                    )
+                )
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "Create the accounting_book row"):
+            self.ledger.post_proposal(
+                ingest_journal_proposal(
+                    self._billing_validated_payload(intended_book_role_code="management_book")
+                )
+            )
+        self.ledger.close_fiscal_period(
+            legal_entity_reference=self.policy.legal_entity_reference,
+            accounting_book_reference=self.policy.accounting_book_reference,
+            period_code="2026-08",
+            snapshot_currency_code="KRW",
+        )
+        with self.assertRaisesRegex(
+            AccountingValidationError,
+            "Open that period or post into an open period",
+        ):
+            self.ledger.post_proposal(ingest_journal_proposal(self._billing_validated_payload()))
+
+        self.assertEqual(self._count_table("accounting_integration.journal_proposal_record"), 0)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), 0)
+        self.assertEqual(self._count_table("accounting_core.journal_entry_line"), 0)
+        self.assertEqual(self._count_table("accounting_integration.posting_receipt"), 0)
+
+    def test_resolve_accounting_policy_catalog_failures_name_the_next_action(self) -> None:
+        """Policy resolution fails closed without inventing chart codes or versions."""
+        with self.assertRaisesRegex(AccountingValidationError, "Open a PostgresPostingLedger"):
+            self.ledger.resolve_accounting_policy(
+                ingest_journal_proposal(
+                    self._billing_validated_payload(tenant_reference="urn:cwl:tenant_other")
+                )
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "Create the legal_entity_record"):
+            self.ledger.resolve_accounting_policy(
+                ingest_journal_proposal(
+                    self._billing_validated_payload(
+                        legal_entity_reference="urn:cwl:legal_entity:missing"
+                    )
+                )
+            )
+        self._delete_role_mappings()
+        with self.assertRaisesRegex(
+            AccountingValidationError, "Create the account_role_mapping rows"
+        ):
+            self.ledger.resolve_accounting_policy(
+                ingest_journal_proposal(self._billing_validated_payload())
+            )
+        self._seed_role_mapping("accounts_receivable", "110100")
+        self._seed_role_mapping(
+            "usage_revenue",
+            "410100",
+            accounting_policy_version="ifrs-v2",
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "single effective mapping set"):
+            self.ledger.resolve_accounting_policy(
+                ingest_journal_proposal(self._billing_validated_payload())
+            )
+        self._delete_role_mappings()
+        self._seed_role_mapping("accounts_receivable", "110100")
+        self._seed_role_mapping("usage_revenue", "410100")
+        self._seed_role_mapping(
+            "accounts_receivable",
+            "110100",
+            valid_from=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "Close the superseded mapping"):
+            self.ledger.resolve_accounting_policy(
+                ingest_journal_proposal(self._billing_validated_payload())
+            )
+
     def _close_period(self, **overrides: object) -> PeriodCloseReceipt:
         values: dict[str, object] = {
             "legal_entity_reference": self.policy.legal_entity_reference,
@@ -582,13 +700,14 @@ class PostgresPostingTests(unittest.TestCase):
                 ("110100", "Accounts receivable", "debit"),
                 ("410100", "Usage revenue", "credit"),
             ):
-                connection.execute(
+                chart_account_id = connection.execute(
                     """
                     INSERT INTO accounting_core.chart_account (
                         tenant_account_id, accounting_book_id, chart_account_code,
                         account_name, normal_balance_code, valid_from
                     )
                     VALUES (%s, %s, %s, %s, %s, %s)
+                    RETURNING chart_account_id
                     """,
                     (
                         tenant_id,
@@ -596,6 +715,23 @@ class PostgresPostingTests(unittest.TestCase):
                         account_code,
                         account_name,
                         normal_balance_code,
+                        VALID_FROM,
+                    ),
+                ).fetchone()[0]
+                connection.execute(
+                    """
+                    INSERT INTO accounting_core.account_role_mapping (
+                        tenant_account_id, accounting_book_id, account_role_code,
+                        chart_account_id, accounting_policy_version, posting_rule_version,
+                        valid_from
+                    )
+                    VALUES (%s, %s, %s, %s, 'ifrs-v1', 'billing-issued-v1', %s)
+                    """,
+                    (
+                        tenant_id,
+                        book_id,
+                        "accounts_receivable" if account_code == "110100" else "usage_revenue",
+                        chart_account_id,
                         VALID_FROM,
                     ),
                 )
@@ -762,6 +898,124 @@ class PostgresPostingTests(unittest.TestCase):
                 (self.tenant_id,),
             ).fetchall()
         return {row[0]: (row[1], row[2], row[3]) for row in rows}
+
+    def _billing_validated_payload(self, **overrides: object) -> dict[str, object]:
+        source_payload_hash = "sha256:" + "a" * 64
+        invoice_draft_id = "019d7b92-1aa0-7a7f-b61c-962c0f4bf612"
+        values: dict[str, object] = {
+            "proposal_id": invoice_draft_id,
+            "proposal_contract_version": 1,
+            "idempotency_key": (
+                f"{self.policy.tenant_reference}:invoice_draft:{invoice_draft_id}"
+                f":{source_payload_hash}:v1"
+            ),
+            "tenant_reference": self.policy.tenant_reference,
+            "legal_entity_reference": self.policy.legal_entity_reference,
+            "intended_book_role_code": "primary_statutory",
+            "transaction_currency": "KRW",
+            "transaction_date": "2026-08-31",
+            "accounting_date": "2026-08-31",
+            "source_payload_hash": source_payload_hash,
+            "proposed_at": "2026-08-31T00:00:00Z",
+            "proposal_status": "validated",
+            "source_event_references": (
+                f"{self.policy.tenant_reference}:invoice_draft:{invoice_draft_id}",
+            ),
+            "lines": [
+                {
+                    "line_number": 1,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "25000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "usage_revenue",
+                    "debit_amount": "0",
+                    "credit_amount": "25000",
+                },
+            ],
+        }
+        values.update(overrides)
+        return values
+
+    def _posted_chart_accounts(self) -> set[str]:
+        with psycopg.connect(DATABASE_URL) as connection:
+            connection.execute(
+                "SELECT set_config('app.tenant_account_id', %s, false)",
+                (self.tenant_id,),
+            )
+            rows = connection.execute(
+                """
+                SELECT chart_account.chart_account_code
+                FROM accounting_core.journal_entry_line
+                JOIN accounting_core.chart_account
+                  ON chart_account.tenant_account_id = journal_entry_line.tenant_account_id
+                 AND chart_account.chart_account_id = journal_entry_line.chart_account_id
+                WHERE journal_entry_line.tenant_account_id = %s
+                """,
+                (self.tenant_id,),
+            ).fetchall()
+        return {row[0] for row in rows}
+
+    def _delete_role_mappings(self) -> None:
+        with psycopg.connect(DATABASE_URL) as connection:
+            connection.execute(
+                "SELECT set_config('app.tenant_account_id', %s, false)",
+                (self.tenant_id,),
+            )
+            connection.execute(
+                """
+                DELETE FROM accounting_core.account_role_mapping
+                WHERE tenant_account_id = %s
+                """,
+                (self.tenant_id,),
+            )
+            connection.commit()
+
+    def _seed_role_mapping(
+        self,
+        account_role_code: str,
+        chart_account_code: str,
+        *,
+        accounting_policy_version: str = "ifrs-v1",
+        posting_rule_version: str = "billing-issued-v1",
+        valid_from: datetime = VALID_FROM,
+    ) -> None:
+        with psycopg.connect(DATABASE_URL) as connection:
+            connection.execute(
+                "SELECT set_config('app.tenant_account_id', %s, false)",
+                (self.tenant_id,),
+            )
+            chart_account_id, book_id = connection.execute(
+                """
+                SELECT chart_account.chart_account_id, chart_account.accounting_book_id
+                FROM accounting_core.chart_account
+                WHERE chart_account.tenant_account_id = %s
+                  AND chart_account.chart_account_code = %s
+                """,
+                (self.tenant_id, chart_account_code),
+            ).fetchone()
+            connection.execute(
+                """
+                INSERT INTO accounting_core.account_role_mapping (
+                    tenant_account_id, accounting_book_id, account_role_code,
+                    chart_account_id, accounting_policy_version, posting_rule_version,
+                    valid_from
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    self.tenant_id,
+                    book_id,
+                    account_role_code,
+                    chart_account_id,
+                    accounting_policy_version,
+                    posting_rule_version,
+                    valid_from,
+                ),
+            )
+            connection.commit()
 
     def _delete_snapshots(self) -> None:
         with psycopg.connect(DATABASE_URL) as connection:
