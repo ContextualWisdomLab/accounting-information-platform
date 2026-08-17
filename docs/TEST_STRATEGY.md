@@ -19,7 +19,8 @@
 - Public API docstrings: 100% through `-Werror` documentation and package inspection.
 - No skipped required test evidence.
 - Exact-head CI, SAST, secret scan, dependency policy, SBOM, and provenance.
-- PostgreSQL integration test for proposal-to-receipt atomicity before the persistence milestone merges.
+- Hash-locked coverage 7.15.4 wheels (including the CPython 3.13 manylinux x86_64 artifact) plus setuptools, wheel, packaging, psycopg, and psycopg-binary so `--require-hashes --only-binary=:all:` and `--no-build-isolation` packaging smoke tests resolve offline.
+- PostgreSQL 18 integration evidence for a two-line post, idempotent replay, append-only reversal, trial-balance tie-out to the journal population, and closed-period zero-row rejection.
 
 ## Required real-world fixtures
 

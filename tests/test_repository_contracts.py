@@ -13,10 +13,13 @@ from unittest import mock
 from pathlib import Path
 
 from scripts.validate_repository import (
+    COVERAGE_CP313_MANYLINUX_X86_64_WHEEL_HASH,
+    COVERAGE_UNIVERSAL_WHEEL_HASH,
     main,
     find_mutable_action_references,
     find_placeholder_tokens,
     validate_public_docstrings,
+    validate_quality_requirements,
     validate_repository,
     validate_sql_object_names,
 )
@@ -182,6 +185,105 @@ class RepositoryContractTests(unittest.TestCase):
             ),
         )
         self.assertEqual(missing_root_errors, ())
+
+    def test_quality_requirements_require_ci_coverage_wheels_and_packaging_backend(
+        self,
+    ) -> None:
+        """Exact-head CI cannot resolve an unhashed native coverage wheel or missing backend."""
+        unhashed = validate_quality_requirements("coverage==7.15.4\n")
+        self.assertIn("quality dependencies must be hash locked", unhashed)
+        self.assertIn(
+            "coverage must pin the universal py3-none-any wheel hash", unhashed
+        )
+        self.assertIn(
+            "coverage must pin the CPython 3.13 manylinux x86_64 wheel hash",
+            unhashed,
+        )
+        self.assertIn(
+            "quality dependencies must pin setuptools for no-build-isolation packaging",
+            unhashed,
+        )
+        self.assertIn(
+            "quality dependencies must pin wheel for no-build-isolation packaging",
+            unhashed,
+        )
+        self.assertIn(
+            "quality dependencies must pin packaging for setuptools license metadata",
+            unhashed,
+        )
+        self.assertIn(
+            "quality dependencies must pin psycopg for PostgreSQL persistence tests",
+            unhashed,
+        )
+        self.assertIn(
+            "quality dependencies must pin psycopg-binary for PostgreSQL persistence tests",
+            unhashed,
+        )
+
+        universal_only = validate_quality_requirements(
+            "coverage==7.15.4 \\\n"
+            f"    --hash=sha256:{COVERAGE_UNIVERSAL_WHEEL_HASH}\n"
+            "setuptools==84.0.0 \\\n"
+            "    --hash=sha256:"
+            "51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670\n"
+            "wheel==0.48.0 \\\n"
+            "    --hash=sha256:"
+            "3217dcc807155e45db462d7ef2431f5ddda0d7273b700d05a67b271ceb1287ab\n"
+            "packaging==26.3 \\\n"
+            "    --hash=sha256:"
+            "d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c\n"
+            "psycopg==3.3.4 \\\n"
+            "    --hash=sha256:"
+            "b6bbc25ccf05c8fad3b061d9db2ef0909a555171b84b07f29458a447253d679a\n"
+            "psycopg-binary==3.3.4 \\\n"
+            "    --hash=sha256:"
+            "c677c4ad433cb7150c8cd304a0769ae3bcfbe5ea0676eb53faa7b1443b16d0d3\n"
+        )
+        self.assertEqual(
+            universal_only,
+            ("coverage must pin the CPython 3.13 manylinux x86_64 wheel hash",),
+        )
+
+        orphan_and_unpinned = validate_quality_requirements(
+            f"--hash=sha256:{COVERAGE_UNIVERSAL_WHEEL_HASH}\n"
+            "not-a-pinned-requirement\n"
+            "setuptools==84.0.0\n"
+            "wheel==0.48.0\n"
+            "packaging==26.3\n"
+            "psycopg==3.3.4\n"
+            "psycopg-binary==3.3.4\n"
+        )
+        self.assertIn(
+            "hash lock is not attached to a quality dependency", orphan_and_unpinned
+        )
+        self.assertIn(
+            "unrecognized quality dependency line: not-a-pinned-requirement",
+            orphan_and_unpinned,
+        )
+        self.assertIn("quality dependencies must pin coverage", orphan_and_unpinned)
+        self.assertIn("setuptools must be hash locked", orphan_and_unpinned)
+        self.assertIn("wheel must be hash locked", orphan_and_unpinned)
+        self.assertIn("packaging must be hash locked", orphan_and_unpinned)
+        self.assertIn("psycopg must be hash locked", orphan_and_unpinned)
+        self.assertIn("psycopg-binary must be hash locked", orphan_and_unpinned)
+
+        inline_valid = validate_quality_requirements(
+            "coverage==7.15.4 "
+            f"--hash=sha256:{COVERAGE_UNIVERSAL_WHEEL_HASH} "
+            f"--hash=sha256:{COVERAGE_CP313_MANYLINUX_X86_64_WHEEL_HASH}\n"
+            "setuptools==84.0.0 --hash=sha256:"
+            "51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670\n"
+            "wheel==0.48.0 --hash=sha256:"
+            "3217dcc807155e45db462d7ef2431f5ddda0d7273b700d05a67b271ceb1287ab\n"
+            "packaging==26.3 --hash=sha256:"
+            "d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c\n"
+            "psycopg==3.3.4 --hash=sha256:"
+            "b6bbc25ccf05c8fad3b061d9db2ef0909a555171b84b07f29458a447253d679a\n"
+            "psycopg-binary==3.3.4 --hash=sha256:"
+            "c677c4ad433cb7150c8cd304a0769ae3bcfbe5ea0676eb53faa7b1443b16d0d3\n"
+            "# comment and blank lines are ignored\n\n"
+        )
+        self.assertEqual(inline_valid, ())
 
     def test_repository_reports_destructive_sql_and_unhashed_dependency(self) -> None:
         """Destructive journal SQL and mutable quality resolution fail closed."""

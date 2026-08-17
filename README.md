@@ -27,13 +27,15 @@ What is present:
   manifest, and posting receipt;
 - a PostgreSQL 18.4-oriented normalized migration with tenant-scoped foreign
   keys and row-level security;
+- `PostgresPostingLedger` and `apply_foundation_migration`, which persist the
+  same posting, replay, reversal, and trial-balance invariants through that
+  migration in one commit boundary;
 - product, architecture, security, and standards documents listed below.
 
-What is not present: a live PostgreSQL adapter, an HTTP or event API, foreign
-exchange, revenue schedules, bank ingestion, financial-statement production,
-consolidation, or tax calculation. The in-memory `PostingLedger` is a
-reference oracle that a future persistence adapter must match. The SQL
-migration is a checked-in schema, not an applied database.
+What is not present: an HTTP or event API, foreign exchange, revenue
+schedules, bank ingestion, financial-statement production, consolidation, or
+tax calculation. The in-memory `PostingLedger` remains the reference oracle
+that the PostgreSQL adapter must match.
 
 The initial milestone does not claim production compliance with a
 jurisdiction's accounting, tax, or statutory reporting rules. It establishes
@@ -101,15 +103,20 @@ PYTHONPATH=src:. python3 -m coverage run --branch -m unittest discover -s tests 
 python3 -m coverage report --fail-under=100 --show-missing
 python3 scripts/validate_repository.py .
 python3 -m compileall -q src scripts tests
+python3 -m pip install --no-deps --no-build-isolation -e .
+python3 -m pip wheel --no-deps --no-build-isolation -w dist .
 ```
 
-These commands exercise the in-process ledger, contract files, and repository
-gates. They do not open a port, apply the SQL migration, or contact Naruon.
+These commands do not open an application HTTP port and do not contact Naruon.
+`unittest` discovery also runs `tests/test_postgres_posting.py`, which needs a
+reachable PostgreSQL 18 instance and `ACCOUNTING_DATABASE_URL` (CI uses
+`postgresql://postgres:postgres@127.0.0.1:5432/accounting_test` and applies
+`database/migrations/0001_accounting_foundation.sql`). Persistence is still
+local to this repository; it is not a Naruon or sibling checkout.
 
-Optional packaging smoke, also local and offline after the quality install:
+Optional import smoke after the editable install above:
 
 ```bash
-python3 -m pip install --no-deps --no-build-isolation -e .
 python3 -c "import accounting_information_platform as aip; assert aip.PostingLedger.__name__ == 'PostingLedger'"
 ```
 
@@ -147,11 +154,12 @@ Call rules that already exist in those contracts and the reference core:
    journals, choose final chart-account identifiers, or require this process to
    start inside Naruon.
 
-Until an HTTP or CloudEvents adapter exists, the in-process call is
-`PostingLedger.post(proposal, policy)` and `PostingLedger.reverse(...)`.
-`PostingLedger.trial_balance(...)` aggregates the retained journal population.
-A transactional outbox table is defined in the SQL foundation for a later
-CloudEvents-compatible publication step; nothing in this tree publishes events.
+Until an HTTP or CloudEvents adapter exists, the in-process calls are
+`PostingLedger.post(proposal, policy)` (reference core) and
+`PostgresPostingLedger.post(proposal, policy)` (durable). Both also expose
+`reverse(...)` and `trial_balance(...)`. A transactional outbox row is written
+in the PostgreSQL posting transaction; nothing in this tree publishes those
+events onto a live bus.
 
 ## Standards already cited
 

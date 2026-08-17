@@ -12,6 +12,7 @@ from .core import (
     PostingLedger,
     PostingReceipt,
 )
+from .persistence import PostgresPostingLedger, apply_foundation_migration
 
 __all__ = [
     "AccountBalance",
@@ -22,6 +23,8 @@ __all__ = [
     "JournalProposal",
     "PostedJournal",
     "PostedJournalLine",
+    "PostgresPostingLedger",
     "PostingLedger",
     "PostingReceipt",
+    "apply_foundation_migration",
 ]
