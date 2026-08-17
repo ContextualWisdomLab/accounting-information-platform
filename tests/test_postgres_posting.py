@@ -55,7 +55,10 @@ from accounting_information_platform import (
 )
 import psycopg
 
-from accounting_information_platform.persistence import apply_foundation_migration
+from accounting_information_platform.persistence import (
+    _fiscal_year_identity,
+    apply_foundation_migration,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -2198,16 +2201,16 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(compare_income["comparison_statement_lines"], prior_only["statement_lines"])
         self.assertEqual(compare_income["comparison_net_income_amount"], prior_only["net_income_amount"])
         self.assertEqual(Decimal(str(prior_only["net_income_amount"])), Decimal("10000"))
-        self.assertEqual(Decimal(str(compare_income["net_income_amount"])), Decimal("35000"))
+        self.assertEqual(Decimal(str(compare_income["net_income_amount"])), Decimal("25000"))
         self.assertEqual(
             Decimal(str(current_income_by_code["410100"]["credit_amount"])),
-            Decimal("35000"),
+            Decimal("25000"),
         )
         self.assertEqual(
             Decimal(str(prior_income_by_code["410100"]["credit_amount"])),
             Decimal("10000"),
         )
-        self.assertEqual(Decimal(str(compare_sheet["net_income_amount"])), Decimal("35000"))
+        self.assertEqual(Decimal(str(compare_sheet["net_income_amount"])), Decimal("25000"))
         self.assertEqual(
             Decimal(str(compare_sheet["comparison_net_income_amount"])),
             Decimal("10000"),
@@ -2259,7 +2262,7 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(closed_prior_status, 200)
         self.assertEqual(live_current["balance_source_code"], "live")
         self.assertEqual(closed_prior["balance_source_code"], "snapshot")
-        self.assertEqual(Decimal(str(closed_compare["net_income_amount"])), Decimal("35000"))
+        self.assertEqual(Decimal(str(closed_compare["net_income_amount"])), Decimal("25000"))
         self.assertEqual(
             Decimal(str(closed_compare["comparison_net_income_amount"])),
             Decimal("0"),
@@ -2308,6 +2311,216 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(
             self._count_table("accounting_reporting.trial_balance_snapshot"),
             snapshots_before + 1,
+        )
+        server.shutdown()
+
+    def test_http_reads_year_to_date_financial_statements(self) -> None:
+        """Optional statement_scope_code=year_to_date sums same-year P&L and reuses period BS."""
+        self._seed_additional_period("midyear", date(2026, 5, 1), date(2026, 5, 31))
+        self._seed_additional_period("2026-07", date(2026, 7, 1), date(2026, 7, 31))
+        prior = self._billing_validated_payload(
+            proposal_id=str(uuid.uuid4()),
+            idempotency_key=(
+                f"{self.policy.tenant_reference}:invoice_draft:july:"
+                f"sha256:{'4' * 64}:v1"
+            ),
+            source_payload_hash="sha256:" + "4" * 64,
+            transaction_date="2026-07-15",
+            accounting_date="2026-07-15",
+            proposed_at="2026-07-15T00:00:00Z",
+            source_event_references=(
+                f"{self.policy.tenant_reference}:invoice_draft:july",
+            ),
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "10000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "usage_revenue",
+                    "debit_amount": "0",
+                    "credit_amount": "10000",
+                },
+            ],
+        )
+        current = self._billing_taxed_payload()
+        server = self._start_http_server()
+        self._http_json("POST", "/journal-proposals", prior)
+        july_close_status, _july_close = self._http_json(
+            "POST",
+            "/period-closes",
+            self._period_close_payload(
+                fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-07"
+            ),
+        )
+        self._http_json("POST", "/journal-proposals", current)
+        journals_before = self._count_table("accounting_core.general_journal")
+        snapshots_before = self._count_table("accounting_reporting.trial_balance_snapshot")
+
+        omit_status, omit_income = self._http_financial_statement("income_statement")
+        explicit_period_status, explicit_period = self._http_financial_statement(
+            "income_statement",
+            statement_scope_code="period",
+        )
+        ytd_income_status, ytd_income = self._http_financial_statement(
+            "income_statement",
+            statement_scope_code="year_to_date",
+        )
+        ytd_sheet_status, ytd_sheet = self._http_financial_statement(
+            "balance_sheet",
+            statement_scope_code="year_to_date",
+        )
+        period_sheet_status, period_sheet = self._http_financial_statement("balance_sheet")
+        july_period_sheet_status, july_period_sheet = self._http_financial_statement(
+            "balance_sheet",
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-07",
+        )
+        july_ytd_sheet_status, july_ytd_sheet = self._http_financial_statement(
+            "balance_sheet",
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-07",
+            statement_scope_code="year_to_date",
+        )
+        compare_ytd_status, compare_ytd = self._http_financial_statement(
+            "income_statement",
+            statement_scope_code="year_to_date",
+            comparison_fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-07",
+        )
+        midyear_ytd_status, midyear_ytd = self._http_financial_statement(
+            "income_statement",
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:midyear",
+            statement_scope_code="year_to_date",
+        )
+        library = lookup_financial_statement(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-08",
+            "income_statement",
+            statement_scope_code="year_to_date",
+        )
+        persist = PostgresPostingLedger(
+            DATABASE_URL, self.policy.tenant_reference
+        ).load_financial_statement(
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "2026-08",
+            "income_statement",
+            statement_scope_code="year_to_date",
+        )
+        period_income_by_code = {
+            str(item["chart_account_code"]): item
+            for item in omit_income["statement_lines"]
+        }
+        ytd_income_by_code = {
+            str(item["chart_account_code"]): item
+            for item in ytd_income["statement_lines"]
+        }
+        july_sheet_by_code = {
+            str(item["chart_account_code"]): item
+            for item in july_ytd_sheet["statement_lines"]
+        }
+
+        self.assertEqual(july_close_status, 200)
+        self.assertEqual(omit_status, 200)
+        self.assertEqual(explicit_period_status, 200)
+        self.assertEqual(ytd_income_status, 200)
+        self.assertEqual(ytd_sheet_status, 200)
+        self.assertEqual(period_sheet_status, 200)
+        self.assertEqual(july_period_sheet_status, 200)
+        self.assertEqual(july_ytd_sheet_status, 200)
+        self.assertEqual(compare_ytd_status, 200)
+        self.assertEqual(midyear_ytd_status, 200)
+        self.assertEqual(omit_income, explicit_period)
+        self.assertNotIn("statement_scope_code", omit_income)
+        self.assertNotIn("statement_scope_code", explicit_period)
+        self.assertEqual(ytd_income, library)
+        self.assertEqual(ytd_income, persist)
+        self.assertEqual(ytd_income["statement_scope_code"], "year_to_date")
+        self.assertEqual(
+            ytd_income["fiscal_period_reference"],
+            "urn:cwl:accounting:fiscal_period:2026-08",
+        )
+        self.assertEqual(Decimal(str(omit_income["net_income_amount"])), Decimal("25000"))
+        self.assertEqual(
+            Decimal(str(period_income_by_code["410100"]["credit_amount"])),
+            Decimal("25000"),
+        )
+        self.assertEqual(Decimal(str(ytd_income["net_income_amount"])), Decimal("35000"))
+        self.assertEqual(
+            Decimal(str(ytd_income_by_code["410100"]["credit_amount"])),
+            Decimal("35000"),
+        )
+        self.assertEqual(ytd_sheet["statement_lines"], period_sheet["statement_lines"])
+        self.assertEqual(ytd_sheet["total_debit_amount"], period_sheet["total_debit_amount"])
+        self.assertEqual(ytd_sheet["total_credit_amount"], period_sheet["total_credit_amount"])
+        self.assertEqual(ytd_sheet["net_income_amount"], period_sheet["net_income_amount"])
+        self.assertEqual(ytd_sheet["statement_scope_code"], "year_to_date")
+        self.assertNotIn("statement_scope_code", period_sheet)
+        self.assertEqual(july_ytd_sheet["statement_lines"], july_period_sheet["statement_lines"])
+        self.assertEqual(july_ytd_sheet["net_income_amount"], july_period_sheet["net_income_amount"])
+        self.assertEqual(july_ytd_sheet["statement_scope_code"], "year_to_date")
+        self.assertEqual(july_ytd_sheet["net_income_amount"], "0")
+        self.assertEqual(july_sheet_by_code["310100"]["account_role_code"], "retained_earnings")
+        self.assertEqual(
+            Decimal(str(july_sheet_by_code["310100"]["credit_amount"])),
+            Decimal("10000"),
+        )
+        self.assertEqual(compare_ytd["statement_scope_code"], "year_to_date")
+        self.assertEqual(
+            compare_ytd["comparison_fiscal_period_reference"],
+            "urn:cwl:accounting:fiscal_period:2026-07",
+        )
+        self.assertEqual(Decimal(str(compare_ytd["net_income_amount"])), Decimal("35000"))
+        self.assertEqual(
+            Decimal(str(compare_ytd["comparison_net_income_amount"])),
+            Decimal("10000"),
+        )
+        self.assertEqual(midyear_ytd["statement_lines"], [])
+        self.assertEqual(midyear_ytd["net_income_amount"], "0")
+        self.assertEqual(midyear_ytd["statement_scope_code"], "year_to_date")
+
+        bad_scope = self._http_financial_statement(
+            "income_statement",
+            statement_scope_code="quarter_to_date",
+        )
+        cross_status, _cross = self._http_financial_statement(
+            "income_statement",
+            statement_scope_code="year_to_date",
+            tenant_header="urn:cwl:tenant_other",
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "statement_scope_code"):
+            lookup_financial_statement(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "urn:cwl:accounting:fiscal_period:2026-08",
+                "income_statement",
+                statement_scope_code="quarter_to_date",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "statement_scope_code"):
+            PostgresPostingLedger(
+                DATABASE_URL, self.policy.tenant_reference
+            ).load_financial_statement(
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "2026-08",
+                "income_statement",
+                statement_scope_code="quarter_to_date",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "fiscal year"):
+            _fiscal_year_identity("", None)
+
+        self.assertEqual(bad_scope[0], 400)
+        self.assertEqual(cross_status, 403)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before)
+        self.assertEqual(
+            self._count_table("accounting_reporting.trial_balance_snapshot"),
+            snapshots_before,
         )
         server.shutdown()
 
@@ -5935,6 +6148,7 @@ class PostgresPostingTests(unittest.TestCase):
         book_reference: str | None = None,
         fiscal_period_reference: str | None = None,
         comparison_fiscal_period_reference: str | None = None,
+        statement_scope_code: str | None = None,
         tenant_header: str | None = "",
     ) -> tuple[int, dict[str, object]]:
         fields = {
@@ -5959,6 +6173,8 @@ class PostgresPostingTests(unittest.TestCase):
             fields["comparison_fiscal_period_reference"] = (
                 comparison_fiscal_period_reference
             )
+        if statement_scope_code is not None:
+            fields["statement_scope_code"] = statement_scope_code
         query = urllib.parse.urlencode(fields)
         return self._http_json(
             "GET",

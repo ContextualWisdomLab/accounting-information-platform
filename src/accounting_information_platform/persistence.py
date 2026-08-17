@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import re
 import uuid
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
@@ -1492,8 +1493,14 @@ class PostgresPostingLedger:
         period_code: str,
         statement_type_code: str,
         comparison_period_code: str = "",
+        statement_scope_code: str = "",
     ) -> dict[str, object]:
         """Project income-statement or balance-sheet lines from the period trial balance."""
+        if statement_scope_code not in {"", "period", "year_to_date"}:
+            raise AccountingValidationError(
+                "statement_scope_code must be period or year_to_date. "
+                "Supply a known statement scope, then retry the financial-statement read."
+            )
         if statement_type_code == "income_statement":
             allowed_classes = frozenset({"revenue", "expense"})
         elif statement_type_code == "balance_sheet":
@@ -1511,11 +1518,15 @@ class PostgresPostingLedger:
         account_facts = self._load_statement_account_facts(
             legal_entity_reference, accounting_book_reference
         )
+        income_scope_code = (
+            "period" if statement_type_code == "balance_sheet" else statement_scope_code
+        )
         if statement_type_code == "income_statement":
             source_lines = self._load_operational_income_lines(
                 legal_entity_reference=legal_entity_reference,
                 accounting_book_reference=accounting_book_reference,
                 period_code=period_code,
+                statement_scope_code=income_scope_code,
             )
         else:
             source_lines = []
@@ -1576,6 +1587,7 @@ class PostgresPostingLedger:
                         legal_entity_reference=legal_entity_reference,
                         accounting_book_reference=accounting_book_reference,
                         period_code=period_code,
+                        statement_scope_code=income_scope_code,
                     )
                 ),
                 Decimal("0"),
@@ -1592,12 +1604,15 @@ class PostgresPostingLedger:
             "total_credit_amount": _exact_amount_text(total_credit_amount),
             "net_income_amount": _exact_amount_text(net_income_amount),
         }
+        if statement_scope_code == "year_to_date":
+            document["statement_scope_code"] = "year_to_date"
         if comparison_period_code.strip():
             compared = self.load_financial_statement(
                 legal_entity_reference,
                 accounting_book_reference,
                 comparison_period_code.strip(),
                 statement_type_code,
+                statement_scope_code=statement_scope_code,
             )
             document["comparison_fiscal_period_reference"] = compared[
                 "fiscal_period_reference"
@@ -1653,6 +1668,7 @@ class PostgresPostingLedger:
         legal_entity_reference: str,
         accounting_book_reference: str,
         period_code: str,
+        statement_scope_code: str = "",
     ) -> list[dict[str, object]]:
         with self._session() as connection:
             tenant_id = self._require_tenant(connection)
@@ -1669,14 +1685,15 @@ class PostgresPostingLedger:
                 accounting_book_reference,
                 next_action="the financial-statement read",
             )[0]
-            _period_id, _period_status_code, period_end_date = self._require_fiscal_period(
+            period_ids = self._statement_period_ids(
                 connection,
                 tenant_id,
                 period_code,
-                next_action="the financial-statement read",
+                statement_scope_code,
             )
+            period_placeholders = ", ".join(["%s"] * len(period_ids))
             rows = connection.execute(
-                """
+                f"""
                 SELECT chart_account.chart_account_code,
                        account_role_mapping.account_role_code,
                        chart_account.account_class_code,
@@ -1696,7 +1713,7 @@ class PostgresPostingLedger:
                 WHERE general_journal.tenant_account_id = %s
                   AND general_journal.legal_entity_id = %s
                   AND general_journal.accounting_book_id = %s
-                  AND general_journal.accounting_date <= %s
+                  AND general_journal.fiscal_period_id IN ({period_placeholders})
                   AND chart_account.account_class_code IN ('revenue', 'expense')
                   AND general_journal.journal_reference NOT LIKE %s
                 GROUP BY chart_account.chart_account_code,
@@ -1708,7 +1725,7 @@ class PostgresPostingLedger:
                     tenant_id,
                     legal_entity_id,
                     book_id,
-                    period_end_date,
+                    *period_ids,
                     "urn:cwl:accounting:general_journal:period_closing:%",
                 ),
             ).fetchall()
@@ -1729,6 +1746,41 @@ class PostgresPostingLedger:
                 }
             )
         return lines
+
+    def _statement_period_ids(
+        self,
+        connection: object,
+        tenant_id: UUID,
+        period_code: str,
+        statement_scope_code: str,
+    ) -> list[UUID]:
+        period_id, calendar_id, requested_code, period_start_date = connection.execute(
+            """
+            SELECT fiscal_period_id, fiscal_calendar_id, period_code, period_start_date
+            FROM accounting_core.fiscal_period
+            WHERE tenant_account_id = %s AND period_code = %s
+            """,
+            (tenant_id, period_code),
+        ).fetchone()
+        if statement_scope_code in {"", "period"}:
+            return [period_id]
+        fiscal_year = _fiscal_year_identity(str(requested_code), period_start_date)
+        peers = connection.execute(
+            """
+            SELECT fiscal_period_id, period_code, period_start_date
+            FROM accounting_core.fiscal_period
+            WHERE tenant_account_id = %s
+              AND fiscal_calendar_id = %s
+              AND period_start_date <= %s
+            ORDER BY period_start_date, period_code
+            """,
+            (tenant_id, calendar_id, period_start_date),
+        ).fetchall()
+        return [
+            peer_id
+            for peer_id, peer_code, peer_start in peers
+            if _fiscal_year_identity(str(peer_code), peer_start) == fiscal_year
+        ]
 
     @contextmanager
     def _session(self) -> Iterator[object]:
@@ -3373,6 +3425,18 @@ def _canonical_receipt_hash(receipt: PostingReceipt) -> str:
         sort_keys=True,
     )
     return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _fiscal_year_identity(period_code: str, period_start_date: date | None) -> str:
+    matched = re.match(r"^(\d{4})", period_code)
+    if matched:
+        return matched.group(1)
+    if period_start_date is not None:
+        return f"{period_start_date.year:04d}"
+    raise AccountingValidationError(
+        "fiscal year identity is missing for this period. "
+        "Use a period_code that starts with the four-digit year, then retry the financial-statement read."
+    )
 
 
 def _format_timestamp(value: datetime) -> str:

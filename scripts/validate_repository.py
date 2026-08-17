@@ -69,6 +69,7 @@ REQUIRED_FILES = (
     "docs/adr/0025-http-financial-statement-comparison.md",
     "docs/adr/0026-http-legal-entity-list.md",
     "docs/adr/0027-http-audit-event-history.md",
+    "docs/adr/0028-http-financial-statement-year-to-date.md",
     "docs/doctoring/REFERENCES.md",
     "docs/doctoring/STANDARD_TRACEABILITY.md",
     "docs/superpowers/specs/2026-08-16-accounting-information-platform-design.md",

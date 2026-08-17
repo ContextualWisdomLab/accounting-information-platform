@@ -424,6 +424,7 @@ def lookup_financial_statement(
     fiscal_period_reference: str,
     statement_type_code: str,
     comparison_fiscal_period_reference: str = "",
+    statement_scope_code: str = "",
 ) -> dict[str, object]:
     """Return the income statement or balance sheet for one book and fiscal period."""
     if not legal_entity_reference or not book_reference or not fiscal_period_reference:
@@ -436,6 +437,11 @@ def lookup_financial_statement(
             "statement_type_code must be income_statement or balance_sheet. "
             "Supply a known statement type, then retry the financial-statement read."
         )
+    if statement_scope_code and statement_scope_code not in {"period", "year_to_date"}:
+        raise AccountingValidationError(
+            "statement_scope_code must be period or year_to_date. "
+            "Supply a known statement scope, then retry the financial-statement read."
+        )
     ledger = PostgresPostingLedger(database_url, tenant_reference)
     return ledger.load_financial_statement(
         legal_entity_reference,
@@ -445,6 +451,7 @@ def lookup_financial_statement(
         comparison_period_code=_period_code_from_reference(
             comparison_fiscal_period_reference
         ),
+        statement_scope_code=statement_scope_code,
     )
 
 

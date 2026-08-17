@@ -10,6 +10,8 @@ IFRS Foundation. (2022). *IAS 1 presentation of financial statements*. https://w
 
 IFRS Foundation. (2022). *IAS 10 events after the reporting period*. https://www.ifrs.org/issued-standards/list-of-standards/ias-10-events-after-the-reporting-period/
 
+IFRS Foundation. (2023). *IAS 34 interim financial reporting*. https://www.ifrs.org/issued-standards/list-of-standards/ias-34-interim-financial-reporting/
+
 IFRS Foundation. (2024). *IFRS 18 presentation and disclosure in financial statements*. https://www.ifrs.org/projects/completed-projects/2024/primary-financial-statements/
 
 IFRS Foundation. (2024). *Post-implementation review of IFRS 15 revenue from contracts with customers: Project summary and feedback statement*. https://www.ifrs.org/projects/completed-projects/2024/pir-ifrs-15/
