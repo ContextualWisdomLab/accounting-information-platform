@@ -271,6 +271,31 @@ def lookup_period_journals(
     )
 
 
+def lookup_journal_reversals(
+    database_url: str,
+    tenant_reference: str,
+    legal_entity_reference: str,
+    original_journal_reference: str = "",
+    fiscal_period_reference: str = "",
+    page_limit: int | None = None,
+    cursor: str = "",
+) -> dict[str, object]:
+    """Return one page of existing journal reversals for a tenant legal entity."""
+    if not legal_entity_reference:
+        raise AccountingValidationError(
+            "legal_entity_reference is required. "
+            "Supply that journal-reversal list field, then retry the journal-reversal list."
+        )
+    ledger = PostgresPostingLedger(database_url, tenant_reference)
+    return ledger.load_journal_reversals(
+        legal_entity_reference,
+        original_journal_reference,
+        _period_code_from_reference(fiscal_period_reference),
+        page_limit=_resolve_journal_reversal_page_limit(page_limit),
+        cursor_after=_parse_journal_reversal_cursor(cursor),
+    )
+
+
 def lookup_outbox_events(
     database_url: str,
     tenant_reference: str,
@@ -482,6 +507,13 @@ def _resolve_journal_list_page_limit(page_limit: int | None) -> int:
     )
 
 
+def _resolve_journal_reversal_page_limit(page_limit: int | None) -> int:
+    return _resolve_bounded_page_limit(
+        page_limit,
+        "Supply a journal-reversal page_limit, then retry the journal-reversal list.",
+    )
+
+
 def _resolve_outbox_page_limit(page_limit: int | None) -> int:
     return _resolve_bounded_page_limit(
         page_limit,
@@ -542,6 +574,30 @@ def _parse_journal_list_cursor(cursor: str) -> tuple[date, str] | None:
             "Supply a journal-list cursor, then retry the journal list."
         ) from error
     return accounting_date, journal_reference
+
+
+def _parse_journal_reversal_cursor(cursor: str) -> tuple[datetime, str] | None:
+    if not cursor:
+        return None
+    if "|" not in cursor:
+        raise AccountingValidationError(
+            "cursor must be posted_at|journal_reference. "
+            "Supply a journal-reversal cursor, then retry the journal-reversal list."
+        )
+    posted_at_text, journal_reference = cursor.split("|", 1)
+    if not posted_at_text or not journal_reference:
+        raise AccountingValidationError(
+            "cursor must be posted_at|journal_reference. "
+            "Supply a journal-reversal cursor, then retry the journal-reversal list."
+        )
+    try:
+        posted_at = datetime.fromisoformat(posted_at_text.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise AccountingValidationError(
+            "cursor must be posted_at|journal_reference. "
+            "Supply a journal-reversal cursor, then retry the journal-reversal list."
+        ) from error
+    return posted_at, journal_reference
 
 
 def _parse_fiscal_period_list_cursor(cursor: str) -> tuple[date, str] | None:

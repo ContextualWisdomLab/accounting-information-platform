@@ -1,4 +1,4 @@
-"""Thin stdlib HTTP boundary for Billing proposals, pulls, receipts, close, open, TB, statements, catalog, journals, outbox, and audit history."""
+"""Thin stdlib HTTP boundary for Billing proposals, pulls, receipts, close, open, TB, statements, catalog, journals, reversals, outbox, and audit history."""
 
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ from .accept import (
     lookup_financial_statement,
     lookup_fiscal_period,
     lookup_fiscal_periods,
+    lookup_journal_reversals,
     lookup_outbox_events,
     lookup_period_journals,
     lookup_posted_journal,
@@ -75,12 +76,12 @@ class JournalProposalServer(ThreadingHTTPServer):
 
 
 class JournalProposalHandler(BaseHTTPRequestHandler):
-    """Serve proposal POST, reverse, pull, receipt GET, close, TB, catalog, journal, outbox, audit history, and healthz."""
+    """Serve proposal POST, reverse, reversal list, pull, receipt GET, close, TB, catalog, journal, outbox, audit history, and healthz."""
 
     server: JournalProposalServer
 
     def do_GET(self) -> None:
-        """Route healthz, receipt, trial-balance, catalog, journal, outbox, audit history, and GET 405s."""
+        """Route healthz, receipt, trial-balance, catalog, journal, reversal list, outbox, audit history, and GET 405s."""
         parsed = urlparse(self.path)
         if parsed.path == HEALTHZ_PATH:
             self._write_json(200, {"status": "ok"})
@@ -93,11 +94,7 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             )
             return
         if parsed.path == JOURNAL_REVERSAL_PATH:
-            self._write_error(
-                405,
-                "GET is not supported on the journal reversal endpoint. "
-                "POST a journal-reversal command, then retry.",
-            )
+            self._get_journal_reversals(parsed.query)
             return
         if parsed.path == JOURNAL_PROPOSAL_PATH:
             self._write_error(
@@ -154,7 +151,7 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             "unknown path. GET /posting-receipts?idempotency_key=, GET /trial-balances, "
             "GET /financial-statements, GET /account-role-mappings, GET /accounting-books, "
             "GET /legal-entities, GET /chart-accounts, GET /account-ledgers, GET /journals, "
-            "GET /fiscal-periods, GET /outbox-events?event_type_code=, or "
+            "GET /journal-reversals, GET /fiscal-periods, GET /outbox-events?event_type_code=, or "
             "GET /audit-events, then retry.",
         )
 
@@ -478,6 +475,50 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
                 legal_entity_reference,
                 chart_account_code,
                 fiscal_period_reference=_first_query(fields, "fiscal_period_reference"),
+                page_limit=page_limit,
+                cursor=_first_query(fields, "cursor"),
+            )
+        except AccountingValidationError as error:
+            message = str(error)
+            if "page_limit" in message or "cursor" in message:
+                self._write_error(400, message)
+                return
+            self._write_error(404, message)
+            return
+        self._write_json(200, document)
+
+    def _get_journal_reversals(self, query: str) -> None:
+        tenant_header = self._bound_tenant_header("journal-reversal list")
+        if tenant_header is None:
+            return
+        fields = parse_qs(query)
+        legal_entity_reference = _first_query(fields, "legal_entity_reference")
+        if not legal_entity_reference:
+            self._write_error(
+                400,
+                "legal_entity_reference is required. "
+                "Supply that journal-reversal list field, then retry the journal-reversal list.",
+            )
+            return
+        raw_limit = _first_query(fields, "page_limit")
+        page_limit: int | None = None
+        if raw_limit:
+            try:
+                page_limit = int(raw_limit)
+            except ValueError:
+                self._write_error(
+                    400,
+                    "page_limit must be an integer. "
+                    "Supply a journal-reversal page_limit, then retry the journal-reversal list.",
+                )
+                return
+        try:
+            document = lookup_journal_reversals(
+                self.server.database_url,
+                tenant_header,
+                legal_entity_reference,
+                _first_query(fields, "original_journal_reference"),
+                _first_query(fields, "fiscal_period_reference"),
                 page_limit=page_limit,
                 cursor=_first_query(fields, "cursor"),
             )
@@ -884,7 +925,7 @@ def create_journal_proposal_server(
     host: str = "127.0.0.1",
     port: int = 0,
 ) -> JournalProposalServer:
-    """Create a stdlib HTTP server that posts, pulls, closes, opens periods, and reads TB, statements, journals, outbox, and audit history."""
+    """Create a stdlib HTTP server that posts, pulls, closes, opens periods, and reads TB, statements, journals, reversals, outbox, and audit history."""
     if not database_url:
         raise AccountingValidationError(
             "ACCOUNTING_DATABASE_URL is empty. Set a PostgreSQL 18 URL and retry posting."

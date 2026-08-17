@@ -253,6 +253,95 @@ class PostgresPostingLedger:
                 "next_cursor": next_cursor,
             }
 
+    def load_journal_reversals(
+        self,
+        legal_entity_reference: str,
+        original_journal_reference: str = "",
+        period_code: str = "",
+        *,
+        page_limit: int = 50,
+        cursor_after: tuple[datetime, str] | None = None,
+    ) -> dict[str, object]:
+        """Return one page of existing journal reversals for a tenant legal entity."""
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            legal_entity_id = self._require_legal_entity(
+                connection, tenant_id, legal_entity_reference, "the journal-reversal list"
+            )
+            parameters: list[object] = [tenant_id, legal_entity_id]
+            original_clause = ""
+            if original_journal_reference:
+                original_clause = "AND original_journal.journal_reference = %s"
+                parameters.append(original_journal_reference)
+            period_clause = ""
+            if period_code:
+                period_id, _status, _period_end = self._require_fiscal_period(
+                    connection, tenant_id, period_code, "the journal-reversal list"
+                )
+                period_clause = "AND reversal_journal.fiscal_period_id = %s"
+                parameters.append(period_id)
+            cursor_clause = ""
+            if cursor_after is not None:
+                cursor_clause = (
+                    "AND (reversal_journal.posted_at, reversal_journal.journal_reference) "
+                    "> (%s, %s)"
+                )
+                parameters.extend(cursor_after)
+            parameters.append(page_limit + 1)
+            rows = connection.execute(
+                f"""
+                SELECT reversal_journal.journal_reference,
+                       original_journal.journal_reference,
+                       reversal_journal.accounting_date,
+                       reversal_journal.posted_at,
+                       journal_reversal.reversal_reason_code
+                FROM accounting_core.journal_reversal
+                JOIN accounting_core.general_journal AS reversal_journal
+                  ON reversal_journal.tenant_account_id = journal_reversal.tenant_account_id
+                 AND reversal_journal.general_journal_id = journal_reversal.reversal_journal_id
+                JOIN accounting_core.general_journal AS original_journal
+                  ON original_journal.tenant_account_id = journal_reversal.tenant_account_id
+                 AND original_journal.general_journal_id = journal_reversal.original_journal_id
+                WHERE journal_reversal.tenant_account_id = %s
+                  AND reversal_journal.legal_entity_id = %s
+                  {original_clause}
+                  {period_clause}
+                  {cursor_clause}
+                ORDER BY reversal_journal.posted_at, reversal_journal.journal_reference
+                LIMIT %s
+                """,
+                tuple(parameters),
+            ).fetchall()
+            has_more = len(rows) > page_limit
+            page_rows = rows[:page_limit]
+            journal_reversals = [
+                {
+                    "reversal_journal_reference": row[0],
+                    "original_journal_reference": row[1],
+                    "reversal_date": row[2].isoformat(),
+                    "posted_at": _format_timestamp(row[3]),
+                    "reversal_reason_code": row[4],
+                }
+                for row in page_rows
+            ]
+            next_cursor = None
+            if has_more:
+                last = page_rows[-1]
+                next_cursor = f"{_format_timestamp(last[3])}|{last[0]}"
+            document: dict[str, object] = {
+                "tenant_reference": self._tenant_reference,
+                "legal_entity_reference": legal_entity_reference,
+                "journal_reversals": journal_reversals,
+                "next_cursor": next_cursor,
+            }
+            if original_journal_reference:
+                document["original_journal_reference"] = original_journal_reference
+            if period_code:
+                document["fiscal_period_reference"] = (
+                    f"urn:cwl:accounting:fiscal_period:{period_code}"
+                )
+            return document
+
     def load_unpublished_outbox_events(
         self,
         event_type_code: str,

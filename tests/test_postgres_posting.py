@@ -44,6 +44,7 @@ from accounting_information_platform import (
     lookup_fiscal_periods,
     lookup_audit_events,
     lookup_outbox_events,
+    lookup_journal_reversals,
     lookup_period_journals,
     lookup_posted_journal,
     publish_outbox_event,
@@ -4759,7 +4760,7 @@ class PostgresPostingTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(get_status, 405)
+        self.assertEqual(get_status, 400)
         self.assertEqual(missing_header[0], 400)
         self.assertEqual(cross_status, 403)
         self.assertEqual(body_mismatch[0], 403)
@@ -4769,6 +4770,184 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(close_status, 200)
         self.assertEqual(closed_reverse[0], 422)
         self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before + 1)
+        server.shutdown()
+
+    def test_http_lists_journal_reversals_without_sql(self) -> None:
+        """GET /journal-reversals lists stored reversal lineage; POST remains the command."""
+        self._seed_additional_period("2026-09", date(2026, 9, 1), date(2026, 9, 30))
+        invoice = self._billing_validated_payload()
+        cash = self._billing_cash_payload()
+        server = self._start_http_server()
+        reversals_before = self._count_table("accounting_core.journal_reversal")
+
+        empty_status, empty_page = self._http_journal_reversals()
+        empty_library = lookup_journal_reversals(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+        )
+        self.assertEqual(empty_status, 200)
+        self.assertEqual(empty_page, empty_library)
+        self.assertEqual(empty_page["journal_reversals"], [])
+        self.assertIsNone(empty_page["next_cursor"])
+        self.assertEqual(empty_page["tenant_reference"], self.policy.tenant_reference)
+        self.assertEqual(
+            empty_page["legal_entity_reference"], self.policy.legal_entity_reference
+        )
+        self.assertNotIn("original_journal_reference", empty_page)
+        self.assertNotIn("fiscal_period_reference", empty_page)
+
+        post_status, posted = self._http_json("POST", "/journal-proposals", invoice)
+        cash_status, cash_posted = self._http_json("POST", "/journal-proposals", cash)
+        reverse_body = {
+            "tenant_reference": self.policy.tenant_reference,
+            "journal_reference": posted["journal_reference"],
+            "reversal_date": "2026-08-31",
+            "reversal_reason_code": "billing_correction",
+        }
+        reverse_status, reversing = self._http_json(
+            "POST", "/journal-reversals", reverse_body
+        )
+        cash_reverse_status, cash_reversing = self._http_json(
+            "POST",
+            "/journal-reversals",
+            {
+                "tenant_reference": self.policy.tenant_reference,
+                "journal_reference": cash_posted["journal_reference"],
+                "reversal_date": "2026-08-31",
+                "reversal_reason_code": "billing_correction",
+            },
+        )
+        listed_status, listed = self._http_journal_reversals()
+        library = lookup_journal_reversals(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+        )
+        persist = PostgresPostingLedger(
+            DATABASE_URL, self.policy.tenant_reference
+        ).load_journal_reversals(self.policy.legal_entity_reference)
+        filtered_status, filtered = self._http_journal_reversals(
+            original_journal_reference=str(posted["journal_reference"])
+        )
+        period_status, period_page = self._http_journal_reversals(
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-08"
+        )
+        empty_period_status, empty_period = self._http_journal_reversals(
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-09"
+        )
+        first_page_status, first_page = self._http_journal_reversals(page_limit=1)
+        second_page_status, second_page = self._http_journal_reversals(
+            page_limit=1,
+            cursor=str(first_page["next_cursor"]),
+        )
+        by_original = {
+            str(item["original_journal_reference"]): item
+            for item in listed["journal_reversals"]
+        }
+
+        self.assertEqual(post_status, 200)
+        self.assertEqual(cash_status, 200)
+        self.assertEqual(reverse_status, 200)
+        self.assertEqual(cash_reverse_status, 200)
+        self.assertEqual(listed_status, 200)
+        self.assertEqual(listed, library)
+        self.assertEqual(listed, persist)
+        self.assertEqual(len(listed["journal_reversals"]), 2)
+        self.assertEqual(
+            by_original[str(posted["journal_reference"])]["reversal_journal_reference"],
+            reversing["journal_reference"],
+        )
+        self.assertEqual(
+            by_original[str(posted["journal_reference"])]["reversal_date"],
+            "2026-08-31",
+        )
+        self.assertEqual(
+            by_original[str(posted["journal_reference"])]["reversal_reason_code"],
+            "billing_correction",
+        )
+        self.assertTrue(by_original[str(posted["journal_reference"])]["posted_at"])
+        self.assertEqual(
+            by_original[str(cash_posted["journal_reference"])]["reversal_journal_reference"],
+            cash_reversing["journal_reference"],
+        )
+        self.assertEqual(filtered_status, 200)
+        self.assertEqual(filtered["original_journal_reference"], posted["journal_reference"])
+        self.assertEqual(len(filtered["journal_reversals"]), 1)
+        self.assertEqual(
+            filtered["journal_reversals"][0]["original_journal_reference"],
+            posted["journal_reference"],
+        )
+        self.assertEqual(period_status, 200)
+        self.assertEqual(
+            period_page["fiscal_period_reference"],
+            "urn:cwl:accounting:fiscal_period:2026-08",
+        )
+        self.assertEqual(len(period_page["journal_reversals"]), 2)
+        self.assertEqual(empty_period_status, 200)
+        self.assertEqual(empty_period["journal_reversals"], [])
+        self.assertEqual(first_page_status, 200)
+        self.assertEqual(second_page_status, 200)
+        self.assertEqual(len(first_page["journal_reversals"]), 1)
+        self.assertTrue(first_page["next_cursor"])
+        self.assertEqual(len(second_page["journal_reversals"]), 1)
+        self.assertIsNone(second_page["next_cursor"])
+        self.assertEqual(
+            [item["reversal_journal_reference"] for item in first_page["journal_reversals"]]
+            + [item["reversal_journal_reference"] for item in second_page["journal_reversals"]],
+            [item["reversal_journal_reference"] for item in listed["journal_reversals"]],
+        )
+        replay_status, replayed = self._http_json("POST", "/journal-reversals", reverse_body)
+        after_replay_status, after_replay = self._http_journal_reversals()
+        self.assertEqual(replay_status, 200)
+        self.assertEqual(replayed, reversing)
+        self.assertEqual(after_replay_status, 200)
+        self.assertEqual(len(after_replay["journal_reversals"]), 2)
+
+        missing_entity = self._http_json("GET", "/journal-reversals", None)
+        missing_header = self._http_journal_reversals(tenant_header=None)
+        cross_status, _cross = self._http_journal_reversals(
+            tenant_header="urn:cwl:tenant_other"
+        )
+        unknown_entity = self._http_journal_reversals(
+            legal_entity_reference="urn:cwl:legal_entity:missing"
+        )
+        unknown_period = self._http_journal_reversals(
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:1999-01"
+        )
+        unknown_original = self._http_journal_reversals(
+            original_journal_reference="urn:cwl:accounting:general_journal:missing"
+        )
+        bad_limit = self._http_journal_reversals(page_limit="abc")
+        high_limit = self._http_journal_reversals(page_limit=101)
+        bad_cursor = self._http_journal_reversals(cursor="not-a-cursor")
+        empty_cursor = self._http_journal_reversals(cursor="|missing")
+        bad_time_cursor = self._http_journal_reversals(cursor="not-a-time|journal")
+        with self.assertRaisesRegex(AccountingValidationError, "legal_entity_reference"):
+            lookup_journal_reversals(DATABASE_URL, self.policy.tenant_reference, "")
+        with self.assertRaisesRegex(AccountingValidationError, "page_limit"):
+            lookup_journal_reversals(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                page_limit=0,
+            )
+
+        self.assertEqual(missing_entity[0], 400)
+        self.assertEqual(missing_header[0], 400)
+        self.assertEqual(cross_status, 403)
+        self.assertEqual(unknown_entity[0], 404)
+        self.assertEqual(unknown_period[0], 404)
+        self.assertEqual(unknown_original[0], 200)
+        self.assertEqual(unknown_original[1]["journal_reversals"], [])
+        self.assertEqual(bad_limit[0], 400)
+        self.assertEqual(high_limit[0], 400)
+        self.assertEqual(bad_cursor[0], 400)
+        self.assertEqual(empty_cursor[0], 400)
+        self.assertEqual(bad_time_cursor[0], 400)
+        self.assertEqual(
+            self._count_table("accounting_core.journal_reversal"), reversals_before + 2
+        )
         server.shutdown()
 
     def test_accept_and_http_guard_cross_tenant_and_operator_failures(self) -> None:
@@ -5995,6 +6174,38 @@ class PostgresPostingTests(unittest.TestCase):
             "POST",
             f"/outbox-events/{outbox_event_id}/publish",
             {},
+            tenant_header=tenant_header,
+        )
+
+    def _http_journal_reversals(
+        self,
+        *,
+        legal_entity_reference: str | None = None,
+        original_journal_reference: str | None = None,
+        fiscal_period_reference: str | None = None,
+        page_limit: object | None = None,
+        cursor: str | None = None,
+        tenant_header: str | None = "",
+    ) -> tuple[int, dict[str, object]]:
+        query: dict[str, str] = {
+            "legal_entity_reference": (
+                self.policy.legal_entity_reference
+                if legal_entity_reference is None
+                else legal_entity_reference
+            )
+        }
+        if original_journal_reference is not None:
+            query["original_journal_reference"] = original_journal_reference
+        if fiscal_period_reference is not None:
+            query["fiscal_period_reference"] = fiscal_period_reference
+        if page_limit is not None:
+            query["page_limit"] = str(page_limit)
+        if cursor is not None:
+            query["cursor"] = cursor
+        return self._http_json(
+            "GET",
+            f"/journal-reversals?{urllib.parse.urlencode(query)}",
+            None,
             tenant_header=tenant_header,
         )
 
