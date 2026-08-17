@@ -73,9 +73,13 @@ class PostgresPostingLedger:
 
     def load_published_receipt(self, proposal: JournalProposal) -> dict[str, object]:
         """Return the schema-shaped posting receipt for a persisted *proposal*."""
+        return self.load_published_receipt_by_key(proposal.idempotency_key)
+
+    def load_published_receipt_by_key(self, idempotency_key: str) -> dict[str, object]:
+        """Return the schema-shaped posting receipt for one Billing idempotency key."""
         with self._session() as connection:
             tenant_id = self._require_tenant(connection)
-            return self._load_published_receipt(connection, tenant_id, proposal)
+            return self._load_published_receipt(connection, tenant_id, idempotency_key)
 
     def _persist_proposal(
         self, proposal: JournalProposal, policy: AccountingPolicy | None
@@ -1320,7 +1324,7 @@ class PostgresPostingLedger:
         )
 
     def _load_published_receipt(
-        self, connection: object, tenant_id: UUID, proposal: JournalProposal
+        self, connection: object, tenant_id: UUID, idempotency_key: str
     ) -> dict[str, object]:
         row = connection.execute(
             """
@@ -1340,7 +1344,10 @@ class PostgresPostingLedger:
                        FROM accounting_core.journal_entry_line
                        WHERE tenant_account_id = general_journal.tenant_account_id
                          AND general_journal_id = general_journal.general_journal_id
-                   )
+                   ),
+                   journal_proposal_record.idempotency_key,
+                   journal_proposal_record.external_proposal_id,
+                   journal_proposal_record.source_payload_hash
             FROM accounting_integration.posting_receipt
             JOIN accounting_integration.journal_proposal_record
               ON journal_proposal_record.tenant_account_id = posting_receipt.tenant_account_id
@@ -1360,7 +1367,7 @@ class PostgresPostingLedger:
             WHERE posting_receipt.tenant_account_id = %s
               AND journal_proposal_record.idempotency_key = %s
             """,
-            (tenant_id, proposal.idempotency_key),
+            (tenant_id, idempotency_key),
         ).fetchone()
         if row is None:
             raise AccountingValidationError(
@@ -1371,10 +1378,10 @@ class PostgresPostingLedger:
         return {
             "receipt_id": str(row[0]),
             "receipt_contract_version": 1,
-            "idempotency_key": proposal.idempotency_key,
-            "source_proposal_id": proposal.proposal_id,
-            "source_payload_hash": proposal.source_payload_hash,
-            "tenant_reference": proposal.tenant_reference,
+            "idempotency_key": row[12],
+            "source_proposal_id": str(row[13]),
+            "source_payload_hash": row[14],
+            "tenant_reference": self._tenant_reference,
             "legal_entity_reference": row[9],
             "accounting_book_reference": row[8],
             "fiscal_period_reference": f"urn:cwl:accounting:fiscal_period:{row[10]}",

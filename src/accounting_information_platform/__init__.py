@@ -13,7 +13,7 @@ from .core import (
     PostingLedger,
     PostingReceipt,
 )
-from .accept import accept_journal_proposal
+from .accept import accept_journal_proposal, lookup_published_receipt
 from .http_api import create_journal_proposal_server, run_journal_proposal_server
 from .ingest import ingest_journal_proposal
 from .persistence import PostgresPostingLedger, apply_foundation_migration
@@ -35,5 +35,6 @@ __all__ = [
     "apply_foundation_migration",
     "create_journal_proposal_server",
     "ingest_journal_proposal",
+    "lookup_published_receipt",
     "run_journal_proposal_server",
 ]

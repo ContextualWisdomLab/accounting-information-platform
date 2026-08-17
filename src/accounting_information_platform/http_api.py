@@ -1,4 +1,4 @@
-"""Thin stdlib HTTP POST boundary for Billing journal proposals."""
+"""Thin stdlib HTTP boundary for Billing journal proposals and receipt lookup."""
 
 from __future__ import annotations
 
@@ -6,13 +6,15 @@ import json
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
+from urllib.parse import parse_qs, urlparse
 
-from .accept import accept_journal_proposal
+from .accept import accept_journal_proposal, lookup_published_receipt
 from .core import AccountingValidationError, IdempotencyConflictError, _require_reference
 
 
 TENANT_HEADER = "X-CWL-Tenant-Reference"
 JOURNAL_PROPOSAL_PATH = "/journal-proposals"
+POSTING_RECEIPT_PATH = "/posting-receipts"
 
 
 class JournalProposalServer(ThreadingHTTPServer):
@@ -31,17 +33,57 @@ class JournalProposalServer(ThreadingHTTPServer):
 
 
 class JournalProposalHandler(BaseHTTPRequestHandler):
-    """Accept POST /journal-proposals and return an accounting posting receipt."""
+    """Accept POST /journal-proposals and GET /posting-receipts for one tenant."""
 
     server: JournalProposalServer
 
     def do_GET(self) -> None:
-        """Reject reads; this endpoint only accepts journal proposals."""
-        self._write_error(
-            405,
-            "GET is not supported on the journal proposal endpoint. "
-            "POST a Billing accounting_journal_proposal, then retry.",
-        )
+        """Return a persisted posting receipt by Billing idempotency key."""
+        parsed = urlparse(self.path)
+        if parsed.path == JOURNAL_PROPOSAL_PATH:
+            self._write_error(
+                405,
+                "GET is not supported on the journal proposal endpoint. "
+                "POST a Billing accounting_journal_proposal, then retry.",
+            )
+            return
+        if parsed.path != POSTING_RECEIPT_PATH:
+            self._write_error(
+                404,
+                "unknown path. GET /posting-receipts?idempotency_key=, then retry.",
+            )
+            return
+        tenant_header = self.headers.get(TENANT_HEADER)
+        if not tenant_header:
+            self._write_error(
+                400,
+                f"{TENANT_HEADER} is required. Supply that tenant header, then retry.",
+            )
+            return
+        if tenant_header != self.server.tenant_reference:
+            self._write_error(
+                403,
+                f"{TENANT_HEADER} does not match this AIS tenant binding. "
+                "Send the lookup to that tenant's endpoint, then retry.",
+            )
+            return
+        keys = parse_qs(parsed.query).get("idempotency_key", [])
+        idempotency_key = keys[0] if keys else ""
+        if not idempotency_key:
+            self._write_error(
+                400,
+                "idempotency_key is required. "
+                "Supply the Billing idempotency key, then retry the receipt read.",
+            )
+            return
+        try:
+            document = lookup_published_receipt(
+                self.server.database_url, tenant_header, idempotency_key
+            )
+        except AccountingValidationError as error:
+            self._write_error(404, str(error))
+            return
+        self._write_json(200, document)
 
     def do_POST(self) -> None:
         """Ingest one Billing proposal for the purpose-limited tenant header."""
@@ -133,7 +175,7 @@ def create_journal_proposal_server(
     host: str = "127.0.0.1",
     port: int = 0,
 ) -> JournalProposalServer:
-    """Create a stdlib HTTP server that posts proposals for one tenant."""
+    """Create a stdlib HTTP server that posts proposals and looks up receipts."""
     if not database_url:
         raise AccountingValidationError(
             "ACCOUNTING_DATABASE_URL is empty. Set a PostgreSQL 18 URL and retry posting."
@@ -149,7 +191,7 @@ def run_journal_proposal_server(
     port: int | None = None,
     serve: Callable[[], None] | None = None,
 ) -> JournalProposalServer:
-    """Bind 0.0.0.0:$PORT by default and serve journal-proposal POST requests."""
+    """Bind 0.0.0.0:$PORT by default and serve proposal POST and receipt GET."""
     resolved_url = (
         database_url
         if database_url is not None

@@ -10,6 +10,7 @@
 
 ### Added
 
+- `lookup_published_receipt` and `GET /posting-receipts` return the persisted `accounting_posting_receipt` for a purpose-limited tenant and Billing idempotency key without inventing a missing receipt.
 - Catalog `account_role_mapping` for `cash_receipt` so a Billing `validated` cash proposal posts debit cash / credit accounts receivable through `post_proposal`.
 - `accept_journal_proposal` and a stdlib `POST /journal-proposals` boundary that return the AIS posting-receipt contract, scoped by purpose-limited `X-CWL-Tenant-Reference`.
 - Catalog policy resolution on `PostgresPostingLedger` so a Billing `JournalProposal` posts through `post_proposal` using AIS `account_role_mapping`, book, period, and policy versions rather than a caller-invented chart mapping.

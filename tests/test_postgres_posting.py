@@ -7,6 +7,7 @@ import json
 import os
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from datetime import date, datetime, timezone
@@ -26,6 +27,7 @@ from accounting_information_platform import (
     accept_journal_proposal,
     create_journal_proposal_server,
     ingest_journal_proposal,
+    lookup_published_receipt,
     run_journal_proposal_server,
 )
 import psycopg
@@ -590,6 +592,79 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(closed_status, 422)
         self.assertEqual(self._count_table("accounting_core.general_journal"), 1)
         self.assertEqual(self._count_table("accounting_integration.journal_proposal_record"), 1)
+        server.shutdown()
+
+    def test_http_posts_and_looks_up_invoice_and_cash_receipts(self) -> None:
+        """HTTP posts invoice and cash proposals, then looks up the same receipts by key."""
+        invoice = self._billing_validated_payload()
+        cash = self._billing_cash_payload()
+        server = self._start_http_server()
+
+        invoice_status, invoice_receipt = self._http_json("POST", "/journal-proposals", invoice)
+        cash_status, cash_receipt = self._http_json("POST", "/journal-proposals", cash)
+        replay_status, replay_receipt = self._http_json("POST", "/journal-proposals", invoice)
+        invoice_lookup_status, invoice_lookup = self._http_lookup(str(invoice["idempotency_key"]))
+        cash_lookup_status, cash_lookup = self._http_lookup(str(cash["idempotency_key"]))
+        replay_lookup_status, replay_lookup = self._http_lookup(str(invoice["idempotency_key"]))
+        library_lookup = lookup_published_receipt(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            str(cash["idempotency_key"]),
+        )
+
+        self.assertEqual(invoice_status, 200)
+        self.assertEqual(cash_status, 200)
+        self.assertEqual(replay_status, 200)
+        self.assertEqual(invoice_lookup_status, 200)
+        self.assertEqual(cash_lookup_status, 200)
+        self.assertEqual(replay_lookup_status, 200)
+        self._assert_published_receipt(invoice_receipt, invoice)
+        self._assert_published_receipt(cash_receipt, cash)
+        self.assertEqual(invoice_receipt, replay_receipt)
+        self.assertEqual(invoice_receipt, invoice_lookup)
+        self.assertEqual(invoice_receipt, replay_lookup)
+        self.assertEqual(cash_receipt, cash_lookup)
+        self.assertEqual(cash_receipt, library_lookup)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), 2)
+        self.assertEqual(self._posted_chart_accounts(), {"110100", "410100", "110200"})
+
+        journals_before = self._count_table("accounting_core.general_journal")
+        receipts_before = self._count_table("accounting_integration.posting_receipt")
+        cross_status, cross_body = self._http_lookup(
+            str(invoice["idempotency_key"]),
+            tenant_header="urn:cwl:tenant_other",
+        )
+        unknown_status, unknown_body = self._http_lookup(
+            f"{self.policy.tenant_reference}:cash_receipt:missing:sha256:{'d' * 64}:v1"
+        )
+        missing_key_status, _missing_key = self._http_json("GET", "/posting-receipts", None)
+        empty_key_status, _empty_key = self._http_json(
+            "GET", "/posting-receipts?idempotency_key=", None
+        )
+        missing_header_status, _missing_header = self._http_lookup(
+            str(invoice["idempotency_key"]),
+            tenant_header=None,
+        )
+        unknown_get_status, _unknown_get = self._http_json("GET", "/unknown", None)
+        with self.assertRaisesRegex(AccountingValidationError, "Supply the Billing idempotency key"):
+            lookup_published_receipt(DATABASE_URL, self.policy.tenant_reference, "")
+        with self.assertRaisesRegex(AccountingValidationError, "Accept the proposal"):
+            lookup_published_receipt(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                f"{self.policy.tenant_reference}:invoice_draft:missing:sha256:{'e' * 64}:v1",
+            )
+
+        self.assertEqual(cross_status, 403)
+        self.assertIn("Send the lookup to that tenant's endpoint", str(cross_body["error_message"]))
+        self.assertEqual(unknown_status, 404)
+        self.assertIn("Accept the proposal", str(unknown_body["error_message"]))
+        self.assertEqual(missing_key_status, 400)
+        self.assertEqual(empty_key_status, 400)
+        self.assertEqual(missing_header_status, 400)
+        self.assertEqual(unknown_get_status, 404)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before)
+        self.assertEqual(self._count_table("accounting_integration.posting_receipt"), receipts_before)
         server.shutdown()
 
     def test_accept_and_http_guard_cross_tenant_and_operator_failures(self) -> None:
@@ -1328,6 +1403,19 @@ class PostgresPostingTests(unittest.TestCase):
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         return server
+
+    def _http_lookup(
+        self,
+        idempotency_key: str,
+        tenant_header: str | None = "",
+    ) -> tuple[int, dict[str, object]]:
+        query = urllib.parse.urlencode({"idempotency_key": idempotency_key})
+        return self._http_json(
+            "GET",
+            f"/posting-receipts?{query}",
+            None,
+            tenant_header=tenant_header,
+        )
 
     def _http_json(
         self,

@@ -27,3 +27,16 @@ def accept_journal_proposal(
     ledger = PostgresPostingLedger(database_url, tenant_reference)
     ledger.post_proposal(proposal)
     return ledger.load_published_receipt(proposal)
+
+
+def lookup_published_receipt(
+    database_url: str, tenant_reference: str, idempotency_key: str
+) -> dict[str, object]:
+    """Return the persisted posting receipt for *tenant_reference* and *idempotency_key*."""
+    if not idempotency_key:
+        raise AccountingValidationError(
+            "idempotency key is required. "
+            "Supply the Billing idempotency key, then retry the receipt read."
+        )
+    ledger = PostgresPostingLedger(database_url, tenant_reference)
+    return ledger.load_published_receipt_by_key(idempotency_key)
