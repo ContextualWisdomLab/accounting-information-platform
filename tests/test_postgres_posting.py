@@ -35,8 +35,10 @@ from accounting_information_platform import (
     ingest_journal_proposal,
     lookup_account_role_mappings,
     lookup_fiscal_period,
+    lookup_outbox_events,
     lookup_period_journals,
     lookup_posted_journal,
+    publish_outbox_event,
     lookup_published_receipt,
     lookup_trial_balance,
     pull_journal_proposal,
@@ -493,7 +495,7 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertIsNotNone(self._period_closed_at("2026-08"))
         self.assertEqual(self._count_table("accounting_reporting.trial_balance_snapshot"), 1)
         self.assertEqual(self._count_table("accounting_reporting.trial_balance_line"), 2)
-        self.assertEqual(self._count_outbox("period_closed"), 1)
+        self.assertEqual(self._count_outbox("period_close"), 1)
         self.assertEqual(snapshot_lines["110100"][0], Decimal("25000"))
         self.assertEqual(snapshot_lines["410100"][1], Decimal("25000"))
         self.assertEqual(snapshot_lines["110100"][0], population["110100"][0])
@@ -538,7 +540,7 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(second.source_journal_count, 1)
         self.assertEqual(self._count_table("accounting_reporting.trial_balance_snapshot"), 1)
         self.assertEqual(self._count_table("accounting_reporting.trial_balance_line"), 2)
-        self.assertEqual(self._count_outbox("period_closed"), 1)
+        self.assertEqual(self._count_outbox("period_close"), 1)
 
     def test_open_period_still_accepts_posts(self) -> None:
         """Closing one period does not block ordinary posting into a later open period."""
@@ -573,7 +575,7 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(soft.period_status_code, "soft_closed")
         self.assertTrue(replayed_soft.replayed)
         self.assertEqual(replayed_soft.snapshot_record_id, soft.snapshot_record_id)
-        self.assertEqual(self._count_outbox("period_closed"), 1)
+        self.assertEqual(self._count_outbox("period_close"), 1)
 
         with self.assertRaisesRegex(
             AccountingValidationError,
@@ -595,7 +597,7 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(hard.period_status_code, "hard_closed")
         self.assertEqual(hard.snapshot_record_id, soft.snapshot_record_id)
         self.assertEqual(self._count_table("accounting_reporting.trial_balance_snapshot"), 1)
-        self.assertEqual(self._count_outbox("period_closed"), 2)
+        self.assertEqual(self._count_outbox("period_close"), 2)
         self.assertTrue(ignored_soft.replayed)
         self.assertEqual(ignored_soft.period_status_code, "hard_closed")
         self.assertEqual(self._period_status("2026-08"), "hard_closed")
@@ -1527,6 +1529,212 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(bad_cursor[0], 400)
         self.assertEqual(cross_status, 403)
         self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before + 5)
+        server.shutdown()
+
+    def test_http_reads_and_publishes_outbox_events(self) -> None:
+        """GET lists unpublished outbox rows; POST publish marks one row idempotently."""
+        invoice = self._billing_validated_payload()
+        cash = self._billing_cash_payload()
+        server = self._start_http_server()
+        outbox_before = self._count_table("accounting_integration.outbox_event")
+
+        empty_status, empty_page = self._http_outbox_events("posting_receipt")
+        library_empty = lookup_outbox_events(
+            DATABASE_URL, self.policy.tenant_reference, "posting_receipt"
+        )
+        self.assertEqual(empty_status, 200)
+        self.assertEqual(empty_page, library_empty)
+        self.assertEqual(empty_page["outbox_events"], [])
+        self.assertIsNone(empty_page["next_cursor"])
+        self.assertEqual(empty_page["event_type_code"], "posting_receipt")
+        self.assertEqual(empty_page["tenant_reference"], self.policy.tenant_reference)
+
+        post_status, _receipt = self._http_json("POST", "/journal-proposals", invoice)
+        cash_status, _cash_receipt = self._http_json("POST", "/journal-proposals", cash)
+        lookup_status, lookup = self._http_lookup(str(invoice["idempotency_key"]))
+        listed_status, listed = self._http_outbox_events("posting_receipt")
+        first_page_status, first_page = self._http_outbox_events("posting_receipt", page_limit=1)
+        second_page_status, second_page = self._http_outbox_events(
+            "posting_receipt",
+            page_limit=1,
+            cursor=str(first_page["next_cursor"]),
+        )
+
+        self.assertEqual(post_status, 200)
+        self.assertEqual(cash_status, 200)
+        self.assertEqual(lookup_status, 200)
+        self.assertEqual(listed_status, 200)
+        self.assertEqual(first_page_status, 200)
+        self.assertEqual(second_page_status, 200)
+        self.assertEqual(len(listed["outbox_events"]), 2)
+        self.assertIsNone(listed["next_cursor"])
+        self.assertEqual(lookup["idempotency_key"], invoice["idempotency_key"])
+        self.assertTrue(lookup["receipt_id"])
+        self.assertEqual(
+            {item["event_type_code"] for item in listed["outbox_events"]},
+            {"posting_receipt"},
+        )
+        self.assertTrue(
+            all(
+                str(item["payload_reference"]).startswith("urn:cwl:accounting:posting_receipt:")
+                for item in listed["outbox_events"]
+            )
+        )
+        self.assertTrue(all(str(item["payload_hash"]).startswith("sha256:") for item in listed["outbox_events"]))
+        self.assertTrue(all(item["aggregate_reference"] for item in listed["outbox_events"]))
+        self.assertTrue(all(item["created_at"] for item in listed["outbox_events"]))
+        self.assertEqual(len(first_page["outbox_events"]), 1)
+        self.assertTrue(first_page["next_cursor"])
+        self.assertEqual(len(second_page["outbox_events"]), 1)
+        self.assertIsNone(second_page["next_cursor"])
+        self.assertEqual(
+            [item["outbox_event_id"] for item in first_page["outbox_events"]]
+            + [item["outbox_event_id"] for item in second_page["outbox_events"]],
+            [item["outbox_event_id"] for item in listed["outbox_events"]],
+        )
+
+        reverse_status, reversing_receipt = self._http_json(
+            "POST",
+            "/journal-reversals",
+            {
+                "tenant_reference": self.policy.tenant_reference,
+                "idempotency_key": invoice["idempotency_key"],
+                "reversal_date": "2026-08-31",
+                "reversal_reason_code": "billing_correction",
+            },
+        )
+        close_status, _close = self._http_json(
+            "POST",
+            "/period-closes",
+            self._period_close_payload(),
+        )
+        reversal_list_status, reversal_list = self._http_outbox_events("journal_reversal")
+        close_list_status, close_list = self._http_outbox_events("period_close")
+        still_posted_status, still_posted = self._http_outbox_events("posting_receipt")
+
+        self.assertEqual(reverse_status, 200)
+        self.assertEqual(close_status, 200)
+        self.assertEqual(reversal_list_status, 200)
+        self.assertEqual(close_list_status, 200)
+        self.assertEqual(still_posted_status, 200)
+        self.assertEqual(len(reversal_list["outbox_events"]), 1)
+        self.assertEqual(reversal_list["outbox_events"][0]["event_type_code"], "journal_reversal")
+        self.assertEqual(
+            reversal_list["outbox_events"][0]["aggregate_reference"],
+            reversing_receipt["journal_reference"],
+        )
+        self.assertEqual(len(close_list["outbox_events"]), 1)
+        self.assertEqual(close_list["outbox_events"][0]["event_type_code"], "period_close")
+        self.assertEqual(len(still_posted["outbox_events"]), 2)
+
+        target = listed["outbox_events"][0]
+        publish_status, published = self._http_publish_outbox(str(target["outbox_event_id"]))
+        replay_status, replayed = self._http_publish_outbox(str(target["outbox_event_id"]))
+        after_publish_status, after_publish = self._http_outbox_events("posting_receipt")
+        library_published = publish_outbox_event(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            str(target["outbox_event_id"]),
+        )
+
+        self.assertEqual(publish_status, 200)
+        self.assertEqual(replay_status, 200)
+        self.assertEqual(after_publish_status, 200)
+        self.assertEqual(published, replayed)
+        self.assertEqual(published, library_published)
+        self.assertEqual(published["outbox_event_id"], target["outbox_event_id"])
+        self.assertEqual(published["event_type_code"], "posting_receipt")
+        self.assertTrue(published["published_at"])
+        self.assertEqual(len(after_publish["outbox_events"]), 1)
+        self.assertNotIn(
+            target["outbox_event_id"],
+            {item["outbox_event_id"] for item in after_publish["outbox_events"]},
+        )
+
+        missing_type = self._http_json("GET", "/outbox-events", None)
+        unknown_type = self._http_outbox_events("not_an_event")
+        bad_limit = self._http_outbox_events("posting_receipt", page_limit="abc")
+        high_limit = self._http_outbox_events("posting_receipt", page_limit=101)
+        bad_cursor = self._http_outbox_events("posting_receipt", cursor="not-a-cursor")
+        post_list = self._http_json("POST", "/outbox-events", {})
+        get_publish = self._http_json(
+            "GET",
+            f"/outbox-events/{target['outbox_event_id']}/publish",
+            None,
+        )
+        unknown_publish = self._http_publish_outbox(str(uuid.uuid4()))
+        missing_header = self._http_outbox_events("posting_receipt", tenant_header=None)
+        cross_get = self._http_outbox_events(
+            "posting_receipt", tenant_header="urn:cwl:tenant_other"
+        )
+        cross_publish = self._http_publish_outbox(
+            str(target["outbox_event_id"]),
+            tenant_header="urn:cwl:tenant_other",
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "event_type_code"):
+            lookup_outbox_events(DATABASE_URL, self.policy.tenant_reference, "")
+        with self.assertRaisesRegex(AccountingValidationError, "event_type_code"):
+            lookup_outbox_events(DATABASE_URL, self.policy.tenant_reference, "not_an_event")
+        with self.assertRaisesRegex(AccountingValidationError, "page_limit"):
+            lookup_outbox_events(
+                DATABASE_URL, self.policy.tenant_reference, "posting_receipt", page_limit=0
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "cursor"):
+            lookup_outbox_events(
+                DATABASE_URL, self.policy.tenant_reference, "posting_receipt", cursor="2026-08-31"
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "cursor"):
+            lookup_outbox_events(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                "posting_receipt",
+                cursor="|01900000-0000-7000-8000-000000000001",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "cursor"):
+            lookup_outbox_events(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                "posting_receipt",
+                cursor="2026-08-31T00:00:00Z|",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "cursor"):
+            lookup_outbox_events(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                "posting_receipt",
+                cursor="not-a-time|01900000-0000-7000-8000-000000000001",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "cursor"):
+            lookup_outbox_events(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                "posting_receipt",
+                cursor="2026-08-31T00:00:00Z|not-a-uuid",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "outbox_event_id"):
+            publish_outbox_event(DATABASE_URL, self.policy.tenant_reference, "not-a-uuid")
+        with self.assertRaisesRegex(AccountingValidationError, "outbox event"):
+            publish_outbox_event(DATABASE_URL, self.policy.tenant_reference, str(uuid.uuid4()))
+        with self.assertRaisesRegex(AccountingValidationError, "outbox_event_id"):
+            PostgresPostingLedger(
+                DATABASE_URL, self.policy.tenant_reference
+            ).publish_outbox_event("")
+
+        self.assertEqual(missing_type[0], 400)
+        self.assertEqual(unknown_type[0], 400)
+        self.assertEqual(bad_limit[0], 400)
+        self.assertEqual(high_limit[0], 400)
+        self.assertEqual(bad_cursor[0], 400)
+        self.assertEqual(post_list[0], 405)
+        self.assertEqual(get_publish[0], 405)
+        self.assertEqual(unknown_publish[0], 404)
+        self.assertEqual(missing_header[0], 400)
+        self.assertEqual(cross_get[0], 403)
+        self.assertEqual(cross_publish[0], 403)
+        self.assertEqual(self._count_table("accounting_integration.outbox_event"), outbox_before + 4)
+        self.assertEqual(self._count_outbox("posting_receipt"), 2)
+        self.assertEqual(self._count_outbox("journal_reversal"), 1)
+        self.assertEqual(self._count_outbox("period_close"), 1)
         server.shutdown()
 
     def test_http_opens_fiscal_period_and_accepts_later_posts(self) -> None:
@@ -3467,6 +3675,39 @@ class PostgresPostingTests(unittest.TestCase):
             "GET",
             f"/fiscal-periods?{query}",
             None,
+            tenant_header=tenant_header,
+        )
+
+    def _http_outbox_events(
+        self,
+        event_type_code: str,
+        *,
+        page_limit: object | None = None,
+        cursor: str | None = None,
+        tenant_header: str | None = "",
+    ) -> tuple[int, dict[str, object]]:
+        query: dict[str, str] = {"event_type_code": event_type_code}
+        if page_limit is not None:
+            query["page_limit"] = str(page_limit)
+        if cursor is not None:
+            query["cursor"] = cursor
+        return self._http_json(
+            "GET",
+            f"/outbox-events?{urllib.parse.urlencode(query)}",
+            None,
+            tenant_header=tenant_header,
+        )
+
+    def _http_publish_outbox(
+        self,
+        outbox_event_id: str,
+        *,
+        tenant_header: str | None = "",
+    ) -> tuple[int, dict[str, object]]:
+        return self._http_json(
+            "POST",
+            f"/outbox-events/{outbox_event_id}/publish",
+            {},
             tenant_header=tenant_header,
         )
 

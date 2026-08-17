@@ -1,9 +1,10 @@
-"""Thin stdlib HTTP boundary for Billing proposals, pulls, receipts, close, open, TB, catalog, and journals."""
+"""Thin stdlib HTTP boundary for Billing proposals, pulls, receipts, close, open, TB, catalog, journals, and outbox."""
 
 from __future__ import annotations
 
 import json
 import os
+import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
 from urllib.parse import parse_qs, urlparse
@@ -15,10 +16,12 @@ from .accept import (
     accept_period_open,
     lookup_account_role_mappings,
     lookup_fiscal_period,
+    lookup_outbox_events,
     lookup_period_journals,
     lookup_posted_journal,
     lookup_published_receipt,
     lookup_trial_balance,
+    publish_outbox_event,
 )
 from .billing_pull import accept_billing_proposal_pull
 from .core import AccountingValidationError, IdempotencyConflictError, _require_reference
@@ -35,6 +38,12 @@ TRIAL_BALANCE_PATH = "/trial-balances"
 ACCOUNT_ROLE_MAPPING_PATH = "/account-role-mappings"
 JOURNAL_PATH = "/journals"
 FISCAL_PERIOD_PATH = "/fiscal-periods"
+OUTBOX_PATH = "/outbox-events"
+_OUTBOX_PUBLISH_PATH = re.compile(
+    r"^/outbox-events/"
+    r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
+    r"/publish$"
+)
 
 
 class JournalProposalServer(ThreadingHTTPServer):
@@ -53,12 +62,12 @@ class JournalProposalServer(ThreadingHTTPServer):
 
 
 class JournalProposalHandler(BaseHTTPRequestHandler):
-    """Serve proposal POST, reverse, pull, receipt GET, close, TB, catalog, journal inquiry, and healthz."""
+    """Serve proposal POST, reverse, pull, receipt GET, close, TB, catalog, journal, outbox, and healthz."""
 
     server: JournalProposalServer
 
     def do_GET(self) -> None:
-        """Route healthz, receipt, trial-balance, catalog, journal inquiry, period journal list, and GET 405s."""
+        """Route healthz, receipt, trial-balance, catalog, journal, outbox, and GET 405s."""
         parsed = urlparse(self.path)
         if parsed.path == HEALTHZ_PATH:
             self._write_json(200, {"status": "ok"})
@@ -99,14 +108,25 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         if parsed.path == FISCAL_PERIOD_PATH:
             self._get_fiscal_period(parsed.query)
             return
+        if parsed.path == OUTBOX_PATH:
+            self._get_outbox_events(parsed.query)
+            return
+        if _OUTBOX_PUBLISH_PATH.fullmatch(parsed.path):
+            self._write_error(
+                405,
+                "GET is not supported on the outbox publish endpoint. "
+                "POST the outbox publish, then retry.",
+            )
+            return
         self._write_error(
             404,
             "unknown path. GET /posting-receipts?idempotency_key=, GET /trial-balances, "
-            "GET /account-role-mappings, GET /journals, or GET /fiscal-periods, then retry.",
+            "GET /account-role-mappings, GET /journals, GET /fiscal-periods, "
+            "or GET /outbox-events?event_type_code=, then retry.",
         )
 
     def do_POST(self) -> None:
-        """Route journal-proposal accept, reverse, Billing pull, close, and GET-only POST 405s."""
+        """Route journal-proposal accept, reverse, Billing pull, close, outbox publish, and GET-only POST 405s."""
         raw_body = self._read_body()
         parsed_path = urlparse(self.path).path
         if parsed_path == JOURNAL_PATH:
@@ -138,11 +158,22 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         if parsed_path == FISCAL_PERIOD_PATH:
             self._post_fiscal_period(raw_body)
             return
+        if parsed_path == OUTBOX_PATH:
+            self._write_error(
+                405,
+                "POST is not supported on the outbox-event list endpoint. "
+                "GET unpublished outbox events, then retry.",
+            )
+            return
+        publish_match = _OUTBOX_PUBLISH_PATH.fullmatch(parsed_path)
+        if publish_match:
+            self._post_outbox_publish(publish_match.group(1))
+            return
         self._write_error(
             404,
             "unknown path. POST /journal-proposals, POST /journal-reversals, "
-            "POST /billing-proposal-pulls, POST /period-closes, or POST /fiscal-periods, "
-            "then retry.",
+            "POST /billing-proposal-pulls, POST /period-closes, POST /fiscal-periods, "
+            "or POST /outbox-events/{outbox_event_id}/publish, then retry.",
         )
 
     def log_message(self, format: str, *args: object) -> None:
@@ -298,6 +329,57 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             "Supply the Billing key, the posted journal reference, or those list fields, "
             "then retry the journal read.",
         )
+
+    def _get_outbox_events(self, query: str) -> None:
+        tenant_header = self._bound_tenant_header("outbox read")
+        if tenant_header is None:
+            return
+        fields = parse_qs(query)
+        event_type_code = _first_query(fields, "event_type_code")
+        if not event_type_code:
+            self._write_error(
+                400,
+                "event_type_code is required. "
+                "Supply posting_receipt, period_close, or journal_reversal, then retry the outbox read.",
+            )
+            return
+        raw_limit = _first_query(fields, "page_limit")
+        page_limit: int | None = None
+        if raw_limit:
+            try:
+                page_limit = int(raw_limit)
+            except ValueError:
+                self._write_error(
+                    400,
+                    "page_limit must be an integer. "
+                    "Supply an outbox-event page_limit, then retry the outbox read.",
+                )
+                return
+        try:
+            document = lookup_outbox_events(
+                self.server.database_url,
+                tenant_header,
+                event_type_code,
+                page_limit=page_limit,
+                cursor=_first_query(fields, "cursor"),
+            )
+        except AccountingValidationError as error:
+            self._write_error(400, str(error))
+            return
+        self._write_json(200, document)
+
+    def _post_outbox_publish(self, outbox_event_id: str) -> None:
+        tenant_header = self._bound_tenant_header("outbox publish")
+        if tenant_header is None:
+            return
+        try:
+            document = publish_outbox_event(
+                self.server.database_url, tenant_header, outbox_event_id
+            )
+        except AccountingValidationError as error:
+            self._write_error(404, str(error))
+            return
+        self._write_json(200, document)
 
     def _get_fiscal_period(self, query: str) -> None:
         tenant_header = self._bound_tenant_header("period read")
@@ -510,7 +592,7 @@ def create_journal_proposal_server(
     host: str = "127.0.0.1",
     port: int = 0,
 ) -> JournalProposalServer:
-    """Create a stdlib HTTP server that posts, pulls, closes, opens periods, and reads TB and journals."""
+    """Create a stdlib HTTP server that posts, pulls, closes, opens periods, and reads TB, journals, and outbox."""
     if not database_url:
         raise AccountingValidationError(
             "ACCOUNTING_DATABASE_URL is empty. Set a PostgreSQL 18 URL and retry posting."

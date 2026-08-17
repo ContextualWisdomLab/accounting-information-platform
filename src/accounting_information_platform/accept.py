@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import Mapping
+from uuid import UUID
 
 from .core import AccountingValidationError, PeriodCloseReceipt
 from .ingest import ingest_journal_proposal
@@ -12,6 +13,9 @@ from .persistence import PostgresPostingLedger, _format_timestamp
 _FISCAL_PERIOD_PREFIX = "urn:cwl:accounting:fiscal_period:"
 _JOURNAL_LIST_DEFAULT_PAGE_LIMIT = 50
 _JOURNAL_LIST_MAX_PAGE_LIMIT = 100
+_ALLOWED_OUTBOX_EVENT_TYPE_CODES = frozenset(
+    {"posting_receipt", "period_close", "journal_reversal"}
+)
 
 
 def accept_journal_proposal(
@@ -216,6 +220,37 @@ def lookup_period_journals(
     )
 
 
+def lookup_outbox_events(
+    database_url: str,
+    tenant_reference: str,
+    event_type_code: str,
+    page_limit: int | None = None,
+    cursor: str = "",
+) -> dict[str, object]:
+    """Return unpublished outbox rows for one tenant and event type."""
+    if event_type_code not in _ALLOWED_OUTBOX_EVENT_TYPE_CODES:
+        raise AccountingValidationError(
+            "event_type_code must be posting_receipt, period_close, or journal_reversal. "
+            "Supply a supported outbox event_type_code, then retry the outbox read."
+        )
+    ledger = PostgresPostingLedger(database_url, tenant_reference)
+    return ledger.load_unpublished_outbox_events(
+        event_type_code,
+        page_limit=_resolve_outbox_page_limit(page_limit),
+        cursor_after=_parse_outbox_cursor(cursor),
+    )
+
+
+def publish_outbox_event(
+    database_url: str,
+    tenant_reference: str,
+    outbox_event_id: str,
+) -> dict[str, object]:
+    """Mark one tenant-owned outbox row published without rewriting other facts."""
+    ledger = PostgresPostingLedger(database_url, tenant_reference)
+    return ledger.publish_outbox_event(outbox_event_id)
+
+
 def lookup_posted_journal(
     database_url: str,
     tenant_reference: str,
@@ -290,12 +325,25 @@ def _parse_reversal_date(value: str) -> date:
 
 
 def _resolve_journal_list_page_limit(page_limit: int | None) -> int:
+    return _resolve_bounded_page_limit(
+        page_limit,
+        "Supply a journal-list page_limit, then retry the journal list.",
+    )
+
+
+def _resolve_outbox_page_limit(page_limit: int | None) -> int:
+    return _resolve_bounded_page_limit(
+        page_limit,
+        "Supply an outbox-event page_limit, then retry the outbox read.",
+    )
+
+
+def _resolve_bounded_page_limit(page_limit: int | None, next_action: str) -> int:
     if page_limit is None:
         return _JOURNAL_LIST_DEFAULT_PAGE_LIMIT
     if page_limit < 1 or page_limit > _JOURNAL_LIST_MAX_PAGE_LIMIT:
         raise AccountingValidationError(
-            "page_limit must be between 1 and 100. "
-            "Supply a journal-list page_limit, then retry the journal list."
+            f"page_limit must be between 1 and 100. {next_action}"
         )
     return page_limit
 
@@ -322,6 +370,36 @@ def _parse_journal_list_cursor(cursor: str) -> tuple[date, str] | None:
             "Supply a journal-list cursor, then retry the journal list."
         ) from error
     return accounting_date, journal_reference
+
+
+def _parse_outbox_cursor(cursor: str) -> tuple[datetime, UUID] | None:
+    if not cursor:
+        return None
+    if "|" not in cursor:
+        raise AccountingValidationError(
+            "cursor must be created_at|outbox_event_id. "
+            "Supply an outbox-event cursor, then retry the outbox read."
+        )
+    created_at_text, outbox_event_id_text = cursor.split("|", 1)
+    if not created_at_text or not outbox_event_id_text:
+        raise AccountingValidationError(
+            "cursor must be created_at|outbox_event_id. "
+            "Supply an outbox-event cursor, then retry the outbox read."
+        )
+    try:
+        created_at = datetime.fromisoformat(created_at_text.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise AccountingValidationError(
+            "cursor created_at must be an ISO-8601 timestamp. "
+            "Supply an outbox-event cursor, then retry the outbox read."
+        ) from error
+    try:
+        return created_at, UUID(outbox_event_id_text)
+    except ValueError as error:
+        raise AccountingValidationError(
+            "cursor outbox_event_id must be a UUID. "
+            "Supply an outbox-event cursor, then retry the outbox read."
+        ) from error
 
 
 def _period_code_from_reference(value: str) -> str:

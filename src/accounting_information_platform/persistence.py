@@ -252,6 +252,121 @@ class PostgresPostingLedger:
                 "next_cursor": next_cursor,
             }
 
+    def load_unpublished_outbox_events(
+        self,
+        event_type_code: str,
+        *,
+        page_limit: int = 50,
+        cursor_after: tuple[datetime, UUID] | None = None,
+    ) -> dict[str, object]:
+        """Return one page of unpublished outbox rows for one tenant event type."""
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            parameters: list[object] = [tenant_id, event_type_code]
+            cursor_clause = ""
+            if cursor_after is not None:
+                cursor_clause = (
+                    "AND (outbox_event.created_at, outbox_event.outbox_event_id) "
+                    "> (%s, %s)"
+                )
+                parameters.extend(cursor_after)
+            parameters.append(page_limit + 1)
+            rows = connection.execute(
+                f"""
+                SELECT outbox_event.outbox_event_id,
+                       outbox_event.event_type_code,
+                       outbox_event.aggregate_reference,
+                       outbox_event.payload_reference,
+                       outbox_event.payload_hash,
+                       outbox_event.created_at
+                FROM accounting_integration.outbox_event
+                WHERE outbox_event.tenant_account_id = %s
+                  AND outbox_event.event_type_code = %s
+                  AND outbox_event.published_at IS NULL
+                  {cursor_clause}
+                ORDER BY outbox_event.created_at, outbox_event.outbox_event_id
+                LIMIT %s
+                """,
+                tuple(parameters),
+            ).fetchall()
+            has_more = len(rows) > page_limit
+            page_rows = rows[:page_limit]
+            events = [
+                {
+                    "outbox_event_id": str(row[0]),
+                    "event_type_code": row[1],
+                    "aggregate_reference": row[2],
+                    "payload_reference": row[3],
+                    "payload_hash": row[4],
+                    "created_at": _format_timestamp(row[5]),
+                }
+                for row in page_rows
+            ]
+            next_cursor = None
+            if has_more:
+                last = page_rows[-1]
+                next_cursor = f"{_format_timestamp(last[5])}|{last[0]}"
+            return {
+                "tenant_reference": self._tenant_reference,
+                "event_type_code": event_type_code,
+                "outbox_events": events,
+                "next_cursor": next_cursor,
+            }
+
+    def publish_outbox_event(self, outbox_event_id: str) -> dict[str, object]:
+        """Set published_at on one tenant outbox row, or replay an already-published row."""
+        if not outbox_event_id:
+            raise AccountingValidationError(
+                "outbox_event_id is required. "
+                "Supply the outbox event id, then retry the outbox publish."
+            )
+        try:
+            event_id = UUID(outbox_event_id)
+        except ValueError as error:
+            raise AccountingValidationError(
+                "outbox_event_id must be a UUID. "
+                "Supply the outbox event id, then retry the outbox publish."
+            ) from error
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            updated = connection.execute(
+                """
+                UPDATE accounting_integration.outbox_event
+                SET published_at = clock_timestamp()
+                WHERE tenant_account_id = %s
+                  AND outbox_event_id = %s
+                  AND published_at IS NULL
+                RETURNING outbox_event_id, event_type_code, aggregate_reference,
+                          payload_reference, payload_hash, created_at, published_at
+                """,
+                (tenant_id, event_id),
+            ).fetchone()
+            row = updated
+            if row is None:
+                row = connection.execute(
+                    """
+                    SELECT outbox_event_id, event_type_code, aggregate_reference,
+                           payload_reference, payload_hash, created_at, published_at
+                    FROM accounting_integration.outbox_event
+                    WHERE tenant_account_id = %s AND outbox_event_id = %s
+                    """,
+                    (tenant_id, event_id),
+                ).fetchone()
+            if row is None:
+                raise AccountingValidationError(
+                    "outbox event is missing for this outbox_event_id. "
+                    "Accept the proposal, then retry the outbox publish."
+                )
+            return {
+                "outbox_event_id": str(row[0]),
+                "event_type_code": row[1],
+                "aggregate_reference": row[2],
+                "payload_reference": row[3],
+                "payload_hash": row[4],
+                "created_at": _format_timestamp(row[5]),
+                "published_at": _format_timestamp(row[6]),
+            }
+
     def _persist_proposal(
         self, proposal: JournalProposal, policy: AccountingPolicy | None
     ) -> PostingReceipt:
@@ -341,7 +456,7 @@ class PostgresPostingLedger:
             self._insert_outbox(
                 connection,
                 tenant_id,
-                "journal_posted",
+                "posting_receipt",
                 journal_reference,
                 receipt.receipt_reference,
                 receipt,
@@ -676,7 +791,7 @@ class PostgresPostingLedger:
             self._insert_outbox(
                 connection,
                 tenant_id,
-                "journal_reversed",
+                "journal_reversal",
                 reversal_reference,
                 receipt.receipt_reference,
                 receipt,
@@ -1552,7 +1667,7 @@ class PostgresPostingLedger:
                 tenant_account_id, event_type_code, aggregate_reference,
                 payload_reference, payload_hash
             )
-            VALUES (%s, 'period_closed', %s, %s, %s)
+            VALUES (%s, 'period_close', %s, %s, %s)
             """,
             (
                 tenant_id,
