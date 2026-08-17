@@ -15,7 +15,7 @@ python3 scripts/validate_repository.py .
 python3 -m compileall -q src scripts tests
 ```
 
-The validator checks required files, public docstrings, closed JSON Schema contracts, two-word SQL names, hash-locked quality dependencies, and unresolved placeholders.
+The validator checks required files, public docstrings, closed JSON Schema contracts, two-word SQL names, hash-locked quality dependencies, and unresolved placeholders. Quality dependencies include `coverage` and the `setuptools` build backend required for offline editable and wheel installs.
 
 ## Documentation
 
