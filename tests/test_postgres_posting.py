@@ -35,6 +35,7 @@ from accounting_information_platform import (
     ingest_journal_proposal,
     lookup_account_role_mappings,
     lookup_fiscal_period,
+    lookup_fiscal_periods,
     lookup_outbox_events,
     lookup_period_journals,
     lookup_posted_journal,
@@ -1966,12 +1967,169 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(cross_open[0], 403)
         self.assertEqual(cross_get[0], 403)
         self.assertEqual(missing_query[0], 400)
-        self.assertEqual(missing_period_query[0], 400)
+        self.assertEqual(missing_period_query[0], 200)
+        self.assertEqual(missing_period_query[1]["fiscal_periods"][0]["period_code"], "2026-08")
         self.assertEqual(body_mismatch[0], 403)
         self.assertEqual(unknown_entity[0], 404)
         self.assertEqual(unknown_period[0], 404)
         self.assertEqual(missing_dates[0], 422)
         self.assertEqual(self._count_table("accounting_core.fiscal_period"), periods_before + 2)
+        server.shutdown()
+
+    def test_http_lists_fiscal_periods_from_existing_rows(self) -> None:
+        """GET lists existing fiscal_period rows for one tenant entity without inventing a table."""
+        server = self._start_http_server()
+        periods_before = self._count_table("accounting_core.fiscal_period")
+        bare_tenant, bare_entity = self._seed_tenant_without_calendar()
+
+        empty_library = lookup_fiscal_periods(DATABASE_URL, bare_tenant, bare_entity)
+        listed_before_status, listed_before = self._http_fiscal_periods()
+        library_before = lookup_fiscal_periods(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+        )
+        single_before_status, single_before = self._http_fiscal_period()
+
+        self.assertEqual(empty_library["fiscal_periods"], [])
+        self.assertIsNone(empty_library["next_cursor"])
+        self.assertEqual(empty_library["legal_entity_reference"], bare_entity)
+        self.assertEqual(listed_before_status, 200)
+        self.assertEqual(listed_before, library_before)
+        self.assertEqual(len(listed_before["fiscal_periods"]), 1)
+        self.assertEqual(listed_before["fiscal_periods"][0]["period_code"], "2026-08")
+        self.assertEqual(listed_before["fiscal_periods"][0]["period_status_code"], "open")
+        self.assertEqual(
+            listed_before["fiscal_periods"][0]["fiscal_period_reference"],
+            "urn:cwl:accounting:fiscal_period:2026-08",
+        )
+        self.assertEqual(listed_before["fiscal_periods"][0]["period_start_date"], "2026-08-01")
+        self.assertEqual(listed_before["fiscal_periods"][0]["period_end_date"], "2026-08-31")
+        self.assertIsNone(listed_before["next_cursor"])
+        self.assertEqual(single_before_status, 200)
+        self.assertEqual(single_before["period_code"], "2026-08")
+        self.assertNotIn("fiscal_periods", single_before)
+
+        open_status, opened = self._http_json("POST", "/fiscal-periods", self._period_open_payload())
+        close_status, _closed = self._http_json("POST", "/period-closes", self._period_close_payload())
+        listed_status, listed = self._http_fiscal_periods()
+        first_page_status, first_page = self._http_fiscal_periods(page_limit=1)
+        second_page_status, second_page = self._http_fiscal_periods(
+            page_limit=1,
+            cursor=str(first_page["next_cursor"]),
+        )
+        single_after_status, single_after = self._http_fiscal_period(
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-08"
+        )
+        single_open_status, single_open = self._http_fiscal_period(
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-09"
+        )
+        by_code = {str(item["period_code"]): item for item in listed["fiscal_periods"]}
+
+        self.assertEqual(open_status, 200)
+        self.assertEqual(opened["period_code"], "2026-09")
+        self.assertEqual(opened["period_status_code"], "open")
+        self.assertEqual(close_status, 200)
+        self.assertEqual(listed_status, 200)
+        self.assertEqual(first_page_status, 200)
+        self.assertEqual(second_page_status, 200)
+        self.assertEqual(single_after_status, 200)
+        self.assertEqual(single_open_status, 200)
+        self.assertEqual(len(listed["fiscal_periods"]), 2)
+        self.assertIsNone(listed["next_cursor"])
+        self.assertEqual(listed["tenant_reference"], self.policy.tenant_reference)
+        self.assertEqual(listed["legal_entity_reference"], self.policy.legal_entity_reference)
+        self.assertEqual(by_code["2026-08"]["period_status_code"], "hard_closed")
+        self.assertEqual(by_code["2026-09"]["period_status_code"], "open")
+        self.assertEqual(by_code["2026-09"]["period_start_date"], "2026-09-01")
+        self.assertEqual(by_code["2026-09"]["period_end_date"], "2026-09-30")
+        self.assertEqual(len(first_page["fiscal_periods"]), 1)
+        self.assertTrue(first_page["next_cursor"])
+        self.assertEqual(len(second_page["fiscal_periods"]), 1)
+        self.assertIsNone(second_page["next_cursor"])
+        self.assertEqual(
+            [item["period_code"] for item in first_page["fiscal_periods"]]
+            + [item["period_code"] for item in second_page["fiscal_periods"]],
+            [item["period_code"] for item in listed["fiscal_periods"]],
+        )
+        self.assertEqual(single_after["period_status_code"], "hard_closed")
+        self.assertEqual(single_open["period_status_code"], "open")
+        self.assertEqual(single_open["period_code"], "2026-09")
+
+        missing_entity_query = self._http_json("GET", "/fiscal-periods", None)
+        period_only = self._http_json(
+            "GET",
+            "/fiscal-periods?"
+            + urllib.parse.urlencode(
+                {"fiscal_period_reference": "urn:cwl:accounting:fiscal_period:2026-08"}
+            ),
+            None,
+        )
+        unknown_entity = self._http_fiscal_periods(
+            legal_entity_reference="urn:cwl:legal_entity:missing"
+        )
+        bad_limit = self._http_fiscal_periods(page_limit="abc")
+        high_limit = self._http_fiscal_periods(page_limit=101)
+        bad_cursor = self._http_fiscal_periods(cursor="not-a-cursor")
+        missing_header = self._http_fiscal_periods(tenant_header=None)
+        cross_status, _cross = self._http_fiscal_periods(tenant_header="urn:cwl:tenant_other")
+        with self.assertRaisesRegex(AccountingValidationError, "legal_entity_reference"):
+            lookup_fiscal_periods(DATABASE_URL, self.policy.tenant_reference, "")
+        with self.assertRaisesRegex(AccountingValidationError, "page_limit"):
+            lookup_fiscal_periods(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                page_limit=0,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "cursor"):
+            lookup_fiscal_periods(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                cursor="2026-08-01",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "cursor"):
+            lookup_fiscal_periods(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                cursor="|2026-08",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "cursor"):
+            lookup_fiscal_periods(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                cursor="2026-08-01|",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "cursor"):
+            lookup_fiscal_periods(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                cursor="not-a-date|2026-08",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "legal_entity"):
+            lookup_fiscal_periods(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                "urn:cwl:legal_entity:missing",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "legal_entity_reference"):
+            PostgresPostingLedger(
+                DATABASE_URL, self.policy.tenant_reference
+            ).load_fiscal_periods("")
+
+        self.assertEqual(missing_entity_query[0], 400)
+        self.assertEqual(period_only[0], 400)
+        self.assertEqual(unknown_entity[0], 404)
+        self.assertEqual(bad_limit[0], 400)
+        self.assertEqual(high_limit[0], 400)
+        self.assertEqual(bad_cursor[0], 400)
+        self.assertEqual(missing_header[0], 400)
+        self.assertEqual(cross_status, 403)
+        self.assertEqual(self._count_table("accounting_core.fiscal_period"), periods_before + 1)
         server.shutdown()
 
     def test_http_closes_period_and_reads_trial_balance(self) -> None:
@@ -3648,6 +3806,32 @@ class PostgresPostingTests(unittest.TestCase):
             ),
             accounting_date="2026-09-15",
             transaction_date="2026-09-15",
+        )
+
+    def _http_fiscal_periods(
+        self,
+        *,
+        legal_entity_reference: str | None = None,
+        page_limit: object | None = None,
+        cursor: str | None = None,
+        tenant_header: str | None = "",
+    ) -> tuple[int, dict[str, object]]:
+        query: dict[str, str] = {
+            "legal_entity_reference": (
+                self.policy.legal_entity_reference
+                if legal_entity_reference is None
+                else legal_entity_reference
+            )
+        }
+        if page_limit is not None:
+            query["page_limit"] = str(page_limit)
+        if cursor is not None:
+            query["cursor"] = cursor
+        return self._http_json(
+            "GET",
+            f"/fiscal-periods?{urllib.parse.urlencode(query)}",
+            None,
+            tenant_header=tenant_header,
         )
 
     def _http_fiscal_period(

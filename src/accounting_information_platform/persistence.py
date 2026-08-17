@@ -650,6 +650,85 @@ class PostgresPostingLedger:
                 "period_end_date": end_date.isoformat(),
             }
 
+    def load_fiscal_periods(
+        self,
+        legal_entity_reference: str,
+        *,
+        page_limit: int = 50,
+        cursor_after: tuple[date, str] | None = None,
+    ) -> dict[str, object]:
+        """Return one page of existing fiscal periods for a tenant legal entity."""
+        if not legal_entity_reference:
+            raise AccountingValidationError(
+                "legal_entity_reference is required. "
+                "Supply that period-list field, then retry the period list."
+            )
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            self._require_legal_entity(
+                connection, tenant_id, legal_entity_reference, "the period list"
+            )
+            calendar_row = connection.execute(
+                """
+                SELECT fiscal_calendar_id
+                FROM accounting_core.fiscal_calendar
+                WHERE tenant_account_id = %s
+                ORDER BY calendar_code
+                LIMIT 1
+                """,
+                (tenant_id,),
+            ).fetchone()
+            periods: list[dict[str, object]] = []
+            next_cursor = None
+            if calendar_row is not None:
+                parameters: list[object] = [tenant_id, calendar_row[0]]
+                cursor_clause = ""
+                if cursor_after is not None:
+                    cursor_clause = (
+                        "AND (fiscal_period.period_start_date, fiscal_period.period_code) "
+                        "> (%s, %s)"
+                    )
+                    parameters.extend(cursor_after)
+                parameters.append(page_limit + 1)
+                rows = connection.execute(
+                    f"""
+                    SELECT fiscal_period.period_code,
+                           fiscal_period.period_start_date,
+                           fiscal_period.period_end_date,
+                           fiscal_period.period_status_code
+                    FROM accounting_core.fiscal_period
+                    WHERE fiscal_period.tenant_account_id = %s
+                      AND fiscal_period.fiscal_calendar_id = %s
+                      {cursor_clause}
+                    ORDER BY fiscal_period.period_start_date, fiscal_period.period_code
+                    LIMIT %s
+                    """,
+                    tuple(parameters),
+                ).fetchall()
+                has_more = len(rows) > page_limit
+                page_rows = rows[:page_limit]
+                periods = [
+                    {
+                        "fiscal_period_reference": (
+                            f"urn:cwl:accounting:fiscal_period:{row[0]}"
+                        ),
+                        "period_code": row[0],
+                        "period_start_date": row[1].isoformat(),
+                        "period_end_date": row[2].isoformat(),
+                        "period_status_code": row[3],
+                    }
+                    for row in page_rows
+                ]
+                if has_more:
+                    last = page_rows[-1]
+                    next_cursor = f"{last[1].isoformat()}|{last[0]}"
+            return {
+                "tenant_reference": self._tenant_reference,
+                "legal_entity_reference": legal_entity_reference,
+                "fiscal_periods": periods,
+                "next_cursor": next_cursor,
+            }
+
     def reverse(
         self,
         journal_reference: str,

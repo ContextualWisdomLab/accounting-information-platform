@@ -58,6 +58,7 @@ REQUIRED_FILES = (
     "docs/adr/0015-http-fiscal-period-open.md",
     "docs/adr/0016-http-period-journal-list.md",
     "docs/adr/0017-http-outbox-read-and-publish.md",
+    "docs/adr/0018-http-fiscal-period-list.md",
     "docs/doctoring/REFERENCES.md",
     "docs/doctoring/STANDARD_TRACEABILITY.md",
     "docs/superpowers/specs/2026-08-16-accounting-information-platform-design.md",

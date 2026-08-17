@@ -16,6 +16,7 @@ from .accept import (
     accept_period_open,
     lookup_account_role_mappings,
     lookup_fiscal_period,
+    lookup_fiscal_periods,
     lookup_outbox_events,
     lookup_period_journals,
     lookup_posted_journal,
@@ -388,22 +389,52 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         fields = parse_qs(query)
         legal_entity_reference = _first_query(fields, "legal_entity_reference")
         fiscal_period_reference = _first_query(fields, "fiscal_period_reference")
-        if not legal_entity_reference or not fiscal_period_reference:
+        if not legal_entity_reference:
             self._write_error(
                 400,
-                "legal_entity_reference and fiscal_period_reference are required. "
-                "Supply those period fields, then retry the period read.",
+                "legal_entity_reference is required. "
+                "Supply that period field, then retry the period read.",
             )
             return
+        if fiscal_period_reference:
+            try:
+                document = lookup_fiscal_period(
+                    self.server.database_url,
+                    tenant_header,
+                    legal_entity_reference,
+                    fiscal_period_reference,
+                )
+            except AccountingValidationError as error:
+                self._write_error(404, str(error))
+                return
+            self._write_json(200, document)
+            return
+        raw_limit = _first_query(fields, "page_limit")
+        page_limit: int | None = None
+        if raw_limit:
+            try:
+                page_limit = int(raw_limit)
+            except ValueError:
+                self._write_error(
+                    400,
+                    "page_limit must be an integer. "
+                    "Supply a fiscal-period-list page_limit, then retry the period list.",
+                )
+                return
         try:
-            document = lookup_fiscal_period(
+            document = lookup_fiscal_periods(
                 self.server.database_url,
                 tenant_header,
                 legal_entity_reference,
-                fiscal_period_reference,
+                page_limit=page_limit,
+                cursor=_first_query(fields, "cursor"),
             )
         except AccountingValidationError as error:
-            self._write_error(404, str(error))
+            message = str(error)
+            if "page_limit" in message or "cursor" in message:
+                self._write_error(400, message)
+                return
+            self._write_error(404, message)
             return
         self._write_json(200, document)
 

@@ -195,6 +195,27 @@ def lookup_fiscal_period(
     )
 
 
+def lookup_fiscal_periods(
+    database_url: str,
+    tenant_reference: str,
+    legal_entity_reference: str,
+    page_limit: int | None = None,
+    cursor: str = "",
+) -> dict[str, object]:
+    """Return one page of existing fiscal periods for a tenant legal entity."""
+    if not legal_entity_reference:
+        raise AccountingValidationError(
+            "legal_entity_reference is required. "
+            "Supply that period-list field, then retry the period list."
+        )
+    ledger = PostgresPostingLedger(database_url, tenant_reference)
+    return ledger.load_fiscal_periods(
+        legal_entity_reference,
+        page_limit=_resolve_fiscal_period_list_page_limit(page_limit),
+        cursor_after=_parse_fiscal_period_list_cursor(cursor),
+    )
+
+
 def lookup_period_journals(
     database_url: str,
     tenant_reference: str,
@@ -338,6 +359,13 @@ def _resolve_outbox_page_limit(page_limit: int | None) -> int:
     )
 
 
+def _resolve_fiscal_period_list_page_limit(page_limit: int | None) -> int:
+    return _resolve_bounded_page_limit(
+        page_limit,
+        "Supply a fiscal-period-list page_limit, then retry the period list.",
+    )
+
+
 def _resolve_bounded_page_limit(page_limit: int | None, next_action: str) -> int:
     if page_limit is None:
         return _JOURNAL_LIST_DEFAULT_PAGE_LIMIT
@@ -370,6 +398,30 @@ def _parse_journal_list_cursor(cursor: str) -> tuple[date, str] | None:
             "Supply a journal-list cursor, then retry the journal list."
         ) from error
     return accounting_date, journal_reference
+
+
+def _parse_fiscal_period_list_cursor(cursor: str) -> tuple[date, str] | None:
+    if not cursor:
+        return None
+    if "|" not in cursor:
+        raise AccountingValidationError(
+            "cursor must be period_start_date|period_code. "
+            "Supply a fiscal-period-list cursor, then retry the period list."
+        )
+    date_text, period_code = cursor.split("|", 1)
+    if not date_text or not period_code:
+        raise AccountingValidationError(
+            "cursor must be period_start_date|period_code. "
+            "Supply a fiscal-period-list cursor, then retry the period list."
+        )
+    try:
+        period_start_date = date.fromisoformat(date_text)
+    except ValueError as error:
+        raise AccountingValidationError(
+            "cursor must be period_start_date|period_code. "
+            "Supply a fiscal-period-list cursor, then retry the period list."
+        ) from error
+    return period_start_date, period_code
 
 
 def _parse_outbox_cursor(cursor: str) -> tuple[datetime, UUID] | None:
