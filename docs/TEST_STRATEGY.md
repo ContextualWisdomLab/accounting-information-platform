@@ -19,6 +19,7 @@
 - Public API docstrings: 100% through `-Werror` documentation and package inspection.
 - No skipped required test evidence.
 - Exact-head CI, SAST, secret scan, dependency policy, SBOM, and provenance.
+- Hash-locked coverage 7.15.4 wheels (including the CPython 3.13 manylinux x86_64 artifact) plus setuptools, wheel, and packaging so `--require-hashes --only-binary=:all:` and `--no-build-isolation` packaging smoke tests resolve offline.
 - PostgreSQL integration test for proposal-to-receipt atomicity before the persistence milestone merges.
 
 ## Required real-world fixtures

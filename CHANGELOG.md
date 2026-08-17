@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Hash-locked setuptools, wheel, and packaging so exact-head CI can install and wheel the package without build isolation or network resolution.
+- Listed every CPython 3.13 coverage 7.15.4 wheel hash plus the universal wheel so ubuntu-latest can install the preferred manylinux x86_64 artifact under `--require-hashes`.
+
 ### Added
 
 - Initial Accounting Information Platform product and authority baseline.

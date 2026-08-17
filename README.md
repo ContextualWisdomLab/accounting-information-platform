@@ -39,6 +39,8 @@ PYTHONPATH=src:. python3 -m coverage run --branch -m unittest discover -s tests 
 python3 -m coverage report --fail-under=100 --show-missing
 python3 scripts/validate_repository.py .
 python3 -m compileall -q src scripts tests
+python3 -m pip install --no-deps --no-build-isolation -e .
+python3 -m pip wheel --no-deps --no-build-isolation -w dist .
 ```
 
 ## Next customer-visible step
