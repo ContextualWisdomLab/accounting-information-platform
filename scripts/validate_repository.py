@@ -53,6 +53,7 @@ REQUIRED_FILES = (
     "docs/adr/0010-http-period-close-and-trial-balance.md",
     "docs/adr/0011-ais-pulls-billing-get.md",
     "docs/adr/0012-http-append-only-reversal.md",
+    "docs/adr/0013-http-account-role-mapping-read.md",
     "docs/doctoring/REFERENCES.md",
     "docs/doctoring/STANDARD_TRACEABILITY.md",
     "docs/superpowers/specs/2026-08-16-accounting-information-platform-design.md",

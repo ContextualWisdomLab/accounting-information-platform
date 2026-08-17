@@ -464,6 +464,65 @@ class PostgresPostingLedger:
                 posting_rule_version=row[6],
             )
 
+    def load_account_role_mappings(
+        self, legal_entity_reference: str, accounting_book_reference: str
+    ) -> dict[str, object]:
+        """Return effective account-role mappings for one legal entity and book."""
+        if not legal_entity_reference or not accounting_book_reference:
+            raise AccountingValidationError(
+                "legal_entity_reference and book_reference are required. "
+                "Supply those catalog fields, then retry the mapping read."
+            )
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            legal_entity_id = self._load_legal_entity(
+                connection, tenant_id, legal_entity_reference, "the mapping read"
+            )[0]
+            book_id = self._require_book_for_close(
+                connection,
+                tenant_id,
+                legal_entity_id,
+                accounting_book_reference,
+                "the mapping read",
+            )[0]
+            rows = connection.execute(
+                """
+                SELECT account_role_mapping.account_role_code,
+                       chart_account.chart_account_code,
+                       account_role_mapping.accounting_policy_version,
+                       account_role_mapping.posting_rule_version
+                FROM accounting_core.account_role_mapping
+                JOIN accounting_core.chart_account
+                  ON chart_account.tenant_account_id = account_role_mapping.tenant_account_id
+                 AND chart_account.chart_account_id = account_role_mapping.chart_account_id
+                WHERE account_role_mapping.tenant_account_id = %s
+                  AND account_role_mapping.accounting_book_id = %s
+                  AND account_role_mapping.valid_to IS NULL
+                ORDER BY account_role_mapping.account_role_code
+                """,
+                (tenant_id, book_id),
+            ).fetchall()
+            if not rows:
+                raise AccountingValidationError(
+                    "No account_role_mapping is recorded for this book. "
+                    "Create the account_role_mapping rows, then retry the mapping read."
+                )
+            return {
+                "tenant_reference": self._tenant_reference,
+                "legal_entity_reference": legal_entity_reference,
+                "accounting_book_reference": accounting_book_reference,
+                "book_reference": accounting_book_reference,
+                "mappings": [
+                    {
+                        "account_role_code": role_code,
+                        "chart_account_code": account_code,
+                        "accounting_policy_version": policy_version,
+                        "posting_rule_version": rule_version,
+                    }
+                    for role_code, account_code, policy_version, rule_version in rows
+                ],
+            }
+
     def trial_balance(
         self,
         tenant_reference: str,

@@ -32,6 +32,7 @@ from accounting_information_platform import (
     accept_pulled_proposals,
     create_journal_proposal_server,
     ingest_journal_proposal,
+    lookup_account_role_mappings,
     lookup_published_receipt,
     lookup_trial_balance,
     pull_journal_proposal,
@@ -882,6 +883,107 @@ class PostgresPostingTests(unittest.TestCase):
         )
         self.assertEqual(cross_post[0], 403)
         self.assertEqual(cross_lookup[0], 403)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before)
+        server.shutdown()
+
+    def test_http_reads_account_role_mappings_from_catalog(self) -> None:
+        """GET returns seeded role-to-chart mappings and rejects cross-tenant or unknown books."""
+        server = self._start_http_server()
+        journals_before = self._count_table("accounting_core.general_journal")
+
+        status, document = self._http_account_role_mappings()
+        alias_query = urllib.parse.urlencode(
+            {
+                "legal_entity_reference": self.policy.legal_entity_reference,
+                "accounting_book_reference": self.policy.accounting_book_reference,
+            }
+        )
+        alias_status, alias_document = self._http_json(
+            "GET", f"/account-role-mappings?{alias_query}", None
+        )
+        aliased = lookup_account_role_mappings(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+        )
+        by_code = {
+            str(item["account_role_code"]): item for item in document["mappings"]
+        }
+
+        self.assertEqual(status, 200)
+        self.assertEqual(alias_status, 200)
+        self.assertEqual(document, aliased)
+        self.assertEqual(alias_document, document)
+        self.assertEqual(document["tenant_reference"], self.policy.tenant_reference)
+        self.assertEqual(document["legal_entity_reference"], self.policy.legal_entity_reference)
+        self.assertEqual(document["accounting_book_reference"], self.policy.accounting_book_reference)
+        self.assertEqual(document["book_reference"], self.policy.accounting_book_reference)
+        self.assertEqual(
+            set(by_code),
+            {"accounts_receivable", "usage_revenue", "cash_receipt"},
+        )
+        self.assertEqual(by_code["accounts_receivable"]["chart_account_code"], "110100")
+        self.assertEqual(by_code["usage_revenue"]["chart_account_code"], "410100")
+        self.assertEqual(by_code["cash_receipt"]["chart_account_code"], "110200")
+        self.assertEqual(by_code["cash_receipt"]["accounting_policy_version"], "ifrs-v1")
+        self.assertEqual(by_code["cash_receipt"]["posting_rule_version"], "billing-issued-v1")
+
+        post_status, _post_body = self._http_json("POST", "/account-role-mappings", {})
+        missing_header = self._http_account_role_mappings(tenant_header=None)
+        cross_status, _cross = self._http_account_role_mappings(
+            tenant_header="urn:cwl:tenant_other"
+        )
+        missing_query = self._http_json("GET", "/account-role-mappings", None)
+        missing_book = self._http_json(
+            "GET",
+            "/account-role-mappings?"
+            + urllib.parse.urlencode(
+                {"legal_entity_reference": self.policy.legal_entity_reference}
+            ),
+            None,
+        )
+        unknown_entity = self._http_account_role_mappings(
+            legal_entity_reference="urn:cwl:legal_entity:missing"
+        )
+        unknown_book = self._http_account_role_mappings(
+            book_reference="urn:cwl:accounting_book:missing"
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "book_reference"):
+            lookup_account_role_mappings(
+                DATABASE_URL, self.policy.tenant_reference, "", ""
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "book_reference"):
+            lookup_account_role_mappings(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                "",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "book_reference"):
+            PostgresPostingLedger(
+                DATABASE_URL, self.policy.tenant_reference
+            ).load_account_role_mappings("", "")
+        with self.assertRaisesRegex(AccountingValidationError, "book_reference"):
+            PostgresPostingLedger(
+                DATABASE_URL, self.policy.tenant_reference
+            ).load_account_role_mappings(self.policy.legal_entity_reference, "")
+        self._delete_role_mappings()
+        with self.assertRaisesRegex(AccountingValidationError, "account_role_mapping"):
+            lookup_account_role_mappings(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+            )
+
+        self.assertEqual(post_status, 405)
+        self.assertEqual(missing_header[0], 400)
+        self.assertEqual(cross_status, 403)
+        self.assertEqual(missing_query[0], 400)
+        self.assertEqual(missing_book[0], 400)
+        self.assertEqual(unknown_entity[0], 404)
+        self.assertEqual(unknown_book[0], 404)
         self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before)
         server.shutdown()
 
@@ -2414,6 +2516,34 @@ class PostgresPostingTests(unittest.TestCase):
         }
         values.update(overrides)
         return values
+
+    def _http_account_role_mappings(
+        self,
+        *,
+        legal_entity_reference: str | None = None,
+        book_reference: str | None = None,
+        tenant_header: str | None = "",
+    ) -> tuple[int, dict[str, object]]:
+        query = urllib.parse.urlencode(
+            {
+                "legal_entity_reference": (
+                    self.policy.legal_entity_reference
+                    if legal_entity_reference is None
+                    else legal_entity_reference
+                ),
+                "book_reference": (
+                    self.policy.accounting_book_reference
+                    if book_reference is None
+                    else book_reference
+                ),
+            }
+        )
+        return self._http_json(
+            "GET",
+            f"/account-role-mappings?{query}",
+            None,
+            tenant_header=tenant_header,
+        )
 
     def _http_trial_balance(
         self,
