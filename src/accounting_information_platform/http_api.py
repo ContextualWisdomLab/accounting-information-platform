@@ -1,4 +1,4 @@
-"""Thin stdlib HTTP boundary for Billing proposals, receipts, close, and trial balance."""
+"""Thin stdlib HTTP boundary for Billing proposals, pulls, receipts, close, and trial balance."""
 
 from __future__ import annotations
 
@@ -14,11 +14,13 @@ from .accept import (
     lookup_published_receipt,
     lookup_trial_balance,
 )
+from .billing_pull import accept_billing_proposal_pull
 from .core import AccountingValidationError, IdempotencyConflictError, _require_reference
 
 
 TENANT_HEADER = "X-CWL-Tenant-Reference"
 HEALTHZ_PATH = "/healthz"
+BILLING_PROPOSAL_PULL_PATH = "/billing-proposal-pulls"
 JOURNAL_PROPOSAL_PATH = "/journal-proposals"
 PERIOD_CLOSE_PATH = "/period-closes"
 POSTING_RECEIPT_PATH = "/posting-receipts"
@@ -41,15 +43,22 @@ class JournalProposalServer(ThreadingHTTPServer):
 
 
 class JournalProposalHandler(BaseHTTPRequestHandler):
-    """Serve proposal POST, receipt GET, period close, trial balance, and healthz."""
+    """Serve proposal POST, Billing pull, receipt GET, period close, trial balance, and healthz."""
 
     server: JournalProposalServer
 
     def do_GET(self) -> None:
-        """Route healthz, receipt lookup, and trial-balance reads."""
+        """Route healthz, receipt lookup, trial-balance reads, and pull 405."""
         parsed = urlparse(self.path)
         if parsed.path == HEALTHZ_PATH:
             self._write_json(200, {"status": "ok"})
+            return
+        if parsed.path == BILLING_PROPOSAL_PULL_PATH:
+            self._write_error(
+                405,
+                "GET is not supported on the billing proposal pull endpoint. "
+                "POST a billing-proposal-pull command, then retry.",
+            )
             return
         if parsed.path == JOURNAL_PROPOSAL_PATH:
             self._write_error(
@@ -71,18 +80,22 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         )
 
     def do_POST(self) -> None:
-        """Route journal-proposal accept and fiscal-period close."""
+        """Route journal-proposal accept, Billing pull, and fiscal-period close."""
         raw_body = self._read_body()
         parsed_path = urlparse(self.path).path
         if self.path == JOURNAL_PROPOSAL_PATH:
             self._post_journal_proposal(raw_body)
+            return
+        if parsed_path == BILLING_PROPOSAL_PULL_PATH:
+            self._post_billing_proposal_pull(raw_body)
             return
         if parsed_path == PERIOD_CLOSE_PATH:
             self._post_period_close(raw_body)
             return
         self._write_error(
             404,
-            "unknown path. POST /journal-proposals or POST /period-closes, then retry.",
+            "unknown path. POST /journal-proposals, POST /billing-proposal-pulls, "
+            "or POST /period-closes, then retry.",
         )
 
     def log_message(self, format: str, *args: object) -> None:
@@ -188,6 +201,29 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             return
         self._write_json(200, document)
 
+    def _post_billing_proposal_pull(self, raw_body: bytes) -> None:
+        tenant_header = self._bound_tenant_header("pull")
+        if tenant_header is None:
+            return
+        payload = self._read_json_object(raw_body, "a billing-proposal-pull command")
+        if payload is None:
+            return
+        if payload.get("tenant_reference") != tenant_header:
+            self._write_error(
+                403,
+                "pull tenant_reference does not match X-CWL-Tenant-Reference. "
+                "Send the pull to that tenant's AIS endpoint, then retry.",
+            )
+            return
+        try:
+            document = accept_billing_proposal_pull(
+                payload, self.server.database_url, tenant_header
+            )
+        except AccountingValidationError as error:
+            self._write_error(422, str(error))
+            return
+        self._write_json(200, document)
+
     def _bound_tenant_header(self, mismatch_action: str) -> str | None:
         tenant_header = self.headers.get(TENANT_HEADER)
         if not tenant_header:
@@ -255,7 +291,7 @@ def create_journal_proposal_server(
     host: str = "127.0.0.1",
     port: int = 0,
 ) -> JournalProposalServer:
-    """Create a stdlib HTTP server that posts, looks up receipts, closes, and reads TB."""
+    """Create a stdlib HTTP server that posts, pulls Billing pages, closes, and reads TB."""
     if not database_url:
         raise AccountingValidationError(
             "ACCOUNTING_DATABASE_URL is empty. Set a PostgreSQL 18 URL and retry posting."

@@ -12,6 +12,7 @@ import urllib.request
 import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
 from unittest import mock
@@ -24,12 +25,16 @@ from accounting_information_platform import (
     JournalProposal,
     PeriodCloseReceipt,
     PostgresPostingLedger,
+    accept_billing_proposal_pull,
     accept_journal_proposal,
     accept_period_close,
+    accept_pulled_proposals,
     create_journal_proposal_server,
     ingest_journal_proposal,
     lookup_published_receipt,
     lookup_trial_balance,
+    pull_journal_proposal,
+    pull_validated_journal_proposals,
     run_journal_proposal_server,
 )
 import psycopg
@@ -44,6 +49,111 @@ DATABASE_URL = os.environ.get(
     "postgresql://postgres:postgres@127.0.0.1:5432/accounting_test",
 )
 VALID_FROM = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+class FakeBillingServer(ThreadingHTTPServer):
+    """Serves Billing #15 list + get-by-id fixtures without the live network."""
+
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        proposals: list[object],
+        *,
+        list_status: int = 200,
+        get_status: int = 200,
+        list_raw: bytes | None = None,
+        get_raw: bytes | None = None,
+    ) -> None:
+        self.proposals = proposals
+        self.list_status = list_status
+        self.get_status = get_status
+        self.list_raw = list_raw
+        self.get_raw = get_raw
+        super().__init__(server_address, FakeBillingHandler)
+
+
+class FakeBillingHandler(BaseHTTPRequestHandler):
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+    def do_GET(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        query = urllib.parse.parse_qs(parsed.query)
+        header_tenant = self.headers.get("X-CWL-Tenant-Reference")
+        query_tenants = query.get("tenant_reference", [])
+        query_tenant = query_tenants[0] if query_tenants else None
+        if header_tenant is None or query_tenant is None or header_tenant != query_tenant:
+            self._json(422, {"rejection_reason_code": "request_invalid"})
+            return
+        server = self.server
+        assert isinstance(server, FakeBillingServer)
+        if parsed.path == "/v1/journal-proposals":
+            if server.list_status != 200:
+                self._json(server.list_status, {"rejection_reason_code": "request_invalid"})
+                return
+            if server.list_raw is not None:
+                self._raw(200, server.list_raw)
+                return
+            filtered = [
+                item
+                for item in server.proposals
+                if isinstance(item, dict) and item.get("tenant_reference") == header_tenant
+            ]
+            proposed_after = query.get("proposed_after", [None])[0]
+            if proposed_after:
+                filtered = [
+                    item
+                    for item in filtered
+                    if str(item.get("proposed_at", "")) >= proposed_after
+                ]
+            cursor = query.get("cursor", [None])[0]
+            if cursor:
+                after_id = cursor.split("|", 1)[-1]
+                start = len(filtered)
+                for index, item in enumerate(filtered):
+                    if str(item.get("proposal_id")) == after_id:
+                        start = index + 1
+                        break
+                filtered = filtered[start:]
+            limit_values = query.get("page_limit", [])
+            limit = int(limit_values[0]) if limit_values else len(filtered)
+            page = filtered[:limit]
+            remainder = filtered[limit:]
+            next_cursor = None
+            if remainder and page:
+                last = page[-1]
+                next_cursor = f"{last['proposed_at']}|{last['proposal_id']}"
+            self._json(200, {"journal_proposals": page, "next_cursor": next_cursor})
+            return
+        if parsed.path.startswith("/v1/journal-proposals/"):
+            if server.get_status != 200:
+                self._json(server.get_status, {"rejection_reason_code": "proposal_not_found"})
+                return
+            if server.get_raw is not None:
+                self._raw(200, server.get_raw)
+                return
+            proposal_id = parsed.path.rsplit("/", 1)[-1]
+            for item in server.proposals:
+                if (
+                    isinstance(item, dict)
+                    and str(item.get("proposal_id")) == proposal_id
+                    and item.get("tenant_reference") == header_tenant
+                ):
+                    self._json(200, item)
+                    return
+            self._json(404, {"rejection_reason_code": "proposal_not_found"})
+            return
+        self._json(404, {"rejection_reason_code": "proposal_not_found"})
+
+    def _json(self, status: int, payload: dict[str, object]) -> None:
+        self._raw(status, json.dumps(payload).encode("utf-8"))
+
+    def _raw(self, status: int, body: bytes) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
 
 class PostgresPostingTests(unittest.TestCase):
@@ -881,6 +991,255 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(self._period_status("2026-08"), "hard_closed")
         server.shutdown()
 
+    def test_pulls_validated_billing_proposals_and_posts(self) -> None:
+        """AIS pulls Billing #15 validated pages, posts them, and ignores other statuses."""
+        invoice = self._billing_validated_payload()
+        cash = self._billing_cash_payload()
+        draft = self._billing_validated_payload(
+            proposal_id=str(uuid.uuid4()),
+            proposal_status="draft",
+            idempotency_key=f"{self.policy.tenant_reference}:invoice_draft:draft:sha256:{'f' * 64}:v1",
+            source_payload_hash="sha256:" + "f" * 64,
+            proposed_at="2026-08-30T00:00:00Z",
+        )
+        exported = self._billing_validated_payload(
+            proposal_id=str(uuid.uuid4()),
+            proposal_status="exported",
+            idempotency_key=f"{self.policy.tenant_reference}:invoice_draft:exported:sha256:{'e' * 64}:v1",
+            source_payload_hash="sha256:" + "e" * 64,
+            proposed_at="2026-08-30T12:00:00Z",
+        )
+        rejected = self._billing_validated_payload(
+            proposal_id=str(uuid.uuid4()),
+            proposal_status="rejected",
+            idempotency_key=f"{self.policy.tenant_reference}:invoice_draft:rejected:sha256:{'d' * 64}:v1",
+            source_payload_hash="sha256:" + "d" * 64,
+            proposed_at="2026-08-30T18:00:00Z",
+        )
+        unmapped = self._billing_validated_payload(
+            proposal_id=str(uuid.uuid4()),
+            idempotency_key=f"{self.policy.tenant_reference}:invoice_draft:tax:sha256:{'c' * 64}:v1",
+            source_payload_hash="sha256:" + "c" * 64,
+            proposed_at="2026-08-31T12:00:00Z",
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "1000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "tax_payable",
+                    "debit_amount": "0",
+                    "credit_amount": "1000",
+                },
+            ],
+        )
+        billing_url = self._start_fake_billing(
+            [draft, exported, rejected, invoice, cash, unmapped]
+        )
+        ais_server = self._start_http_server()
+
+        page = pull_validated_journal_proposals(
+            billing_url,
+            self.policy.tenant_reference,
+            proposed_after="2026-08-01T00:00:00Z",
+            page_limit=10,
+        )
+        receipts = accept_pulled_proposals(
+            billing_url,
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            proposed_after="2026-08-01T00:00:00Z",
+            page_limit=1,
+        )
+        replayed = accept_pulled_proposals(
+            billing_url, DATABASE_URL, self.policy.tenant_reference
+        )
+        invoice_lookup = lookup_published_receipt(
+            DATABASE_URL, self.policy.tenant_reference, str(invoice["idempotency_key"])
+        )
+        cash_lookup = lookup_published_receipt(
+            DATABASE_URL, self.policy.tenant_reference, str(cash["idempotency_key"])
+        )
+        lookup_status, http_lookup = self._http_lookup(str(invoice["idempotency_key"]))
+        pulled_invoice = pull_journal_proposal(
+            billing_url, self.policy.tenant_reference, str(invoice["proposal_id"])
+        )
+        http_status, http_body = self._http_json(
+            "POST",
+            "/billing-proposal-pulls",
+            {"tenant_reference": self.policy.tenant_reference, "billing_base_url": billing_url},
+        )
+
+        self.assertEqual(
+            [item["proposal_id"] for item in page.journal_proposals],
+            [invoice["proposal_id"], cash["proposal_id"], unmapped["proposal_id"]],
+        )
+        self.assertIsNone(page.next_cursor)
+        self.assertEqual(len(receipts), 2)
+        self.assertEqual(receipts[0], invoice_lookup)
+        self.assertEqual(receipts[1], cash_lookup)
+        self.assertEqual(replayed, receipts)
+        self.assertEqual(lookup_status, 200)
+        self.assertEqual(http_lookup, invoice_lookup)
+        self.assertEqual(pulled_invoice["proposal_id"], invoice["proposal_id"])
+        self.assertEqual(http_status, 200)
+        self.assertEqual(http_body["posting_receipts"], list(replayed))
+        self.assertEqual(self._count_table("accounting_core.general_journal"), 2)
+        self.assertEqual(self._posted_chart_accounts(), {"110100", "410100", "110200"})
+
+        journals_before = self._count_table("accounting_core.general_journal")
+        with self.assertRaisesRegex(AccountingValidationError, "Do not retry as another tenant"):
+            pull_journal_proposal(
+                billing_url, self.policy.tenant_reference, str(uuid.uuid4())
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "Set BILLING_BASE_URL"):
+            pull_validated_journal_proposals("", self.policy.tenant_reference)
+        with self.assertRaisesRegex(AccountingValidationError, "Set BILLING_BASE_URL"):
+            accept_pulled_proposals("", DATABASE_URL, self.policy.tenant_reference)
+        with self.assertRaisesRegex(AccountingValidationError, "Ask Billing to correct"):
+            pull_validated_journal_proposals(
+                self._start_fake_billing([], list_status=422),
+                self.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "Retry the Billing pull"):
+            pull_validated_journal_proposals(
+                self._start_fake_billing([], list_status=500),
+                self.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "JSON object"):
+            accept_billing_proposal_pull(
+                ["not-an-object"], DATABASE_URL, self.policy.tenant_reference
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "bound tenant"):
+            accept_billing_proposal_pull(
+                {"tenant_reference": "urn:cwl:tenant_other", "billing_base_url": billing_url},
+                DATABASE_URL,
+                self.policy.tenant_reference,
+            )
+        cross_status, _cross = self._http_json(
+            "POST",
+            "/billing-proposal-pulls",
+            {"tenant_reference": self.policy.tenant_reference, "billing_base_url": billing_url},
+            tenant_header="urn:cwl:tenant_other",
+        )
+        body_mismatch_status, _body_mismatch = self._http_json(
+            "POST",
+            "/billing-proposal-pulls",
+            {"tenant_reference": "urn:cwl:tenant_other", "billing_base_url": billing_url},
+        )
+        get_pull_status, _get_pull = self._http_json("GET", "/billing-proposal-pulls", None)
+        bad_pull_json = self._http_raw(
+            "POST", "/billing-proposal-pulls", b"{", self.policy.tenant_reference
+        )
+        with mock.patch.dict(os.environ, {"BILLING_BASE_URL": ""}, clear=False):
+            missing_url_status, _missing_url = self._http_json(
+                "POST",
+                "/billing-proposal-pulls",
+                {"tenant_reference": self.policy.tenant_reference},
+            )
+        with mock.patch.dict(os.environ, {"BILLING_BASE_URL": billing_url}, clear=False):
+            from_env = accept_billing_proposal_pull(
+                {"tenant_reference": self.policy.tenant_reference},
+                DATABASE_URL,
+                self.policy.tenant_reference,
+            )
+        empty_page = accept_billing_proposal_pull(
+            {
+                "tenant_reference": self.policy.tenant_reference,
+                "billing_base_url": billing_url,
+                "proposed_after": "2026-08-01T00:00:00Z",
+                "cursor": f"{unmapped['proposed_at']}|{unmapped['proposal_id']}",
+                "page_limit": 2,
+            },
+            DATABASE_URL,
+            self.policy.tenant_reference,
+        )
+        mixed_page = pull_validated_journal_proposals(
+            self._start_fake_billing(
+                [],
+                list_raw=json.dumps(
+                    {
+                        "journal_proposals": [1, {"proposal_status": "validated", "proposal_id": "x"}],
+                        "next_cursor": "",
+                    }
+                ).encode("utf-8"),
+            ),
+            self.policy.tenant_reference,
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "page_limit"):
+            accept_billing_proposal_pull(
+                {
+                    "tenant_reference": self.policy.tenant_reference,
+                    "billing_base_url": billing_url,
+                    "page_limit": "nope",
+                },
+                DATABASE_URL,
+                self.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "proposal_id"):
+            pull_journal_proposal(billing_url, self.policy.tenant_reference, "")
+        with self.assertRaisesRegex(AccountingValidationError, "must be a CWL URN"):
+            pull_validated_journal_proposals(billing_url, "not-a-urn")
+        with self.assertRaisesRegex(AccountingValidationError, "not validated"):
+            pull_journal_proposal(
+                billing_url, self.policy.tenant_reference, str(draft["proposal_id"])
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "Ask Billing to correct"):
+            pull_journal_proposal(
+                self._start_fake_billing([invoice], get_status=422),
+                self.policy.tenant_reference,
+                str(invoice["proposal_id"]),
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "Retry the Billing pull"):
+            pull_journal_proposal(
+                self._start_fake_billing([invoice], get_status=500),
+                self.policy.tenant_reference,
+                str(invoice["proposal_id"]),
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "HTTP 401"):
+            pull_validated_journal_proposals(
+                self._start_fake_billing([], list_status=401),
+                self.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "Retry the Billing pull"):
+            pull_validated_journal_proposals(
+                "http://127.0.0.1:1", self.policy.tenant_reference
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "non-JSON"):
+            pull_validated_journal_proposals(
+                self._start_fake_billing([], list_raw=b"not-json"),
+                self.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "non-JSON"):
+            pull_validated_journal_proposals(
+                self._start_fake_billing([], list_raw=b"\xff\xfe"),
+                self.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "JSON object"):
+            pull_validated_journal_proposals(
+                self._start_fake_billing([], list_raw=b"[1]"),
+                self.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "journal_proposals"):
+            pull_validated_journal_proposals(
+                self._start_fake_billing([], list_raw=b'{"next_cursor":null}'),
+                self.policy.tenant_reference,
+            )
+        self.assertEqual(cross_status, 403)
+        self.assertEqual(body_mismatch_status, 403)
+        self.assertEqual(get_pull_status, 405)
+        self.assertEqual(bad_pull_json[0], 400)
+        self.assertEqual(missing_url_status, 422)
+        self.assertEqual(from_env["posting_receipts"], list(replayed))
+        self.assertEqual(empty_page["posting_receipts"], [])
+        self.assertEqual(len(mixed_page.journal_proposals), 1)
+        self.assertIsNone(mixed_page.next_cursor)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before)
+        ais_server.shutdown()
+
     def test_accept_and_http_guard_cross_tenant_and_operator_failures(self) -> None:
         """The tenant header is purpose-limited and cross-tenant posts write zero rows."""
         payload = self._billing_validated_payload()
@@ -1617,6 +1976,30 @@ class PostgresPostingTests(unittest.TestCase):
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         return server
+
+    def _start_fake_billing(
+        self,
+        proposals: list[object],
+        *,
+        list_status: int = 200,
+        get_status: int = 200,
+        list_raw: bytes | None = None,
+        get_raw: bytes | None = None,
+    ) -> str:
+        server = FakeBillingServer(
+            ("127.0.0.1", 0),
+            proposals,
+            list_status=list_status,
+            get_status=get_status,
+            list_raw=list_raw,
+            get_raw=get_raw,
+        )
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        host, port = server.server_address
+        return f"http://{host}:{port}"
 
     def _period_close_payload(self, **overrides: object) -> dict[str, object]:
         values: dict[str, object] = {
