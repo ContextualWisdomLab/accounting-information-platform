@@ -24,6 +24,7 @@ from .accept import (
     lookup_fiscal_period,
     lookup_fiscal_periods,
     lookup_journal_reversals,
+    lookup_period_closes,
     lookup_outbox_events,
     lookup_period_journals,
     lookup_posted_journal,
@@ -81,7 +82,7 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
     server: JournalProposalServer
 
     def do_GET(self) -> None:
-        """Route healthz, receipt, trial-balance, catalog, journal, reversal list, outbox, audit history, and GET 405s."""
+        """Route healthz, receipt, trial-balance, catalog, journal, reversal list, close list, outbox, audit history, and GET 405s."""
         parsed = urlparse(self.path)
         if parsed.path == HEALTHZ_PATH:
             self._write_json(200, {"status": "ok"})
@@ -130,6 +131,9 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         if parsed.path == JOURNAL_PATH:
             self._get_posted_journal(parsed.query)
             return
+        if parsed.path == PERIOD_CLOSE_PATH:
+            self._get_period_closes(parsed.query)
+            return
         if parsed.path == FISCAL_PERIOD_PATH:
             self._get_fiscal_period(parsed.query)
             return
@@ -151,8 +155,8 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             "unknown path. GET /posting-receipts?idempotency_key=, GET /trial-balances, "
             "GET /financial-statements, GET /account-role-mappings, GET /accounting-books, "
             "GET /legal-entities, GET /chart-accounts, GET /account-ledgers, GET /journals, "
-            "GET /journal-reversals, GET /fiscal-periods, GET /outbox-events?event_type_code=, or "
-            "GET /audit-events, then retry.",
+            "GET /journal-reversals, GET /period-closes, GET /fiscal-periods, "
+            "GET /outbox-events?event_type_code=, or GET /audit-events, then retry.",
         )
 
     def do_POST(self) -> None:
@@ -525,6 +529,54 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         except AccountingValidationError as error:
             message = str(error)
             if "page_limit" in message or "cursor" in message:
+                self._write_error(400, message)
+                return
+            self._write_error(404, message)
+            return
+        self._write_json(200, document)
+
+    def _get_period_closes(self, query: str) -> None:
+        tenant_header = self._bound_tenant_header("period-close list")
+        if tenant_header is None:
+            return
+        fields = parse_qs(query)
+        legal_entity_reference = _first_query(fields, "legal_entity_reference")
+        if not legal_entity_reference:
+            self._write_error(
+                400,
+                "legal_entity_reference is required. "
+                "Supply that period-close list field, then retry the period-close list.",
+            )
+            return
+        raw_limit = _first_query(fields, "page_limit")
+        page_limit: int | None = None
+        if raw_limit:
+            try:
+                page_limit = int(raw_limit)
+            except ValueError:
+                self._write_error(
+                    400,
+                    "page_limit must be an integer. "
+                    "Supply a period-close page_limit, then retry the period-close list.",
+                )
+                return
+        try:
+            document = lookup_period_closes(
+                self.server.database_url,
+                tenant_header,
+                legal_entity_reference,
+                _first_query(fields, "fiscal_period_reference"),
+                _first_query(fields, "period_status_code"),
+                page_limit=page_limit,
+                cursor=_first_query(fields, "cursor"),
+            )
+        except AccountingValidationError as error:
+            message = str(error)
+            if (
+                "page_limit" in message
+                or "cursor" in message
+                or "period_status_code" in message
+            ):
                 self._write_error(400, message)
                 return
             self._write_error(404, message)

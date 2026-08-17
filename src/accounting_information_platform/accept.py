@@ -296,6 +296,36 @@ def lookup_journal_reversals(
     )
 
 
+def lookup_period_closes(
+    database_url: str,
+    tenant_reference: str,
+    legal_entity_reference: str,
+    fiscal_period_reference: str = "",
+    period_status_code: str = "",
+    page_limit: int | None = None,
+    cursor: str = "",
+) -> dict[str, object]:
+    """Return one page of durable hard-close receipts for a tenant legal entity."""
+    if not legal_entity_reference:
+        raise AccountingValidationError(
+            "legal_entity_reference is required. "
+            "Supply that period-close list field, then retry the period-close list."
+        )
+    if period_status_code and period_status_code not in {"soft_closed", "hard_closed"}:
+        raise AccountingValidationError(
+            "period_status_code must be soft_closed or hard_closed. "
+            "Supply a known period_status_code, then retry the period-close list."
+        )
+    ledger = PostgresPostingLedger(database_url, tenant_reference)
+    return ledger.load_period_closes(
+        legal_entity_reference,
+        _period_code_from_reference(fiscal_period_reference),
+        period_status_code,
+        page_limit=_resolve_period_close_page_limit(page_limit),
+        cursor_after=_parse_period_close_cursor(cursor),
+    )
+
+
 def lookup_outbox_events(
     database_url: str,
     tenant_reference: str,
@@ -514,6 +544,13 @@ def _resolve_journal_reversal_page_limit(page_limit: int | None) -> int:
     )
 
 
+def _resolve_period_close_page_limit(page_limit: int | None) -> int:
+    return _resolve_bounded_page_limit(
+        page_limit,
+        "Supply a period-close page_limit, then retry the period-close list.",
+    )
+
+
 def _resolve_outbox_page_limit(page_limit: int | None) -> int:
     return _resolve_bounded_page_limit(
         page_limit,
@@ -598,6 +635,36 @@ def _parse_journal_reversal_cursor(cursor: str) -> tuple[datetime, str] | None:
             "Supply a journal-reversal cursor, then retry the journal-reversal list."
         ) from error
     return posted_at, journal_reference
+
+
+def _parse_period_close_cursor(cursor: str) -> tuple[datetime, UUID] | None:
+    if not cursor:
+        return None
+    if "|" not in cursor:
+        raise AccountingValidationError(
+            "cursor must be snapshot_generated_at|snapshot_record_id. "
+            "Supply a period-close cursor, then retry the period-close list."
+        )
+    generated_at_text, snapshot_record_id_text = cursor.split("|", 1)
+    if not generated_at_text or not snapshot_record_id_text:
+        raise AccountingValidationError(
+            "cursor must be snapshot_generated_at|snapshot_record_id. "
+            "Supply a period-close cursor, then retry the period-close list."
+        )
+    try:
+        generated_at = datetime.fromisoformat(generated_at_text.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise AccountingValidationError(
+            "cursor must be snapshot_generated_at|snapshot_record_id. "
+            "Supply a period-close cursor, then retry the period-close list."
+        ) from error
+    try:
+        return generated_at, UUID(snapshot_record_id_text)
+    except ValueError as error:
+        raise AccountingValidationError(
+            "cursor snapshot_record_id must be a UUID. "
+            "Supply a period-close cursor, then retry the period-close list."
+        ) from error
 
 
 def _parse_fiscal_period_list_cursor(cursor: str) -> tuple[date, str] | None:

@@ -45,6 +45,7 @@ from accounting_information_platform import (
     lookup_audit_events,
     lookup_outbox_events,
     lookup_journal_reversals,
+    lookup_period_closes,
     lookup_period_journals,
     lookup_posted_journal,
     publish_outbox_event,
@@ -4950,6 +4951,188 @@ class PostgresPostingTests(unittest.TestCase):
         )
         server.shutdown()
 
+    def test_http_lists_period_closes_without_sql(self) -> None:
+        """GET /period-closes lists durable hard-close receipts; POST remains the command."""
+        self._seed_additional_period("2026-09", date(2026, 9, 1), date(2026, 9, 30))
+        invoice = self._billing_validated_payload()
+        september = self._billing_validated_payload(
+            proposal_id="019d7b92-1aa0-7a7f-b61c-962c0f4bf699",
+            source_payload_hash="sha256:" + "c" * 64,
+            idempotency_key=(
+                f"{self.policy.tenant_reference}:invoice_draft:"
+                "019d7b92-1aa0-7a7f-b61c-962c0f4bf699:"
+                f"sha256:{'c' * 64}:v1"
+            ),
+            transaction_date="2026-09-15",
+            accounting_date="2026-09-15",
+            proposed_at="2026-09-15T00:00:00Z",
+        )
+        server = self._start_http_server()
+        snapshots_before = self._count_table("accounting_reporting.trial_balance_snapshot")
+
+        empty_status, empty_page = self._http_period_closes()
+        empty_library = lookup_period_closes(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+        )
+        self.assertEqual(empty_status, 200)
+        self.assertEqual(empty_page, empty_library)
+        self.assertEqual(empty_page["period_closes"], [])
+        self.assertIsNone(empty_page["next_cursor"])
+        self.assertEqual(empty_page["tenant_reference"], self.policy.tenant_reference)
+        self.assertEqual(
+            empty_page["legal_entity_reference"], self.policy.legal_entity_reference
+        )
+        self.assertNotIn("fiscal_period_reference", empty_page)
+        self.assertNotIn("period_status_code", empty_page)
+
+        post_status, _posted = self._http_json("POST", "/journal-proposals", invoice)
+        soft_body = self._period_close_payload(period_status_code="soft_closed")
+        soft_status, soft_receipt = self._http_json("POST", "/period-closes", soft_body)
+        soft_list_status, soft_list = self._http_period_closes()
+        self.assertEqual(post_status, 200)
+        self.assertEqual(soft_status, 200)
+        self.assertEqual(soft_receipt["period_status_code"], "soft_closed")
+        self.assertEqual(soft_receipt["snapshot_record_id"], "")
+        self.assertEqual(soft_list_status, 200)
+        self.assertEqual(soft_list["period_closes"], [])
+        self.assertEqual(
+            self._count_table("accounting_reporting.trial_balance_snapshot"), snapshots_before
+        )
+
+        hard_body = self._period_close_payload()
+        hard_status, hard_receipt = self._http_json("POST", "/period-closes", hard_body)
+        replay_status, replay_receipt = self._http_json("POST", "/period-closes", hard_body)
+        listed_status, listed = self._http_period_closes()
+        library = lookup_period_closes(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+        )
+        persist = PostgresPostingLedger(
+            DATABASE_URL, self.policy.tenant_reference
+        ).load_period_closes(self.policy.legal_entity_reference)
+        self.assertEqual(hard_status, 200)
+        self.assertEqual(replay_status, 200)
+        self.assertFalse(hard_receipt["replayed"])
+        self.assertTrue(replay_receipt["replayed"])
+        self.assertEqual(replay_receipt["snapshot_record_id"], hard_receipt["snapshot_record_id"])
+        self.assertEqual(listed_status, 200)
+        self.assertEqual(listed, library)
+        self.assertEqual(listed, persist)
+        self.assertEqual(len(listed["period_closes"]), 1)
+        self.assertEqual(listed["period_closes"][0], hard_receipt)
+        self.assertEqual(
+            self._count_table("accounting_reporting.trial_balance_snapshot"), snapshots_before + 1
+        )
+
+        september_status, _september_posted = self._http_json(
+            "POST", "/journal-proposals", september
+        )
+        september_close_status, september_receipt = self._http_json(
+            "POST",
+            "/period-closes",
+            self._period_close_payload(
+                fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-09"
+            ),
+        )
+        both_status, both = self._http_period_closes()
+        filtered_status, filtered = self._http_period_closes(
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-08"
+        )
+        hard_filter_status, hard_filter = self._http_period_closes(
+            period_status_code="hard_closed"
+        )
+        soft_filter_status, soft_filter = self._http_period_closes(
+            period_status_code="soft_closed"
+        )
+        first_page_status, first_page = self._http_period_closes(page_limit=1)
+        second_page_status, second_page = self._http_period_closes(
+            page_limit=1,
+            cursor=str(first_page["next_cursor"]),
+        )
+        by_period = {
+            str(item["period_code"]): item for item in both["period_closes"]
+        }
+
+        self.assertEqual(september_status, 200)
+        self.assertEqual(september_close_status, 200)
+        self.assertEqual(both_status, 200)
+        self.assertEqual(len(both["period_closes"]), 2)
+        self.assertEqual(by_period["2026-08"], hard_receipt)
+        self.assertEqual(by_period["2026-09"], september_receipt)
+        self.assertEqual(filtered_status, 200)
+        self.assertEqual(
+            filtered["fiscal_period_reference"],
+            "urn:cwl:accounting:fiscal_period:2026-08",
+        )
+        self.assertEqual(len(filtered["period_closes"]), 1)
+        self.assertEqual(filtered["period_closes"][0], hard_receipt)
+        self.assertEqual(hard_filter_status, 200)
+        self.assertEqual(hard_filter["period_status_code"], "hard_closed")
+        self.assertEqual(len(hard_filter["period_closes"]), 2)
+        self.assertEqual(soft_filter_status, 200)
+        self.assertEqual(soft_filter["period_status_code"], "soft_closed")
+        self.assertEqual(soft_filter["period_closes"], [])
+        self.assertEqual(first_page_status, 200)
+        self.assertEqual(second_page_status, 200)
+        self.assertEqual(len(first_page["period_closes"]), 1)
+        self.assertTrue(first_page["next_cursor"])
+        self.assertEqual(len(second_page["period_closes"]), 1)
+        self.assertIsNone(second_page["next_cursor"])
+        self.assertEqual(
+            [item["snapshot_record_id"] for item in first_page["period_closes"]]
+            + [item["snapshot_record_id"] for item in second_page["period_closes"]],
+            [item["snapshot_record_id"] for item in both["period_closes"]],
+        )
+
+        missing_entity = self._http_json("GET", "/period-closes", None)
+        missing_header = self._http_period_closes(tenant_header=None)
+        cross_status, _cross = self._http_period_closes(tenant_header="urn:cwl:tenant_other")
+        unknown_entity = self._http_period_closes(
+            legal_entity_reference="urn:cwl:legal_entity:missing"
+        )
+        unknown_period = self._http_period_closes(
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:1999-01"
+        )
+        bad_limit = self._http_period_closes(page_limit="abc")
+        high_limit = self._http_period_closes(page_limit=101)
+        bad_status = self._http_period_closes(period_status_code="open")
+        bad_cursor = self._http_period_closes(cursor="not-a-cursor")
+        empty_cursor = self._http_period_closes(cursor="|missing")
+        bad_time_cursor = self._http_period_closes(cursor="not-a-time|journal")
+        bad_id_cursor = self._http_period_closes(
+            cursor="2026-08-31T00:00:00Z|not-a-uuid"
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "legal_entity_reference"):
+            lookup_period_closes(DATABASE_URL, self.policy.tenant_reference, "")
+        with self.assertRaisesRegex(AccountingValidationError, "page_limit"):
+            lookup_period_closes(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                page_limit=0,
+            )
+
+        self.assertEqual(missing_entity[0], 400)
+        self.assertEqual(missing_header[0], 400)
+        self.assertEqual(cross_status, 403)
+        self.assertEqual(unknown_entity[0], 404)
+        self.assertEqual(unknown_period[0], 404)
+        self.assertEqual(bad_limit[0], 400)
+        self.assertEqual(high_limit[0], 400)
+        self.assertEqual(bad_status[0], 400)
+        self.assertEqual(bad_cursor[0], 400)
+        self.assertEqual(empty_cursor[0], 400)
+        self.assertEqual(bad_time_cursor[0], 400)
+        self.assertEqual(bad_id_cursor[0], 400)
+        self.assertEqual(
+            self._count_table("accounting_reporting.trial_balance_snapshot"),
+            snapshots_before + 2,
+        )
+        server.shutdown()
+
     def test_accept_and_http_guard_cross_tenant_and_operator_failures(self) -> None:
         """The tenant header is purpose-limited and cross-tenant posts write zero rows."""
         payload = self._billing_validated_payload()
@@ -6174,6 +6357,38 @@ class PostgresPostingTests(unittest.TestCase):
             "POST",
             f"/outbox-events/{outbox_event_id}/publish",
             {},
+            tenant_header=tenant_header,
+        )
+
+    def _http_period_closes(
+        self,
+        *,
+        legal_entity_reference: str | None = None,
+        fiscal_period_reference: str | None = None,
+        period_status_code: str | None = None,
+        page_limit: object | None = None,
+        cursor: str | None = None,
+        tenant_header: str | None = "",
+    ) -> tuple[int, dict[str, object]]:
+        query: dict[str, str] = {
+            "legal_entity_reference": (
+                self.policy.legal_entity_reference
+                if legal_entity_reference is None
+                else legal_entity_reference
+            )
+        }
+        if fiscal_period_reference is not None:
+            query["fiscal_period_reference"] = fiscal_period_reference
+        if period_status_code is not None:
+            query["period_status_code"] = period_status_code
+        if page_limit is not None:
+            query["page_limit"] = str(page_limit)
+        if cursor is not None:
+            query["cursor"] = cursor
+        return self._http_json(
+            "GET",
+            f"/period-closes?{urllib.parse.urlencode(query)}",
+            None,
             tenant_header=tenant_header,
         )
 

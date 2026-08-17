@@ -71,6 +71,7 @@ REQUIRED_FILES = (
     "docs/adr/0027-http-audit-event-history.md",
     "docs/adr/0028-http-financial-statement-year-to-date.md",
     "docs/adr/0029-http-journal-reversal-list.md",
+    "docs/adr/0030-http-period-close-list.md",
     "docs/doctoring/REFERENCES.md",
     "docs/doctoring/STANDARD_TRACEABILITY.md",
     "docs/superpowers/specs/2026-08-16-accounting-information-platform-design.md",

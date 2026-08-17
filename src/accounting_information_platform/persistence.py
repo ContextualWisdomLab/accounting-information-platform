@@ -342,6 +342,108 @@ class PostgresPostingLedger:
                 )
             return document
 
+    def load_period_closes(
+        self,
+        legal_entity_reference: str,
+        period_code: str = "",
+        period_status_code: str = "",
+        *,
+        page_limit: int = 50,
+        cursor_after: tuple[datetime, UUID] | None = None,
+    ) -> dict[str, object]:
+        """Return one page of durable hard-close receipts for a tenant legal entity."""
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            legal_entity_id = self._require_legal_entity(
+                connection, tenant_id, legal_entity_reference, "the period-close list"
+            )
+            parameters: list[object] = [tenant_id, legal_entity_id]
+            period_clause = ""
+            if period_code:
+                period_id, _status, _period_end = self._require_fiscal_period(
+                    connection, tenant_id, period_code, "the period-close list"
+                )
+                period_clause = "AND trial_balance_snapshot.fiscal_period_id = %s"
+                parameters.append(period_id)
+            status_clause = ""
+            if period_status_code:
+                status_clause = "AND fiscal_period.period_status_code = %s"
+                parameters.append(period_status_code)
+            cursor_clause = ""
+            if cursor_after is not None:
+                cursor_clause = (
+                    "AND (trial_balance_snapshot.snapshot_generated_at, "
+                    "trial_balance_snapshot.trial_balance_snapshot_id) "
+                    "> (%s, %s)"
+                )
+                parameters.extend(cursor_after)
+            parameters.append(page_limit + 1)
+            rows = connection.execute(
+                f"""
+                SELECT trial_balance_snapshot.trial_balance_snapshot_id,
+                       trial_balance_snapshot.snapshot_generated_at,
+                       trial_balance_snapshot.source_journal_count,
+                       trial_balance_snapshot.source_payload_hash,
+                       fiscal_period.period_code,
+                       fiscal_period.period_status_code,
+                       accounting_book.book_name,
+                       legal_entity_record.legal_entity_code
+                FROM accounting_reporting.trial_balance_snapshot
+                JOIN accounting_core.fiscal_period
+                  ON fiscal_period.tenant_account_id = trial_balance_snapshot.tenant_account_id
+                 AND fiscal_period.fiscal_period_id = trial_balance_snapshot.fiscal_period_id
+                JOIN accounting_core.accounting_book
+                  ON accounting_book.tenant_account_id = trial_balance_snapshot.tenant_account_id
+                 AND accounting_book.accounting_book_id = trial_balance_snapshot.accounting_book_id
+                JOIN accounting_core.legal_entity_record
+                  ON legal_entity_record.tenant_account_id = trial_balance_snapshot.tenant_account_id
+                 AND legal_entity_record.legal_entity_id = trial_balance_snapshot.legal_entity_id
+                WHERE trial_balance_snapshot.tenant_account_id = %s
+                  AND trial_balance_snapshot.legal_entity_id = %s
+                  {period_clause}
+                  {status_clause}
+                  {cursor_clause}
+                ORDER BY trial_balance_snapshot.snapshot_generated_at,
+                         trial_balance_snapshot.trial_balance_snapshot_id
+                LIMIT %s
+                """,
+                tuple(parameters),
+            ).fetchall()
+            has_more = len(rows) > page_limit
+            page_rows = rows[:page_limit]
+            period_closes = [
+                {
+                    "tenant_reference": self._tenant_reference,
+                    "legal_entity_reference": row[7],
+                    "accounting_book_reference": row[6],
+                    "period_code": row[4],
+                    "period_status_code": row[5],
+                    "snapshot_record_id": str(row[0]),
+                    "snapshot_generated_at": _format_timestamp(row[1]),
+                    "source_journal_count": int(row[2]),
+                    "source_payload_hash": row[3],
+                    "replayed": False,
+                }
+                for row in page_rows
+            ]
+            next_cursor = None
+            if has_more:
+                last = page_rows[-1]
+                next_cursor = f"{_format_timestamp(last[1])}|{last[0]}"
+            document: dict[str, object] = {
+                "tenant_reference": self._tenant_reference,
+                "legal_entity_reference": legal_entity_reference,
+                "period_closes": period_closes,
+                "next_cursor": next_cursor,
+            }
+            if period_code:
+                document["fiscal_period_reference"] = (
+                    f"urn:cwl:accounting:fiscal_period:{period_code}"
+                )
+            if period_status_code:
+                document["period_status_code"] = period_status_code
+            return document
+
     def load_unpublished_outbox_events(
         self,
         event_type_code: str,
