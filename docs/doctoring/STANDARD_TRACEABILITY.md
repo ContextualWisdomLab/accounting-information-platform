@@ -3,6 +3,7 @@
 | Authority or standard | Product decision | Initial evidence |
 |---|---|---|
 | IFRS 15 / ASC 606 | Invoice, payment, and payout do not automatically determine revenue recognition; policy remains versioned and approved | Accounting/billing boundary and policy manifest |
+| IAS 1 | Statement of financial position presents assets, liabilities, and equity; statement of profit or loss presents income and expenses; AIS stores that split as `account_class_code` | Chart-account class migration and HTTP financial-statement read |
 | IFRS 18 | Financial-statement presentation is a versioned projection separate from the journal core | Reporting boundary and roadmap |
 | ISO 20022-1:2026 | Bank and financial-message fields remain adapter contracts with explicit versioning and traceability | Future bank adapter boundary |
 | PostgreSQL 18.4 | Use current supported minor release, UUIDv7, exact numeric types, composite foreign keys, and row-level security | Initial migration |

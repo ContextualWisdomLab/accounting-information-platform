@@ -33,6 +33,7 @@ REQUIRED_FILES = (
     "schemas/accounting-posting-receipt.schema.json",
     "schemas/accounting-policy-manifest.schema.json",
     "database/migrations/0001_accounting_foundation.sql",
+    "database/migrations/0002_chart_account_class.sql",
     "docs/PRD.md",
     "docs/TRD.md",
     "docs/ARCHITECTURE.md",
@@ -61,6 +62,7 @@ REQUIRED_FILES = (
     "docs/adr/0018-http-fiscal-period-list.md",
     "docs/adr/0019-http-account-ledger-inquiry.md",
     "docs/adr/0020-http-chart-account-catalog-read.md",
+    "docs/adr/0021-http-financial-statement-read.md",
     "docs/doctoring/REFERENCES.md",
     "docs/doctoring/STANDARD_TRACEABILITY.md",
     "docs/superpowers/specs/2026-08-16-accounting-information-platform-design.md",
@@ -246,12 +248,15 @@ def validate_repository(root: Path) -> tuple[str, ...]:
         for schema_path in sorted(schemas_directory.glob("*.schema.json")):
             errors.extend(_validate_schema_file(schema_path, schema_ids))
 
-    migration_path = root / "database/migrations/0001_accounting_foundation.sql"
-    if migration_path.is_file():
-        sql_text = migration_path.read_text(encoding="utf-8")
-        errors.extend(validate_sql_object_names(sql_text))
-        if re.search(r"\bDELETE\s+FROM\b", sql_text, re.IGNORECASE):
-            errors.append("accounting migrations must not define destructive journal deletion")
+    migrations_directory = root / "database/migrations"
+    if migrations_directory.is_dir():
+        for migration_path in sorted(migrations_directory.glob("*.sql")):
+            sql_text = migration_path.read_text(encoding="utf-8")
+            errors.extend(validate_sql_object_names(sql_text))
+            if re.search(r"\bDELETE\s+FROM\b", sql_text, re.IGNORECASE):
+                errors.append(
+                    "accounting migrations must not define destructive journal deletion"
+                )
 
     requirements_path = root / "requirements-quality.txt"
     if requirements_path.is_file():

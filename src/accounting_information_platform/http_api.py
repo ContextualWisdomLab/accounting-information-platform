@@ -1,4 +1,4 @@
-"""Thin stdlib HTTP boundary for Billing proposals, pulls, receipts, close, open, TB, catalog, journals, and outbox."""
+"""Thin stdlib HTTP boundary for Billing proposals, pulls, receipts, close, open, TB, statements, catalog, journals, and outbox."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from .accept import (
     lookup_account_ledger,
     lookup_account_role_mappings,
     lookup_chart_accounts,
+    lookup_financial_statement,
     lookup_fiscal_period,
     lookup_fiscal_periods,
     lookup_outbox_events,
@@ -38,6 +39,7 @@ JOURNAL_REVERSAL_PATH = "/journal-reversals"
 PERIOD_CLOSE_PATH = "/period-closes"
 POSTING_RECEIPT_PATH = "/posting-receipts"
 TRIAL_BALANCE_PATH = "/trial-balances"
+FINANCIAL_STATEMENT_PATH = "/financial-statements"
 ACCOUNT_ROLE_MAPPING_PATH = "/account-role-mappings"
 CHART_ACCOUNT_PATH = "/chart-accounts"
 ACCOUNT_LEDGER_PATH = "/account-ledgers"
@@ -104,6 +106,9 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         if parsed.path == TRIAL_BALANCE_PATH:
             self._get_trial_balance(parsed.query)
             return
+        if parsed.path == FINANCIAL_STATEMENT_PATH:
+            self._get_financial_statement(parsed.query)
+            return
         if parsed.path == ACCOUNT_ROLE_MAPPING_PATH:
             self._get_account_role_mappings(parsed.query)
             return
@@ -132,8 +137,9 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         self._write_error(
             404,
             "unknown path. GET /posting-receipts?idempotency_key=, GET /trial-balances, "
-            "GET /account-role-mappings, GET /chart-accounts, GET /account-ledgers, GET /journals, "
-            "GET /fiscal-periods, or GET /outbox-events?event_type_code=, then retry.",
+            "GET /financial-statements, GET /account-role-mappings, GET /chart-accounts, "
+            "GET /account-ledgers, GET /journals, GET /fiscal-periods, or "
+            "GET /outbox-events?event_type_code=, then retry.",
         )
 
     def do_POST(self) -> None:
@@ -152,6 +158,13 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
                 405,
                 "POST is not supported on the account role mapping endpoint. "
                 "GET the catalog mappings, then retry.",
+            )
+            return
+        if parsed_path == FINANCIAL_STATEMENT_PATH:
+            self._write_error(
+                405,
+                "POST is not supported on the financial statement endpoint. "
+                "GET the income statement or balance sheet, then retry.",
             )
             return
         if parsed_path == CHART_ACCOUNT_PATH:
@@ -252,6 +265,46 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             )
         except AccountingValidationError as error:
             self._write_error(404, str(error))
+            return
+        self._write_json(200, document)
+
+    def _get_financial_statement(self, query: str) -> None:
+        tenant_header = self._bound_tenant_header("financial-statement read")
+        if tenant_header is None:
+            return
+        fields = parse_qs(query)
+        legal_entity_reference = _first_query(fields, "legal_entity_reference")
+        book_reference = _first_query(fields, "book_reference")
+        fiscal_period_reference = _first_query(fields, "fiscal_period_reference")
+        statement_type_code = _first_query(fields, "statement_type_code")
+        if (
+            not legal_entity_reference
+            or not book_reference
+            or not fiscal_period_reference
+            or not statement_type_code
+        ):
+            self._write_error(
+                400,
+                "legal_entity_reference, book_reference, fiscal_period_reference, "
+                "and statement_type_code are required. "
+                "Supply those financial-statement fields, then retry the financial-statement read.",
+            )
+            return
+        try:
+            document = lookup_financial_statement(
+                self.server.database_url,
+                tenant_header,
+                legal_entity_reference,
+                book_reference,
+                fiscal_period_reference,
+                statement_type_code,
+            )
+        except AccountingValidationError as error:
+            message = str(error)
+            if "statement_type_code" in message:
+                self._write_error(400, message)
+                return
+            self._write_error(404, message)
             return
         self._write_json(200, document)
 
@@ -720,7 +773,7 @@ def create_journal_proposal_server(
     host: str = "127.0.0.1",
     port: int = 0,
 ) -> JournalProposalServer:
-    """Create a stdlib HTTP server that posts, pulls, closes, opens periods, and reads TB, journals, and outbox."""
+    """Create a stdlib HTTP server that posts, pulls, closes, opens periods, and reads TB, statements, journals, and outbox."""
     if not database_url:
         raise AccountingValidationError(
             "ACCOUNTING_DATABASE_URL is empty. Set a PostgreSQL 18 URL and retry posting."

@@ -5,6 +5,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import tempfile
 import unittest
 import urllib.error
 import urllib.parse
@@ -36,6 +37,7 @@ from accounting_information_platform import (
     lookup_account_ledger,
     lookup_account_role_mappings,
     lookup_chart_accounts,
+    lookup_financial_statement,
     lookup_fiscal_period,
     lookup_fiscal_periods,
     lookup_outbox_events,
@@ -478,6 +480,15 @@ class PostgresPostingTests(unittest.TestCase):
             AccountingValidationError, "Restore database/migrations"
         ):
             apply_foundation_migration(DATABASE_URL, ROOT / "absent.sql")
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            only_foundation = Path(temporary_directory) / "0001_accounting_foundation.sql"
+            only_foundation.write_text(
+                MIGRATION_PATH.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(
+                AccountingValidationError, "0002_chart_account_class"
+            ):
+                apply_foundation_migration(DATABASE_URL, only_foundation)
         with self.assertRaisesRegex(AccountingValidationError, "restore a clean database"):
             apply_foundation_migration(DATABASE_URL, MIGRATION_PATH)
 
@@ -1174,7 +1185,7 @@ class PostgresPostingTests(unittest.TestCase):
         server.shutdown()
 
     def test_http_reads_chart_accounts_from_catalog(self) -> None:
-        """GET returns seeded chart_account rows; financial statements wait on account_class_code."""
+        """GET returns seeded chart_account rows including durable account_class_code."""
         server = self._start_http_server()
         journals_before = self._count_table("accounting_core.general_journal")
         empty_book = self._seed_book_without_chart_accounts()
@@ -1211,13 +1222,16 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(set(by_code), {"110100", "410100", "110200", "210100"})
         self.assertEqual(by_code["110100"]["account_name"], "Accounts receivable")
         self.assertEqual(by_code["110100"]["normal_balance_code"], "debit")
+        self.assertEqual(by_code["110100"]["account_class_code"], "asset")
         self.assertEqual(by_code["410100"]["account_name"], "Usage revenue")
         self.assertEqual(by_code["410100"]["normal_balance_code"], "credit")
+        self.assertEqual(by_code["410100"]["account_class_code"], "revenue")
         self.assertEqual(by_code["110200"]["account_name"], "Cash receipts")
         self.assertEqual(by_code["110200"]["normal_balance_code"], "debit")
+        self.assertEqual(by_code["110200"]["account_class_code"], "asset")
         self.assertEqual(by_code["210100"]["account_name"], "Tax payable")
         self.assertEqual(by_code["210100"]["normal_balance_code"], "credit")
-        self.assertTrue(all("account_class_code" not in item for item in document["chart_accounts"]))
+        self.assertEqual(by_code["210100"]["account_class_code"], "liability")
         self.assertEqual(empty_status, 200)
         self.assertEqual(empty_page["chart_accounts"], [])
         self.assertEqual(empty_page["book_reference"], empty_book)
@@ -1276,6 +1290,280 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(unknown_entity[0], 404)
         self.assertEqual(unknown_book[0], 404)
         self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before)
+        server.shutdown()
+
+    def test_http_reads_income_statement_and_balance_sheet(self) -> None:
+        """GET projects IAS 1 classes from the same trial-balance totals as GET /trial-balances."""
+        server = self._start_http_server()
+        journals_before = self._count_table("accounting_core.general_journal")
+
+        empty_income_status, empty_income = self._http_financial_statement("income_statement")
+        empty_sheet_status, empty_sheet = self._http_financial_statement("balance_sheet")
+        empty_library = lookup_financial_statement(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-08",
+            "income_statement",
+        )
+
+        taxed = self._billing_taxed_payload()
+        cash = self._billing_cash_payload()
+        taxed_credit = self._billing_taxed_credit_payload()
+        invoice_status, _invoice_receipt = self._http_json("POST", "/journal-proposals", taxed)
+        cash_status, _cash_receipt = self._http_json("POST", "/journal-proposals", cash)
+        credit_status, _credit_receipt = self._http_json(
+            "POST", "/journal-proposals", taxed_credit
+        )
+        live_tb_status, live_tb = self._http_trial_balance()
+        income_status, income = self._http_financial_statement("income_statement")
+        sheet_status, sheet = self._http_financial_statement("balance_sheet")
+        income_library = lookup_financial_statement(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-08",
+            "income_statement",
+        )
+        sheet_library = lookup_financial_statement(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-08",
+            "balance_sheet",
+        )
+        close_status, _close_receipt = self._http_json(
+            "POST", "/period-closes", self._period_close_payload()
+        )
+        closed_tb_status, closed_tb = self._http_trial_balance()
+        closed_income_status, closed_income = self._http_financial_statement(
+            "income_statement"
+        )
+        closed_sheet_status, closed_sheet = self._http_financial_statement("balance_sheet")
+
+        self.assertEqual(empty_income_status, 200)
+        self.assertEqual(empty_sheet_status, 200)
+        self.assertEqual(empty_income, empty_library)
+        self.assertEqual(empty_income["statement_lines"], [])
+        self.assertEqual(empty_sheet["statement_lines"], [])
+        self.assertEqual(empty_income["total_debit_amount"], "0")
+        self.assertEqual(empty_income["total_credit_amount"], "0")
+        self.assertEqual(empty_income["net_income_amount"], "0")
+        self.assertEqual(empty_sheet["total_debit_amount"], "0")
+        self.assertEqual(empty_sheet["total_credit_amount"], "0")
+        self.assertEqual(empty_sheet["net_income_amount"], "0")
+        self.assertEqual(invoice_status, 200)
+        self.assertEqual(cash_status, 200)
+        self.assertEqual(credit_status, 200)
+        self.assertEqual(live_tb_status, 200)
+        self.assertEqual(income_status, 200)
+        self.assertEqual(sheet_status, 200)
+        self.assertEqual(income, income_library)
+        self.assertEqual(sheet, sheet_library)
+        self.assertEqual(income["tenant_reference"], self.policy.tenant_reference)
+        self.assertEqual(income["legal_entity_reference"], self.policy.legal_entity_reference)
+        self.assertEqual(income["accounting_book_reference"], self.policy.accounting_book_reference)
+        self.assertEqual(income["book_reference"], self.policy.accounting_book_reference)
+        self.assertEqual(
+            income["fiscal_period_reference"], "urn:cwl:accounting:fiscal_period:2026-08"
+        )
+        self.assertEqual(income["statement_type_code"], "income_statement")
+        self.assertEqual(sheet["statement_type_code"], "balance_sheet")
+        income_by_code = {
+            str(item["chart_account_code"]): item for item in income["statement_lines"]
+        }
+        sheet_by_code = {
+            str(item["chart_account_code"]): item for item in sheet["statement_lines"]
+        }
+        self.assertEqual(set(income_by_code), {"410100"})
+        self.assertNotIn("110100", income_by_code)
+        self.assertNotIn("110200", income_by_code)
+        self.assertNotIn("210100", income_by_code)
+        self.assertEqual(income_by_code["410100"]["account_role_code"], "usage_revenue")
+        self.assertEqual(income_by_code["410100"]["account_class_code"], "revenue")
+        self.assertEqual(
+            Decimal(str(income_by_code["410100"]["debit_amount"])),
+            Decimal(str(self._trial_balance_line(live_tb, "410100")["debit_amount"])),
+        )
+        self.assertEqual(
+            Decimal(str(income_by_code["410100"]["credit_amount"])),
+            Decimal(str(self._trial_balance_line(live_tb, "410100")["credit_amount"])),
+        )
+        self.assertEqual(set(sheet_by_code), {"110100", "110200", "210100"})
+        self.assertNotIn("410100", sheet_by_code)
+        self.assertEqual(sheet_by_code["110100"]["account_role_code"], "accounts_receivable")
+        self.assertEqual(sheet_by_code["110100"]["account_class_code"], "asset")
+        self.assertEqual(sheet_by_code["110200"]["account_role_code"], "cash_receipt")
+        self.assertEqual(sheet_by_code["110200"]["account_class_code"], "asset")
+        self.assertEqual(sheet_by_code["210100"]["account_role_code"], "tax_payable")
+        self.assertEqual(sheet_by_code["210100"]["account_class_code"], "liability")
+        for account_code in ("110100", "110200", "210100"):
+            self.assertEqual(
+                Decimal(str(sheet_by_code[account_code]["debit_amount"])),
+                Decimal(str(self._trial_balance_line(live_tb, account_code)["debit_amount"])),
+            )
+            self.assertEqual(
+                Decimal(str(sheet_by_code[account_code]["credit_amount"])),
+                Decimal(str(self._trial_balance_line(live_tb, account_code)["credit_amount"])),
+            )
+        income_debit_total = sum(
+            Decimal(str(item["debit_amount"])) for item in income["statement_lines"]
+        )
+        income_credit_total = sum(
+            Decimal(str(item["credit_amount"])) for item in income["statement_lines"]
+        )
+        self.assertEqual(Decimal(str(income["total_debit_amount"])), income_debit_total)
+        self.assertEqual(Decimal(str(income["total_credit_amount"])), income_credit_total)
+        self.assertEqual(
+            Decimal(str(income["net_income_amount"])),
+            income_credit_total - income_debit_total,
+        )
+        sheet_debit_total = sum(
+            Decimal(str(item["debit_amount"])) for item in sheet["statement_lines"]
+        )
+        sheet_credit_total = sum(
+            Decimal(str(item["credit_amount"])) for item in sheet["statement_lines"]
+        )
+        self.assertEqual(Decimal(str(sheet["total_debit_amount"])), sheet_debit_total)
+        self.assertEqual(Decimal(str(sheet["total_credit_amount"])), sheet_credit_total)
+        self.assertEqual(sheet["net_income_amount"], income["net_income_amount"])
+        asset_net = sum(
+            Decimal(str(item["debit_amount"])) - Decimal(str(item["credit_amount"]))
+            for item in sheet["statement_lines"]
+            if item["account_class_code"] == "asset"
+        )
+        liability_net = sum(
+            Decimal(str(item["credit_amount"])) - Decimal(str(item["debit_amount"]))
+            for item in sheet["statement_lines"]
+            if item["account_class_code"] == "liability"
+        )
+        equity_net = sum(
+            Decimal(str(item["credit_amount"])) - Decimal(str(item["debit_amount"]))
+            for item in sheet["statement_lines"]
+            if item["account_class_code"] == "equity"
+        )
+        self.assertEqual(
+            asset_net,
+            liability_net + equity_net + Decimal(str(sheet["net_income_amount"])),
+        )
+        self.assertEqual(close_status, 200)
+        self.assertEqual(closed_tb_status, 200)
+        self.assertEqual(closed_income_status, 200)
+        self.assertEqual(closed_sheet_status, 200)
+        self.assertEqual(closed_tb["balance_source_code"], "snapshot")
+        self.assertEqual(
+            closed_income["statement_lines"], income["statement_lines"]
+        )
+        self.assertEqual(closed_sheet["statement_lines"], sheet["statement_lines"])
+        self.assertEqual(closed_income["net_income_amount"], income["net_income_amount"])
+        self.assertEqual(closed_sheet["net_income_amount"], sheet["net_income_amount"])
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(closed_tb, "410100")["debit_amount"])),
+            Decimal(str(income_by_code["410100"]["debit_amount"])),
+        )
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(closed_tb, "410100")["credit_amount"])),
+            Decimal(str(income_by_code["410100"]["credit_amount"])),
+        )
+
+        post_status, _post_body = self._http_json("POST", "/financial-statements", {})
+        missing_header = self._http_financial_statement(
+            "income_statement", tenant_header=None
+        )
+        cross_status, _cross = self._http_financial_statement(
+            "income_statement", tenant_header="urn:cwl:tenant_other"
+        )
+        missing_query = self._http_json("GET", "/financial-statements", None)
+        missing_book_query = self._http_json(
+            "GET",
+            "/financial-statements?"
+            + urllib.parse.urlencode(
+                {
+                    "legal_entity_reference": self.policy.legal_entity_reference,
+                    "fiscal_period_reference": "urn:cwl:accounting:fiscal_period:2026-08",
+                    "statement_type_code": "income_statement",
+                }
+            ),
+            None,
+        )
+        missing_type = self._http_json(
+            "GET",
+            "/financial-statements?"
+            + urllib.parse.urlencode(
+                {
+                    "legal_entity_reference": self.policy.legal_entity_reference,
+                    "book_reference": self.policy.accounting_book_reference,
+                    "fiscal_period_reference": "urn:cwl:accounting:fiscal_period:2026-08",
+                }
+            ),
+            None,
+        )
+        bad_type = self._http_financial_statement("cash_flow")
+        unknown_period = self._http_financial_statement(
+            "income_statement",
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:1999-01",
+        )
+        unknown_entity = self._http_financial_statement(
+            "income_statement",
+            legal_entity_reference="urn:cwl:legal_entity:missing",
+        )
+        missing_book = self._http_financial_statement(
+            "income_statement",
+            book_reference="urn:cwl:accounting_book:missing",
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "statement_type_code"):
+            lookup_financial_statement(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "urn:cwl:accounting:fiscal_period:2026-08",
+                "cash_flow",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "fiscal_period_reference"):
+            lookup_financial_statement(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "",
+                "income_statement",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "statement_type_code"):
+            PostgresPostingLedger(
+                DATABASE_URL, self.policy.tenant_reference
+            ).load_financial_statement(
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "2026-08",
+                "cash_flow",
+            )
+        self._delete_role_mapping("usage_revenue")
+        with self.assertRaisesRegex(AccountingValidationError, "account_role_mapping"):
+            lookup_financial_statement(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "urn:cwl:accounting:fiscal_period:2026-08",
+                "income_statement",
+            )
+        self._seed_role_mapping("usage_revenue", "410100")
+
+        self.assertEqual(post_status, 405)
+        self.assertEqual(missing_header[0], 400)
+        self.assertEqual(cross_status, 403)
+        self.assertEqual(missing_query[0], 400)
+        self.assertEqual(missing_book_query[0], 400)
+        self.assertEqual(missing_type[0], 400)
+        self.assertEqual(bad_type[0], 400)
+        self.assertEqual(unknown_period[0], 404)
+        self.assertEqual(unknown_entity[0], 404)
+        self.assertEqual(missing_book[0], 404)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before + 3)
         server.shutdown()
 
     def test_http_reads_posted_journal_lines(self) -> None:
@@ -3552,19 +3840,25 @@ class PostgresPostingTests(unittest.TestCase):
                     VALID_FROM,
                 ),
             ).fetchone()[0]
-            for account_code, account_name, normal_balance_code, account_role_code in (
-                ("110100", "Accounts receivable", "debit", "accounts_receivable"),
-                ("410100", "Usage revenue", "credit", "usage_revenue"),
-                ("110200", "Cash receipts", "debit", "cash_receipt"),
-                ("210100", "Tax payable", "credit", "tax_payable"),
+            for (
+                account_code,
+                account_name,
+                normal_balance_code,
+                account_class_code,
+                account_role_code,
+            ) in (
+                ("110100", "Accounts receivable", "debit", "asset", "accounts_receivable"),
+                ("410100", "Usage revenue", "credit", "revenue", "usage_revenue"),
+                ("110200", "Cash receipts", "debit", "asset", "cash_receipt"),
+                ("210100", "Tax payable", "credit", "liability", "tax_payable"),
             ):
                 chart_account_id = connection.execute(
                     """
                     INSERT INTO accounting_core.chart_account (
                         tenant_account_id, accounting_book_id, chart_account_code,
-                        account_name, normal_balance_code, valid_from
+                        account_name, normal_balance_code, account_class_code, valid_from
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                     RETURNING chart_account_id
                     """,
                     (
@@ -3573,6 +3867,7 @@ class PostgresPostingTests(unittest.TestCase):
                         account_code,
                         account_name,
                         normal_balance_code,
+                        account_class_code,
                         VALID_FROM,
                     ),
                 ).fetchone()[0]
@@ -4486,6 +4781,42 @@ class PostgresPostingTests(unittest.TestCase):
         return self._http_json(
             "GET",
             f"/account-role-mappings?{query}",
+            None,
+            tenant_header=tenant_header,
+        )
+
+    def _http_financial_statement(
+        self,
+        statement_type_code: str,
+        *,
+        legal_entity_reference: str | None = None,
+        book_reference: str | None = None,
+        fiscal_period_reference: str | None = None,
+        tenant_header: str | None = "",
+    ) -> tuple[int, dict[str, object]]:
+        query = urllib.parse.urlencode(
+            {
+                "legal_entity_reference": (
+                    self.policy.legal_entity_reference
+                    if legal_entity_reference is None
+                    else legal_entity_reference
+                ),
+                "book_reference": (
+                    self.policy.accounting_book_reference
+                    if book_reference is None
+                    else book_reference
+                ),
+                "fiscal_period_reference": (
+                    "urn:cwl:accounting:fiscal_period:2026-08"
+                    if fiscal_period_reference is None
+                    else fiscal_period_reference
+                ),
+                "statement_type_code": statement_type_code,
+            }
+        )
+        return self._http_json(
+            "GET",
+            f"/financial-statements?{query}",
             None,
             tenant_header=tenant_header,
         )

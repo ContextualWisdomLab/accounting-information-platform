@@ -371,6 +371,34 @@ def lookup_trial_balance(
     )
 
 
+def lookup_financial_statement(
+    database_url: str,
+    tenant_reference: str,
+    legal_entity_reference: str,
+    book_reference: str,
+    fiscal_period_reference: str,
+    statement_type_code: str,
+) -> dict[str, object]:
+    """Return the income statement or balance sheet for one book and fiscal period."""
+    if not legal_entity_reference or not book_reference or not fiscal_period_reference:
+        raise AccountingValidationError(
+            "legal_entity_reference, book_reference, and fiscal_period_reference are required. "
+            "Supply those financial-statement fields, then retry the financial-statement read."
+        )
+    if statement_type_code not in {"income_statement", "balance_sheet"}:
+        raise AccountingValidationError(
+            "statement_type_code must be income_statement or balance_sheet. "
+            "Supply a known statement type, then retry the financial-statement read."
+        )
+    ledger = PostgresPostingLedger(database_url, tenant_reference)
+    return ledger.load_financial_statement(
+        legal_entity_reference,
+        book_reference,
+        _period_code_from_reference(fiscal_period_reference),
+        statement_type_code,
+    )
+
+
 def _parse_period_date(value: str, field_name: str) -> date:
     try:
         return date.fromisoformat(value)

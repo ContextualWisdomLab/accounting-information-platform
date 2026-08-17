@@ -30,7 +30,7 @@ from .core import (
 
 
 class PostgresPostingLedger:
-    """Authoritative posting, catalog policy resolution, close, and trial balance on PostgreSQL 18."""
+    """Authoritative posting, catalog policy resolution, close, trial balance, and statements on PostgreSQL 18."""
 
     def __init__(self, database_url: str, tenant_reference: str) -> None:
         """Bind one tenant to a PostgreSQL 18 database URL."""
@@ -1176,7 +1176,8 @@ class PostgresPostingLedger:
                 """
                 SELECT chart_account.chart_account_code,
                        chart_account.account_name,
-                       chart_account.normal_balance_code
+                       chart_account.normal_balance_code,
+                       chart_account.account_class_code
                 FROM accounting_core.chart_account
                 WHERE chart_account.tenant_account_id = %s
                   AND chart_account.accounting_book_id = %s
@@ -1195,8 +1196,14 @@ class PostgresPostingLedger:
                         "chart_account_code": account_code,
                         "account_name": account_name,
                         "normal_balance_code": normal_balance_code,
+                        "account_class_code": account_class_code,
                     }
-                    for account_code, account_name, normal_balance_code in rows
+                    for (
+                        account_code,
+                        account_name,
+                        normal_balance_code,
+                        account_class_code,
+                    ) in rows
                 ],
             }
 
@@ -1318,6 +1325,113 @@ class PostgresPostingLedger:
         if snapshot_record_id is not None:
             document["snapshot_record_id"] = snapshot_record_id
         return document
+
+    def load_financial_statement(
+        self,
+        legal_entity_reference: str,
+        accounting_book_reference: str,
+        period_code: str,
+        statement_type_code: str,
+    ) -> dict[str, object]:
+        """Project income-statement or balance-sheet lines from the period trial balance."""
+        if statement_type_code == "income_statement":
+            allowed_classes = frozenset({"revenue", "expense"})
+        elif statement_type_code == "balance_sheet":
+            allowed_classes = frozenset({"asset", "liability", "equity"})
+        else:
+            raise AccountingValidationError(
+                "statement_type_code must be income_statement or balance_sheet. "
+                "Supply a known statement type, then retry the financial-statement read."
+            )
+        trial_balance = self.load_period_trial_balance(
+            legal_entity_reference=legal_entity_reference,
+            accounting_book_reference=accounting_book_reference,
+            period_code=period_code,
+        )
+        account_facts = self._load_statement_account_facts(
+            legal_entity_reference, accounting_book_reference
+        )
+        statement_lines: list[dict[str, str]] = []
+        total_debit_amount = Decimal("0")
+        total_credit_amount = Decimal("0")
+        net_income_amount = Decimal("0")
+        for raw_line in trial_balance["lines"]:
+            account_code = str(raw_line["chart_account_code"])
+            account_fact = account_facts.get(account_code)
+            if account_fact is None:
+                raise AccountingValidationError(
+                    f"account_role_mapping is missing for chart account {account_code}. "
+                    "Create the account_role_mapping row, then retry the financial-statement read."
+                )
+            account_role_code, account_class_code = account_fact
+            debit_amount = Decimal(str(raw_line["debit_amount"]))
+            credit_amount = Decimal(str(raw_line["credit_amount"]))
+            if account_class_code in {"revenue", "expense"}:
+                net_income_amount += credit_amount - debit_amount
+            if account_class_code not in allowed_classes:
+                continue
+            statement_lines.append(
+                {
+                    "chart_account_code": account_code,
+                    "account_role_code": account_role_code,
+                    "account_class_code": account_class_code,
+                    "debit_amount": _exact_amount_text(debit_amount),
+                    "credit_amount": _exact_amount_text(credit_amount),
+                }
+            )
+            total_debit_amount += debit_amount
+            total_credit_amount += credit_amount
+        return {
+            "tenant_reference": self._tenant_reference,
+            "legal_entity_reference": legal_entity_reference,
+            "accounting_book_reference": accounting_book_reference,
+            "book_reference": accounting_book_reference,
+            "fiscal_period_reference": str(trial_balance["fiscal_period_reference"]),
+            "statement_type_code": statement_type_code,
+            "statement_lines": statement_lines,
+            "total_debit_amount": _exact_amount_text(total_debit_amount),
+            "total_credit_amount": _exact_amount_text(total_credit_amount),
+            "net_income_amount": _exact_amount_text(net_income_amount),
+        }
+
+    def _load_statement_account_facts(
+        self, legal_entity_reference: str, accounting_book_reference: str
+    ) -> dict[str, tuple[str, str]]:
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            legal_entity_id = self._require_legal_entity(
+                connection,
+                tenant_id,
+                legal_entity_reference,
+                next_action="the financial-statement read",
+            )
+            book_id = self._require_book_for_close(
+                connection,
+                tenant_id,
+                legal_entity_id,
+                accounting_book_reference,
+                next_action="the financial-statement read",
+            )[0]
+            rows = connection.execute(
+                """
+                SELECT chart_account.chart_account_code,
+                       account_role_mapping.account_role_code,
+                       chart_account.account_class_code
+                FROM accounting_core.chart_account
+                JOIN accounting_core.account_role_mapping
+                  ON account_role_mapping.tenant_account_id = chart_account.tenant_account_id
+                 AND account_role_mapping.chart_account_id = chart_account.chart_account_id
+                 AND account_role_mapping.valid_to IS NULL
+                WHERE chart_account.tenant_account_id = %s
+                  AND chart_account.accounting_book_id = %s
+                  AND chart_account.valid_to IS NULL
+                """,
+                (tenant_id, book_id),
+            ).fetchall()
+        return {
+            str(account_code): (str(account_role_code), str(account_class_code))
+            for account_code, account_role_code, account_class_code in rows
+        }
 
     @contextmanager
     def _session(self) -> Iterator[object]:
@@ -2483,11 +2597,17 @@ class _ReversalProposal:
 
 
 def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
-    """Apply the checked-in PostgreSQL 18 foundation migration to *database_url*."""
+    """Apply the checked-in PostgreSQL 18 foundation migrations to *database_url*."""
     if not migration_path.is_file():
         raise AccountingValidationError(
             f"Foundation migration is missing at {migration_path}. "
             "Restore database/migrations/0001_accounting_foundation.sql, then retry."
+        )
+    class_migration_path = migration_path.parent / "0002_chart_account_class.sql"
+    if not class_migration_path.is_file():
+        raise AccountingValidationError(
+            f"Chart-account class migration is missing at {class_migration_path}. "
+            "Restore database/migrations/0002_chart_account_class.sql, then retry."
         )
     psycopg = _import_psycopg()
     try:
@@ -2495,6 +2615,7 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             database_url, autocommit=True, cursor_factory=psycopg.ClientCursor
         ) as connection:
             connection.execute(migration_path.read_text(encoding="utf-8"))
+            connection.execute(class_migration_path.read_text(encoding="utf-8"))
     except Exception as error:
         raise AccountingValidationError(
             "Foundation migration failed. Inspect the PostgreSQL error, restore a clean "
