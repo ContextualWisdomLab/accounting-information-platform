@@ -11,6 +11,7 @@
 
 ### Added
 
+- Billing #17 `credit_adjustment` proposals reuse the published `accounting_journal_proposal` path (debit `usage_revenue` / credit `accounts_receivable`) with idempotency key `{tenant}:credit_adjustment:{credit_adjustment_id}:{source_payload_hash}:v{contract_version}`; no new account role or AIS mapping.
 - `accept_journal_reversal` and `POST /journal-reversals` append an equal-and-opposite reversing journal through existing `PostgresPostingLedger.reverse` and return the reversing `accounting_posting_receipt`; the original receipt lookup is unchanged.
 - `pull_validated_journal_proposals`, `pull_journal_proposal`, `accept_pulled_proposals`, `accept_billing_proposal_pull`, and `POST /billing-proposal-pulls` pull Billing #15 `validated` journal-proposal pages (`journal_proposals` + `next_cursor`) and post them without flipping Billing `proposal_status`.
 - `accept_period_close`, `lookup_trial_balance`, `POST /period-closes`, and `GET /trial-balances` close a fiscal period and read snapshot or live trial-balance totals over the same purpose-limited HTTP surface; `GET /healthz` is an ops probe.

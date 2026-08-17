@@ -804,6 +804,87 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(self._count_table("accounting_integration.posting_receipt"), receipts_before)
         server.shutdown()
 
+    def test_http_posts_and_pulls_billing_credit_adjustment(self) -> None:
+        """Billing #17 credit_adjustment uses the published proposal path and pinned key."""
+        credit = self._billing_credit_payload()
+        draft = self._billing_credit_payload(
+            proposal_id=str(uuid.uuid4()),
+            proposal_status="draft",
+            idempotency_key=(
+                f"{self.policy.tenant_reference}:credit_adjustment:draft:sha256:{'f' * 64}:v1"
+            ),
+            source_payload_hash="sha256:" + "f" * 64,
+            proposed_at="2026-08-30T00:00:00Z",
+        )
+        exported = self._billing_credit_payload(
+            proposal_id=str(uuid.uuid4()),
+            proposal_status="exported",
+            idempotency_key=(
+                f"{self.policy.tenant_reference}:credit_adjustment:exported:sha256:{'e' * 64}:v1"
+            ),
+            source_payload_hash="sha256:" + "e" * 64,
+            proposed_at="2026-08-30T12:00:00Z",
+        )
+        rejected = self._billing_credit_payload(
+            proposal_id=str(uuid.uuid4()),
+            proposal_status="rejected",
+            idempotency_key=(
+                f"{self.policy.tenant_reference}:credit_adjustment:rejected:sha256:{'d' * 64}:v1"
+            ),
+            source_payload_hash="sha256:" + "d" * 64,
+            proposed_at="2026-08-30T18:00:00Z",
+        )
+        billing_url = self._start_fake_billing([draft, exported, rejected, credit])
+        server = self._start_http_server()
+
+        self.assertEqual(
+            credit["idempotency_key"],
+            (
+                f"{self.policy.tenant_reference}:credit_adjustment:"
+                f"11111111-1111-1111-1111-111111111111:{credit['source_payload_hash']}:v1"
+            ),
+        )
+        self.assertEqual(credit["lines"][0]["account_role_code"], "usage_revenue")
+        self.assertEqual(credit["lines"][1]["account_role_code"], "accounts_receivable")
+
+        pull_status, pull_body = self._http_json(
+            "POST",
+            "/billing-proposal-pulls",
+            {"tenant_reference": self.policy.tenant_reference, "billing_base_url": billing_url},
+        )
+        post_status, post_receipt = self._http_json("POST", "/journal-proposals", credit)
+        lookup_status, lookup = self._http_lookup(str(credit["idempotency_key"]))
+        replayed = accept_pulled_proposals(
+            billing_url, DATABASE_URL, self.policy.tenant_reference
+        )
+
+        self.assertEqual(pull_status, 200)
+        self.assertEqual(post_status, 200)
+        self.assertEqual(lookup_status, 200)
+        self.assertEqual(len(pull_body["posting_receipts"]), 1)
+        self._assert_published_receipt(post_receipt, credit)
+        self.assertEqual(post_receipt, pull_body["posting_receipts"][0])
+        self.assertEqual(post_receipt, lookup)
+        self.assertEqual(replayed, (post_receipt,))
+        self.assertEqual(self._count_table("accounting_core.general_journal"), 1)
+        self.assertEqual(self._posted_chart_accounts(), {"110100", "410100"})
+
+        journals_before = self._count_table("accounting_core.general_journal")
+        cross_post = self._http_json(
+            "POST",
+            "/journal-proposals",
+            credit,
+            tenant_header="urn:cwl:tenant_other",
+        )
+        cross_lookup = self._http_lookup(
+            str(credit["idempotency_key"]),
+            tenant_header="urn:cwl:tenant_other",
+        )
+        self.assertEqual(cross_post[0], 403)
+        self.assertEqual(cross_lookup[0], 403)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before)
+        server.shutdown()
+
     def test_http_closes_period_and_reads_trial_balance(self) -> None:
         """HTTP closes a posted period, replays the close, and reads snapshot or live TB."""
         payload = self._billing_validated_payload()
@@ -2095,6 +2176,46 @@ class PostgresPostingTests(unittest.TestCase):
                     "account_role_code": "accounts_receivable",
                     "debit_amount": "0",
                     "credit_amount": "18000",
+                },
+            ],
+        }
+        values.update(overrides)
+        return values
+
+    def _billing_credit_payload(self, **overrides: object) -> dict[str, object]:
+        source_payload_hash = "sha256:" + "b" * 64
+        credit_adjustment_id = "11111111-1111-1111-1111-111111111111"
+        values: dict[str, object] = {
+            "proposal_id": credit_adjustment_id,
+            "proposal_contract_version": 1,
+            "idempotency_key": (
+                f"{self.policy.tenant_reference}:credit_adjustment:{credit_adjustment_id}"
+                f":{source_payload_hash}:v1"
+            ),
+            "tenant_reference": self.policy.tenant_reference,
+            "legal_entity_reference": self.policy.legal_entity_reference,
+            "intended_book_role_code": "primary_statutory",
+            "transaction_currency": "KRW",
+            "transaction_date": "2026-08-31",
+            "accounting_date": "2026-08-31",
+            "source_payload_hash": source_payload_hash,
+            "proposed_at": "2026-08-31T00:00:00Z",
+            "proposal_status": "validated",
+            "source_event_references": (
+                f"{self.policy.tenant_reference}:credit_adjustment:{credit_adjustment_id}",
+            ),
+            "lines": [
+                {
+                    "line_number": 1,
+                    "account_role_code": "usage_revenue",
+                    "debit_amount": "4000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "0",
+                    "credit_amount": "4000",
                 },
             ],
         }
