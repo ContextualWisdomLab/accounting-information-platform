@@ -151,6 +151,107 @@ class PostgresPostingLedger:
                 ],
             }
 
+    def load_period_journals(
+        self,
+        legal_entity_reference: str,
+        book_reference: str,
+        period_code: str,
+        *,
+        page_limit: int = 50,
+        cursor_after: tuple[date, str] | None = None,
+    ) -> dict[str, object]:
+        """Return one page of existing journals for a tenant entity, book, and period."""
+        if not legal_entity_reference or not book_reference or not period_code:
+            raise AccountingValidationError(
+                "legal_entity_reference, book_reference, and fiscal_period_reference are required. "
+                "Supply those journal-list fields, then retry the journal list."
+            )
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            legal_entity_id = self._require_legal_entity(
+                connection, tenant_id, legal_entity_reference, "the journal list"
+            )
+            book_id, _currency = self._require_book_for_close(
+                connection,
+                tenant_id,
+                legal_entity_id,
+                book_reference,
+                "the journal list",
+            )
+            period_id, _status, _period_end = self._require_fiscal_period(
+                connection, tenant_id, period_code, "the journal list"
+            )
+            parameters: list[object] = [tenant_id, legal_entity_id, book_id, period_id]
+            cursor_clause = ""
+            if cursor_after is not None:
+                cursor_clause = (
+                    "AND (general_journal.accounting_date, general_journal.journal_reference) "
+                    "> (%s, %s)"
+                )
+                parameters.extend(cursor_after)
+            parameters.append(page_limit + 1)
+            rows = connection.execute(
+                f"""
+                SELECT general_journal.journal_reference,
+                       journal_proposal_record.idempotency_key,
+                       general_journal.journal_status_code,
+                       general_journal.accounting_date,
+                       (
+                           SELECT COUNT(*)
+                           FROM accounting_core.journal_entry_line
+                           WHERE tenant_account_id = general_journal.tenant_account_id
+                             AND general_journal_id = general_journal.general_journal_id
+                       ),
+                       original_journal.journal_reference
+                FROM accounting_core.general_journal
+                JOIN accounting_integration.journal_proposal_record
+                  ON journal_proposal_record.tenant_account_id = general_journal.tenant_account_id
+                 AND journal_proposal_record.proposal_record_id
+                   = general_journal.source_proposal_record_id
+                LEFT JOIN accounting_core.journal_reversal
+                  ON journal_reversal.tenant_account_id = general_journal.tenant_account_id
+                 AND journal_reversal.reversal_journal_id = general_journal.general_journal_id
+                LEFT JOIN accounting_core.general_journal AS original_journal
+                  ON original_journal.tenant_account_id = journal_reversal.tenant_account_id
+                 AND original_journal.general_journal_id = journal_reversal.original_journal_id
+                WHERE general_journal.tenant_account_id = %s
+                  AND general_journal.legal_entity_id = %s
+                  AND general_journal.accounting_book_id = %s
+                  AND general_journal.fiscal_period_id = %s
+                  {cursor_clause}
+                ORDER BY general_journal.accounting_date, general_journal.journal_reference
+                LIMIT %s
+                """,
+                tuple(parameters),
+            ).fetchall()
+            has_more = len(rows) > page_limit
+            page_rows = rows[:page_limit]
+            journals = [
+                {
+                    "journal_reference": row[0],
+                    "idempotency_key": row[1],
+                    "journal_status_code": row[2],
+                    "accounting_date": row[3].isoformat(),
+                    "line_count": int(row[4]),
+                    "reversal_of_journal_reference": row[5],
+                }
+                for row in page_rows
+            ]
+            next_cursor = None
+            if has_more:
+                last = page_rows[-1]
+                next_cursor = f"{last[3].isoformat()}|{last[0]}"
+            return {
+                "tenant_reference": self._tenant_reference,
+                "legal_entity_reference": legal_entity_reference,
+                "accounting_book_reference": book_reference,
+                "book_reference": book_reference,
+                "fiscal_period_reference": f"urn:cwl:accounting:fiscal_period:{period_code}",
+                "period_code": period_code,
+                "journals": journals,
+                "next_cursor": next_cursor,
+            }
+
     def _persist_proposal(
         self, proposal: JournalProposal, policy: AccountingPolicy | None
     ) -> PostingReceipt:

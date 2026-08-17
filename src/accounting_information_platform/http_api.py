@@ -15,6 +15,7 @@ from .accept import (
     accept_period_open,
     lookup_account_role_mappings,
     lookup_fiscal_period,
+    lookup_period_journals,
     lookup_posted_journal,
     lookup_published_receipt,
     lookup_trial_balance,
@@ -57,7 +58,7 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
     server: JournalProposalServer
 
     def do_GET(self) -> None:
-        """Route healthz, receipt, trial-balance, catalog, and journal-inquiry reads, and GET 405s."""
+        """Route healthz, receipt, trial-balance, catalog, journal inquiry, period journal list, and GET 405s."""
         parsed = urlparse(self.path)
         if parsed.path == HEALTHZ_PATH:
             self._write_json(200, {"status": "ok"})
@@ -112,7 +113,7 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             self._write_error(
                 405,
                 "POST is not supported on the journal inquiry endpoint. "
-                "GET the posted journal, then retry.",
+                "GET the posted journal or the period journal list, then retry.",
             )
             return
         if parsed_path == ACCOUNT_ROLE_MAPPING_PATH:
@@ -233,24 +234,70 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         fields = parse_qs(query)
         idempotency_key = _first_query(fields, "idempotency_key")
         journal_reference = _first_query(fields, "journal_reference")
-        if not idempotency_key and not journal_reference:
-            self._write_error(
-                400,
-                "idempotency_key or journal_reference is required. "
-                "Supply the Billing key or the posted journal reference, then retry the journal read.",
-            )
+        if idempotency_key or journal_reference:
+            try:
+                document = lookup_posted_journal(
+                    self.server.database_url,
+                    tenant_header,
+                    idempotency_key=idempotency_key,
+                    journal_reference=journal_reference,
+                )
+            except AccountingValidationError as error:
+                self._write_error(404, str(error))
+                return
+            self._write_json(200, document)
             return
-        try:
-            document = lookup_posted_journal(
-                self.server.database_url,
-                tenant_header,
-                idempotency_key=idempotency_key,
-                journal_reference=journal_reference,
-            )
-        except AccountingValidationError as error:
-            self._write_error(404, str(error))
+        legal_entity_reference = _first_query(fields, "legal_entity_reference")
+        book_reference = _first_query(fields, "book_reference")
+        if not book_reference:
+            book_reference = _first_query(fields, "accounting_book_reference")
+        fiscal_period_reference = _first_query(fields, "fiscal_period_reference")
+        if legal_entity_reference or book_reference or fiscal_period_reference:
+            if not legal_entity_reference or not book_reference or not fiscal_period_reference:
+                self._write_error(
+                    400,
+                    "legal_entity_reference, book_reference, and fiscal_period_reference are required. "
+                    "Supply those journal-list fields, then retry the journal list.",
+                )
+                return
+            raw_limit = _first_query(fields, "page_limit")
+            page_limit: int | None = None
+            if raw_limit:
+                try:
+                    page_limit = int(raw_limit)
+                except ValueError:
+                    self._write_error(
+                        400,
+                        "page_limit must be an integer. "
+                        "Supply a journal-list page_limit, then retry the journal list.",
+                    )
+                    return
+            try:
+                document = lookup_period_journals(
+                    self.server.database_url,
+                    tenant_header,
+                    legal_entity_reference,
+                    book_reference,
+                    fiscal_period_reference,
+                    page_limit=page_limit,
+                    cursor=_first_query(fields, "cursor"),
+                )
+            except AccountingValidationError as error:
+                message = str(error)
+                if "page_limit" in message or "cursor" in message:
+                    self._write_error(400, message)
+                    return
+                self._write_error(404, message)
+                return
+            self._write_json(200, document)
             return
-        self._write_json(200, document)
+        self._write_error(
+            400,
+            "idempotency_key, journal_reference, or a period list "
+            "(legal_entity_reference, book_reference, fiscal_period_reference) is required. "
+            "Supply the Billing key, the posted journal reference, or those list fields, "
+            "then retry the journal read.",
+        )
 
     def _get_fiscal_period(self, query: str) -> None:
         tenant_header = self._bound_tenant_header("period read")

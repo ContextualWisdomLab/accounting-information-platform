@@ -35,6 +35,7 @@ from accounting_information_platform import (
     ingest_journal_proposal,
     lookup_account_role_mappings,
     lookup_fiscal_period,
+    lookup_period_journals,
     lookup_posted_journal,
     lookup_published_receipt,
     lookup_trial_balance,
@@ -1291,6 +1292,241 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(unknown_key[0], 404)
         self.assertEqual(unknown_reference[0], 404)
         self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before + 1)
+        server.shutdown()
+
+    def test_http_lists_period_journals_from_existing_rows(self) -> None:
+        """GET lists posted and reversing journals for one period without inventing rows."""
+        invoice = self._billing_validated_payload()
+        cash = self._billing_cash_payload()
+        taxed_credit = self._billing_taxed_credit_payload()
+        september = self._september_invoice_payload()
+        server = self._start_http_server()
+        journals_before = self._count_table("accounting_core.general_journal")
+
+        empty_status, empty_page = self._http_period_journals()
+        alias_status, alias_page = self._http_period_journals(use_book_alias=True)
+        library_empty = lookup_period_journals(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-08",
+        )
+
+        self.assertEqual(empty_status, 200)
+        self.assertEqual(alias_status, 200)
+        self.assertEqual(empty_page, library_empty)
+        self.assertEqual(alias_page["journals"], [])
+        self.assertEqual(empty_page["journals"], [])
+        self.assertIsNone(empty_page["next_cursor"])
+        self.assertEqual(empty_page["tenant_reference"], self.policy.tenant_reference)
+        self.assertEqual(empty_page["legal_entity_reference"], self.policy.legal_entity_reference)
+        self.assertEqual(empty_page["accounting_book_reference"], self.policy.accounting_book_reference)
+        self.assertEqual(empty_page["book_reference"], self.policy.accounting_book_reference)
+        self.assertEqual(
+            empty_page["fiscal_period_reference"],
+            "urn:cwl:accounting:fiscal_period:2026-08",
+        )
+        self.assertEqual(empty_page["period_code"], "2026-08")
+
+        invoice_status, invoice_receipt = self._http_json("POST", "/journal-proposals", invoice)
+        cash_status, _cash_receipt = self._http_json("POST", "/journal-proposals", cash)
+        credit_status, _credit_receipt = self._http_json("POST", "/journal-proposals", taxed_credit)
+        accept_period_open(self._period_open_payload(), DATABASE_URL, self.policy.tenant_reference)
+        september_status, september_receipt = self._http_json("POST", "/journal-proposals", september)
+        listed_status, listed = self._http_period_journals()
+        september_list_status, september_list = self._http_period_journals(
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-09"
+        )
+        first_page_status, first_page = self._http_period_journals(page_limit=2)
+        second_page_status, second_page = self._http_period_journals(
+            page_limit=2,
+            cursor=str(first_page["next_cursor"]),
+        )
+        single_status, single = self._http_journal(idempotency_key=str(invoice["idempotency_key"]))
+        reverse_status, reversing_receipt = self._http_json(
+            "POST",
+            "/journal-reversals",
+            {
+                "tenant_reference": self.policy.tenant_reference,
+                "journal_reference": invoice_receipt["journal_reference"],
+                "reversal_date": "2026-08-31",
+                "reversal_reason_code": "billing_correction",
+            },
+        )
+        after_reverse_status, after_reverse = self._http_period_journals()
+        by_key = {str(item["idempotency_key"]): item for item in listed["journals"]}
+        after_keys = {str(item["idempotency_key"]) for item in after_reverse["journals"]}
+
+        self.assertEqual(invoice_status, 200)
+        self.assertEqual(cash_status, 200)
+        self.assertEqual(credit_status, 200)
+        self.assertEqual(september_status, 200)
+        self.assertEqual(listed_status, 200)
+        self.assertEqual(september_list_status, 200)
+        self.assertEqual(first_page_status, 200)
+        self.assertEqual(second_page_status, 200)
+        self.assertEqual(single_status, 200)
+        self.assertEqual(reverse_status, 200)
+        self.assertEqual(after_reverse_status, 200)
+        self.assertEqual(
+            {str(item["idempotency_key"]) for item in listed["journals"]},
+            {
+                str(invoice["idempotency_key"]),
+                str(cash["idempotency_key"]),
+                str(taxed_credit["idempotency_key"]),
+            },
+        )
+        self.assertNotIn(str(september["idempotency_key"]), by_key)
+        self.assertEqual(listed["next_cursor"], None)
+        self.assertEqual(by_key[str(invoice["idempotency_key"])]["journal_status_code"], "posted")
+        self.assertEqual(by_key[str(invoice["idempotency_key"])]["accounting_date"], "2026-08-31")
+        self.assertEqual(by_key[str(invoice["idempotency_key"])]["line_count"], 2)
+        self.assertEqual(by_key[str(cash["idempotency_key"])]["line_count"], 2)
+        self.assertEqual(by_key[str(taxed_credit["idempotency_key"])]["line_count"], 3)
+        self.assertEqual(
+            by_key[str(invoice["idempotency_key"])]["journal_reference"],
+            invoice_receipt["journal_reference"],
+        )
+        self.assertEqual(
+            [str(item["idempotency_key"]) for item in september_list["journals"]],
+            [str(september["idempotency_key"])],
+        )
+        self.assertEqual(
+            september_list["journals"][0]["journal_reference"],
+            september_receipt["journal_reference"],
+        )
+        self.assertEqual(len(first_page["journals"]), 2)
+        self.assertTrue(first_page["next_cursor"])
+        self.assertEqual(len(second_page["journals"]), 1)
+        self.assertIsNone(second_page["next_cursor"])
+        self.assertEqual(
+            [item["journal_reference"] for item in first_page["journals"]]
+            + [item["journal_reference"] for item in second_page["journals"]],
+            [item["journal_reference"] for item in listed["journals"]],
+        )
+        self.assertIn("lines", single)
+        self.assertEqual(len(single["lines"]), 2)
+        self.assertEqual(single["idempotency_key"], invoice["idempotency_key"])
+        self.assertIn(str(invoice["idempotency_key"]), after_keys)
+        self.assertIn(f"reversal:{invoice_receipt['journal_reference']}", after_keys)
+        reversing_item = next(
+            item
+            for item in after_reverse["journals"]
+            if item["idempotency_key"] == f"reversal:{invoice_receipt['journal_reference']}"
+        )
+        self.assertEqual(
+            reversing_item["journal_reference"],
+            reversing_receipt["journal_reference"],
+        )
+        self.assertEqual(
+            reversing_item["reversal_of_journal_reference"],
+            invoice_receipt["journal_reference"],
+        )
+        self.assertEqual(reversing_item["line_count"], 2)
+        self.assertEqual(len(after_reverse["journals"]), 4)
+
+        missing_scope = self._http_json(
+            "GET",
+            f"/journals?legal_entity_reference={urllib.parse.quote(self.policy.legal_entity_reference)}",
+            None,
+        )
+        unknown_entity = self._http_period_journals(
+            legal_entity_reference="urn:cwl:legal_entity:missing"
+        )
+        unknown_book = self._http_period_journals(book_reference="urn:cwl:accounting_book:missing")
+        unknown_period = self._http_period_journals(
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-10"
+        )
+        bad_limit = self._http_period_journals(page_limit="abc")
+        high_limit = self._http_period_journals(page_limit=101)
+        bad_cursor = self._http_period_journals(cursor="not-a-cursor")
+        cross_status, _cross = self._http_period_journals(tenant_header="urn:cwl:tenant_other")
+        with self.assertRaisesRegex(AccountingValidationError, "are required"):
+            lookup_period_journals(DATABASE_URL, self.policy.tenant_reference, "", "", "")
+        with self.assertRaisesRegex(AccountingValidationError, "page_limit"):
+            lookup_period_journals(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "2026-08",
+                page_limit=0,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "cursor"):
+            lookup_period_journals(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "2026-08",
+                cursor="2026-08-31",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "cursor"):
+            lookup_period_journals(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "2026-08",
+                cursor="|urn:cwl:accounting:general_journal:x",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "cursor"):
+            lookup_period_journals(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "2026-08",
+                cursor="2026-08-31|",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "cursor"):
+            lookup_period_journals(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "2026-08",
+                cursor="not-a-date|urn:cwl:accounting:general_journal:x",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "are required"):
+            PostgresPostingLedger(
+                DATABASE_URL, self.policy.tenant_reference
+            ).load_period_journals("", "", "")
+        with self.assertRaisesRegex(AccountingValidationError, "fiscal_period"):
+            lookup_period_journals(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "urn:cwl:accounting:fiscal_period:1999-01",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "legal_entity"):
+            PostgresPostingLedger(
+                DATABASE_URL, self.policy.tenant_reference
+            ).load_period_journals(
+                "urn:cwl:legal_entity:missing",
+                self.policy.accounting_book_reference,
+                "2026-08",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "accounting_book"):
+            PostgresPostingLedger(
+                DATABASE_URL, self.policy.tenant_reference
+            ).load_period_journals(
+                self.policy.legal_entity_reference,
+                "urn:cwl:accounting_book:missing",
+                "2026-08",
+            )
+
+        self.assertEqual(missing_scope[0], 400)
+        self.assertEqual(unknown_entity[0], 404)
+        self.assertEqual(unknown_book[0], 404)
+        self.assertEqual(unknown_period[0], 404)
+        self.assertEqual(bad_limit[0], 400)
+        self.assertEqual(high_limit[0], 400)
+        self.assertEqual(bad_cursor[0], 400)
+        self.assertEqual(cross_status, 403)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before + 5)
         server.shutdown()
 
     def test_http_opens_fiscal_period_and_accepts_later_posts(self) -> None:
@@ -3230,6 +3466,46 @@ class PostgresPostingTests(unittest.TestCase):
         return self._http_json(
             "GET",
             f"/fiscal-periods?{query}",
+            None,
+            tenant_header=tenant_header,
+        )
+
+    def _http_period_journals(
+        self,
+        *,
+        legal_entity_reference: str | None = None,
+        book_reference: str | None = None,
+        fiscal_period_reference: str | None = None,
+        page_limit: object | None = None,
+        cursor: str | None = None,
+        use_book_alias: bool = False,
+        tenant_header: str | None = "",
+    ) -> tuple[int, dict[str, object]]:
+        query: dict[str, str] = {
+            "legal_entity_reference": (
+                self.policy.legal_entity_reference
+                if legal_entity_reference is None
+                else legal_entity_reference
+            ),
+            "fiscal_period_reference": (
+                "urn:cwl:accounting:fiscal_period:2026-08"
+                if fiscal_period_reference is None
+                else fiscal_period_reference
+            ),
+        }
+        book_key = "accounting_book_reference" if use_book_alias else "book_reference"
+        query[book_key] = (
+            self.policy.accounting_book_reference
+            if book_reference is None
+            else book_reference
+        )
+        if page_limit is not None:
+            query["page_limit"] = str(page_limit)
+        if cursor is not None:
+            query["cursor"] = cursor
+        return self._http_json(
+            "GET",
+            f"/journals?{urllib.parse.urlencode(query)}",
             None,
             tenant_header=tenant_header,
         )

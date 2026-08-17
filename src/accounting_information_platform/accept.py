@@ -10,6 +10,8 @@ from .ingest import ingest_journal_proposal
 from .persistence import PostgresPostingLedger, _format_timestamp
 
 _FISCAL_PERIOD_PREFIX = "urn:cwl:accounting:fiscal_period:"
+_JOURNAL_LIST_DEFAULT_PAGE_LIMIT = 50
+_JOURNAL_LIST_MAX_PAGE_LIMIT = 100
 
 
 def accept_journal_proposal(
@@ -189,6 +191,31 @@ def lookup_fiscal_period(
     )
 
 
+def lookup_period_journals(
+    database_url: str,
+    tenant_reference: str,
+    legal_entity_reference: str,
+    book_reference: str,
+    fiscal_period_reference: str,
+    page_limit: int | None = None,
+    cursor: str = "",
+) -> dict[str, object]:
+    """Return one page of existing posted and reversing journals for a tenant period."""
+    if not legal_entity_reference or not book_reference or not fiscal_period_reference:
+        raise AccountingValidationError(
+            "legal_entity_reference, book_reference, and fiscal_period_reference are required. "
+            "Supply those journal-list fields, then retry the journal list."
+        )
+    ledger = PostgresPostingLedger(database_url, tenant_reference)
+    return ledger.load_period_journals(
+        legal_entity_reference,
+        book_reference,
+        _period_code_from_reference(fiscal_period_reference),
+        page_limit=_resolve_journal_list_page_limit(page_limit),
+        cursor_after=_parse_journal_list_cursor(cursor),
+    )
+
+
 def lookup_posted_journal(
     database_url: str,
     tenant_reference: str,
@@ -260,6 +287,41 @@ def _parse_reversal_date(value: str) -> date:
             "reversal_date must be an ISO-8601 date. "
             "Supply reversal_date, then retry the reverse."
         ) from error
+
+
+def _resolve_journal_list_page_limit(page_limit: int | None) -> int:
+    if page_limit is None:
+        return _JOURNAL_LIST_DEFAULT_PAGE_LIMIT
+    if page_limit < 1 or page_limit > _JOURNAL_LIST_MAX_PAGE_LIMIT:
+        raise AccountingValidationError(
+            "page_limit must be between 1 and 100. "
+            "Supply a journal-list page_limit, then retry the journal list."
+        )
+    return page_limit
+
+
+def _parse_journal_list_cursor(cursor: str) -> tuple[date, str] | None:
+    if not cursor:
+        return None
+    if "|" not in cursor:
+        raise AccountingValidationError(
+            "cursor must be accounting_date|journal_reference. "
+            "Supply a journal-list cursor, then retry the journal list."
+        )
+    date_text, journal_reference = cursor.split("|", 1)
+    if not date_text or not journal_reference:
+        raise AccountingValidationError(
+            "cursor must be accounting_date|journal_reference. "
+            "Supply a journal-list cursor, then retry the journal list."
+        )
+    try:
+        accounting_date = date.fromisoformat(date_text)
+    except ValueError as error:
+        raise AccountingValidationError(
+            "cursor must be accounting_date|journal_reference. "
+            "Supply a journal-list cursor, then retry the journal list."
+        ) from error
+    return accounting_date, journal_reference
 
 
 def _period_code_from_reference(value: str) -> str:

@@ -11,6 +11,7 @@
 
 ### Added
 
+- `lookup_period_journals` and `GET /journals?legal_entity_reference=&fiscal_period_reference=&book_reference=` list existing posted and reversing `general_journal` rows for one tenant period (`journal_reference`, `idempotency_key`, `journal_status_code`, `accounting_date`, `line_count`); default `page_limit` is 50, maximum 100, and `next_cursor` is `accounting_date|journal_reference`. Empty periods return `journals` []. Single-journal GET by key or reference is unchanged.
 - Billing #20 taxed `credit_adjustment` proposals post the exact three-line Billing split (debit `usage_revenue` 410100, debit `tax_payable` 210100, credit `accounts_receivable` 110100) on the existing `{tenant}:credit_adjustment:{credit_adjustment_id}:{source_payload_hash}:v{version}` key; AIS does not recompute `credit_tax_amount` and does not add `tax_receivable`.
 - Catalog `account_role_mapping` for `tax_payable` → 210100 (credit-normal current liability) so a Billing #19 three-line taxed invoice posts AR inclusive / revenue exclusive / tax payable through `post_proposal`; the invoice `invoice_draft` idempotency key is unchanged.
 - `accept_period_open`, `lookup_fiscal_period`, `POST /fiscal-periods`, and `GET /fiscal-periods` open the next `fiscal_period` row (or replay an already-open period) and read existing period status and dates; hard-closed and soft-closed periods cannot be reopened.
