@@ -132,6 +132,63 @@ def accept_period_close(
     return _period_close_document(receipt)
 
 
+def accept_period_open(
+    payload: object, database_url: str, tenant_reference: str
+) -> dict[str, object]:
+    """Open one fiscal period for *tenant_reference* and return the open receipt."""
+    if not isinstance(payload, Mapping):
+        raise AccountingValidationError(
+            "period open payload must be a JSON object. "
+            "Supply a period-open command, then retry the period open."
+        )
+    if payload.get("tenant_reference") != tenant_reference:
+        raise AccountingValidationError(
+            "open tenant_reference does not match the bound tenant. "
+            "Call accept_period_open with that tenant_reference, then retry."
+        )
+    legal_entity_reference = str(payload.get("legal_entity_reference") or "")
+    period_code = _period_code_from_reference(
+        str(payload.get("fiscal_period_reference") or payload.get("period_code") or "")
+    )
+    if not legal_entity_reference or not period_code:
+        raise AccountingValidationError(
+            "legal_entity_reference and fiscal_period_reference are required. "
+            "Supply those period-open fields, then retry the period open."
+        )
+    start_text = str(payload.get("period_start_date") or "")
+    end_text = str(payload.get("period_end_date") or "")
+    period_start_date = (
+        _parse_period_date(start_text, "period_start_date") if start_text else None
+    )
+    period_end_date = _parse_period_date(end_text, "period_end_date") if end_text else None
+    ledger = PostgresPostingLedger(database_url, tenant_reference)
+    return ledger.open_fiscal_period(
+        legal_entity_reference,
+        period_code,
+        period_start_date,
+        period_end_date,
+    )
+
+
+def lookup_fiscal_period(
+    database_url: str,
+    tenant_reference: str,
+    legal_entity_reference: str,
+    fiscal_period_reference: str,
+) -> dict[str, object]:
+    """Return the persisted fiscal-period status and dates for one tenant entity."""
+    if not legal_entity_reference or not fiscal_period_reference:
+        raise AccountingValidationError(
+            "legal_entity_reference and fiscal_period_reference are required. "
+            "Supply those period fields, then retry the period read."
+        )
+    ledger = PostgresPostingLedger(database_url, tenant_reference)
+    return ledger.load_fiscal_period(
+        legal_entity_reference,
+        _period_code_from_reference(fiscal_period_reference),
+    )
+
+
 def lookup_posted_journal(
     database_url: str,
     tenant_reference: str,
@@ -183,6 +240,16 @@ def lookup_trial_balance(
         accounting_book_reference=book_reference,
         period_code=_period_code_from_reference(fiscal_period_reference),
     )
+
+
+def _parse_period_date(value: str, field_name: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as error:
+        raise AccountingValidationError(
+            f"{field_name} must be an ISO-8601 date. "
+            f"Supply {field_name}, then retry the period open."
+        ) from error
 
 
 def _parse_reversal_date(value: str) -> date:

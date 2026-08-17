@@ -29,10 +29,12 @@ from accounting_information_platform import (
     accept_journal_proposal,
     accept_journal_reversal,
     accept_period_close,
+    accept_period_open,
     accept_pulled_proposals,
     create_journal_proposal_server,
     ingest_journal_proposal,
     lookup_account_role_mappings,
+    lookup_fiscal_period,
     lookup_posted_journal,
     lookup_published_receipt,
     lookup_trial_balance,
@@ -1112,6 +1114,243 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(unknown_key[0], 404)
         self.assertEqual(unknown_reference[0], 404)
         self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before + 1)
+        server.shutdown()
+
+    def test_http_opens_fiscal_period_and_accepts_later_posts(self) -> None:
+        """HTTP opens the next fiscal period, replays the open, and still closes over HTTP."""
+        server = self._start_http_server()
+        periods_before = self._count_table("accounting_core.fiscal_period")
+        open_body = self._period_open_payload()
+        september = self._september_invoice_payload()
+
+        seeded_status, seeded = self._http_fiscal_period()
+        open_status, opened = self._http_json("POST", "/fiscal-periods", open_body)
+        replay_status, replayed = self._http_json("POST", "/fiscal-periods", open_body)
+        get_status, document = self._http_fiscal_period(
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-09"
+        )
+        library = lookup_fiscal_period(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            "urn:cwl:accounting:fiscal_period:2026-09",
+        )
+        library_open = accept_period_open(open_body, DATABASE_URL, self.policy.tenant_reference)
+        post_status, posted = self._http_json("POST", "/journal-proposals", september)
+        close_status, closed = self._http_json(
+            "POST",
+            "/period-closes",
+            self._period_close_payload(
+                fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-09"
+            ),
+        )
+
+        self.assertEqual(seeded_status, 200)
+        self.assertEqual(seeded["period_code"], "2026-08")
+        self.assertEqual(seeded["period_status_code"], "open")
+        self.assertEqual(seeded["period_start_date"], "2026-08-01")
+        self.assertEqual(seeded["period_end_date"], "2026-08-31")
+        self.assertEqual(open_status, 200)
+        self.assertFalse(opened["replayed"])
+        self.assertEqual(opened["period_code"], "2026-09")
+        self.assertEqual(opened["period_status_code"], "open")
+        self.assertEqual(opened["period_start_date"], "2026-09-01")
+        self.assertEqual(opened["period_end_date"], "2026-09-30")
+        self.assertEqual(replay_status, 200)
+        self.assertTrue(replayed["replayed"])
+        self.assertEqual(replayed["period_code"], opened["period_code"])
+        self.assertEqual(self._count_table("accounting_core.fiscal_period"), periods_before + 1)
+        self.assertEqual(get_status, 200)
+        self.assertEqual(document, library)
+        self.assertEqual(document["period_status_code"], "open")
+        self.assertEqual(document["period_start_date"], "2026-09-01")
+        self.assertEqual(document["period_end_date"], "2026-09-30")
+        self.assertTrue(library_open["replayed"])
+        self.assertEqual(post_status, 200)
+        self.assertEqual(posted["posting_status_code"], "posted")
+        self.assertEqual(close_status, 200)
+        self.assertEqual(closed["period_code"], "2026-09")
+        self.assertEqual(closed["period_status_code"], "hard_closed")
+        self.assertEqual(self._period_status("2026-09"), "hard_closed")
+
+        august_close = self._http_json("POST", "/period-closes", self._period_close_payload())
+        hard_open = self._http_json(
+            "POST",
+            "/fiscal-periods",
+            self._period_open_payload(
+                fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-08"
+            ),
+        )
+        soft_body = self._period_open_payload(
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-10",
+            period_start_date="2026-10-01",
+            period_end_date="2026-10-31",
+        )
+        soft_open = self._http_json("POST", "/fiscal-periods", soft_body)
+        soft_close = accept_period_close(
+            self._period_close_payload(
+                fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-10",
+                period_status_code="soft_closed",
+            ),
+            DATABASE_URL,
+            self.policy.tenant_reference,
+        )
+        soft_reopen = self._http_json("POST", "/fiscal-periods", soft_body)
+        missing_header = self._http_json(
+            "POST", "/fiscal-periods", open_body, tenant_header=None
+        )
+        missing_get_header = self._http_fiscal_period(tenant_header=None)
+        bad_json = self._http_raw(
+            "POST", "/fiscal-periods", b"{", self.policy.tenant_reference
+        )
+        cross_open = self._http_json(
+            "POST",
+            "/fiscal-periods",
+            open_body,
+            tenant_header="urn:cwl:tenant_other",
+        )
+        cross_get = self._http_fiscal_period(tenant_header="urn:cwl:tenant_other")
+        missing_query = self._http_json("GET", "/fiscal-periods", None)
+        missing_period_query = self._http_json(
+            "GET",
+            "/fiscal-periods?"
+            + urllib.parse.urlencode(
+                {"legal_entity_reference": self.policy.legal_entity_reference}
+            ),
+            None,
+        )
+        body_mismatch = self._http_json(
+            "POST",
+            "/fiscal-periods",
+            {**open_body, "tenant_reference": "urn:cwl:tenant_other"},
+        )
+        unknown_entity = self._http_fiscal_period(
+            legal_entity_reference="urn:cwl:legal_entity:missing"
+        )
+        unknown_period = self._http_fiscal_period(
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:1999-01"
+        )
+        missing_dates = self._http_json(
+            "POST",
+            "/fiscal-periods",
+            {
+                "tenant_reference": self.policy.tenant_reference,
+                "legal_entity_reference": self.policy.legal_entity_reference,
+                "fiscal_period_reference": "urn:cwl:accounting:fiscal_period:2026-11",
+            },
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "JSON object"):
+            accept_period_open(["not-an-object"], DATABASE_URL, self.policy.tenant_reference)
+        with self.assertRaisesRegex(AccountingValidationError, "bound tenant"):
+            accept_period_open(
+                {**open_body, "tenant_reference": "urn:cwl:tenant_other"},
+                DATABASE_URL,
+                self.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "fiscal_period_reference"):
+            accept_period_open(
+                {"tenant_reference": self.policy.tenant_reference},
+                DATABASE_URL,
+                self.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "period_start_date"):
+            accept_period_open(
+                {
+                    "tenant_reference": self.policy.tenant_reference,
+                    "legal_entity_reference": self.policy.legal_entity_reference,
+                    "fiscal_period_reference": "urn:cwl:accounting:fiscal_period:2026-11",
+                    "period_start_date": "01-11-2026",
+                    "period_end_date": "2026-11-30",
+                },
+                DATABASE_URL,
+                self.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "period_end_date"):
+            PostgresPostingLedger(
+                DATABASE_URL, self.policy.tenant_reference
+            ).open_fiscal_period(
+                self.policy.legal_entity_reference,
+                "2026-11",
+                date(2026, 11, 30),
+                date(2026, 11, 1),
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "fiscal_period_reference"):
+            lookup_fiscal_period(DATABASE_URL, self.policy.tenant_reference, "", "")
+        with self.assertRaisesRegex(AccountingValidationError, "period_end_date"):
+            accept_period_open(
+                {
+                    "tenant_reference": self.policy.tenant_reference,
+                    "legal_entity_reference": self.policy.legal_entity_reference,
+                    "fiscal_period_reference": "urn:cwl:accounting:fiscal_period:2026-11",
+                    "period_start_date": "2026-11-01",
+                    "period_end_date": "30-11-2026",
+                },
+                DATABASE_URL,
+                self.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "period_start_date"):
+            accept_period_open(
+                {
+                    "tenant_reference": self.policy.tenant_reference,
+                    "legal_entity_reference": self.policy.legal_entity_reference,
+                    "period_code": "2026-11",
+                    "period_end_date": "2026-11-30",
+                },
+                DATABASE_URL,
+                self.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "fiscal_period"):
+            lookup_fiscal_period(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                "urn:cwl:accounting:fiscal_period:1999-01",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "fiscal_period_reference"):
+            PostgresPostingLedger(
+                DATABASE_URL, self.policy.tenant_reference
+            ).load_fiscal_period("", "")
+        with self.assertRaisesRegex(AccountingValidationError, "fiscal_period_reference"):
+            PostgresPostingLedger(
+                DATABASE_URL, self.policy.tenant_reference
+            ).open_fiscal_period("", "")
+        with self.assertRaisesRegex(AccountingValidationError, "legal_entity"):
+            PostgresPostingLedger(
+                DATABASE_URL, self.policy.tenant_reference
+            ).open_fiscal_period(
+                "urn:cwl:legal_entity:missing",
+                "2026-12",
+                date(2026, 12, 1),
+                date(2026, 12, 31),
+            )
+        bare_tenant, bare_entity = self._seed_tenant_without_calendar()
+        with self.assertRaisesRegex(AccountingValidationError, "fiscal_calendar"):
+            PostgresPostingLedger(DATABASE_URL, bare_tenant).open_fiscal_period(
+                bare_entity,
+                "2026-12",
+                date(2026, 12, 1),
+                date(2026, 12, 31),
+            )
+
+        self.assertEqual(august_close[0], 200)
+        self.assertEqual(hard_open[0], 422)
+        self.assertIn("hard_closed", str(hard_open[1]))
+        self.assertEqual(soft_open[0], 200)
+        self.assertEqual(soft_close["period_status_code"], "soft_closed")
+        self.assertEqual(soft_reopen[0], 422)
+        self.assertIn("soft_closed", str(soft_reopen[1]))
+        self.assertEqual(missing_header[0], 400)
+        self.assertEqual(missing_get_header[0], 400)
+        self.assertEqual(bad_json[0], 400)
+        self.assertEqual(cross_open[0], 403)
+        self.assertEqual(cross_get[0], 403)
+        self.assertEqual(missing_query[0], 400)
+        self.assertEqual(missing_period_query[0], 400)
+        self.assertEqual(body_mismatch[0], 403)
+        self.assertEqual(unknown_entity[0], 404)
+        self.assertEqual(unknown_period[0], 404)
+        self.assertEqual(missing_dates[0], 422)
+        self.assertEqual(self._count_table("accounting_core.fiscal_period"), periods_before + 2)
         server.shutdown()
 
     def test_http_closes_period_and_reads_trial_balance(self) -> None:
@@ -2643,6 +2882,88 @@ class PostgresPostingTests(unittest.TestCase):
         }
         values.update(overrides)
         return values
+
+    def _seed_tenant_without_calendar(self) -> tuple[str, str]:
+        tenant_code = f"urn:cwl:tenant:nocalendar_{uuid.uuid4().hex[:8]}"
+        entity_code = f"urn:cwl:legal_entity:nocalendar_{uuid.uuid4().hex[:8]}"
+        with psycopg.connect(DATABASE_URL) as connection:
+            tenant_id = connection.execute(
+                """
+                INSERT INTO accounting_core.tenant_account (tenant_account_code)
+                VALUES (%s)
+                RETURNING tenant_account_id
+                """,
+                (tenant_code,),
+            ).fetchone()[0]
+            connection.execute(
+                "SELECT set_config('app.tenant_account_id', %s, false)",
+                (str(tenant_id),),
+            )
+            connection.execute(
+                """
+                INSERT INTO accounting_core.legal_entity_record (
+                    tenant_account_id, legal_entity_code, entity_name,
+                    functional_currency_code, valid_from
+                )
+                VALUES (%s, %s, %s, 'KRW', %s)
+                """,
+                (tenant_id, entity_code, "No calendar entity", VALID_FROM),
+            )
+            connection.commit()
+        return tenant_code, entity_code
+
+    def _period_open_payload(self, **overrides: object) -> dict[str, object]:
+        values: dict[str, object] = {
+            "tenant_reference": self.policy.tenant_reference,
+            "legal_entity_reference": self.policy.legal_entity_reference,
+            "fiscal_period_reference": "urn:cwl:accounting:fiscal_period:2026-09",
+            "period_start_date": "2026-09-01",
+            "period_end_date": "2026-09-30",
+        }
+        values.update(overrides)
+        return values
+
+    def _september_invoice_payload(self) -> dict[str, object]:
+        proposal_id = str(uuid.uuid4())
+        source_payload_hash = "sha256:" + "e" * 64
+        return self._billing_validated_payload(
+            proposal_id=proposal_id,
+            source_payload_hash=source_payload_hash,
+            idempotency_key=(
+                f"{self.policy.tenant_reference}:invoice_draft:{proposal_id}"
+                f":{source_payload_hash}:v1"
+            ),
+            accounting_date="2026-09-15",
+            transaction_date="2026-09-15",
+        )
+
+    def _http_fiscal_period(
+        self,
+        *,
+        legal_entity_reference: str | None = None,
+        fiscal_period_reference: str | None = None,
+        tenant_header: str | None = "",
+    ) -> tuple[int, dict[str, object]]:
+        query = urllib.parse.urlencode(
+            {
+                "legal_entity_reference": (
+                    self.policy.legal_entity_reference
+                    if legal_entity_reference is None
+                    else legal_entity_reference
+                ),
+                "fiscal_period_reference": (
+                    "urn:cwl:accounting:fiscal_period:2026-08"
+                    if fiscal_period_reference is None
+                    else fiscal_period_reference
+                ),
+            }
+        )
+        return self._http_json(
+            "GET",
+            f"/fiscal-periods?{query}",
+            None,
+            tenant_header=tenant_header,
+        )
 
     def _http_journal(
         self,

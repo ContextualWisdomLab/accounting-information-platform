@@ -334,6 +334,106 @@ class PostgresPostingLedger:
                 accounting_book_reference=accounting_book_reference,
             )
 
+    def open_fiscal_period(
+        self,
+        legal_entity_reference: str,
+        period_code: str,
+        period_start_date: date | None = None,
+        period_end_date: date | None = None,
+    ) -> dict[str, object]:
+        """Insert or replay an open fiscal_period row on the tenant calendar."""
+        if not legal_entity_reference or not period_code:
+            raise AccountingValidationError(
+                "legal_entity_reference and fiscal_period_reference are required. "
+                "Supply those period-open fields, then retry the period open."
+            )
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            self._require_legal_entity(
+                connection, tenant_id, legal_entity_reference, "the period open"
+            )
+            existing = self._load_period_state(connection, tenant_id, period_code)
+            if existing is not None:
+                _period_id, current_status, start_date, end_date = existing
+                if current_status != "open":
+                    raise AccountingValidationError(
+                        f"Fiscal period {period_code} is {current_status}. "
+                        "Closed periods cannot be reopened. Open a later period, "
+                        "then retry the period open."
+                    )
+                return self._period_open_document(
+                    legal_entity_reference,
+                    period_code,
+                    start_date,
+                    end_date,
+                    replayed=True,
+                )
+            if period_start_date is None or period_end_date is None:
+                raise AccountingValidationError(
+                    "period_start_date and period_end_date are required. "
+                    "Supply those fiscal_period dates, then retry the period open."
+                )
+            if period_end_date < period_start_date:
+                raise AccountingValidationError(
+                    "period_end_date must be on or after period_start_date. "
+                    "Supply a valid date range, then retry the period open."
+                )
+            calendar_id = self._require_tenant_calendar(connection, tenant_id)
+            connection.execute(
+                """
+                INSERT INTO accounting_core.fiscal_period (
+                    tenant_account_id, fiscal_calendar_id, period_code,
+                    period_start_date, period_end_date, period_status_code
+                )
+                VALUES (%s, %s, %s, %s, %s, 'open')
+                """,
+                (
+                    tenant_id,
+                    calendar_id,
+                    period_code,
+                    period_start_date,
+                    period_end_date,
+                ),
+            )
+            return self._period_open_document(
+                legal_entity_reference,
+                period_code,
+                period_start_date,
+                period_end_date,
+                replayed=False,
+            )
+
+    def load_fiscal_period(
+        self, legal_entity_reference: str, period_code: str
+    ) -> dict[str, object]:
+        """Return persisted fiscal-period status and dates for one tenant entity."""
+        if not legal_entity_reference or not period_code:
+            raise AccountingValidationError(
+                "legal_entity_reference and fiscal_period_reference are required. "
+                "Supply those period fields, then retry the period read."
+            )
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            self._require_legal_entity(
+                connection, tenant_id, legal_entity_reference, "the period read"
+            )
+            existing = self._load_period_state(connection, tenant_id, period_code)
+            if existing is None:
+                raise AccountingValidationError(
+                    f"Fiscal period {period_code} is not recorded for this tenant. "
+                    "Create the fiscal_period row, then retry the period read."
+                )
+            _period_id, current_status, start_date, end_date = existing
+            return {
+                "tenant_reference": self._tenant_reference,
+                "legal_entity_reference": legal_entity_reference,
+                "fiscal_period_reference": f"urn:cwl:accounting:fiscal_period:{period_code}",
+                "period_code": period_code,
+                "period_status_code": current_status,
+                "period_start_date": start_date.isoformat(),
+                "period_end_date": end_date.isoformat(),
+            }
+
     def reverse(
         self,
         journal_reference: str,
@@ -1013,6 +1113,59 @@ class PostgresPostingLedger:
                 f"Create the fiscal_period row, then retry {next_action}."
             )
         return row[0], row[1], row[2]
+
+    def _load_period_state(
+        self, connection: object, tenant_id: UUID, period_code: str
+    ) -> tuple[UUID, str, date, date] | None:
+        row = connection.execute(
+            """
+            SELECT fiscal_period_id, period_status_code, period_start_date, period_end_date
+            FROM accounting_core.fiscal_period
+            WHERE tenant_account_id = %s AND period_code = %s
+            """,
+            (tenant_id, period_code),
+        ).fetchone()
+        if row is None:
+            return None
+        return row[0], row[1], row[2], row[3]
+
+    def _require_tenant_calendar(self, connection: object, tenant_id: UUID) -> UUID:
+        row = connection.execute(
+            """
+            SELECT fiscal_calendar_id
+            FROM accounting_core.fiscal_calendar
+            WHERE tenant_account_id = %s
+            ORDER BY calendar_code
+            LIMIT 1
+            """,
+            (tenant_id,),
+        ).fetchone()
+        if row is None:
+            raise AccountingValidationError(
+                "No fiscal_calendar is recorded for this tenant. "
+                "Create the fiscal_calendar row, then retry the period open."
+            )
+        return row[0]
+
+    def _period_open_document(
+        self,
+        legal_entity_reference: str,
+        period_code: str,
+        period_start_date: date,
+        period_end_date: date,
+        *,
+        replayed: bool,
+    ) -> dict[str, object]:
+        return {
+            "tenant_reference": self._tenant_reference,
+            "legal_entity_reference": legal_entity_reference,
+            "fiscal_period_reference": f"urn:cwl:accounting:fiscal_period:{period_code}",
+            "period_code": period_code,
+            "period_status_code": "open",
+            "period_start_date": period_start_date.isoformat(),
+            "period_end_date": period_end_date.isoformat(),
+            "replayed": replayed,
+        }
 
     def _aggregate_trial_balance(
         self,

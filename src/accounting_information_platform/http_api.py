@@ -1,4 +1,4 @@
-"""Thin stdlib HTTP boundary for Billing proposals, pulls, receipts, close, TB, catalog, and journals."""
+"""Thin stdlib HTTP boundary for Billing proposals, pulls, receipts, close, open, TB, catalog, and journals."""
 
 from __future__ import annotations
 
@@ -12,7 +12,9 @@ from .accept import (
     accept_journal_proposal,
     accept_journal_reversal,
     accept_period_close,
+    accept_period_open,
     lookup_account_role_mappings,
+    lookup_fiscal_period,
     lookup_posted_journal,
     lookup_published_receipt,
     lookup_trial_balance,
@@ -31,6 +33,7 @@ POSTING_RECEIPT_PATH = "/posting-receipts"
 TRIAL_BALANCE_PATH = "/trial-balances"
 ACCOUNT_ROLE_MAPPING_PATH = "/account-role-mappings"
 JOURNAL_PATH = "/journals"
+FISCAL_PERIOD_PATH = "/fiscal-periods"
 
 
 class JournalProposalServer(ThreadingHTTPServer):
@@ -92,10 +95,13 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         if parsed.path == JOURNAL_PATH:
             self._get_posted_journal(parsed.query)
             return
+        if parsed.path == FISCAL_PERIOD_PATH:
+            self._get_fiscal_period(parsed.query)
+            return
         self._write_error(
             404,
             "unknown path. GET /posting-receipts?idempotency_key=, GET /trial-balances, "
-            "GET /account-role-mappings, or GET /journals, then retry.",
+            "GET /account-role-mappings, GET /journals, or GET /fiscal-periods, then retry.",
         )
 
     def do_POST(self) -> None:
@@ -128,10 +134,14 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         if parsed_path == PERIOD_CLOSE_PATH:
             self._post_period_close(raw_body)
             return
+        if parsed_path == FISCAL_PERIOD_PATH:
+            self._post_fiscal_period(raw_body)
+            return
         self._write_error(
             404,
             "unknown path. POST /journal-proposals, POST /journal-reversals, "
-            "POST /billing-proposal-pulls, or POST /period-closes, then retry.",
+            "POST /billing-proposal-pulls, POST /period-closes, or POST /fiscal-periods, "
+            "then retry.",
         )
 
     def log_message(self, format: str, *args: object) -> None:
@@ -239,6 +249,55 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             )
         except AccountingValidationError as error:
             self._write_error(404, str(error))
+            return
+        self._write_json(200, document)
+
+    def _get_fiscal_period(self, query: str) -> None:
+        tenant_header = self._bound_tenant_header("period read")
+        if tenant_header is None:
+            return
+        fields = parse_qs(query)
+        legal_entity_reference = _first_query(fields, "legal_entity_reference")
+        fiscal_period_reference = _first_query(fields, "fiscal_period_reference")
+        if not legal_entity_reference or not fiscal_period_reference:
+            self._write_error(
+                400,
+                "legal_entity_reference and fiscal_period_reference are required. "
+                "Supply those period fields, then retry the period read.",
+            )
+            return
+        try:
+            document = lookup_fiscal_period(
+                self.server.database_url,
+                tenant_header,
+                legal_entity_reference,
+                fiscal_period_reference,
+            )
+        except AccountingValidationError as error:
+            self._write_error(404, str(error))
+            return
+        self._write_json(200, document)
+
+    def _post_fiscal_period(self, raw_body: bytes) -> None:
+        tenant_header = self._bound_tenant_header("period open")
+        if tenant_header is None:
+            return
+        payload = self._read_json_object(raw_body, "a period-open command")
+        if payload is None:
+            return
+        if payload.get("tenant_reference") != tenant_header:
+            self._write_error(
+                403,
+                "open tenant_reference does not match X-CWL-Tenant-Reference. "
+                "Send the period open to that tenant's AIS endpoint, then retry.",
+            )
+            return
+        try:
+            document = accept_period_open(
+                payload, self.server.database_url, tenant_header
+            )
+        except AccountingValidationError as error:
+            self._write_error(422, str(error))
             return
         self._write_json(200, document)
 
@@ -404,7 +463,7 @@ def create_journal_proposal_server(
     host: str = "127.0.0.1",
     port: int = 0,
 ) -> JournalProposalServer:
-    """Create a stdlib HTTP server that posts, pulls, closes, and reads TB, catalog, and journals."""
+    """Create a stdlib HTTP server that posts, pulls, closes, opens periods, and reads TB and journals."""
     if not database_url:
         raise AccountingValidationError(
             "ACCOUNTING_DATABASE_URL is empty. Set a PostgreSQL 18 URL and retry posting."
