@@ -67,6 +67,7 @@ class PostgresPostingTests(unittest.TestCase):
             chart_account_mapping={
                 "accounts_receivable": "110100",
                 "usage_revenue": "410100",
+                "cash_receipt": "110200",
             },
             accounting_policy_version="ifrs-v1",
             posting_rule_version="billing-issued-v1",
@@ -516,6 +517,35 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(self._count_table("accounting_core.general_journal"), 1)
         self.assertEqual(line_accounts, {"110100", "410100"})
 
+    def test_post_proposal_posts_billing_cash_receipt_from_catalog(self) -> None:
+        """A Billing cash receipt proposal posts debit cash / credit AR from catalog mapping."""
+        payload = self._billing_cash_payload()
+        proposal = ingest_journal_proposal(payload)
+
+        policy = self.ledger.resolve_accounting_policy(proposal)
+        receipt = self.ledger.post_proposal(proposal)
+        replayed = self.ledger.post_proposal(proposal)
+        balances = self.ledger.trial_balance(
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            date(2026, 8, 31),
+        )
+
+        self.assertEqual(policy.chart_account_mapping["cash_receipt"], "110200")
+        self.assertEqual(policy.chart_account_mapping["accounts_receivable"], "110100")
+        self.assertEqual(policy.accounting_policy_version, "ifrs-v1")
+        self.assertEqual(policy.posting_rule_version, "billing-issued-v1")
+        self.assertEqual(policy.intended_book_role_code, "primary_statutory")
+        self.assertNotIn("110200", json.dumps(payload["lines"]))
+        self.assertNotIn("110100", json.dumps(payload["lines"]))
+        self.assertEqual(receipt, replayed)
+        self.assertEqual(self.ledger.journal_count, 1)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), 1)
+        self.assertEqual(self._posted_chart_accounts(), {"110200", "110100"})
+        self.assertEqual(balances["110200"].debit_total, Decimal("18000"))
+        self.assertEqual(balances["110100"].credit_total, Decimal("18000"))
+
     def test_accept_and_http_post_billing_proposal_replay_and_reject_zero_rows(self) -> None:
         """HTTP POST accepts a Billing proposal, replays the receipt, and writes zero rows on reject."""
         payload = self._billing_validated_payload()
@@ -859,9 +889,10 @@ class PostgresPostingTests(unittest.TestCase):
                     VALID_FROM,
                 ),
             ).fetchone()[0]
-            for account_code, account_name, normal_balance_code in (
-                ("110100", "Accounts receivable", "debit"),
-                ("410100", "Usage revenue", "credit"),
+            for account_code, account_name, normal_balance_code, account_role_code in (
+                ("110100", "Accounts receivable", "debit", "accounts_receivable"),
+                ("410100", "Usage revenue", "credit", "usage_revenue"),
+                ("110200", "Cash receipts", "debit", "cash_receipt"),
             ):
                 chart_account_id = connection.execute(
                     """
@@ -893,7 +924,7 @@ class PostgresPostingTests(unittest.TestCase):
                     (
                         tenant_id,
                         book_id,
-                        "accounts_receivable" if account_code == "110100" else "usage_revenue",
+                        account_role_code,
                         chart_account_id,
                         VALID_FROM,
                     ),
@@ -1096,6 +1127,46 @@ class PostgresPostingTests(unittest.TestCase):
                     "account_role_code": "usage_revenue",
                     "debit_amount": "0",
                     "credit_amount": "25000",
+                },
+            ],
+        }
+        values.update(overrides)
+        return values
+
+    def _billing_cash_payload(self, **overrides: object) -> dict[str, object]:
+        source_payload_hash = "sha256:" + "c" * 64
+        cash_receipt_id = "019d7b92-2bb1-7a7f-b61c-962c0f4bf613"
+        values: dict[str, object] = {
+            "proposal_id": cash_receipt_id,
+            "proposal_contract_version": 1,
+            "idempotency_key": (
+                f"{self.policy.tenant_reference}:cash_receipt:{cash_receipt_id}"
+                f":{source_payload_hash}:v1"
+            ),
+            "tenant_reference": self.policy.tenant_reference,
+            "legal_entity_reference": self.policy.legal_entity_reference,
+            "intended_book_role_code": "primary_statutory",
+            "transaction_currency": "KRW",
+            "transaction_date": "2026-08-31",
+            "accounting_date": "2026-08-31",
+            "source_payload_hash": source_payload_hash,
+            "proposed_at": "2026-08-31T00:00:00Z",
+            "proposal_status": "validated",
+            "source_event_references": (
+                f"{self.policy.tenant_reference}:cash_receipt:{cash_receipt_id}",
+            ),
+            "lines": [
+                {
+                    "line_number": 1,
+                    "account_role_code": "cash_receipt",
+                    "debit_amount": "18000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "0",
+                    "credit_amount": "18000",
                 },
             ],
         }

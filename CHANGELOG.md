@@ -10,6 +10,7 @@
 
 ### Added
 
+- Catalog `account_role_mapping` for `cash_receipt` so a Billing `validated` cash proposal posts debit cash / credit accounts receivable through `post_proposal`.
 - `accept_journal_proposal` and a stdlib `POST /journal-proposals` boundary that return the AIS posting-receipt contract, scoped by purpose-limited `X-CWL-Tenant-Reference`.
 - Catalog policy resolution on `PostgresPostingLedger` so a Billing `JournalProposal` posts through `post_proposal` using AIS `account_role_mapping`, book, period, and policy versions rather than a caller-invented chart mapping.
 - First-class fiscal-period close on `PostgresPostingLedger` that snapshots the trial-balance population and sets `soft_closed` or `hard_closed` in one transaction, with idempotent re-close and zero-row rejection of later ordinary posts.
