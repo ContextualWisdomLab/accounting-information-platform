@@ -20,7 +20,7 @@
 - No skipped required test evidence.
 - Exact-head CI, SAST, secret scan, dependency policy, SBOM, and provenance.
 - Hash-locked coverage 7.15.4 wheels (including the CPython 3.13 manylinux x86_64 artifact) plus setuptools, wheel, packaging, psycopg, and psycopg-binary so `--require-hashes --only-binary=:all:` and `--no-build-isolation` packaging smoke tests resolve offline.
-- PostgreSQL 18 integration evidence for a two-line post, idempotent replay, append-only reversal, trial-balance tie-out to the journal population, first-class period close with a durable snapshot, closed-period zero-row rejection, idempotent re-close, continued posting into a later open period, and catalog policy resolution from a Billing `validated` proposal (AIS mapping on the journal, replay, and zero-row rejection for unmapped roles, missing books, and closed periods).
+- PostgreSQL 18 integration evidence for a two-line post, idempotent replay, append-only reversal, trial-balance tie-out to the journal population, first-class period close with a durable snapshot, closed-period zero-row rejection, idempotent re-close, continued posting into a later open period, catalog policy resolution from a Billing `validated` proposal, and HTTP `POST /journal-proposals` accept (catalog policy on the receipt, idempotent replay, and zero-row rejection for draft, operational reject, closed period, and cross-tenant).
 
 ## Required real-world fixtures
 

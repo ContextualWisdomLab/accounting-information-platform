@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import unittest
+import urllib.error
+import urllib.request
 import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
+from threading import Thread
 from unittest import mock
 
 from accounting_information_platform import (
@@ -19,7 +23,10 @@ from accounting_information_platform import (
     JournalProposal,
     PeriodCloseReceipt,
     PostgresPostingLedger,
+    accept_journal_proposal,
+    create_journal_proposal_server,
     ingest_journal_proposal,
+    run_journal_proposal_server,
 )
 import psycopg
 
@@ -508,6 +515,162 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(self.ledger.journal_count, 1)
         self.assertEqual(self._count_table("accounting_core.general_journal"), 1)
         self.assertEqual(line_accounts, {"110100", "410100"})
+
+    def test_accept_and_http_post_billing_proposal_replay_and_reject_zero_rows(self) -> None:
+        """HTTP POST accepts a Billing proposal, replays the receipt, and writes zero rows on reject."""
+        payload = self._billing_validated_payload()
+        first = accept_journal_proposal(payload, DATABASE_URL, self.policy.tenant_reference)
+        replayed = accept_journal_proposal(payload, DATABASE_URL, self.policy.tenant_reference)
+        self._assert_published_receipt(first, payload)
+        self.assertEqual(first, replayed)
+        self.assertEqual(self._posted_chart_accounts(), {"110100", "410100"})
+        self.assertEqual(self._count_table("accounting_core.general_journal"), 1)
+
+        server = self._start_http_server()
+        status, document = self._http_json("POST", "/journal-proposals", payload)
+        self.assertEqual(status, 200)
+        self.assertEqual(document, first)
+        replay_status, replay_document = self._http_json("POST", "/journal-proposals", payload)
+        self.assertEqual(replay_status, 200)
+        self.assertEqual(replay_document, first)
+
+        draft = self._billing_validated_payload(proposal_status="draft")
+        reject_row = {
+            "proposal_contract_version": 1,
+            "journal_proposal_outcome_code": "rejected",
+            "rejection_reason_code": "invoice_draft_not_found",
+            "tenant_reference": self.policy.tenant_reference,
+        }
+        self.ledger.close_fiscal_period(
+            legal_entity_reference=self.policy.legal_entity_reference,
+            accounting_book_reference=self.policy.accounting_book_reference,
+            period_code="2026-08",
+            snapshot_currency_code="KRW",
+        )
+        closed = self._billing_validated_payload(
+            proposal_id=str(uuid.uuid4()),
+            idempotency_key=f"{self.policy.tenant_reference}:invoice_draft:closed:sha256:{'b' * 64}:v1",
+            source_payload_hash="sha256:" + "b" * 64,
+        )
+        draft_status, _draft_body = self._http_json("POST", "/journal-proposals", draft)
+        reject_status, _reject_body = self._http_json("POST", "/journal-proposals", reject_row)
+        closed_status, _closed_body = self._http_json("POST", "/journal-proposals", closed)
+        self.assertEqual(draft_status, 422)
+        self.assertEqual(reject_status, 422)
+        self.assertEqual(closed_status, 422)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), 1)
+        self.assertEqual(self._count_table("accounting_integration.journal_proposal_record"), 1)
+        server.shutdown()
+
+    def test_accept_and_http_guard_cross_tenant_and_operator_failures(self) -> None:
+        """The tenant header is purpose-limited and cross-tenant posts write zero rows."""
+        payload = self._billing_validated_payload()
+        with self.assertRaisesRegex(AccountingValidationError, "JSON object"):
+            accept_journal_proposal(["not-an-object"], DATABASE_URL, self.policy.tenant_reference)
+        with self.assertRaisesRegex(AccountingValidationError, "bound tenant"):
+            accept_journal_proposal(
+                self._billing_validated_payload(tenant_reference="urn:cwl:tenant_other"),
+                DATABASE_URL,
+                self.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "posting receipt is missing"):
+            self.ledger.load_published_receipt(ingest_journal_proposal(payload))
+
+        server = self._start_http_server()
+        missing_header = self._http_json(
+            "POST", "/journal-proposals", payload, tenant_header=None
+        )
+        wrong_header = self._http_json(
+            "POST",
+            "/journal-proposals",
+            payload,
+            tenant_header="urn:cwl:tenant_other",
+        )
+        payload_mismatch = self._http_json(
+            "POST",
+            "/journal-proposals",
+            self._billing_validated_payload(tenant_reference="urn:cwl:tenant_other"),
+        )
+        bad_json = self._http_raw("POST", "/journal-proposals", b"{", self.policy.tenant_reference)
+        empty = self._http_raw("POST", "/journal-proposals", b"", self.policy.tenant_reference)
+        not_object = self._http_raw(
+            "POST", "/journal-proposals", b"[1]", self.policy.tenant_reference
+        )
+        invalid_bytes = self._http_raw(
+            "POST", "/journal-proposals", b"\xff\xfe", self.policy.tenant_reference
+        )
+        invalid_length = self._http_invalid_length()
+        unknown_path = self._http_json("POST", "/unknown", payload)
+        get_status, _get_body = self._http_json("GET", "/journal-proposals", None)
+        conflict_payload = self._billing_validated_payload(
+            proposal_id=str(uuid.uuid4()),
+            source_payload_hash="sha256:" + "c" * 64,
+        )
+        accept_journal_proposal(payload, DATABASE_URL, self.policy.tenant_reference)
+        conflict_status, _conflict_body = self._http_json(
+            "POST", "/journal-proposals", conflict_payload
+        )
+        self.assertEqual(missing_header[0], 400)
+        self.assertEqual(wrong_header[0], 403)
+        self.assertEqual(payload_mismatch[0], 403)
+        self.assertEqual(bad_json[0], 400)
+        self.assertEqual(empty[0], 400)
+        self.assertEqual(not_object[0], 400)
+        self.assertEqual(invalid_bytes[0], 400)
+        self.assertEqual(invalid_length[0], 400)
+        self.assertEqual(unknown_path[0], 404)
+        self.assertEqual(get_status, 405)
+        self.assertEqual(conflict_status, 409)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), 1)
+        with self.assertRaisesRegex(AccountingValidationError, "Set a PostgreSQL 18 URL"):
+            create_journal_proposal_server("", self.policy.tenant_reference)
+        with mock.patch.dict(
+            os.environ,
+            {
+                "ACCOUNTING_DATABASE_URL": DATABASE_URL,
+                "ACCOUNTING_TENANT_REFERENCE": self.policy.tenant_reference,
+                "PORT": "not-a-port",
+            },
+            clear=False,
+        ):
+            with self.assertRaisesRegex(AccountingValidationError, "PORT must be an integer"):
+                run_journal_proposal_server(host="127.0.0.1")
+        with mock.patch.dict(
+            os.environ,
+            {
+                "ACCOUNTING_DATABASE_URL": DATABASE_URL,
+                "ACCOUNTING_TENANT_REFERENCE": self.policy.tenant_reference,
+                "PORT": "0",
+            },
+            clear=False,
+        ):
+            started = run_journal_proposal_server(serve=lambda: None)
+            started.server_close()
+        with mock.patch(
+            "accounting_information_platform.http_api.JournalProposalServer.serve_forever",
+            return_value=None,
+        ):
+            bound = run_journal_proposal_server(
+                DATABASE_URL, self.policy.tenant_reference, "127.0.0.1", 0
+            )
+            bound.server_close()
+        with mock.patch(
+            "accounting_information_platform.http_api.create_journal_proposal_server"
+        ) as create_server:
+            fake_server = mock.Mock()
+            create_server.return_value = fake_server
+            env = {
+                key: value
+                for key, value in os.environ.items()
+                if key != "PORT"
+            }
+            env["ACCOUNTING_DATABASE_URL"] = DATABASE_URL
+            env["ACCOUNTING_TENANT_REFERENCE"] = self.policy.tenant_reference
+            with mock.patch.dict(os.environ, env, clear=True):
+                run_journal_proposal_server(host="127.0.0.1")
+            self.assertEqual(create_server.call_args.args[3], 8080)
+            fake_server.serve_forever.assert_called_once()
+        server.shutdown()
 
     def test_post_proposal_catalog_misses_write_zero_rows(self) -> None:
         """Unmapped roles, missing books, and closed periods write no durable rows."""
@@ -1053,6 +1216,108 @@ class PostgresPostingTests(unittest.TestCase):
                 """,
                 (self.tenant_id, journal_reference),
             ).fetchone()[0]
+
+    def _assert_published_receipt(
+        self, document: dict[str, object], payload: dict[str, object]
+    ) -> None:
+        required = {
+            "receipt_id",
+            "receipt_contract_version",
+            "idempotency_key",
+            "source_proposal_id",
+            "source_payload_hash",
+            "tenant_reference",
+            "legal_entity_reference",
+            "accounting_book_reference",
+            "accounting_policy_version",
+            "posting_rule_version",
+            "posting_status_code",
+            "recorded_at",
+        }
+        self.assertTrue(required <= set(document))
+        self.assertEqual(document["receipt_contract_version"], 1)
+        self.assertEqual(document["idempotency_key"], payload["idempotency_key"])
+        self.assertEqual(document["source_proposal_id"], payload["proposal_id"])
+        self.assertEqual(document["source_payload_hash"], payload["source_payload_hash"])
+        self.assertEqual(document["tenant_reference"], self.policy.tenant_reference)
+        self.assertEqual(document["posting_status_code"], "posted")
+        self.assertEqual(document["accounting_policy_version"], "ifrs-v1")
+        self.assertEqual(document["posting_rule_version"], "billing-issued-v1")
+        self.assertEqual(document["accounting_book_reference"], self.policy.accounting_book_reference)
+        self.assertEqual(document["line_count"], 2)
+        uuid.UUID(str(document["receipt_id"]))
+
+    def _start_http_server(self):
+        server = create_journal_proposal_server(
+            DATABASE_URL, self.policy.tenant_reference, "127.0.0.1", 0
+        )
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self._http_server = server
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return server
+
+    def _http_json(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, object] | None,
+        tenant_header: str | None = "",
+    ) -> tuple[int, dict[str, object]]:
+        body = None if payload is None else json.dumps(payload).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        if tenant_header is None:
+            pass
+        elif tenant_header == "":
+            headers["X-CWL-Tenant-Reference"] = self.policy.tenant_reference
+        else:
+            headers["X-CWL-Tenant-Reference"] = tenant_header
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self._http_port()}{path}",
+            data=body,
+            method=method,
+            headers=headers,
+        )
+        try:
+            with urllib.request.urlopen(request) as response:
+                return response.status, json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            return error.code, json.loads(error.read().decode("utf-8"))
+
+    def _http_raw(self, method: str, path: str, body: bytes, tenant_reference: str) -> tuple[int, dict[str, object]]:
+        connection = http.client.HTTPConnection("127.0.0.1", self._http_port())
+        try:
+            connection.request(
+                method,
+                path,
+                body=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-CWL-Tenant-Reference": tenant_reference,
+                },
+            )
+            response = connection.getresponse()
+            return response.status, json.loads(response.read().decode("utf-8"))
+        finally:
+            connection.close()
+
+    def _http_invalid_length(self) -> tuple[int, dict[str, object]]:
+        connection = http.client.HTTPConnection("127.0.0.1", self._http_port())
+        try:
+            connection.putrequest("POST", "/journal-proposals")
+            connection.putheader("Content-Type", "application/json")
+            connection.putheader("X-CWL-Tenant-Reference", self.policy.tenant_reference)
+            connection.putheader("Content-Length", "abc")
+            connection.endheaders()
+            connection.send(b"{}")
+            response = connection.getresponse()
+            return response.status, json.loads(response.read().decode("utf-8"))
+        finally:
+            connection.close()
+
+    def _http_port(self) -> int:
+        return self._http_server.server_address[1]
 
 
 if __name__ == "__main__":

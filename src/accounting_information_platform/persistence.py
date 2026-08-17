@@ -71,6 +71,12 @@ class PostgresPostingLedger:
             tenant_id = self._require_tenant(connection)
             return self._resolve_accounting_policy(connection, tenant_id, proposal)
 
+    def load_published_receipt(self, proposal: JournalProposal) -> dict[str, object]:
+        """Return the schema-shaped posting receipt for a persisted *proposal*."""
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            return self._load_published_receipt(connection, tenant_id, proposal)
+
     def _persist_proposal(
         self, proposal: JournalProposal, policy: AccountingPolicy | None
     ) -> PostingReceipt:
@@ -1313,6 +1319,76 @@ class PostgresPostingLedger:
             ).fetchone()[0]
         )
 
+    def _load_published_receipt(
+        self, connection: object, tenant_id: UUID, proposal: JournalProposal
+    ) -> dict[str, object]:
+        row = connection.execute(
+            """
+            SELECT posting_receipt.posting_receipt_id,
+                   posting_receipt.created_at,
+                   posting_receipt.receipt_status_code,
+                   general_journal.journal_reference,
+                   general_journal.transaction_currency_code,
+                   general_journal.functional_currency_code,
+                   general_journal.accounting_policy_version,
+                   general_journal.posting_rule_version,
+                   accounting_book.book_name,
+                   legal_entity_record.legal_entity_code,
+                   fiscal_period.period_code,
+                   (
+                       SELECT COUNT(*)
+                       FROM accounting_core.journal_entry_line
+                       WHERE tenant_account_id = general_journal.tenant_account_id
+                         AND general_journal_id = general_journal.general_journal_id
+                   )
+            FROM accounting_integration.posting_receipt
+            JOIN accounting_integration.journal_proposal_record
+              ON journal_proposal_record.tenant_account_id = posting_receipt.tenant_account_id
+             AND journal_proposal_record.proposal_record_id = posting_receipt.proposal_record_id
+            JOIN accounting_core.general_journal
+              ON general_journal.tenant_account_id = posting_receipt.tenant_account_id
+             AND general_journal.general_journal_id = posting_receipt.general_journal_id
+            JOIN accounting_core.accounting_book
+              ON accounting_book.tenant_account_id = general_journal.tenant_account_id
+             AND accounting_book.accounting_book_id = general_journal.accounting_book_id
+            JOIN accounting_core.legal_entity_record
+              ON legal_entity_record.tenant_account_id = general_journal.tenant_account_id
+             AND legal_entity_record.legal_entity_id = general_journal.legal_entity_id
+            JOIN accounting_core.fiscal_period
+              ON fiscal_period.tenant_account_id = general_journal.tenant_account_id
+             AND fiscal_period.fiscal_period_id = general_journal.fiscal_period_id
+            WHERE posting_receipt.tenant_account_id = %s
+              AND journal_proposal_record.idempotency_key = %s
+            """,
+            (tenant_id, proposal.idempotency_key),
+        ).fetchone()
+        if row is None:
+            raise AccountingValidationError(
+                "posting receipt is missing for this idempotency key. "
+                "Accept the proposal, then retry the receipt read."
+            )
+        recorded_at = _format_timestamp(row[1])
+        return {
+            "receipt_id": str(row[0]),
+            "receipt_contract_version": 1,
+            "idempotency_key": proposal.idempotency_key,
+            "source_proposal_id": proposal.proposal_id,
+            "source_payload_hash": proposal.source_payload_hash,
+            "tenant_reference": proposal.tenant_reference,
+            "legal_entity_reference": row[9],
+            "accounting_book_reference": row[8],
+            "fiscal_period_reference": f"urn:cwl:accounting:fiscal_period:{row[10]}",
+            "journal_reference": row[3],
+            "accounting_policy_version": row[6],
+            "posting_rule_version": row[7],
+            "posting_status_code": row[2],
+            "recorded_at": recorded_at,
+            "posted_at": recorded_at,
+            "line_count": int(row[11]),
+            "transaction_currency": row[4],
+            "functional_currency": row[5],
+        }
+
     def _load_lines(
         self, connection: object, tenant_id: UUID, journal_id: UUID
     ) -> tuple[PostedJournalLine, ...]:
@@ -1487,3 +1563,7 @@ def _canonical_receipt_hash(receipt: PostingReceipt) -> str:
         sort_keys=True,
     )
     return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _format_timestamp(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
