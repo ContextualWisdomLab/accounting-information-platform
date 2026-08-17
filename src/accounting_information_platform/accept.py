@@ -334,6 +334,15 @@ def lookup_account_role_mappings(
     return ledger.load_account_role_mappings(legal_entity_reference, book_reference)
 
 
+def lookup_legal_entities(
+    database_url: str,
+    tenant_reference: str,
+) -> dict[str, object]:
+    """Return existing legal entities for the bound tenant."""
+    ledger = PostgresPostingLedger(database_url, tenant_reference)
+    return ledger.load_legal_entities()
+
+
 def lookup_accounting_books(
     database_url: str,
     tenant_reference: str,

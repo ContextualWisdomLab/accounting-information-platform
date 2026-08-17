@@ -38,6 +38,7 @@ from accounting_information_platform import (
     lookup_account_role_mappings,
     lookup_accounting_books,
     lookup_chart_accounts,
+    lookup_legal_entities,
     lookup_financial_statement,
     lookup_fiscal_period,
     lookup_fiscal_periods,
@@ -1634,6 +1635,65 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(unknown_entity[0], 404)
         self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before)
         server.shutdown()
+
+    def test_http_lists_legal_entities_for_tenant(self) -> None:
+        """GET /legal-entities returns the tenant catalog so a controller can discover legal_entity_reference."""
+        extra_entity = self._seed_entity_without_books()
+        server = self._start_http_server()
+        journals_before = self._count_table("accounting_core.general_journal")
+
+        status, document = self._http_legal_entities()
+        library = lookup_legal_entities(DATABASE_URL, self.policy.tenant_reference)
+        persist = PostgresPostingLedger(
+            DATABASE_URL, self.policy.tenant_reference
+        ).load_legal_entities()
+        by_reference = {
+            str(item["legal_entity_reference"]): item
+            for item in document["legal_entities"]
+        }
+
+        self.assertEqual(status, 200)
+        self.assertEqual(document, library)
+        self.assertEqual(document, persist)
+        self.assertEqual(document["tenant_reference"], self.policy.tenant_reference)
+        self.assertNotIn("next_cursor", document)
+        self.assertEqual(
+            set(by_reference),
+            {self.policy.legal_entity_reference, extra_entity},
+        )
+        self.assertEqual(
+            by_reference[self.policy.legal_entity_reference]["entity_name"],
+            "Statutory entity",
+        )
+        self.assertEqual(by_reference[extra_entity]["entity_name"], "Entity without books")
+
+        post_status, _post_body = self._http_json("POST", "/legal-entities", {})
+        missing_header = self._http_legal_entities(tenant_header=None)
+        cross_status, _cross = self._http_legal_entities(
+            tenant_header="urn:cwl:tenant_other"
+        )
+        self.assertEqual(post_status, 405)
+        self.assertEqual(missing_header[0], 400)
+        self.assertEqual(cross_status, 403)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before)
+        server.shutdown()
+
+        empty_tenant = self._seed_tenant_without_entities()
+        empty_library = lookup_legal_entities(DATABASE_URL, empty_tenant)
+        empty_server = self._start_http_server(empty_tenant)
+        empty_status, empty_page = self._http_legal_entities(tenant_header=empty_tenant)
+        self.assertEqual(empty_library["legal_entities"], [])
+        self.assertEqual(empty_status, 200)
+        self.assertEqual(empty_page["legal_entities"], [])
+        self.assertEqual(empty_page["tenant_reference"], empty_tenant)
+        empty_server.shutdown()
+        missing_tenant = "urn:cwl:tenant:missing_entities"
+        missing_server = self._start_http_server(missing_tenant)
+        missing_status, _missing = self._http_legal_entities(tenant_header=missing_tenant)
+        with self.assertRaisesRegex(AccountingValidationError, "tenant_account"):
+            lookup_legal_entities(DATABASE_URL, missing_tenant)
+        self.assertEqual(missing_status, 404)
+        missing_server.shutdown()
 
     def test_http_reads_income_statement_and_balance_sheet(self) -> None:
         """GET projects IAS 1 classes from the same trial-balance totals as GET /trial-balances."""
@@ -5296,9 +5356,12 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(document["line_count"], 2)
         uuid.UUID(str(document["receipt_id"]))
 
-    def _start_http_server(self):
+    def _start_http_server(self, tenant_reference: str | None = None):
         server = create_journal_proposal_server(
-            DATABASE_URL, self.policy.tenant_reference, "127.0.0.1", 0
+            DATABASE_URL,
+            self.policy.tenant_reference if tenant_reference is None else tenant_reference,
+            "127.0.0.1",
+            0,
         )
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -5391,6 +5454,19 @@ class PostgresPostingTests(unittest.TestCase):
             )
             connection.commit()
         return book_name
+
+    def _seed_tenant_without_entities(self) -> str:
+        tenant_code = f"urn:cwl:tenant:noentities_{uuid.uuid4().hex[:8]}"
+        with psycopg.connect(DATABASE_URL) as connection:
+            connection.execute(
+                """
+                INSERT INTO accounting_core.tenant_account (tenant_account_code)
+                VALUES (%s)
+                """,
+                (tenant_code,),
+            )
+            connection.commit()
+        return tenant_code
 
     def _seed_tenant_without_calendar(self) -> tuple[str, str]:
         tenant_code = f"urn:cwl:tenant:nocalendar_{uuid.uuid4().hex[:8]}"
@@ -5620,6 +5696,13 @@ class PostgresPostingTests(unittest.TestCase):
         if query:
             path = f"/journals?{urllib.parse.urlencode(query)}"
         return self._http_json("GET", path, None, tenant_header=tenant_header)
+
+    def _http_legal_entities(
+        self,
+        *,
+        tenant_header: str | None = "",
+    ) -> tuple[int, dict[str, object]]:
+        return self._http_json("GET", "/legal-entities", None, tenant_header=tenant_header)
 
     def _http_accounting_books(
         self,

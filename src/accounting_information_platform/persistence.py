@@ -1176,6 +1176,32 @@ class PostgresPostingLedger:
                 ],
             }
 
+    def load_legal_entities(self) -> dict[str, object]:
+        """Return existing legal_entity_record rows for the bound tenant."""
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            rows = connection.execute(
+                """
+                SELECT legal_entity_record.legal_entity_code,
+                       legal_entity_record.entity_name
+                FROM accounting_core.legal_entity_record
+                WHERE legal_entity_record.tenant_account_id = %s
+                  AND legal_entity_record.valid_to IS NULL
+                ORDER BY legal_entity_record.legal_entity_code
+                """,
+                (tenant_id,),
+            ).fetchall()
+        return {
+            "tenant_reference": self._tenant_reference,
+            "legal_entities": [
+                {
+                    "legal_entity_reference": legal_entity_code,
+                    "entity_name": entity_name,
+                }
+                for legal_entity_code, entity_name in rows
+            ],
+        }
+
     def load_accounting_books(self, legal_entity_reference: str) -> dict[str, object]:
         """Return existing accounting_book rows for one legal entity."""
         if not legal_entity_reference:
