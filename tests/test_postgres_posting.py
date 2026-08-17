@@ -211,6 +211,7 @@ class PostgresPostingTests(unittest.TestCase):
                 "accounts_receivable": "110100",
                 "usage_revenue": "410100",
                 "cash_receipt": "110200",
+                "tax_payable": "210100",
             },
             accounting_policy_version="ifrs-v1",
             posting_rule_version="billing-issued-v1",
@@ -889,6 +890,96 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before)
         server.shutdown()
 
+    def test_http_posts_and_pulls_billing_taxed_invoice(self) -> None:
+        """Billing #19 taxed invoice posts AR inclusive, revenue exclusive, and tax_payable."""
+        taxed = self._billing_taxed_payload()
+        untaxed = self._billing_validated_payload()
+        billing_url = self._start_fake_billing([taxed])
+        server = self._start_http_server()
+
+        self.assertEqual(
+            taxed["idempotency_key"],
+            (
+                f"{self.policy.tenant_reference}:invoice_draft:"
+                f"{taxed['proposal_id']}:{taxed['source_payload_hash']}:v1"
+            ),
+        )
+        self.assertNotIn(":tax_", str(taxed["idempotency_key"]))
+        self.assertEqual(taxed["lines"][0]["account_role_code"], "accounts_receivable")
+        self.assertEqual(taxed["lines"][1]["account_role_code"], "usage_revenue")
+        self.assertEqual(taxed["lines"][2]["account_role_code"], "tax_payable")
+
+        mapping_status, mappings = self._http_account_role_mappings()
+        pull_status, pull_body = self._http_json(
+            "POST",
+            "/billing-proposal-pulls",
+            {"tenant_reference": self.policy.tenant_reference, "billing_base_url": billing_url},
+        )
+        post_status, post_receipt = self._http_json("POST", "/journal-proposals", taxed)
+        replay_status, replay_receipt = self._http_json("POST", "/journal-proposals", taxed)
+        journal_status, journal = self._http_journal(
+            idempotency_key=str(taxed["idempotency_key"])
+        )
+        untaxed_status, untaxed_receipt = self._http_json("POST", "/journal-proposals", untaxed)
+        untaxed_journal_status, untaxed_journal = self._http_journal(
+            idempotency_key=str(untaxed["idempotency_key"])
+        )
+        by_code = {str(item["chart_account_code"]): item for item in journal["lines"]}
+        mapping_by_role = {
+            str(item["account_role_code"]): item for item in mappings["mappings"]
+        }
+
+        self.assertEqual(mapping_status, 200)
+        self.assertEqual(mapping_by_role["tax_payable"]["chart_account_code"], "210100")
+        self.assertEqual(pull_status, 200)
+        self.assertEqual(post_status, 200)
+        self.assertEqual(replay_status, 200)
+        self.assertEqual(post_receipt, replay_receipt)
+        self.assertEqual(post_receipt, pull_body["posting_receipts"][0])
+        self.assertEqual(post_receipt["line_count"], 3)
+        self.assertEqual(post_receipt["idempotency_key"], taxed["idempotency_key"])
+        self.assertEqual(journal_status, 200)
+        self.assertEqual(set(by_code), {"110100", "410100", "210100"})
+        self.assertEqual(Decimal(str(by_code["110100"]["debit_amount"])), Decimal("27500"))
+        self.assertEqual(Decimal(str(by_code["410100"]["credit_amount"])), Decimal("25000"))
+        self.assertEqual(Decimal(str(by_code["210100"]["credit_amount"])), Decimal("2500"))
+        self.assertEqual(by_code["210100"]["account_role_code"], "tax_payable")
+        self.assertEqual(untaxed_status, 200)
+        self.assertEqual(untaxed_journal_status, 200)
+        self.assertEqual(untaxed_receipt["line_count"], 2)
+        self.assertEqual(
+            {str(item["chart_account_code"]) for item in untaxed_journal["lines"]},
+            {"110100", "410100"},
+        )
+        self.assertEqual(self._count_table("accounting_core.general_journal"), 2)
+
+        journals_before = self._count_table("accounting_core.general_journal")
+        missing_taxed_id = "019d7b92-4dd3-7a7f-b61c-962c0f4bf616"
+        missing_hash = "sha256:" + "2" * 64
+        missing_taxed = self._billing_taxed_payload(
+            proposal_id=missing_taxed_id,
+            source_payload_hash=missing_hash,
+            idempotency_key=(
+                f"{self.policy.tenant_reference}:invoice_draft:"
+                f"{missing_taxed_id}:{missing_hash}:v1"
+            ),
+        )
+        self._delete_role_mapping("tax_payable")
+        missing_mapping = self._http_json("POST", "/journal-proposals", missing_taxed)
+        self._seed_role_mapping("tax_payable", "210100")
+        cross_post = self._http_json(
+            "POST",
+            "/journal-proposals",
+            taxed,
+            tenant_header="urn:cwl:tenant_other",
+        )
+        self.assertEqual(missing_mapping[0], 422)
+        self.assertIn("tax_payable", str(missing_mapping[1]["error_message"]))
+        self.assertIn("Create the account_role_mapping row", str(missing_mapping[1]["error_message"]))
+        self.assertEqual(cross_post[0], 403)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before)
+        server.shutdown()
+
     def test_http_reads_account_role_mappings_from_catalog(self) -> None:
         """GET returns seeded role-to-chart mappings and rejects cross-tenant or unknown books."""
         server = self._start_http_server()
@@ -924,11 +1015,12 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(document["book_reference"], self.policy.accounting_book_reference)
         self.assertEqual(
             set(by_code),
-            {"accounts_receivable", "usage_revenue", "cash_receipt"},
+            {"accounts_receivable", "usage_revenue", "cash_receipt", "tax_payable"},
         )
         self.assertEqual(by_code["accounts_receivable"]["chart_account_code"], "110100")
         self.assertEqual(by_code["usage_revenue"]["chart_account_code"], "410100")
         self.assertEqual(by_code["cash_receipt"]["chart_account_code"], "110200")
+        self.assertEqual(by_code["tax_payable"]["chart_account_code"], "210100")
         self.assertEqual(by_code["cash_receipt"]["accounting_policy_version"], "ifrs-v1")
         self.assertEqual(by_code["cash_receipt"]["posting_rule_version"], "billing-issued-v1")
 
@@ -1604,7 +1696,7 @@ class PostgresPostingTests(unittest.TestCase):
                 },
                 {
                     "line_number": 2,
-                    "account_role_code": "tax_payable",
+                    "account_role_code": "contract_liability",
                     "debit_amount": "0",
                     "credit_amount": "1000",
                 },
@@ -2181,26 +2273,10 @@ class PostgresPostingTests(unittest.TestCase):
 
     def test_post_proposal_catalog_misses_write_zero_rows(self) -> None:
         """Unmapped roles, missing books, and closed periods write no durable rows."""
+        self._delete_role_mapping("tax_payable")
         with self.assertRaisesRegex(AccountingValidationError, "Create the account_role_mapping row"):
             self.ledger.post_proposal(
-                ingest_journal_proposal(
-                    self._billing_validated_payload(
-                        lines=[
-                            {
-                                "line_number": 1,
-                                "account_role_code": "accounts_receivable",
-                                "debit_amount": "25000",
-                                "credit_amount": "0",
-                            },
-                            {
-                                "line_number": 2,
-                                "account_role_code": "tax_payable",
-                                "debit_amount": "0",
-                                "credit_amount": "25000",
-                            },
-                        ]
-                    )
-                )
+                ingest_journal_proposal(self._billing_taxed_payload())
             )
         with self.assertRaisesRegex(AccountingValidationError, "Create the accounting_book row"):
             self.ledger.post_proposal(
@@ -2370,6 +2446,7 @@ class PostgresPostingTests(unittest.TestCase):
                 ("110100", "Accounts receivable", "debit", "accounts_receivable"),
                 ("410100", "Usage revenue", "credit", "usage_revenue"),
                 ("110200", "Cash receipts", "debit", "cash_receipt"),
+                ("210100", "Tax payable", "credit", "tax_payable"),
             ):
                 chart_account_id = connection.execute(
                     """
@@ -2610,6 +2687,52 @@ class PostgresPostingTests(unittest.TestCase):
         values.update(overrides)
         return values
 
+    def _billing_taxed_payload(self, **overrides: object) -> dict[str, object]:
+        source_payload_hash = "sha256:" + "1" * 64
+        invoice_draft_id = "019d7b92-3cc2-7a7f-b61c-962c0f4bf614"
+        values: dict[str, object] = {
+            "proposal_id": invoice_draft_id,
+            "proposal_contract_version": 1,
+            "idempotency_key": (
+                f"{self.policy.tenant_reference}:invoice_draft:{invoice_draft_id}"
+                f":{source_payload_hash}:v1"
+            ),
+            "tenant_reference": self.policy.tenant_reference,
+            "legal_entity_reference": self.policy.legal_entity_reference,
+            "intended_book_role_code": "primary_statutory",
+            "transaction_currency": "KRW",
+            "transaction_date": "2026-08-31",
+            "accounting_date": "2026-08-31",
+            "source_payload_hash": source_payload_hash,
+            "proposed_at": "2026-08-31T00:00:00Z",
+            "proposal_status": "validated",
+            "source_event_references": (
+                f"{self.policy.tenant_reference}:invoice_draft:{invoice_draft_id}",
+            ),
+            "lines": [
+                {
+                    "line_number": 1,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "27500",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "usage_revenue",
+                    "debit_amount": "0",
+                    "credit_amount": "25000",
+                },
+                {
+                    "line_number": 3,
+                    "account_role_code": "tax_payable",
+                    "debit_amount": "0",
+                    "credit_amount": "2500",
+                },
+            ],
+        }
+        values.update(overrides)
+        return values
+
     def _billing_cash_payload(self, **overrides: object) -> dict[str, object]:
         source_payload_hash = "sha256:" + "c" * 64
         cash_receipt_id = "019d7b92-2bb1-7a7f-b61c-962c0f4bf613"
@@ -2708,6 +2831,21 @@ class PostgresPostingTests(unittest.TestCase):
                 (self.tenant_id,),
             ).fetchall()
         return {row[0] for row in rows}
+
+    def _delete_role_mapping(self, account_role_code: str) -> None:
+        with psycopg.connect(DATABASE_URL) as connection:
+            connection.execute(
+                "SELECT set_config('app.tenant_account_id', %s, false)",
+                (self.tenant_id,),
+            )
+            connection.execute(
+                """
+                DELETE FROM accounting_core.account_role_mapping
+                WHERE tenant_account_id = %s AND account_role_code = %s
+                """,
+                (self.tenant_id, account_role_code),
+            )
+            connection.commit()
 
     def _delete_role_mappings(self) -> None:
         with psycopg.connect(DATABASE_URL) as connection:

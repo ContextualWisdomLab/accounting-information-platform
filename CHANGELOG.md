@@ -11,6 +11,7 @@
 
 ### Added
 
+- Catalog `account_role_mapping` for `tax_payable` → 210100 (credit-normal current liability) so a Billing #19 three-line taxed invoice posts AR inclusive / revenue exclusive / tax payable through `post_proposal`; the invoice `invoice_draft` idempotency key is unchanged.
 - `accept_period_open`, `lookup_fiscal_period`, `POST /fiscal-periods`, and `GET /fiscal-periods` open the next `fiscal_period` row (or replay an already-open period) and read existing period status and dates; hard-closed and soft-closed periods cannot be reopened.
 - `lookup_posted_journal` and `GET /journals` return the persisted posted journal and its lines (`chart_account_code`, exact decimal debit/credit, `line_number`) by Billing `idempotency_key` or `journal_reference`; a reversing journal is returned when that identity is a reversal, missing journals fail closed, and `POST /journals` is 405.
 - `lookup_account_role_mappings` and `GET /account-role-mappings` return the existing catalog `account_role_code` → `chart_account_code` rows plus stored policy and posting-rule versions for one tenant, legal entity, and book; missing catalog fails closed and `POST /account-role-mappings` is 405.
