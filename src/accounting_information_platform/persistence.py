@@ -388,6 +388,12 @@ class PostgresPostingLedger:
                         "idempotency key was already used with a different payload"
                     )
                 return self._receipt_for_idempotency_key(connection, tenant_id, proposal)
+            if any(line.account_role_code == "retained_earnings" for line in proposal.lines):
+                raise AccountingValidationError(
+                    "retained_earnings is reserved for AIS period-close. "
+                    "Post revenue and expense through Billing, then hard-close; "
+                    "no journal was written."
+                )
             if policy is None:
                 policy = self._resolve_accounting_policy(connection, tenant_id, proposal)
             PostingLedger._validate_policy_scope(proposal, policy)
@@ -1408,36 +1414,75 @@ class PostgresPostingLedger:
         account_facts = self._load_statement_account_facts(
             legal_entity_reference, accounting_book_reference
         )
+        if statement_type_code == "income_statement":
+            source_lines = self._load_operational_income_lines(
+                legal_entity_reference=legal_entity_reference,
+                accounting_book_reference=accounting_book_reference,
+                period_code=period_code,
+            )
+        else:
+            source_lines = []
+            for raw_line in trial_balance["lines"]:
+                account_code = str(raw_line["chart_account_code"])
+                account_fact = account_facts.get(account_code)
+                if account_fact is None:
+                    raise AccountingValidationError(
+                        f"account_role_mapping is missing for chart account {account_code}. "
+                        "Create the account_role_mapping row, then retry the financial-statement read."
+                    )
+                account_role_code, account_class_code = account_fact
+                if account_class_code not in allowed_classes:
+                    continue
+                source_lines.append(
+                    {
+                        "chart_account_code": account_code,
+                        "account_role_code": account_role_code,
+                        "account_class_code": account_class_code,
+                        "debit_amount": Decimal(str(raw_line["debit_amount"])),
+                        "credit_amount": Decimal(str(raw_line["credit_amount"])),
+                    }
+                )
         statement_lines: list[dict[str, str]] = []
         total_debit_amount = Decimal("0")
         total_credit_amount = Decimal("0")
-        net_income_amount = Decimal("0")
-        for raw_line in trial_balance["lines"]:
-            account_code = str(raw_line["chart_account_code"])
-            account_fact = account_facts.get(account_code)
-            if account_fact is None:
-                raise AccountingValidationError(
-                    f"account_role_mapping is missing for chart account {account_code}. "
-                    "Create the account_role_mapping row, then retry the financial-statement read."
-                )
-            account_role_code, account_class_code = account_fact
+        for raw_line in source_lines:
             debit_amount = Decimal(str(raw_line["debit_amount"]))
             credit_amount = Decimal(str(raw_line["credit_amount"]))
-            if account_class_code in {"revenue", "expense"}:
-                net_income_amount += credit_amount - debit_amount
-            if account_class_code not in allowed_classes:
-                continue
             statement_lines.append(
                 {
-                    "chart_account_code": account_code,
-                    "account_role_code": account_role_code,
-                    "account_class_code": account_class_code,
+                    "chart_account_code": str(raw_line["chart_account_code"]),
+                    "account_role_code": str(raw_line["account_role_code"]),
+                    "account_class_code": str(raw_line["account_class_code"]),
                     "debit_amount": _exact_amount_text(debit_amount),
                     "credit_amount": _exact_amount_text(credit_amount),
                 }
             )
             total_debit_amount += debit_amount
             total_credit_amount += credit_amount
+        if statement_type_code == "income_statement":
+            net_income_amount = sum(
+                (
+                    Decimal(str(raw_line["credit_amount"]))
+                    - Decimal(str(raw_line["debit_amount"]))
+                    for raw_line in source_lines
+                ),
+                Decimal("0"),
+            )
+        elif str(trial_balance["period_status_code"]) == "hard_closed":
+            net_income_amount = Decimal("0")
+        else:
+            net_income_amount = sum(
+                (
+                    Decimal(str(raw_line["credit_amount"]))
+                    - Decimal(str(raw_line["debit_amount"]))
+                    for raw_line in self._load_operational_income_lines(
+                        legal_entity_reference=legal_entity_reference,
+                        accounting_book_reference=accounting_book_reference,
+                        period_code=period_code,
+                    )
+                ),
+                Decimal("0"),
+            )
         return {
             "tenant_reference": self._tenant_reference,
             "legal_entity_reference": legal_entity_reference,
@@ -1489,6 +1534,89 @@ class PostgresPostingLedger:
             str(account_code): (str(account_role_code), str(account_class_code))
             for account_code, account_role_code, account_class_code in rows
         }
+
+    def _load_operational_income_lines(
+        self,
+        *,
+        legal_entity_reference: str,
+        accounting_book_reference: str,
+        period_code: str,
+    ) -> list[dict[str, object]]:
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            legal_entity_id = self._require_legal_entity(
+                connection,
+                tenant_id,
+                legal_entity_reference,
+                next_action="the financial-statement read",
+            )
+            book_id = self._require_book_for_close(
+                connection,
+                tenant_id,
+                legal_entity_id,
+                accounting_book_reference,
+                next_action="the financial-statement read",
+            )[0]
+            _period_id, _period_status_code, period_end_date = self._require_fiscal_period(
+                connection,
+                tenant_id,
+                period_code,
+                next_action="the financial-statement read",
+            )
+            rows = connection.execute(
+                """
+                SELECT chart_account.chart_account_code,
+                       account_role_mapping.account_role_code,
+                       chart_account.account_class_code,
+                       SUM(journal_entry_line.debit_amount),
+                       SUM(journal_entry_line.credit_amount)
+                FROM accounting_core.journal_entry_line
+                JOIN accounting_core.general_journal
+                  ON general_journal.tenant_account_id = journal_entry_line.tenant_account_id
+                 AND general_journal.general_journal_id = journal_entry_line.general_journal_id
+                JOIN accounting_core.chart_account
+                  ON chart_account.tenant_account_id = journal_entry_line.tenant_account_id
+                 AND chart_account.chart_account_id = journal_entry_line.chart_account_id
+                LEFT JOIN accounting_core.account_role_mapping
+                  ON account_role_mapping.tenant_account_id = chart_account.tenant_account_id
+                 AND account_role_mapping.chart_account_id = chart_account.chart_account_id
+                 AND account_role_mapping.valid_to IS NULL
+                WHERE general_journal.tenant_account_id = %s
+                  AND general_journal.legal_entity_id = %s
+                  AND general_journal.accounting_book_id = %s
+                  AND general_journal.accounting_date <= %s
+                  AND chart_account.account_class_code IN ('revenue', 'expense')
+                  AND general_journal.journal_reference NOT LIKE %s
+                GROUP BY chart_account.chart_account_code,
+                         account_role_mapping.account_role_code,
+                         chart_account.account_class_code
+                ORDER BY chart_account.chart_account_code
+                """,
+                (
+                    tenant_id,
+                    legal_entity_id,
+                    book_id,
+                    period_end_date,
+                    "urn:cwl:accounting:general_journal:period_closing:%",
+                ),
+            ).fetchall()
+        lines: list[dict[str, object]] = []
+        for account_code, account_role_code, account_class_code, debit_total, credit_total in rows:
+            if account_role_code is None:
+                raise AccountingValidationError(
+                    f"account_role_mapping is missing for chart account {account_code}. "
+                    "Create the account_role_mapping row, then retry the financial-statement read."
+                )
+            lines.append(
+                {
+                    "chart_account_code": str(account_code),
+                    "account_role_code": str(account_role_code),
+                    "account_class_code": str(account_class_code),
+                    "debit_amount": Decimal(debit_total),
+                    "credit_amount": Decimal(credit_total),
+                }
+            )
+        return lines
 
     @contextmanager
     def _session(self) -> Iterator[object]:
@@ -2151,6 +2279,18 @@ class PostgresPostingLedger:
         legal_entity_reference: str,
         accounting_book_reference: str,
     ) -> PeriodCloseReceipt:
+        self._post_closing_journal(
+            connection,
+            tenant_id=tenant_id,
+            legal_entity_id=legal_entity_id,
+            book_id=book_id,
+            period_id=period_id,
+            period_code=period_code,
+            period_end_date=period_end_date,
+            snapshot_currency_code=snapshot_currency_code,
+            legal_entity_reference=legal_entity_reference,
+            accounting_book_reference=accounting_book_reference,
+        )
         lines, source_journal_count, source_payload_hash = self._live_close_source(
             connection,
             tenant_id=tenant_id,
@@ -2219,6 +2359,199 @@ class PostgresPostingLedger:
             source_journal_count=source_journal_count,
             source_payload_hash=source_payload_hash,
             replayed=False,
+        )
+
+    def _post_closing_journal(
+        self,
+        connection: object,
+        *,
+        tenant_id: UUID,
+        legal_entity_id: UUID,
+        book_id: UUID,
+        period_id: UUID,
+        period_code: str,
+        period_end_date: date,
+        snapshot_currency_code: str,
+        legal_entity_reference: str,
+        accounting_book_reference: str,
+    ) -> None:
+        closing_reference = (
+            f"urn:cwl:accounting:general_journal:period_closing:{period_code}"
+        )
+        income_rows = connection.execute(
+            """
+            SELECT chart_account.chart_account_code,
+                   account_role_mapping.account_role_code,
+                   SUM(journal_entry_line.debit_amount),
+                   SUM(journal_entry_line.credit_amount)
+            FROM accounting_core.journal_entry_line
+            JOIN accounting_core.general_journal
+              ON general_journal.tenant_account_id = journal_entry_line.tenant_account_id
+             AND general_journal.general_journal_id = journal_entry_line.general_journal_id
+            JOIN accounting_core.chart_account
+              ON chart_account.tenant_account_id = journal_entry_line.tenant_account_id
+             AND chart_account.chart_account_id = journal_entry_line.chart_account_id
+            JOIN accounting_core.account_role_mapping
+              ON account_role_mapping.tenant_account_id = chart_account.tenant_account_id
+             AND account_role_mapping.chart_account_id = chart_account.chart_account_id
+             AND account_role_mapping.valid_to IS NULL
+            WHERE general_journal.tenant_account_id = %s
+              AND general_journal.legal_entity_id = %s
+              AND general_journal.accounting_book_id = %s
+              AND general_journal.accounting_date <= %s
+              AND chart_account.account_class_code IN ('revenue', 'expense')
+            GROUP BY chart_account.chart_account_code, account_role_mapping.account_role_code
+            ORDER BY chart_account.chart_account_code
+            """,
+            (tenant_id, legal_entity_id, book_id, period_end_date),
+        ).fetchall()
+        closing_lines: list[PostedJournalLine] = []
+        retained_earnings_amount = Decimal("0")
+        for account_code, role_code, debit_total, credit_total in income_rows:
+            net_amount = Decimal(credit_total) - Decimal(debit_total)
+            if net_amount == 0:
+                continue
+            line_number = len(closing_lines) + 1
+            if net_amount > 0:
+                closing_lines.append(
+                    PostedJournalLine(
+                        line_number=line_number,
+                        chart_account_code=str(account_code),
+                        account_role_code=str(role_code),
+                        debit_amount=net_amount,
+                        credit_amount=Decimal("0"),
+                    )
+                )
+            else:
+                closing_lines.append(
+                    PostedJournalLine(
+                        line_number=line_number,
+                        chart_account_code=str(account_code),
+                        account_role_code=str(role_code),
+                        debit_amount=Decimal("0"),
+                        credit_amount=-net_amount,
+                    )
+                )
+            retained_earnings_amount += net_amount
+        if not closing_lines:
+            return
+        policy_version, rule_version = self._require_retained_earnings_mapping(
+            connection, tenant_id, book_id
+        )
+        if retained_earnings_amount > 0:
+            closing_lines.append(
+                PostedJournalLine(
+                    line_number=len(closing_lines) + 1,
+                    chart_account_code="310100",
+                    account_role_code="retained_earnings",
+                    debit_amount=Decimal("0"),
+                    credit_amount=retained_earnings_amount,
+                )
+            )
+        elif retained_earnings_amount < 0:
+            closing_lines.append(
+                PostedJournalLine(
+                    line_number=len(closing_lines) + 1,
+                    chart_account_code="310100",
+                    account_role_code="retained_earnings",
+                    debit_amount=-retained_earnings_amount,
+                    credit_amount=Decimal("0"),
+                )
+            )
+        source_payload_hash = _canonical_closing_hash(
+            tenant_reference=self._tenant_reference,
+            legal_entity_reference=legal_entity_reference,
+            accounting_book_reference=accounting_book_reference,
+            period_code=period_code,
+            lines=tuple(closing_lines),
+        )
+        proposal_record_id = connection.execute(
+            """
+            INSERT INTO accounting_integration.journal_proposal_record (
+                tenant_account_id, external_proposal_id, proposal_contract_version,
+                idempotency_key, source_payload_hash, proposal_status_code, processed_at
+            )
+            VALUES (%s, uuidv7(), 1, %s, %s, 'posted', clock_timestamp())
+            RETURNING proposal_record_id
+            """,
+            (
+                tenant_id,
+                f"{self._tenant_reference}:period_closing:{period_code}",
+                source_payload_hash,
+            ),
+        ).fetchone()[0]
+        policy = AccountingPolicy(
+            tenant_reference=self._tenant_reference,
+            legal_entity_reference=legal_entity_reference,
+            accounting_book_reference=accounting_book_reference,
+            intended_book_role_code=self._book_role_code(connection, tenant_id, book_id),
+            transaction_currency=snapshot_currency_code,
+            functional_currency=snapshot_currency_code,
+            open_period_start=period_end_date,
+            open_period_end=period_end_date,
+            chart_account_mapping={"retained_earnings": "310100"},
+            accounting_policy_version=policy_version,
+            posting_rule_version=rule_version,
+        )
+        self._insert_journal(
+            connection,
+            tenant_id=tenant_id,
+            legal_entity_id=legal_entity_id,
+            book_id=book_id,
+            period_id=period_id,
+            journal_reference=closing_reference,
+            proposal=_ClosingProposal(
+                source_payload_hash=source_payload_hash,
+                transaction_currency=snapshot_currency_code,
+                transaction_date=period_end_date,
+                accounting_date=period_end_date,
+                source_event_references=(),
+            ),
+            policy=policy,
+            proposal_record_id=proposal_record_id,
+            lines=tuple(closing_lines),
+        )
+
+    def _require_retained_earnings_mapping(
+        self, connection: object, tenant_id: UUID, book_id: UUID
+    ) -> tuple[str, str]:
+        row = connection.execute(
+            """
+            SELECT account_role_mapping.accounting_policy_version,
+                   account_role_mapping.posting_rule_version
+            FROM accounting_core.account_role_mapping
+            JOIN accounting_core.chart_account
+              ON chart_account.tenant_account_id = account_role_mapping.tenant_account_id
+             AND chart_account.chart_account_id = account_role_mapping.chart_account_id
+            WHERE account_role_mapping.tenant_account_id = %s
+              AND account_role_mapping.accounting_book_id = %s
+              AND account_role_mapping.account_role_code = 'retained_earnings'
+              AND chart_account.chart_account_code = '310100'
+              AND account_role_mapping.valid_to IS NULL
+              AND chart_account.valid_to IS NULL
+            """,
+            (tenant_id, book_id),
+        ).fetchone()
+        if row is None:
+            raise AccountingValidationError(
+                "account_role_mapping is missing for retained_earnings → 310100. "
+                "Create the retained_earnings mapping and chart_account 310100, "
+                "then retry the close."
+            )
+        return str(row[0]), str(row[1])
+
+    def _book_role_code(
+        self, connection: object, tenant_id: UUID, book_id: UUID
+    ) -> str:
+        return str(
+            connection.execute(
+                """
+                SELECT book_role_code
+                FROM accounting_core.accounting_book
+                WHERE tenant_account_id = %s AND accounting_book_id = %s
+                """,
+                (tenant_id, book_id),
+            ).fetchone()[0]
         )
 
     def _set_period_closed(
@@ -2302,7 +2635,7 @@ class PostgresPostingLedger:
         book_id: UUID,
         period_id: UUID,
         journal_reference: str,
-        proposal: JournalProposal | _ReversalProposal,
+        proposal: JournalProposal | _ReversalProposal | _ClosingProposal,
         policy: AccountingPolicy,
         proposal_record_id: UUID,
         lines: tuple[PostedJournalLine, ...],
@@ -2764,6 +3097,25 @@ class PostgresPostingLedger:
         ).fetchone()[0]
 
 
+class _ClosingProposal:
+    """Minimal proposal shape used when persisting an AIS period-closing journal."""
+
+    def __init__(
+        self,
+        *,
+        source_payload_hash: str,
+        transaction_currency: str,
+        transaction_date: date,
+        accounting_date: date,
+        source_event_references: tuple[str, ...],
+    ) -> None:
+        self.source_payload_hash = source_payload_hash
+        self.transaction_currency = transaction_currency
+        self.transaction_date = transaction_date
+        self.accounting_date = accounting_date
+        self.source_event_references = source_event_references
+
+
 class _ReversalProposal:
     """Minimal proposal shape used when persisting an equal-and-opposite journal."""
 
@@ -2855,6 +3207,37 @@ def _canonical_snapshot_hash(
             "period_code": period_code,
             "snapshot_currency_code": snapshot_currency_code,
             "source_journal_count": source_journal_count,
+            "tenant_reference": tenant_reference,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _canonical_closing_hash(
+    *,
+    tenant_reference: str,
+    legal_entity_reference: str,
+    accounting_book_reference: str,
+    period_code: str,
+    lines: tuple[PostedJournalLine, ...],
+) -> str:
+    payload = json.dumps(
+        {
+            "accounting_book_reference": accounting_book_reference,
+            "legal_entity_reference": legal_entity_reference,
+            "lines": [
+                {
+                    "account_role_code": line.account_role_code,
+                    "chart_account_code": line.chart_account_code,
+                    "credit_amount": format(line.credit_amount, "f"),
+                    "debit_amount": format(line.debit_amount, "f"),
+                    "line_number": line.line_number,
+                }
+                for line in lines
+            ],
+            "period_code": period_code,
             "tenant_reference": tenant_reference,
         },
         separators=(",", ":"),

@@ -505,18 +505,22 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertFalse(receipt.replayed)
         self.assertEqual(receipt.period_code, "2026-08")
         self.assertEqual(receipt.period_status_code, "hard_closed")
-        self.assertEqual(receipt.source_journal_count, 1)
+        self.assertEqual(receipt.source_journal_count, 2)
         self.assertEqual(self._period_status("2026-08"), "hard_closed")
         self.assertIsNotNone(self._period_closed_at("2026-08"))
         self.assertEqual(self._count_table("accounting_reporting.trial_balance_snapshot"), 1)
-        self.assertEqual(self._count_table("accounting_reporting.trial_balance_line"), 2)
+        self.assertEqual(self._count_table("accounting_reporting.trial_balance_line"), 3)
         self.assertEqual(self._count_outbox("period_close"), 1)
+        self.assertEqual(self._count_closing_journals(), 1)
         self.assertEqual(snapshot_lines["110100"][0], Decimal("25000"))
+        self.assertEqual(snapshot_lines["410100"][0], Decimal("25000"))
         self.assertEqual(snapshot_lines["410100"][1], Decimal("25000"))
+        self.assertEqual(snapshot_lines["310100"][1], Decimal("25000"))
         self.assertEqual(snapshot_lines["110100"][0], population["110100"][0])
         self.assertEqual(snapshot_lines["410100"][1], population["410100"][1])
         self.assertEqual(snapshot_lines["110100"][2], Decimal("25000"))
-        self.assertEqual(snapshot_lines["410100"][2], Decimal("-25000"))
+        self.assertEqual(snapshot_lines["410100"][2], Decimal("0"))
+        self.assertEqual(snapshot_lines["310100"][2], Decimal("-25000"))
 
     def test_close_then_ordinary_post_writes_zero_rows(self) -> None:
         """A later ordinary post into a closed period writes no durable rows."""
@@ -536,11 +540,11 @@ class PostgresPostingTests(unittest.TestCase):
                 self.policy,
             )
 
-        self.assertEqual(self._count_table("accounting_integration.journal_proposal_record"), 1)
-        self.assertEqual(self._count_table("accounting_core.general_journal"), 1)
-        self.assertEqual(self._count_table("accounting_core.journal_entry_line"), 2)
+        self.assertEqual(self._count_table("accounting_integration.journal_proposal_record"), 2)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), 2)
+        self.assertEqual(self._count_table("accounting_core.journal_entry_line"), 4)
         self.assertEqual(self._count_table("accounting_integration.posting_receipt"), 1)
-        self.assertEqual(self.ledger.journal_count, 1)
+        self.assertEqual(self.ledger.journal_count, 2)
 
     def test_reclose_is_idempotent(self) -> None:
         """Re-closing a hard-closed period replays the same snapshot and event."""
@@ -552,10 +556,11 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(second.snapshot_record_id, first.snapshot_record_id)
         self.assertEqual(second.source_payload_hash, first.source_payload_hash)
         self.assertEqual(second.snapshot_generated_at, first.snapshot_generated_at)
-        self.assertEqual(second.source_journal_count, 1)
+        self.assertEqual(second.source_journal_count, 2)
         self.assertEqual(self._count_table("accounting_reporting.trial_balance_snapshot"), 1)
-        self.assertEqual(self._count_table("accounting_reporting.trial_balance_line"), 2)
+        self.assertEqual(self._count_table("accounting_reporting.trial_balance_line"), 3)
         self.assertEqual(self._count_outbox("period_close"), 1)
+        self.assertEqual(self._count_closing_journals(), 1)
 
     def test_open_period_still_accepts_posts(self) -> None:
         """Closing one period does not block ordinary posting into a later open period."""
@@ -578,7 +583,7 @@ class PostgresPostingTests(unittest.TestCase):
         )
 
         self.assertEqual(later.posting_status_code, "posted")
-        self.assertEqual(self.ledger.journal_count, 2)
+        self.assertEqual(self.ledger.journal_count, 3)
         self.assertEqual(self._period_status("2026-08"), "hard_closed")
         self.assertEqual(self._period_status("2026-09"), "open")
 
@@ -607,6 +612,7 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(replayed_soft.source_payload_hash, soft.source_payload_hash)
         self.assertEqual(self._count_table("accounting_reporting.trial_balance_snapshot"), 0)
         self.assertEqual(self._count_outbox("period_close"), 1)
+        self.assertEqual(self._count_closing_journals(), 0)
 
         with self.assertRaisesRegex(
             AccountingValidationError,
@@ -657,13 +663,22 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertFalse(hard.replayed)
         self.assertEqual(hard.period_status_code, "hard_closed")
         self.assertTrue(hard.snapshot_record_id)
-        self.assertEqual(hard.source_journal_count, 3)
+        self.assertEqual(hard.source_journal_count, 4)
         self.assertEqual(snapshots_after_hard, 1)
         self.assertEqual(outbox_after_hard, 2)
+        self.assertEqual(self._count_closing_journals(), 1)
         self.assertEqual(snapshot["balance_source_code"], "snapshot")
         self.assertEqual(snapshot["period_status_code"], "hard_closed")
         self.assertEqual(
             Decimal(str(self._trial_balance_line(snapshot, "110100")["net_balance_amount"])),
+            Decimal("25000"),
+        )
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(snapshot, "410100")["net_balance_amount"])),
+            Decimal("0"),
+        )
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(snapshot, "310100")["credit_amount"])),
             Decimal("25000"),
         )
 
@@ -682,7 +697,7 @@ class PostgresPostingTests(unittest.TestCase):
             "cannot be soft-closed",
         ):
             self._close_period(period_status_code="soft_closed")
-        self.assertEqual(self.ledger.journal_count, 3)
+        self.assertEqual(self.ledger.journal_count, 4)
         self.assertEqual(
             self._count_table("accounting_reporting.trial_balance_snapshot"),
             snapshots_after_hard,
@@ -693,10 +708,31 @@ class PostgresPostingTests(unittest.TestCase):
     def test_close_empty_period_and_catalog_failures_name_the_next_action(self) -> None:
         """Empty-period close is durable; catalog and status errors name the retry action."""
         empty = self._close_period()
+        empty_income = lookup_financial_statement(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-08",
+            "income_statement",
+        )
+        empty_sheet = lookup_financial_statement(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-08",
+            "balance_sheet",
+        )
         self.assertEqual(empty.source_journal_count, 0)
+        self.assertEqual(self._count_closing_journals(), 0)
         self.assertEqual(self._count_table("accounting_reporting.trial_balance_snapshot"), 1)
         self.assertEqual(self._count_table("accounting_reporting.trial_balance_line"), 0)
         self.assertEqual(self._period_status("2026-08"), "hard_closed")
+        self.assertEqual(empty_income["statement_lines"], [])
+        self.assertEqual(empty_income["net_income_amount"], "0")
+        self.assertEqual(empty_sheet["statement_lines"], [])
+        self.assertEqual(empty_sheet["net_income_amount"], "0")
 
         with self.assertRaisesRegex(AccountingValidationError, "Create the fiscal_period row"):
             self._close_period(period_code="2026-10")
@@ -726,6 +762,146 @@ class PostgresPostingTests(unittest.TestCase):
                 period_code="2026-08",
                 snapshot_currency_code="KRW",
             )
+
+    def test_hard_close_parks_earnings_and_rejects_billing_retained_earnings(self) -> None:
+        """Hard-close posts one AIS closing journal; Billing cannot use retained_earnings."""
+        self.ledger.post(self._two_line_proposal(), self.policy)
+        soft = self._close_period(period_status_code="soft_closed")
+        self.assertEqual(soft.period_status_code, "soft_closed")
+        self.assertEqual(self._count_closing_journals(), 0)
+        live = self.ledger.load_period_trial_balance(
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "2026-08",
+        )
+        self.assertNotIn(
+            "310100",
+            {str(item["chart_account_code"]) for item in live["lines"]},
+        )
+
+        hard = self._close_period()
+        replayed = self._close_period()
+        snapshot = self.ledger.load_period_trial_balance(
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "2026-08",
+        )
+        self.assertFalse(hard.replayed)
+        self.assertTrue(replayed.replayed)
+        self.assertEqual(self._count_closing_journals(), 1)
+        self.assertEqual(hard.source_journal_count, 2)
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(snapshot, "410100")["net_balance_amount"])),
+            Decimal("0"),
+        )
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(snapshot, "310100")["credit_amount"])),
+            Decimal("25000"),
+        )
+
+        loss_ledger_journals = self.ledger.journal_count
+        self._seed_additional_period("2026-09", date(2026, 9, 1), date(2026, 9, 30))
+        self.ledger.post(
+            self._two_line_proposal(
+                proposal_id=str(uuid.uuid4()),
+                idempotency_key="credit-loss-v1",
+                accounting_date=date(2026, 9, 15),
+                transaction_date=date(2026, 9, 15),
+                source_payload_hash="sha256:" + "9" * 64,
+                lines=(
+                    JournalLineProposal(1, "usage_revenue", "4000", "0"),
+                    JournalLineProposal(2, "accounts_receivable", "0", "4000"),
+                ),
+            ),
+            self._policy_with(
+                open_period_start=date(2026, 9, 1),
+                open_period_end=date(2026, 9, 30),
+            ),
+        )
+        september = self._close_period(period_code="2026-09")
+        self.assertEqual(september.source_journal_count, 4)
+        self.assertEqual(self._count_closing_journals(), 2)
+        self.assertEqual(self.ledger.journal_count, loss_ledger_journals + 2)
+
+        with self.assertRaisesRegex(
+            AccountingValidationError,
+            "retained_earnings is reserved for AIS period-close",
+        ):
+            self.ledger.post(
+                self._two_line_proposal(
+                    proposal_id=str(uuid.uuid4()),
+                    idempotency_key="billing-retained-earnings",
+                    source_payload_hash="sha256:" + "8" * 64,
+                    lines=(
+                        JournalLineProposal(1, "accounts_receivable", "1000", "0"),
+                        JournalLineProposal(2, "retained_earnings", "0", "1000"),
+                    ),
+                ),
+                self._policy_with(
+                    chart_account_mapping={
+                        **self.policy.chart_account_mapping,
+                        "retained_earnings": "310100",
+                    }
+                ),
+            )
+
+    def test_hard_close_without_retained_earnings_mapping_writes_zero_rows(self) -> None:
+        """Missing retained_earnings catalog fails closed and writes no close rows."""
+        self.ledger.post(self._two_line_proposal(), self.policy)
+        self._delete_role_mapping("retained_earnings")
+        with self.assertRaisesRegex(
+            AccountingValidationError,
+            "retained_earnings",
+        ):
+            self._close_period()
+        self.assertEqual(self._period_status("2026-08"), "open")
+        self.assertEqual(self._count_closing_journals(), 0)
+        self.assertEqual(self._count_table("accounting_reporting.trial_balance_snapshot"), 0)
+        self.assertEqual(self.ledger.journal_count, 1)
+
+    def test_hard_close_clears_offsetting_revenue_and_expense_without_earnings_plug(
+        self,
+    ) -> None:
+        """Zero net income still closes income-statement balances when they are non-zero."""
+        self._seed_expense_account()
+        self.ledger.post(self._two_line_proposal(), self.policy)
+        self.ledger.post(
+            self._two_line_proposal(
+                proposal_id=str(uuid.uuid4()),
+                idempotency_key="usage-cost-v1",
+                source_payload_hash="sha256:" + "7" * 64,
+                lines=(
+                    JournalLineProposal(1, "usage_cost", "25000", "0"),
+                    JournalLineProposal(2, "accounts_receivable", "0", "25000"),
+                ),
+            ),
+            self._policy_with(
+                chart_account_mapping={
+                    **self.policy.chart_account_mapping,
+                    "usage_cost": "510100",
+                }
+            ),
+        )
+        receipt = self._close_period()
+        snapshot = self.ledger.load_period_trial_balance(
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "2026-08",
+        )
+        self.assertEqual(self._count_closing_journals(), 1)
+        self.assertEqual(receipt.source_journal_count, 3)
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(snapshot, "410100")["net_balance_amount"])),
+            Decimal("0"),
+        )
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(snapshot, "510100")["net_balance_amount"])),
+            Decimal("0"),
+        )
+        self.assertNotIn(
+            "310100",
+            {str(item["chart_account_code"]) for item in snapshot["lines"]},
+        )
 
     def test_post_proposal_resolves_catalog_policy_from_billing_ingest(self) -> None:
         """A Billing validated proposal posts with AIS catalog mapping and versions."""
@@ -811,6 +987,10 @@ class PostgresPostingTests(unittest.TestCase):
             period_code="2026-08",
             snapshot_currency_code="KRW",
         )
+        journals_after_close = self._count_table("accounting_core.general_journal")
+        proposals_after_close = self._count_table(
+            "accounting_integration.journal_proposal_record"
+        )
         closed = self._billing_validated_payload(
             proposal_id=str(uuid.uuid4()),
             idempotency_key=f"{self.policy.tenant_reference}:invoice_draft:closed:sha256:{'b' * 64}:v1",
@@ -822,8 +1002,13 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(draft_status, 422)
         self.assertEqual(reject_status, 422)
         self.assertEqual(closed_status, 422)
-        self.assertEqual(self._count_table("accounting_core.general_journal"), 1)
-        self.assertEqual(self._count_table("accounting_integration.journal_proposal_record"), 1)
+        self.assertEqual(journals_after_close, 2)
+        self.assertEqual(self._count_closing_journals(), 1)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), journals_after_close)
+        self.assertEqual(
+            self._count_table("accounting_integration.journal_proposal_record"),
+            proposals_after_close,
+        )
         server.shutdown()
 
     def test_http_posts_and_looks_up_invoice_and_cash_receipts(self) -> None:
@@ -1190,12 +1375,19 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(document["book_reference"], self.policy.accounting_book_reference)
         self.assertEqual(
             set(by_code),
-            {"accounts_receivable", "usage_revenue", "cash_receipt", "tax_payable"},
+            {
+                "accounts_receivable",
+                "usage_revenue",
+                "cash_receipt",
+                "tax_payable",
+                "retained_earnings",
+            },
         )
         self.assertEqual(by_code["accounts_receivable"]["chart_account_code"], "110100")
         self.assertEqual(by_code["usage_revenue"]["chart_account_code"], "410100")
         self.assertEqual(by_code["cash_receipt"]["chart_account_code"], "110200")
         self.assertEqual(by_code["tax_payable"]["chart_account_code"], "210100")
+        self.assertEqual(by_code["retained_earnings"]["chart_account_code"], "310100")
         self.assertEqual(by_code["cash_receipt"]["accounting_policy_version"], "ifrs-v1")
         self.assertEqual(by_code["cash_receipt"]["posting_rule_version"], "billing-issued-v1")
 
@@ -1292,7 +1484,7 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(document["legal_entity_reference"], self.policy.legal_entity_reference)
         self.assertEqual(document["accounting_book_reference"], self.policy.accounting_book_reference)
         self.assertEqual(document["book_reference"], self.policy.accounting_book_reference)
-        self.assertEqual(set(by_code), {"110100", "410100", "110200", "210100"})
+        self.assertEqual(set(by_code), {"110100", "410100", "110200", "210100", "310100"})
         self.assertEqual(by_code["110100"]["account_name"], "Accounts receivable")
         self.assertEqual(by_code["110100"]["normal_balance_code"], "debit")
         self.assertEqual(by_code["110100"]["account_class_code"], "asset")
@@ -1305,6 +1497,9 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(by_code["210100"]["account_name"], "Tax payable")
         self.assertEqual(by_code["210100"]["normal_balance_code"], "credit")
         self.assertEqual(by_code["210100"]["account_class_code"], "liability")
+        self.assertEqual(by_code["310100"]["account_name"], "Retained earnings")
+        self.assertEqual(by_code["310100"]["normal_balance_code"], "credit")
+        self.assertEqual(by_code["310100"]["account_class_code"], "equity")
         self.assertEqual(empty_status, 200)
         self.assertEqual(empty_page["chart_accounts"], [])
         self.assertEqual(empty_page["book_reference"], empty_book)
@@ -1607,7 +1802,12 @@ class PostgresPostingTests(unittest.TestCase):
         )
         self.assertEqual(closed_sheet["statement_lines"], sheet["statement_lines"])
         self.assertEqual(closed_income["net_income_amount"], income["net_income_amount"])
-        self.assertEqual(closed_sheet["net_income_amount"], sheet["net_income_amount"])
+        self.assertEqual(closed_sheet["net_income_amount"], "0")
+        self.assertEqual(self._count_closing_journals(), 0)
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(closed_tb, "410100")["net_balance_amount"])),
+            Decimal("0"),
+        )
         self.assertEqual(
             Decimal(str(self._trial_balance_line(closed_tb, "410100")["debit_amount"])),
             Decimal(str(income_by_code["410100"]["debit_amount"])),
@@ -1699,6 +1899,15 @@ class PostgresPostingTests(unittest.TestCase):
                 "urn:cwl:accounting:fiscal_period:2026-08",
                 "income_statement",
             )
+        with self.assertRaisesRegex(AccountingValidationError, "account_role_mapping"):
+            lookup_financial_statement(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "urn:cwl:accounting:fiscal_period:2026-08",
+                "balance_sheet",
+            )
         self._seed_role_mapping("usage_revenue", "410100")
 
         self.assertEqual(post_status, 405)
@@ -1712,6 +1921,108 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(unknown_entity[0], 404)
         self.assertEqual(missing_book[0], 404)
         self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before + 3)
+        server.shutdown()
+
+    def test_http_hard_close_parks_earnings_in_retained_earnings(self) -> None:
+        """Hard-close parks remaining earnings in 310100 and keeps pre-close P&L."""
+        taxed = self._billing_taxed_payload()
+        cash = self._billing_cash_payload()
+        taxed_credit = self._billing_taxed_credit_payload()
+        remaining = self._billing_validated_payload()
+        server = self._start_http_server()
+        self._http_json("POST", "/journal-proposals", taxed)
+        self._http_json("POST", "/journal-proposals", cash)
+        self._http_json("POST", "/journal-proposals", taxed_credit)
+        self._http_json("POST", "/journal-proposals", remaining)
+        pre_income_status, pre_income = self._http_financial_statement("income_statement")
+        pre_sheet_status, pre_sheet = self._http_financial_statement("balance_sheet")
+        soft_status, _soft = self._http_json(
+            "POST",
+            "/period-closes",
+            self._period_close_payload(period_status_code="soft_closed"),
+        )
+        soft_tb_status, soft_tb = self._http_trial_balance()
+        self.assertEqual(soft_status, 200)
+        self.assertEqual(soft_tb_status, 200)
+        self.assertEqual(self._count_closing_journals(), 0)
+        self.assertNotIn(
+            "310100",
+            {str(item["chart_account_code"]) for item in soft_tb["lines"]},
+        )
+        hard_status, hard_receipt = self._http_json(
+            "POST", "/period-closes", self._period_close_payload()
+        )
+        replay_status, replay_receipt = self._http_json(
+            "POST", "/period-closes", self._period_close_payload()
+        )
+        closed_income_status, closed_income = self._http_financial_statement(
+            "income_statement"
+        )
+        closed_sheet_status, closed_sheet = self._http_financial_statement(
+            "balance_sheet"
+        )
+        closed_tb_status, closed_tb = self._http_trial_balance()
+        mapping_status, mappings = self._http_account_role_mappings()
+        chart_status, charts = self._http_chart_accounts()
+        snapshots = self._count_table("accounting_reporting.trial_balance_snapshot")
+        cross_status, _cross = self._http_json(
+            "POST",
+            "/period-closes",
+            self._period_close_payload(),
+            tenant_header="urn:cwl:tenant_other",
+        )
+        income_by_code = {
+            str(item["chart_account_code"]): item
+            for item in closed_income["statement_lines"]
+        }
+        sheet_by_code = {
+            str(item["chart_account_code"]): item
+            for item in closed_sheet["statement_lines"]
+        }
+        mapping_by_role = {
+            str(item["account_role_code"]): item for item in mappings["mappings"]
+        }
+        chart_by_code = {
+            str(item["chart_account_code"]): item for item in charts["chart_accounts"]
+        }
+
+        self.assertEqual(pre_income_status, 200)
+        self.assertEqual(pre_sheet_status, 200)
+        self.assertEqual(hard_status, 200)
+        self.assertEqual(replay_status, 200)
+        self.assertTrue(replay_receipt["replayed"])
+        self.assertEqual(replay_receipt["snapshot_record_id"], hard_receipt["snapshot_record_id"])
+        self.assertEqual(self._count_closing_journals(), 1)
+        self.assertEqual(closed_income_status, 200)
+        self.assertEqual(closed_sheet_status, 200)
+        self.assertEqual(closed_tb_status, 200)
+        self.assertEqual(closed_income["net_income_amount"], pre_income["net_income_amount"])
+        self.assertEqual(closed_income["statement_lines"], pre_income["statement_lines"])
+        self.assertEqual(income_by_code["410100"]["account_role_code"], "usage_revenue")
+        self.assertEqual(closed_sheet["net_income_amount"], "0")
+        self.assertEqual(sheet_by_code["310100"]["account_role_code"], "retained_earnings")
+        self.assertEqual(sheet_by_code["310100"]["account_class_code"], "equity")
+        self.assertEqual(
+            Decimal(str(sheet_by_code["310100"]["credit_amount"])),
+            Decimal(str(pre_income["net_income_amount"])),
+        )
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(closed_tb, "410100")["net_balance_amount"])),
+            Decimal("0"),
+        )
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(closed_tb, "310100")["credit_amount"])),
+            Decimal(str(pre_income["net_income_amount"])),
+        )
+        self.assertEqual(mapping_status, 200)
+        self.assertEqual(mapping_by_role["retained_earnings"]["chart_account_code"], "310100")
+        self.assertEqual(chart_status, 200)
+        self.assertEqual(chart_by_code["310100"]["account_class_code"], "equity")
+        self.assertEqual(cross_status, 403)
+        self.assertEqual(
+            self._count_table("accounting_reporting.trial_balance_snapshot"), snapshots
+        )
+        self.assertEqual(self._count_closing_journals(), 1)
         server.shutdown()
 
     def test_http_reads_posted_journal_lines(self) -> None:
@@ -3033,7 +3344,7 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(close_receipt["period_code"], "2026-08")
         self.assertEqual(close_receipt["period_status_code"], "hard_closed")
         self.assertFalse(close_receipt["replayed"])
-        self.assertEqual(close_receipt["source_journal_count"], 1)
+        self.assertEqual(close_receipt["source_journal_count"], 2)
         self.assertEqual(self._period_status("2026-08"), "hard_closed")
         self.assertEqual(self._count_table("accounting_reporting.trial_balance_snapshot"), 1)
         self.assertEqual(replay_status, 200)
@@ -3053,6 +3364,19 @@ class PostgresPostingTests(unittest.TestCase):
             Decimal(str(self._trial_balance_line(snapshot_balance, "410100")["credit_amount"])),
             Decimal("25000"),
         )
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(snapshot_balance, "410100")["debit_amount"])),
+            Decimal("25000"),
+        )
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(snapshot_balance, "410100")["net_balance_amount"])),
+            Decimal("0"),
+        )
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(snapshot_balance, "310100")["credit_amount"])),
+            Decimal("25000"),
+        )
+        self.assertEqual(self._count_closing_journals(), 1)
         self.assertEqual(library_close["snapshot_record_id"], close_receipt["snapshot_record_id"])
         self.assertTrue(library_close["replayed"])
         self.assertEqual(library_balance, snapshot_balance)
@@ -3301,6 +3625,7 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertTrue(hard_receipt["snapshot_record_id"])
         self.assertFalse(hard_receipt["replayed"])
         self.assertEqual(hard_receipt["source_journal_count"], 2)
+        self.assertEqual(self._count_closing_journals(), 0)
         self.assertEqual(snapshots_after_hard, 1)
         self.assertEqual(snapshot_status, 200)
         self.assertEqual(snapshot_balance["balance_source_code"], "snapshot")
@@ -4115,6 +4440,7 @@ class PostgresPostingTests(unittest.TestCase):
                 ("410100", "Usage revenue", "credit", "revenue", "usage_revenue"),
                 ("110200", "Cash receipts", "debit", "asset", "cash_receipt"),
                 ("210100", "Tax payable", "credit", "liability", "tax_payable"),
+                ("310100", "Retained earnings", "credit", "equity", "retained_earnings"),
             ):
                 chart_account_id = connection.execute(
                     """
@@ -4293,6 +4619,63 @@ class PostgresPostingTests(unittest.TestCase):
                 """,
                 (self.tenant_id, event_type_code),
             ).fetchone()[0]
+
+    def _count_closing_journals(self) -> int:
+        with psycopg.connect(DATABASE_URL) as connection:
+            connection.execute(
+                "SELECT set_config('app.tenant_account_id', %s, false)",
+                (self.tenant_id,),
+            )
+            return connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM accounting_core.general_journal
+                WHERE tenant_account_id = %s
+                  AND journal_reference LIKE %s
+                """,
+                (
+                    self.tenant_id,
+                    "urn:cwl:accounting:general_journal:period_closing:%",
+                ),
+            ).fetchone()[0]
+
+    def _seed_expense_account(self) -> None:
+        with psycopg.connect(DATABASE_URL) as connection:
+            connection.execute(
+                "SELECT set_config('app.tenant_account_id', %s, false)",
+                (self.tenant_id,),
+            )
+            book_id = connection.execute(
+                """
+                SELECT accounting_book_id
+                FROM accounting_core.accounting_book
+                WHERE tenant_account_id = %s
+                """,
+                (self.tenant_id,),
+            ).fetchone()[0]
+            chart_account_id = connection.execute(
+                """
+                INSERT INTO accounting_core.chart_account (
+                    tenant_account_id, accounting_book_id, chart_account_code,
+                    account_name, normal_balance_code, account_class_code, valid_from
+                )
+                VALUES (%s, %s, '510100', 'Usage cost', 'debit', 'expense', %s)
+                RETURNING chart_account_id
+                """,
+                (self.tenant_id, book_id, VALID_FROM),
+            ).fetchone()[0]
+            connection.execute(
+                """
+                INSERT INTO accounting_core.account_role_mapping (
+                    tenant_account_id, accounting_book_id, account_role_code,
+                    chart_account_id, accounting_policy_version, posting_rule_version,
+                    valid_from
+                )
+                VALUES (%s, %s, 'usage_cost', %s, 'ifrs-v1', 'billing-issued-v1', %s)
+                """,
+                (self.tenant_id, book_id, chart_account_id, VALID_FROM),
+            )
+            connection.commit()
 
     def _snapshot_line_totals(self) -> dict[str, tuple[Decimal, Decimal, Decimal]]:
         with psycopg.connect(DATABASE_URL) as connection:
