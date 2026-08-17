@@ -42,6 +42,7 @@ REQUIRED_FILES = (
     "docs/adr/0003-append-only-journals.md",
     "docs/adr/0004-exact-decimal-arithmetic.md",
     "docs/adr/0005-policy-driven-account-mapping.md",
+    "docs/adr/0006-fiscal-period-close-snapshot.md",
     "docs/doctoring/REFERENCES.md",
     "docs/doctoring/STANDARD_TRACEABILITY.md",
     "docs/superpowers/specs/2026-08-16-accounting-information-platform-design.md",

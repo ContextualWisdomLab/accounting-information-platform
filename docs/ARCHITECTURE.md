@@ -38,7 +38,7 @@ Operational systems         Metering Billing Platform
 
 ## Current implementation
 
-`accounting_information_platform.core` is the reference implementation for proposal validation, policy checks, posting, reversal, and trial balance. It has no network or database dependency. `PostgresPostingLedger` applies those same invariants to PostgreSQL 18 through `database/migrations/0001_accounting_foundation.sql`: one transaction writes the proposal, journal, lines, receipt, and outbox event; replay returns the original receipt; reversal is append-only; a closed fiscal period writes zero rows.
+`accounting_information_platform.core` is the reference implementation for proposal validation, policy checks, posting, reversal, and trial balance. It has no network or database dependency. `PostgresPostingLedger` applies those same invariants to PostgreSQL 18 through `database/migrations/0001_accounting_foundation.sql`: one transaction writes the proposal, journal, lines, receipt, and outbox event; replay returns the original receipt; reversal is append-only; `close_fiscal_period` writes a trial-balance snapshot and the period status in one commit; a non-open fiscal period writes zero ordinary-posting rows.
 
 ## Deployment evolution
 
@@ -47,6 +47,6 @@ Operational systems         Metering Billing Platform
 3. Read-only API and operator hold queue.
 4. Billing integration and source-to-posting reconciliation.
 5. Revenue accounting and settlement accounting.
-6. Cash, ISO 20022 adapters, close, multi-currency, reporting, and consolidation.
+6. Cash, ISO 20022 adapters, multi-currency, reporting, and consolidation.
 
 The modules may remain in one deployable service until throughput, data residency, or independent control ownership justifies separation. Service boundaries must not introduce direct cross-service SQL.

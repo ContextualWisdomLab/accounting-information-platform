@@ -9,6 +9,7 @@
 
 ### Added
 
+- First-class fiscal-period close on `PostgresPostingLedger` that snapshots the trial-balance population and sets `soft_closed` or `hard_closed` in one transaction, with idempotent re-close and zero-row rejection of later ordinary posts.
 - PostgreSQL 18 posting adapter that persists a balanced journal, idempotent replay, append-only reversal, and trial-balance tie-out through the foundation migration in one commit boundary.
 - Hash-locked psycopg 3.3.4 and CPython 3.13 psycopg-binary wheels for exact-head persistence tests.
 - Initial Accounting Information Platform product and authority baseline.

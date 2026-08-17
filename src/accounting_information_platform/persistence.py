@@ -7,7 +7,7 @@ import importlib
 import json
 import uuid
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Iterator
@@ -19,16 +19,18 @@ from .core import (
     AccountingValidationError,
     IdempotencyConflictError,
     JournalProposal,
+    PeriodCloseReceipt,
     PostedJournalLine,
     PostingLedger,
     PostingReceipt,
     _require_code,
+    _require_currency,
     _require_reference,
 )
 
 
 class PostgresPostingLedger:
-    """Authoritative posting, reversal, and trial balance against PostgreSQL 18."""
+    """Authoritative posting, reversal, trial balance, and period close against PostgreSQL 18."""
 
     def __init__(self, database_url: str, tenant_reference: str) -> None:
         """Bind one tenant to a PostgreSQL 18 database URL."""
@@ -146,6 +148,93 @@ class PostgresPostingLedger:
                 receipt,
             )
             return receipt
+
+    def close_fiscal_period(
+        self,
+        legal_entity_reference: str,
+        accounting_book_reference: str,
+        period_code: str,
+        snapshot_currency_code: str,
+        period_status_code: str = "hard_closed",
+    ) -> PeriodCloseReceipt:
+        """Snapshot the book population through period end and close that fiscal period."""
+        _require_reference(legal_entity_reference, "legal entity reference")
+        _require_reference(accounting_book_reference, "accounting book reference")
+        if not period_code.strip():
+            raise AccountingValidationError(
+                "period_code is required. Supply the fiscal period code, then retry the close."
+            )
+        try:
+            _require_currency(snapshot_currency_code)
+        except AccountingValidationError as error:
+            raise AccountingValidationError(
+                "snapshot_currency_code must be a three-letter ISO currency. "
+                "Supply the book reporting currency, then retry the close."
+            ) from error
+        if period_status_code not in {"soft_closed", "hard_closed"}:
+            raise AccountingValidationError(
+                "period_status_code must be soft_closed or hard_closed. "
+                "Supply one of those codes, then retry the close."
+            )
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            legal_entity_id = self._require_legal_entity(
+                connection,
+                tenant_id,
+                legal_entity_reference,
+                next_action="the close",
+            )
+            book_id, reporting_currency_code = self._require_book_for_close(
+                connection, tenant_id, legal_entity_id, accounting_book_reference
+            )
+            if snapshot_currency_code != reporting_currency_code:
+                raise AccountingValidationError(
+                    f"snapshot currency {snapshot_currency_code} does not match book reporting "
+                    f"currency {reporting_currency_code}. Supply the book reporting currency, "
+                    "then retry the close."
+                )
+            period_id, current_status, period_end_date = self._require_fiscal_period(
+                connection, tenant_id, period_code
+            )
+            if current_status == "hard_closed" or current_status == period_status_code:
+                return self._replay_close_receipt(
+                    connection,
+                    tenant_id=tenant_id,
+                    legal_entity_id=legal_entity_id,
+                    book_id=book_id,
+                    period_id=period_id,
+                    period_code=period_code,
+                    current_status=current_status,
+                    legal_entity_reference=legal_entity_reference,
+                    accounting_book_reference=accounting_book_reference,
+                )
+            existing = self._latest_close_snapshot(
+                connection, tenant_id, legal_entity_id, book_id, period_id
+            )
+            if existing is not None:
+                return self._upgrade_closed_period(
+                    connection,
+                    tenant_id=tenant_id,
+                    period_id=period_id,
+                    period_code=period_code,
+                    period_status_code=period_status_code,
+                    legal_entity_reference=legal_entity_reference,
+                    accounting_book_reference=accounting_book_reference,
+                    snapshot=existing,
+                )
+            return self._persist_period_close(
+                connection,
+                tenant_id=tenant_id,
+                legal_entity_id=legal_entity_id,
+                book_id=book_id,
+                period_id=period_id,
+                period_code=period_code,
+                period_end_date=period_end_date,
+                period_status_code=period_status_code,
+                snapshot_currency_code=snapshot_currency_code,
+                legal_entity_reference=legal_entity_reference,
+                accounting_book_reference=accounting_book_reference,
+            )
 
     def reverse(
         self,
@@ -325,30 +414,12 @@ class PostgresPostingLedger:
             ).fetchone()
             if legal_entity_id is None or book_id is None:
                 return {}
-            rows = connection.execute(
-                """
-                SELECT chart_account.chart_account_code,
-                       SUM(journal_entry_line.debit_amount),
-                       SUM(journal_entry_line.credit_amount)
-                FROM accounting_core.journal_entry_line
-                JOIN accounting_core.general_journal
-                  ON general_journal.tenant_account_id = journal_entry_line.tenant_account_id
-                 AND general_journal.general_journal_id = journal_entry_line.general_journal_id
-                JOIN accounting_core.chart_account
-                  ON chart_account.tenant_account_id = journal_entry_line.tenant_account_id
-                 AND chart_account.chart_account_id = journal_entry_line.chart_account_id
-                WHERE general_journal.tenant_account_id = %s
-                  AND general_journal.legal_entity_id = %s
-                  AND general_journal.accounting_book_id = %s
-                  AND general_journal.accounting_date <= %s
-                GROUP BY chart_account.chart_account_code
-                ORDER BY chart_account.chart_account_code
-                """,
-                (tenant_id, legal_entity_id[0], book_id[0], through_date),
-            ).fetchall()
+            rows = self._aggregate_trial_balance(
+                connection, tenant_id, legal_entity_id[0], book_id[0], through_date
+            )
         return {
             account_code: AccountBalance(account_code, debit_total, credit_total)
-            for account_code, debit_total, credit_total in rows
+            for _account_id, account_code, debit_total, credit_total in rows
         }
 
     @contextmanager
@@ -391,7 +462,11 @@ class PostgresPostingLedger:
         return row[0]
 
     def _require_legal_entity(
-        self, connection: object, tenant_id: UUID, legal_entity_reference: str
+        self,
+        connection: object,
+        tenant_id: UUID,
+        legal_entity_reference: str,
+        next_action: str = "posting",
     ) -> UUID:
         row = connection.execute(
             """
@@ -404,7 +479,7 @@ class PostgresPostingLedger:
         if row is None:
             raise AccountingValidationError(
                 f"Legal entity {legal_entity_reference} is not recorded for this tenant. "
-                "Create the legal_entity_record row, then retry posting."
+                f"Create the legal_entity_record row, then retry {next_action}."
             )
         return row[0]
 
@@ -458,6 +533,347 @@ class PostgresPostingLedger:
                 "no journal was written."
             )
         return row[0]
+
+    def _require_book_for_close(
+        self,
+        connection: object,
+        tenant_id: UUID,
+        legal_entity_id: UUID,
+        accounting_book_reference: str,
+    ) -> tuple[UUID, str]:
+        row = connection.execute(
+            """
+            SELECT accounting_book_id, reporting_currency_code
+            FROM accounting_core.accounting_book
+            WHERE tenant_account_id = %s
+              AND legal_entity_id = %s
+              AND book_name = %s
+              AND valid_to IS NULL
+            """,
+            (tenant_id, legal_entity_id, accounting_book_reference),
+        ).fetchone()
+        if row is None:
+            raise AccountingValidationError(
+                f"Accounting book {accounting_book_reference} is not recorded for this legal entity. "
+                "Create the accounting_book row, then retry the close."
+            )
+        return row[0], row[1]
+
+    def _require_fiscal_period(
+        self, connection: object, tenant_id: UUID, period_code: str
+    ) -> tuple[UUID, str, date]:
+        row = connection.execute(
+            """
+            SELECT fiscal_period_id, period_status_code, period_end_date
+            FROM accounting_core.fiscal_period
+            WHERE tenant_account_id = %s AND period_code = %s
+            """,
+            (tenant_id, period_code),
+        ).fetchone()
+        if row is None:
+            raise AccountingValidationError(
+                f"Fiscal period {period_code} is not recorded for this tenant. "
+                "Create the fiscal_period row, then retry the close."
+            )
+        return row[0], row[1], row[2]
+
+    def _aggregate_trial_balance(
+        self,
+        connection: object,
+        tenant_id: UUID,
+        legal_entity_id: UUID,
+        book_id: UUID,
+        through_date: date,
+    ) -> tuple[tuple[UUID, str, Decimal, Decimal], ...]:
+        rows = connection.execute(
+            """
+            SELECT chart_account.chart_account_id,
+                   chart_account.chart_account_code,
+                   SUM(journal_entry_line.debit_amount),
+                   SUM(journal_entry_line.credit_amount)
+            FROM accounting_core.journal_entry_line
+            JOIN accounting_core.general_journal
+              ON general_journal.tenant_account_id = journal_entry_line.tenant_account_id
+             AND general_journal.general_journal_id = journal_entry_line.general_journal_id
+            JOIN accounting_core.chart_account
+              ON chart_account.tenant_account_id = journal_entry_line.tenant_account_id
+             AND chart_account.chart_account_id = journal_entry_line.chart_account_id
+            WHERE general_journal.tenant_account_id = %s
+              AND general_journal.legal_entity_id = %s
+              AND general_journal.accounting_book_id = %s
+              AND general_journal.accounting_date <= %s
+            GROUP BY chart_account.chart_account_id, chart_account.chart_account_code
+            ORDER BY chart_account.chart_account_code
+            """,
+            (tenant_id, legal_entity_id, book_id, through_date),
+        ).fetchall()
+        return tuple(
+            (row[0], row[1], Decimal(row[2]), Decimal(row[3])) for row in rows
+        )
+
+    def _count_source_journals(
+        self,
+        connection: object,
+        tenant_id: UUID,
+        legal_entity_id: UUID,
+        book_id: UUID,
+        through_date: date,
+    ) -> int:
+        return int(
+            connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM accounting_core.general_journal
+                WHERE tenant_account_id = %s
+                  AND legal_entity_id = %s
+                  AND accounting_book_id = %s
+                  AND accounting_date <= %s
+                """,
+                (tenant_id, legal_entity_id, book_id, through_date),
+            ).fetchone()[0]
+        )
+
+    def _latest_close_snapshot(
+        self,
+        connection: object,
+        tenant_id: UUID,
+        legal_entity_id: UUID,
+        book_id: UUID,
+        period_id: UUID,
+    ) -> tuple[UUID, datetime, int, str] | None:
+        row = connection.execute(
+            """
+            SELECT trial_balance_snapshot_id, snapshot_generated_at,
+                   source_journal_count, source_payload_hash
+            FROM accounting_reporting.trial_balance_snapshot
+            WHERE tenant_account_id = %s
+              AND legal_entity_id = %s
+              AND accounting_book_id = %s
+              AND fiscal_period_id = %s
+            ORDER BY snapshot_generated_at DESC
+            LIMIT 1
+            """,
+            (tenant_id, legal_entity_id, book_id, period_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return row[0], row[1], int(row[2]), row[3]
+
+    def _replay_close_receipt(
+        self,
+        connection: object,
+        *,
+        tenant_id: UUID,
+        legal_entity_id: UUID,
+        book_id: UUID,
+        period_id: UUID,
+        period_code: str,
+        current_status: str,
+        legal_entity_reference: str,
+        accounting_book_reference: str,
+    ) -> PeriodCloseReceipt:
+        snapshot = self._latest_close_snapshot(
+            connection, tenant_id, legal_entity_id, book_id, period_id
+        )
+        if snapshot is None:
+            raise AccountingValidationError(
+                f"Fiscal period {period_code} is {current_status} without a trial-balance snapshot. "
+                "Restore the trial_balance_snapshot for this book from the journal population, "
+                "then retry the close."
+            )
+        return self._close_receipt_from_snapshot(
+            snapshot,
+            period_code=period_code,
+            period_status_code=current_status,
+            legal_entity_reference=legal_entity_reference,
+            accounting_book_reference=accounting_book_reference,
+            replayed=True,
+        )
+
+    def _upgrade_closed_period(
+        self,
+        connection: object,
+        *,
+        tenant_id: UUID,
+        period_id: UUID,
+        period_code: str,
+        period_status_code: str,
+        legal_entity_reference: str,
+        accounting_book_reference: str,
+        snapshot: tuple[UUID, datetime, int, str],
+    ) -> PeriodCloseReceipt:
+        self._set_period_closed(connection, tenant_id, period_id, period_status_code)
+        self._insert_period_close_event(
+            connection,
+            tenant_id,
+            period_code,
+            accounting_book_reference,
+            snapshot[0],
+            snapshot[3],
+        )
+        return self._close_receipt_from_snapshot(
+            snapshot,
+            period_code=period_code,
+            period_status_code=period_status_code,
+            legal_entity_reference=legal_entity_reference,
+            accounting_book_reference=accounting_book_reference,
+            replayed=False,
+        )
+
+    def _persist_period_close(
+        self,
+        connection: object,
+        *,
+        tenant_id: UUID,
+        legal_entity_id: UUID,
+        book_id: UUID,
+        period_id: UUID,
+        period_code: str,
+        period_end_date: date,
+        period_status_code: str,
+        snapshot_currency_code: str,
+        legal_entity_reference: str,
+        accounting_book_reference: str,
+    ) -> PeriodCloseReceipt:
+        lines = self._aggregate_trial_balance(
+            connection, tenant_id, legal_entity_id, book_id, period_end_date
+        )
+        source_journal_count = self._count_source_journals(
+            connection, tenant_id, legal_entity_id, book_id, period_end_date
+        )
+        source_payload_hash = _canonical_snapshot_hash(
+            tenant_reference=self._tenant_reference,
+            legal_entity_reference=legal_entity_reference,
+            accounting_book_reference=accounting_book_reference,
+            period_code=period_code,
+            snapshot_currency_code=snapshot_currency_code,
+            source_journal_count=source_journal_count,
+            lines=lines,
+        )
+        snapshot_id, snapshot_generated_at = connection.execute(
+            """
+            INSERT INTO accounting_reporting.trial_balance_snapshot (
+                tenant_account_id, legal_entity_id, accounting_book_id, fiscal_period_id,
+                snapshot_currency_code, source_journal_count, source_payload_hash
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING trial_balance_snapshot_id, snapshot_generated_at
+            """,
+            (
+                tenant_id,
+                legal_entity_id,
+                book_id,
+                period_id,
+                snapshot_currency_code,
+                source_journal_count,
+                source_payload_hash,
+            ),
+        ).fetchone()
+        for account_id, _account_code, debit_total, credit_total in lines:
+            connection.execute(
+                """
+                INSERT INTO accounting_reporting.trial_balance_line (
+                    tenant_account_id, trial_balance_snapshot_id, chart_account_id,
+                    debit_total_amount, credit_total_amount, net_balance_amount
+                )
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    tenant_id,
+                    snapshot_id,
+                    account_id,
+                    debit_total,
+                    credit_total,
+                    debit_total - credit_total,
+                ),
+            )
+        self._set_period_closed(connection, tenant_id, period_id, period_status_code)
+        self._insert_period_close_event(
+            connection,
+            tenant_id,
+            period_code,
+            accounting_book_reference,
+            snapshot_id,
+            source_payload_hash,
+        )
+        return PeriodCloseReceipt(
+            tenant_reference=self._tenant_reference,
+            legal_entity_reference=legal_entity_reference,
+            accounting_book_reference=accounting_book_reference,
+            period_code=period_code,
+            period_status_code=period_status_code,
+            snapshot_record_id=str(snapshot_id),
+            snapshot_generated_at=snapshot_generated_at,
+            source_journal_count=source_journal_count,
+            source_payload_hash=source_payload_hash,
+            replayed=False,
+        )
+
+    def _set_period_closed(
+        self,
+        connection: object,
+        tenant_id: UUID,
+        period_id: UUID,
+        period_status_code: str,
+    ) -> None:
+        connection.execute(
+            """
+            UPDATE accounting_core.fiscal_period
+            SET period_status_code = %s,
+                period_closed_at = clock_timestamp()
+            WHERE tenant_account_id = %s AND fiscal_period_id = %s
+            """,
+            (period_status_code, tenant_id, period_id),
+        )
+
+    def _insert_period_close_event(
+        self,
+        connection: object,
+        tenant_id: UUID,
+        period_code: str,
+        accounting_book_reference: str,
+        snapshot_id: UUID,
+        payload_hash: str,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO accounting_integration.outbox_event (
+                tenant_account_id, event_type_code, aggregate_reference,
+                payload_reference, payload_hash
+            )
+            VALUES (%s, 'period_closed', %s, %s, %s)
+            """,
+            (
+                tenant_id,
+                f"{accounting_book_reference}:fiscal_period:{period_code}",
+                f"urn:cwl:accounting:trial_balance_snapshot:{snapshot_id}",
+                payload_hash,
+            ),
+        )
+
+    def _close_receipt_from_snapshot(
+        self,
+        snapshot: tuple[UUID, datetime, int, str],
+        *,
+        period_code: str,
+        period_status_code: str,
+        legal_entity_reference: str,
+        accounting_book_reference: str,
+        replayed: bool,
+    ) -> PeriodCloseReceipt:
+        snapshot_id, snapshot_generated_at, source_journal_count, source_payload_hash = snapshot
+        return PeriodCloseReceipt(
+            tenant_reference=self._tenant_reference,
+            legal_entity_reference=legal_entity_reference,
+            accounting_book_reference=accounting_book_reference,
+            period_code=period_code,
+            period_status_code=period_status_code,
+            snapshot_record_id=str(snapshot_id),
+            snapshot_generated_at=snapshot_generated_at,
+            source_journal_count=source_journal_count,
+            source_payload_hash=source_payload_hash,
+            replayed=replayed,
+        )
 
     def _insert_journal(
         self,
@@ -860,6 +1276,40 @@ def _require_proposal_uuid(proposal_id: str) -> UUID:
         raise AccountingValidationError(
             "proposal_id must be a UUID. Supply the source proposal UUID, then retry posting."
         ) from error
+
+
+def _canonical_snapshot_hash(
+    *,
+    tenant_reference: str,
+    legal_entity_reference: str,
+    accounting_book_reference: str,
+    period_code: str,
+    snapshot_currency_code: str,
+    source_journal_count: int,
+    lines: tuple[tuple[UUID, str, Decimal, Decimal], ...],
+) -> str:
+    payload = json.dumps(
+        {
+            "accounting_book_reference": accounting_book_reference,
+            "legal_entity_reference": legal_entity_reference,
+            "lines": [
+                {
+                    "chart_account_code": account_code,
+                    "credit_total_amount": format(credit_total, "f"),
+                    "debit_total_amount": format(debit_total, "f"),
+                    "net_balance_amount": format(debit_total - credit_total, "f"),
+                }
+                for _account_id, account_code, debit_total, credit_total in lines
+            ],
+            "period_code": period_code,
+            "snapshot_currency_code": snapshot_currency_code,
+            "source_journal_count": source_journal_count,
+            "tenant_reference": tenant_reference,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _canonical_receipt_hash(receipt: PostingReceipt) -> str:

@@ -16,6 +16,7 @@ from accounting_information_platform import (
     IdempotencyConflictError,
     JournalLineProposal,
     JournalProposal,
+    PeriodCloseReceipt,
     PostgresPostingLedger,
 )
 import psycopg
@@ -320,6 +321,178 @@ class PostgresPostingTests(unittest.TestCase):
         with self.assertRaisesRegex(AccountingValidationError, "restore a clean database"):
             apply_foundation_migration(DATABASE_URL, MIGRATION_PATH)
 
+    def test_close_persists_snapshot_tied_to_posted_journal(self) -> None:
+        """Closing an open period snapshots the journal population in one transaction."""
+        self.ledger.post(self._two_line_proposal(), self.policy)
+
+        receipt = self._close_period()
+        snapshot_lines = self._snapshot_line_totals()
+        population = self._journal_population_totals()
+
+        self.assertIsInstance(receipt, PeriodCloseReceipt)
+        self.assertFalse(receipt.replayed)
+        self.assertEqual(receipt.period_code, "2026-08")
+        self.assertEqual(receipt.period_status_code, "hard_closed")
+        self.assertEqual(receipt.source_journal_count, 1)
+        self.assertEqual(self._period_status("2026-08"), "hard_closed")
+        self.assertIsNotNone(self._period_closed_at("2026-08"))
+        self.assertEqual(self._count_table("accounting_reporting.trial_balance_snapshot"), 1)
+        self.assertEqual(self._count_table("accounting_reporting.trial_balance_line"), 2)
+        self.assertEqual(self._count_outbox("period_closed"), 1)
+        self.assertEqual(snapshot_lines["110100"][0], Decimal("25000"))
+        self.assertEqual(snapshot_lines["410100"][1], Decimal("25000"))
+        self.assertEqual(snapshot_lines["110100"][0], population["110100"][0])
+        self.assertEqual(snapshot_lines["410100"][1], population["410100"][1])
+        self.assertEqual(snapshot_lines["110100"][2], Decimal("25000"))
+        self.assertEqual(snapshot_lines["410100"][2], Decimal("-25000"))
+
+    def test_close_then_ordinary_post_writes_zero_rows(self) -> None:
+        """A later ordinary post into a closed period writes no durable rows."""
+        self.ledger.post(self._two_line_proposal(), self.policy)
+        self._close_period()
+
+        with self.assertRaisesRegex(
+            AccountingValidationError,
+            "Open that period or post into an open period",
+        ):
+            self.ledger.post(
+                self._two_line_proposal(
+                    proposal_id=str(uuid.uuid4()),
+                    idempotency_key="after-close-rejected",
+                    source_payload_hash="sha256:" + "c" * 64,
+                ),
+                self.policy,
+            )
+
+        self.assertEqual(self._count_table("accounting_integration.journal_proposal_record"), 1)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), 1)
+        self.assertEqual(self._count_table("accounting_core.journal_entry_line"), 2)
+        self.assertEqual(self._count_table("accounting_integration.posting_receipt"), 1)
+        self.assertEqual(self.ledger.journal_count, 1)
+
+    def test_reclose_is_idempotent(self) -> None:
+        """Re-closing a hard-closed period replays the same snapshot and event."""
+        self.ledger.post(self._two_line_proposal(), self.policy)
+        first = self._close_period()
+        second = self._close_period()
+
+        self.assertTrue(second.replayed)
+        self.assertEqual(second.snapshot_record_id, first.snapshot_record_id)
+        self.assertEqual(second.source_payload_hash, first.source_payload_hash)
+        self.assertEqual(second.snapshot_generated_at, first.snapshot_generated_at)
+        self.assertEqual(second.source_journal_count, 1)
+        self.assertEqual(self._count_table("accounting_reporting.trial_balance_snapshot"), 1)
+        self.assertEqual(self._count_table("accounting_reporting.trial_balance_line"), 2)
+        self.assertEqual(self._count_outbox("period_closed"), 1)
+
+    def test_open_period_still_accepts_posts(self) -> None:
+        """Closing one period does not block ordinary posting into a later open period."""
+        self.ledger.post(self._two_line_proposal(), self.policy)
+        self._close_period()
+        self._seed_additional_period("2026-09", date(2026, 9, 1), date(2026, 9, 30))
+
+        later = self.ledger.post(
+            self._two_line_proposal(
+                proposal_id=str(uuid.uuid4()),
+                idempotency_key="september-open-period",
+                accounting_date=date(2026, 9, 15),
+                transaction_date=date(2026, 9, 15),
+                source_payload_hash="sha256:" + "d" * 64,
+            ),
+            self._policy_with(
+                open_period_start=date(2026, 9, 1),
+                open_period_end=date(2026, 9, 30),
+            ),
+        )
+
+        self.assertEqual(later.posting_status_code, "posted")
+        self.assertEqual(self.ledger.journal_count, 2)
+        self.assertEqual(self._period_status("2026-08"), "hard_closed")
+        self.assertEqual(self._period_status("2026-09"), "open")
+
+    def test_soft_close_rejects_posts_and_hard_close_reuses_snapshot(self) -> None:
+        """soft_closed rejects ordinary posting; hard close upgrades without a second snapshot."""
+        self.ledger.post(self._two_line_proposal(), self.policy)
+        soft = self._close_period(period_status_code="soft_closed")
+        replayed_soft = self._close_period(period_status_code="soft_closed")
+        self.assertEqual(soft.period_status_code, "soft_closed")
+        self.assertTrue(replayed_soft.replayed)
+        self.assertEqual(replayed_soft.snapshot_record_id, soft.snapshot_record_id)
+        self.assertEqual(self._count_outbox("period_closed"), 1)
+
+        with self.assertRaisesRegex(
+            AccountingValidationError,
+            "Open that period or post into an open period",
+        ):
+            self.ledger.post(
+                self._two_line_proposal(
+                    proposal_id=str(uuid.uuid4()),
+                    idempotency_key="after-soft-close",
+                    source_payload_hash="sha256:" + "e" * 64,
+                ),
+                self.policy,
+            )
+
+        hard = self._close_period(period_status_code="hard_closed")
+        ignored_soft = self._close_period(period_status_code="soft_closed")
+
+        self.assertFalse(hard.replayed)
+        self.assertEqual(hard.period_status_code, "hard_closed")
+        self.assertEqual(hard.snapshot_record_id, soft.snapshot_record_id)
+        self.assertEqual(self._count_table("accounting_reporting.trial_balance_snapshot"), 1)
+        self.assertEqual(self._count_outbox("period_closed"), 2)
+        self.assertTrue(ignored_soft.replayed)
+        self.assertEqual(ignored_soft.period_status_code, "hard_closed")
+        self.assertEqual(self._period_status("2026-08"), "hard_closed")
+        self.assertEqual(self._count_table("accounting_integration.journal_proposal_record"), 1)
+
+    def test_close_empty_period_and_catalog_failures_name_the_next_action(self) -> None:
+        """Empty-period close is durable; catalog and status errors name the retry action."""
+        empty = self._close_period()
+        self.assertEqual(empty.source_journal_count, 0)
+        self.assertEqual(self._count_table("accounting_reporting.trial_balance_snapshot"), 1)
+        self.assertEqual(self._count_table("accounting_reporting.trial_balance_line"), 0)
+        self.assertEqual(self._period_status("2026-08"), "hard_closed")
+
+        with self.assertRaisesRegex(AccountingValidationError, "Create the fiscal_period row"):
+            self._close_period(period_code="2026-10")
+        with self.assertRaisesRegex(AccountingValidationError, "Create the legal_entity_record"):
+            self._close_period(legal_entity_reference="urn:cwl:legal_entity:missing")
+        with self.assertRaisesRegex(AccountingValidationError, "Create the accounting_book row"):
+            self._close_period(accounting_book_reference="urn:cwl:accounting_book:missing")
+        with self.assertRaisesRegex(AccountingValidationError, "soft_closed or hard_closed"):
+            self._close_period(period_status_code="open")
+        with self.assertRaisesRegex(AccountingValidationError, "book reporting currency"):
+            self._close_period(snapshot_currency_code="USD")
+        with self.assertRaisesRegex(AccountingValidationError, "three-letter ISO currency"):
+            self._close_period(snapshot_currency_code="usd")
+        with self.assertRaisesRegex(AccountingValidationError, "Supply the fiscal period code"):
+            self._close_period(period_code="   ")
+        self._set_period_status("hard_closed")
+        other_ledger = PostgresPostingLedger(
+            DATABASE_URL, tenant_reference=self.policy.tenant_reference
+        )
+        self._delete_snapshots()
+        with self.assertRaisesRegex(
+            AccountingValidationError, "Restore the trial_balance_snapshot"
+        ):
+            other_ledger.close_fiscal_period(
+                legal_entity_reference=self.policy.legal_entity_reference,
+                accounting_book_reference=self.policy.accounting_book_reference,
+                period_code="2026-08",
+                snapshot_currency_code="KRW",
+            )
+
+    def _close_period(self, **overrides: object) -> PeriodCloseReceipt:
+        values: dict[str, object] = {
+            "legal_entity_reference": self.policy.legal_entity_reference,
+            "accounting_book_reference": self.policy.accounting_book_reference,
+            "period_code": "2026-08",
+            "snapshot_currency_code": "KRW",
+        }
+        values.update(overrides)
+        return self.ledger.close_fiscal_period(**values)
+
     def _policy_with(self, **overrides: object) -> AccountingPolicy:
         values: dict[str, object] = {
             "tenant_reference": self.policy.tenant_reference,
@@ -503,6 +676,114 @@ class PostgresPostingTests(unittest.TestCase):
                 (self.tenant_id,),
             ).fetchall()
         return {row[0]: (row[1], row[2]) for row in rows}
+
+    def _seed_additional_period(
+        self, period_code: str, period_start: date, period_end: date
+    ) -> None:
+        with psycopg.connect(DATABASE_URL) as connection:
+            connection.execute(
+                "SELECT set_config('app.tenant_account_id', %s, false)",
+                (self.tenant_id,),
+            )
+            calendar_id = connection.execute(
+                """
+                SELECT fiscal_calendar_id
+                FROM accounting_core.fiscal_calendar
+                WHERE tenant_account_id = %s
+                """,
+                (self.tenant_id,),
+            ).fetchone()[0]
+            connection.execute(
+                """
+                INSERT INTO accounting_core.fiscal_period (
+                    tenant_account_id, fiscal_calendar_id, period_code,
+                    period_start_date, period_end_date, period_status_code
+                )
+                VALUES (%s, %s, %s, %s, %s, 'open')
+                """,
+                (self.tenant_id, calendar_id, period_code, period_start, period_end),
+            )
+            connection.commit()
+
+    def _period_status(self, period_code: str) -> str:
+        return self._period_row(period_code)[0]
+
+    def _period_closed_at(self, period_code: str):
+        return self._period_row(period_code)[1]
+
+    def _period_row(self, period_code: str) -> tuple[str, object]:
+        with psycopg.connect(DATABASE_URL) as connection:
+            connection.execute(
+                "SELECT set_config('app.tenant_account_id', %s, false)",
+                (self.tenant_id,),
+            )
+            return connection.execute(
+                """
+                SELECT period_status_code, period_closed_at
+                FROM accounting_core.fiscal_period
+                WHERE tenant_account_id = %s AND period_code = %s
+                """,
+                (self.tenant_id, period_code),
+            ).fetchone()
+
+    def _count_outbox(self, event_type_code: str) -> int:
+        with psycopg.connect(DATABASE_URL) as connection:
+            connection.execute(
+                "SELECT set_config('app.tenant_account_id', %s, false)",
+                (self.tenant_id,),
+            )
+            return connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM accounting_integration.outbox_event
+                WHERE tenant_account_id = %s AND event_type_code = %s
+                """,
+                (self.tenant_id, event_type_code),
+            ).fetchone()[0]
+
+    def _snapshot_line_totals(self) -> dict[str, tuple[Decimal, Decimal, Decimal]]:
+        with psycopg.connect(DATABASE_URL) as connection:
+            connection.execute(
+                "SELECT set_config('app.tenant_account_id', %s, false)",
+                (self.tenant_id,),
+            )
+            rows = connection.execute(
+                """
+                SELECT chart_account.chart_account_code,
+                       trial_balance_line.debit_total_amount,
+                       trial_balance_line.credit_total_amount,
+                       trial_balance_line.net_balance_amount
+                FROM accounting_reporting.trial_balance_line
+                JOIN accounting_core.chart_account
+                  ON chart_account.tenant_account_id = trial_balance_line.tenant_account_id
+                 AND chart_account.chart_account_id = trial_balance_line.chart_account_id
+                WHERE trial_balance_line.tenant_account_id = %s
+                """,
+                (self.tenant_id,),
+            ).fetchall()
+        return {row[0]: (row[1], row[2], row[3]) for row in rows}
+
+    def _delete_snapshots(self) -> None:
+        with psycopg.connect(DATABASE_URL) as connection:
+            connection.execute(
+                "SELECT set_config('app.tenant_account_id', %s, false)",
+                (self.tenant_id,),
+            )
+            connection.execute(
+                """
+                DELETE FROM accounting_reporting.trial_balance_line
+                WHERE tenant_account_id = %s
+                """,
+                (self.tenant_id,),
+            )
+            connection.execute(
+                """
+                DELETE FROM accounting_reporting.trial_balance_snapshot
+                WHERE tenant_account_id = %s
+                """,
+                (self.tenant_id,),
+            )
+            connection.commit()
 
     def _original_journal_status(self, journal_reference: str) -> str:
         with psycopg.connect(DATABASE_URL) as connection:
