@@ -729,6 +729,169 @@ class PostgresPostingLedger:
                 "next_cursor": next_cursor,
             }
 
+    def load_account_ledger(
+        self,
+        legal_entity_reference: str,
+        chart_account_code: str,
+        fiscal_period_reference: str = "",
+        *,
+        page_limit: int = 50,
+        cursor_after: tuple[datetime, str, int] | None = None,
+    ) -> dict[str, object]:
+        """Return posted journal lines for one tenant entity and chart account."""
+        if not legal_entity_reference:
+            raise AccountingValidationError(
+                "legal_entity_reference is required. "
+                "Supply that ledger field, then retry the account-ledger read."
+            )
+        if not chart_account_code:
+            raise AccountingValidationError(
+                "chart_account_code is required. "
+                "Supply that ledger field, then retry the account-ledger read."
+            )
+        period_code = ""
+        if fiscal_period_reference:
+            period_code = fiscal_period_reference
+            if period_code.startswith("urn:cwl:accounting:fiscal_period:"):
+                period_code = period_code[len("urn:cwl:accounting:fiscal_period:") :]
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            self._require_legal_entity(
+                connection, tenant_id, legal_entity_reference, "the account-ledger read"
+            )
+            chart_row = connection.execute(
+                """
+                SELECT chart_account_id
+                FROM accounting_core.chart_account
+                WHERE tenant_account_id = %s
+                  AND chart_account_code = %s
+                  AND valid_to IS NULL
+                LIMIT 1
+                """,
+                (tenant_id, chart_account_code),
+            ).fetchone()
+            if chart_row is None:
+                raise AccountingValidationError(
+                    f"Chart account {chart_account_code} is not recorded for this tenant. "
+                    "Create the chart_account row, then retry the account-ledger read."
+                )
+            period_id = None
+            period_reference: str | None = None
+            if period_code:
+                period_id, _status, _end = self._require_fiscal_period(
+                    connection, tenant_id, period_code, "the account-ledger read"
+                )
+                period_reference = f"urn:cwl:accounting:fiscal_period:{period_code}"
+            cursor_posted_at = None
+            cursor_journal_reference = None
+            cursor_line_number = None
+            if cursor_after is not None:
+                cursor_posted_at, cursor_journal_reference, cursor_line_number = cursor_after
+            totals = connection.execute(
+                """
+                SELECT COALESCE(SUM(journal_entry_line.debit_amount), 0),
+                       COALESCE(SUM(journal_entry_line.credit_amount), 0)
+                FROM accounting_core.journal_entry_line
+                JOIN accounting_core.general_journal
+                  ON general_journal.tenant_account_id = journal_entry_line.tenant_account_id
+                 AND general_journal.general_journal_id = journal_entry_line.general_journal_id
+                JOIN accounting_core.chart_account
+                  ON chart_account.tenant_account_id = journal_entry_line.tenant_account_id
+                 AND chart_account.chart_account_id = journal_entry_line.chart_account_id
+                JOIN accounting_core.legal_entity_record
+                  ON legal_entity_record.tenant_account_id = general_journal.tenant_account_id
+                 AND legal_entity_record.legal_entity_id = general_journal.legal_entity_id
+                WHERE journal_entry_line.tenant_account_id = %s
+                  AND legal_entity_record.legal_entity_code = %s
+                  AND chart_account.chart_account_code = %s
+                  AND (%s::uuid IS NULL OR general_journal.fiscal_period_id = %s)
+                """,
+                (
+                    tenant_id,
+                    legal_entity_reference,
+                    chart_account_code,
+                    period_id,
+                    period_id,
+                ),
+            ).fetchone()
+            rows = connection.execute(
+                """
+                SELECT general_journal.journal_reference,
+                       general_journal.posted_at,
+                       journal_entry_line.line_number,
+                       chart_account.chart_account_code,
+                       journal_entry_line.account_role_code,
+                       journal_entry_line.debit_amount,
+                       journal_entry_line.credit_amount
+                FROM accounting_core.journal_entry_line
+                JOIN accounting_core.general_journal
+                  ON general_journal.tenant_account_id = journal_entry_line.tenant_account_id
+                 AND general_journal.general_journal_id = journal_entry_line.general_journal_id
+                JOIN accounting_core.chart_account
+                  ON chart_account.tenant_account_id = journal_entry_line.tenant_account_id
+                 AND chart_account.chart_account_id = journal_entry_line.chart_account_id
+                JOIN accounting_core.legal_entity_record
+                  ON legal_entity_record.tenant_account_id = general_journal.tenant_account_id
+                 AND legal_entity_record.legal_entity_id = general_journal.legal_entity_id
+                WHERE journal_entry_line.tenant_account_id = %s
+                  AND legal_entity_record.legal_entity_code = %s
+                  AND chart_account.chart_account_code = %s
+                  AND (%s::uuid IS NULL OR general_journal.fiscal_period_id = %s)
+                  AND (
+                        %s::timestamptz IS NULL
+                        OR (
+                            general_journal.posted_at,
+                            general_journal.journal_reference,
+                            journal_entry_line.line_number
+                        ) > (%s, %s, %s)
+                      )
+                ORDER BY general_journal.posted_at,
+                         general_journal.journal_reference,
+                         journal_entry_line.line_number
+                LIMIT %s
+                """,
+                (
+                    tenant_id,
+                    legal_entity_reference,
+                    chart_account_code,
+                    period_id,
+                    period_id,
+                    cursor_posted_at,
+                    cursor_posted_at,
+                    cursor_journal_reference,
+                    cursor_line_number,
+                    page_limit + 1,
+                ),
+            ).fetchall()
+            has_more = len(rows) > page_limit
+            page_rows = rows[:page_limit]
+            ledger_lines = [
+                {
+                    "line_number": row[2],
+                    "chart_account_code": row[3],
+                    "account_role_code": row[4],
+                    "debit_amount": _exact_amount_text(Decimal(row[5])),
+                    "credit_amount": _exact_amount_text(Decimal(row[6])),
+                    "journal_reference": row[0],
+                    "posted_at": _format_timestamp(row[1]),
+                }
+                for row in page_rows
+            ]
+            next_cursor = None
+            if has_more:
+                last = page_rows[-1]
+                next_cursor = f"{_format_timestamp(last[1])}|{last[0]}|{last[2]}"
+            return {
+                "tenant_reference": self._tenant_reference,
+                "legal_entity_reference": legal_entity_reference,
+                "chart_account_code": chart_account_code,
+                "fiscal_period_reference": period_reference,
+                "ledger_lines": ledger_lines,
+                "period_debit_total": _exact_amount_text(Decimal(totals[0])),
+                "period_credit_total": _exact_amount_text(Decimal(totals[1])),
+                "next_cursor": next_cursor,
+            }
+
     def reverse(
         self,
         journal_reference: str,

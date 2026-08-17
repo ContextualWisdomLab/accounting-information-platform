@@ -33,6 +33,7 @@ from accounting_information_platform import (
     accept_pulled_proposals,
     create_journal_proposal_server,
     ingest_journal_proposal,
+    lookup_account_ledger,
     lookup_account_role_mappings,
     lookup_fiscal_period,
     lookup_fiscal_periods,
@@ -2132,6 +2133,318 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(self._count_table("accounting_core.fiscal_period"), periods_before + 1)
         server.shutdown()
 
+    def test_http_reads_account_ledger_from_existing_lines(self) -> None:
+        """GET lists posted journal lines for one statutory chart account without SQL."""
+        invoice = self._billing_validated_payload()
+        cash = self._billing_cash_payload()
+        credit = self._billing_credit_payload()
+        taxed = self._billing_taxed_payload()
+        taxed_credit = self._billing_taxed_credit_payload()
+        september = self._september_invoice_payload()
+        server = self._start_http_server()
+        journals_before = self._count_table("accounting_core.general_journal")
+
+        empty_status, empty_page = self._http_account_ledger("110200")
+        library_empty = lookup_account_ledger(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            "110200",
+        )
+        self.assertEqual(empty_status, 200)
+        self.assertEqual(empty_page, library_empty)
+        self.assertEqual(empty_page["ledger_lines"], [])
+        self.assertIsNone(empty_page["next_cursor"])
+        self.assertIsNone(empty_page["fiscal_period_reference"])
+        self.assertEqual(empty_page["chart_account_code"], "110200")
+        self.assertEqual(Decimal(str(empty_page["period_debit_total"])), Decimal("0"))
+        self.assertEqual(Decimal(str(empty_page["period_credit_total"])), Decimal("0"))
+
+        invoice_status, invoice_receipt = self._http_json("POST", "/journal-proposals", invoice)
+        cash_status, cash_receipt = self._http_json("POST", "/journal-proposals", cash)
+        credit_status, credit_receipt = self._http_json("POST", "/journal-proposals", credit)
+        journal_status, journal = self._http_journal(
+            idempotency_key=str(invoice["idempotency_key"])
+        )
+        ar_status, ar_ledger = self._http_account_ledger("110100")
+        ar_line = next(
+            item
+            for item in journal["lines"]
+            if item["chart_account_code"] == "110100"
+        )
+        ar_by_journal = {
+            str(item["journal_reference"]): item for item in ar_ledger["ledger_lines"]
+        }
+
+        self.assertEqual(invoice_status, 200)
+        self.assertEqual(cash_status, 200)
+        self.assertEqual(credit_status, 200)
+        self.assertEqual(journal_status, 200)
+        self.assertEqual(ar_status, 200)
+        self.assertEqual(len(ar_ledger["ledger_lines"]), 3)
+        self.assertEqual(ar_ledger["chart_account_code"], "110100")
+        self.assertEqual(
+            {item["journal_reference"] for item in ar_ledger["ledger_lines"]},
+            {
+                invoice_receipt["journal_reference"],
+                cash_receipt["journal_reference"],
+                credit_receipt["journal_reference"],
+            },
+        )
+        self.assertEqual(ar_by_journal[invoice_receipt["journal_reference"]]["line_number"], ar_line["line_number"])
+        self.assertEqual(
+            ar_by_journal[invoice_receipt["journal_reference"]]["account_role_code"],
+            ar_line["account_role_code"],
+        )
+        self.assertEqual(
+            ar_by_journal[invoice_receipt["journal_reference"]]["debit_amount"],
+            ar_line["debit_amount"],
+        )
+        self.assertEqual(
+            ar_by_journal[invoice_receipt["journal_reference"]]["credit_amount"],
+            ar_line["credit_amount"],
+        )
+        self.assertTrue(ar_by_journal[invoice_receipt["journal_reference"]]["posted_at"])
+        self.assertEqual(Decimal(str(ar_ledger["period_debit_total"])), Decimal("25000"))
+        self.assertEqual(Decimal(str(ar_ledger["period_credit_total"])), Decimal("22000"))
+
+        taxed_status, taxed_receipt = self._http_json("POST", "/journal-proposals", taxed)
+        taxed_credit_status, taxed_credit_receipt = self._http_json(
+            "POST", "/journal-proposals", taxed_credit
+        )
+        tax_status, tax_ledger = self._http_account_ledger("210100")
+        tax_by_journal = {
+            str(item["journal_reference"]): item for item in tax_ledger["ledger_lines"]
+        }
+
+        self.assertEqual(taxed_status, 200)
+        self.assertEqual(taxed_credit_status, 200)
+        self.assertEqual(tax_status, 200)
+        self.assertEqual(len(tax_ledger["ledger_lines"]), 2)
+        self.assertEqual(
+            tax_by_journal[taxed_receipt["journal_reference"]]["account_role_code"],
+            "tax_payable",
+        )
+        self.assertEqual(
+            Decimal(str(tax_by_journal[taxed_receipt["journal_reference"]]["credit_amount"])),
+            Decimal("2500"),
+        )
+        self.assertEqual(
+            Decimal(str(tax_by_journal[taxed_credit_receipt["journal_reference"]]["debit_amount"])),
+            Decimal("2500"),
+        )
+        self.assertEqual(Decimal(str(tax_ledger["period_debit_total"])), Decimal("2500"))
+        self.assertEqual(Decimal(str(tax_ledger["period_credit_total"])), Decimal("2500"))
+
+        accept_period_open(self._period_open_payload(), DATABASE_URL, self.policy.tenant_reference)
+        september_status, september_receipt = self._http_json(
+            "POST", "/journal-proposals", september
+        )
+        august_status, august_ledger = self._http_account_ledger(
+            "110100",
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-08",
+        )
+        bare_period = lookup_account_ledger(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            "110100",
+            fiscal_period_reference="2026-08",
+        )
+        first_page_status, first_page = self._http_account_ledger("110100", page_limit=2)
+        second_page_status, second_page = self._http_account_ledger(
+            "110100",
+            page_limit=2,
+            cursor=str(first_page["next_cursor"]),
+        )
+        third_page_status, third_page = self._http_account_ledger(
+            "110100",
+            page_limit=2,
+            cursor=str(second_page["next_cursor"]),
+        )
+        august_refs = {item["journal_reference"] for item in august_ledger["ledger_lines"]}
+
+        self.assertEqual(september_status, 200)
+        self.assertEqual(august_status, 200)
+        self.assertEqual(first_page_status, 200)
+        self.assertEqual(second_page_status, 200)
+        self.assertEqual(third_page_status, 200)
+        self.assertEqual(august_ledger["fiscal_period_reference"], "urn:cwl:accounting:fiscal_period:2026-08")
+        self.assertEqual(bare_period["fiscal_period_reference"], "urn:cwl:accounting:fiscal_period:2026-08")
+        self.assertEqual(len(bare_period["ledger_lines"]), 5)
+        self.assertNotIn(september_receipt["journal_reference"], august_refs)
+        self.assertEqual(len(august_ledger["ledger_lines"]), 5)
+        self.assertEqual(Decimal(str(august_ledger["period_debit_total"])), Decimal("52500"))
+        self.assertEqual(Decimal(str(august_ledger["period_credit_total"])), Decimal("49500"))
+        self.assertEqual(Decimal(str(first_page["period_debit_total"])), Decimal("77500"))
+        self.assertEqual(Decimal(str(first_page["period_credit_total"])), Decimal("49500"))
+        self.assertEqual(len(first_page["ledger_lines"]), 2)
+        self.assertTrue(first_page["next_cursor"])
+        self.assertEqual(len(second_page["ledger_lines"]), 2)
+        self.assertTrue(second_page["next_cursor"])
+        self.assertEqual(len(third_page["ledger_lines"]), 2)
+        self.assertIsNone(third_page["next_cursor"])
+        paged_refs = (
+            [item["journal_reference"] for item in first_page["ledger_lines"]]
+            + [item["journal_reference"] for item in second_page["ledger_lines"]]
+            + [item["journal_reference"] for item in third_page["ledger_lines"]]
+        )
+        self.assertEqual(len(paged_refs), 6)
+        self.assertIn(september_receipt["journal_reference"], paged_refs)
+        self.assertEqual(
+            [
+                (item["posted_at"], item["journal_reference"], item["line_number"])
+                for item in first_page["ledger_lines"]
+            ]
+            + [
+                (item["posted_at"], item["journal_reference"], item["line_number"])
+                for item in second_page["ledger_lines"]
+            ]
+            + [
+                (item["posted_at"], item["journal_reference"], item["line_number"])
+                for item in third_page["ledger_lines"]
+            ],
+            sorted(
+                [
+                    (item["posted_at"], item["journal_reference"], item["line_number"])
+                    for item in first_page["ledger_lines"]
+                    + second_page["ledger_lines"]
+                    + third_page["ledger_lines"]
+                ]
+            ),
+        )
+
+        missing_query = self._http_json("GET", "/account-ledgers", None)
+        missing_account = self._http_json(
+            "GET",
+            "/account-ledgers?"
+            + urllib.parse.urlencode(
+                {"legal_entity_reference": self.policy.legal_entity_reference}
+            ),
+            None,
+        )
+        post_ledger = self._http_json("POST", "/account-ledgers", {})
+        unknown_entity = self._http_account_ledger(
+            "110100", legal_entity_reference="urn:cwl:legal_entity:missing"
+        )
+        unknown_account = self._http_account_ledger("999999")
+        unknown_period = self._http_account_ledger(
+            "110100",
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:1999-01",
+        )
+        bad_limit = self._http_account_ledger("110100", page_limit="abc")
+        high_limit = self._http_account_ledger("110100", page_limit=101)
+        bad_cursor = self._http_account_ledger("110100", cursor="not-a-cursor")
+        missing_header = self._http_account_ledger("110100", tenant_header=None)
+        cross_status, _cross = self._http_account_ledger(
+            "110100", tenant_header="urn:cwl:tenant_other"
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "legal_entity_reference"):
+            lookup_account_ledger(DATABASE_URL, self.policy.tenant_reference, "", "110100")
+        with self.assertRaisesRegex(AccountingValidationError, "chart_account_code"):
+            lookup_account_ledger(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                "",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "page_limit"):
+            lookup_account_ledger(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                "110100",
+                page_limit=0,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "cursor"):
+            lookup_account_ledger(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                "110100",
+                cursor="2026-08-31T00:00:00Z",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "cursor"):
+            lookup_account_ledger(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                "110100",
+                cursor="|urn:cwl:accounting:general_journal:x|1",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "cursor"):
+            lookup_account_ledger(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                "110100",
+                cursor="2026-08-31T00:00:00Z||1",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "cursor"):
+            lookup_account_ledger(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                "110100",
+                cursor="2026-08-31T00:00:00Z|urn:cwl:accounting:general_journal:x|",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "cursor"):
+            lookup_account_ledger(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                "110100",
+                cursor="not-a-time|urn:cwl:accounting:general_journal:x|1",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "cursor"):
+            lookup_account_ledger(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                "110100",
+                cursor="2026-08-31T00:00:00Z|urn:cwl:accounting:general_journal:x|x",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "legal_entity"):
+            lookup_account_ledger(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                "urn:cwl:legal_entity:missing",
+                "110100",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "chart_account"):
+            lookup_account_ledger(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                "999999",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "fiscal_period"):
+            lookup_account_ledger(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                "110100",
+                fiscal_period_reference="urn:cwl:accounting:fiscal_period:1999-01",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "legal_entity_reference"):
+            PostgresPostingLedger(
+                DATABASE_URL, self.policy.tenant_reference
+            ).load_account_ledger("", "110100")
+
+        self.assertEqual(missing_query[0], 400)
+        self.assertEqual(missing_account[0], 400)
+        self.assertEqual(post_ledger[0], 405)
+        self.assertEqual(unknown_entity[0], 404)
+        self.assertEqual(unknown_account[0], 404)
+        self.assertEqual(unknown_period[0], 404)
+        self.assertEqual(bad_limit[0], 400)
+        self.assertEqual(high_limit[0], 400)
+        self.assertEqual(bad_cursor[0], 400)
+        self.assertEqual(missing_header[0], 400)
+        self.assertEqual(cross_status, 403)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before + 6)
+        server.shutdown()
+
     def test_http_closes_period_and_reads_trial_balance(self) -> None:
         """HTTP closes a posted period, replays the close, and reads snapshot or live TB."""
         payload = self._billing_validated_payload()
@@ -3806,6 +4119,37 @@ class PostgresPostingTests(unittest.TestCase):
             ),
             accounting_date="2026-09-15",
             transaction_date="2026-09-15",
+        )
+
+    def _http_account_ledger(
+        self,
+        chart_account_code: str,
+        *,
+        legal_entity_reference: str | None = None,
+        fiscal_period_reference: str | None = None,
+        page_limit: object | None = None,
+        cursor: str | None = None,
+        tenant_header: str | None = "",
+    ) -> tuple[int, dict[str, object]]:
+        query: dict[str, str] = {
+            "legal_entity_reference": (
+                self.policy.legal_entity_reference
+                if legal_entity_reference is None
+                else legal_entity_reference
+            ),
+            "chart_account_code": chart_account_code,
+        }
+        if fiscal_period_reference is not None:
+            query["fiscal_period_reference"] = fiscal_period_reference
+        if page_limit is not None:
+            query["page_limit"] = str(page_limit)
+        if cursor is not None:
+            query["cursor"] = cursor
+        return self._http_json(
+            "GET",
+            f"/account-ledgers?{urllib.parse.urlencode(query)}",
+            None,
+            tenant_header=tenant_header,
         )
 
     def _http_fiscal_periods(

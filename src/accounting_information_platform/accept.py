@@ -216,6 +216,36 @@ def lookup_fiscal_periods(
     )
 
 
+def lookup_account_ledger(
+    database_url: str,
+    tenant_reference: str,
+    legal_entity_reference: str,
+    chart_account_code: str,
+    fiscal_period_reference: str = "",
+    page_limit: int | None = None,
+    cursor: str = "",
+) -> dict[str, object]:
+    """Return posted journal lines for one tenant entity and statutory chart account."""
+    if not legal_entity_reference:
+        raise AccountingValidationError(
+            "legal_entity_reference is required. "
+            "Supply that ledger field, then retry the account-ledger read."
+        )
+    if not chart_account_code:
+        raise AccountingValidationError(
+            "chart_account_code is required. "
+            "Supply that ledger field, then retry the account-ledger read."
+        )
+    ledger = PostgresPostingLedger(database_url, tenant_reference)
+    return ledger.load_account_ledger(
+        legal_entity_reference,
+        chart_account_code,
+        fiscal_period_reference,
+        page_limit=_resolve_account_ledger_page_limit(page_limit),
+        cursor_after=_parse_account_ledger_cursor(cursor),
+    )
+
+
 def lookup_period_journals(
     database_url: str,
     tenant_reference: str,
@@ -366,6 +396,13 @@ def _resolve_fiscal_period_list_page_limit(page_limit: int | None) -> int:
     )
 
 
+def _resolve_account_ledger_page_limit(page_limit: int | None) -> int:
+    return _resolve_bounded_page_limit(
+        page_limit,
+        "Supply an account-ledger page_limit, then retry the account-ledger read.",
+    )
+
+
 def _resolve_bounded_page_limit(page_limit: int | None, next_action: str) -> int:
     if page_limit is None:
         return _JOURNAL_LIST_DEFAULT_PAGE_LIMIT
@@ -422,6 +459,37 @@ def _parse_fiscal_period_list_cursor(cursor: str) -> tuple[date, str] | None:
             "Supply a fiscal-period-list cursor, then retry the period list."
         ) from error
     return period_start_date, period_code
+
+
+def _parse_account_ledger_cursor(cursor: str) -> tuple[datetime, str, int] | None:
+    if not cursor:
+        return None
+    parts = cursor.split("|")
+    if len(parts) != 3:
+        raise AccountingValidationError(
+            "cursor must be posted_at|journal_reference|line_number. "
+            "Supply an account-ledger cursor, then retry the account-ledger read."
+        )
+    posted_at_text, journal_reference, line_number_text = parts
+    if not posted_at_text or not journal_reference or not line_number_text:
+        raise AccountingValidationError(
+            "cursor must be posted_at|journal_reference|line_number. "
+            "Supply an account-ledger cursor, then retry the account-ledger read."
+        )
+    try:
+        posted_at = datetime.fromisoformat(posted_at_text.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise AccountingValidationError(
+            "cursor posted_at must be an ISO-8601 timestamp. "
+            "Supply an account-ledger cursor, then retry the account-ledger read."
+        ) from error
+    try:
+        return posted_at, journal_reference, int(line_number_text)
+    except ValueError as error:
+        raise AccountingValidationError(
+            "cursor line_number must be an integer. "
+            "Supply an account-ledger cursor, then retry the account-ledger read."
+        ) from error
 
 
 def _parse_outbox_cursor(cursor: str) -> tuple[datetime, UUID] | None:

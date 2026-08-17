@@ -14,6 +14,7 @@ from .accept import (
     accept_journal_reversal,
     accept_period_close,
     accept_period_open,
+    lookup_account_ledger,
     lookup_account_role_mappings,
     lookup_fiscal_period,
     lookup_fiscal_periods,
@@ -37,6 +38,7 @@ PERIOD_CLOSE_PATH = "/period-closes"
 POSTING_RECEIPT_PATH = "/posting-receipts"
 TRIAL_BALANCE_PATH = "/trial-balances"
 ACCOUNT_ROLE_MAPPING_PATH = "/account-role-mappings"
+ACCOUNT_LEDGER_PATH = "/account-ledgers"
 JOURNAL_PATH = "/journals"
 FISCAL_PERIOD_PATH = "/fiscal-periods"
 OUTBOX_PATH = "/outbox-events"
@@ -103,6 +105,9 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         if parsed.path == ACCOUNT_ROLE_MAPPING_PATH:
             self._get_account_role_mappings(parsed.query)
             return
+        if parsed.path == ACCOUNT_LEDGER_PATH:
+            self._get_account_ledger(parsed.query)
+            return
         if parsed.path == JOURNAL_PATH:
             self._get_posted_journal(parsed.query)
             return
@@ -122,8 +127,8 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         self._write_error(
             404,
             "unknown path. GET /posting-receipts?idempotency_key=, GET /trial-balances, "
-            "GET /account-role-mappings, GET /journals, GET /fiscal-periods, "
-            "or GET /outbox-events?event_type_code=, then retry.",
+            "GET /account-role-mappings, GET /account-ledgers, GET /journals, "
+            "GET /fiscal-periods, or GET /outbox-events?event_type_code=, then retry.",
         )
 
     def do_POST(self) -> None:
@@ -142,6 +147,13 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
                 405,
                 "POST is not supported on the account role mapping endpoint. "
                 "GET the catalog mappings, then retry.",
+            )
+            return
+        if parsed_path == ACCOUNT_LEDGER_PATH:
+            self._write_error(
+                405,
+                "POST is not supported on the account ledger endpoint. "
+                "GET the account ledger, then retry.",
             )
             return
         if self.path == JOURNAL_PROPOSAL_PATH:
@@ -256,6 +268,51 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             )
         except AccountingValidationError as error:
             self._write_error(404, str(error))
+            return
+        self._write_json(200, document)
+
+    def _get_account_ledger(self, query: str) -> None:
+        tenant_header = self._bound_tenant_header("account-ledger read")
+        if tenant_header is None:
+            return
+        fields = parse_qs(query)
+        legal_entity_reference = _first_query(fields, "legal_entity_reference")
+        chart_account_code = _first_query(fields, "chart_account_code")
+        if not legal_entity_reference or not chart_account_code:
+            self._write_error(
+                400,
+                "legal_entity_reference and chart_account_code are required. "
+                "Supply those ledger fields, then retry the account-ledger read.",
+            )
+            return
+        raw_limit = _first_query(fields, "page_limit")
+        page_limit: int | None = None
+        if raw_limit:
+            try:
+                page_limit = int(raw_limit)
+            except ValueError:
+                self._write_error(
+                    400,
+                    "page_limit must be an integer. "
+                    "Supply an account-ledger page_limit, then retry the account-ledger read.",
+                )
+                return
+        try:
+            document = lookup_account_ledger(
+                self.server.database_url,
+                tenant_header,
+                legal_entity_reference,
+                chart_account_code,
+                fiscal_period_reference=_first_query(fields, "fiscal_period_reference"),
+                page_limit=page_limit,
+                cursor=_first_query(fields, "cursor"),
+            )
+        except AccountingValidationError as error:
+            message = str(error)
+            if "page_limit" in message or "cursor" in message:
+                self._write_error(400, message)
+                return
+            self._write_error(404, message)
             return
         self._write_json(200, document)
 
