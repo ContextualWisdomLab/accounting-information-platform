@@ -211,6 +211,14 @@ class RepositoryContractTests(unittest.TestCase):
             "quality dependencies must pin packaging for setuptools license metadata",
             unhashed,
         )
+        self.assertIn(
+            "quality dependencies must pin psycopg for PostgreSQL persistence tests",
+            unhashed,
+        )
+        self.assertIn(
+            "quality dependencies must pin psycopg-binary for PostgreSQL persistence tests",
+            unhashed,
+        )
 
         universal_only = validate_quality_requirements(
             "coverage==7.15.4 \\\n"
@@ -224,6 +232,12 @@ class RepositoryContractTests(unittest.TestCase):
             "packaging==26.3 \\\n"
             "    --hash=sha256:"
             "d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c\n"
+            "psycopg==3.3.4 \\\n"
+            "    --hash=sha256:"
+            "b6bbc25ccf05c8fad3b061d9db2ef0909a555171b84b07f29458a447253d679a\n"
+            "psycopg-binary==3.3.4 \\\n"
+            "    --hash=sha256:"
+            "c677c4ad433cb7150c8cd304a0769ae3bcfbe5ea0676eb53faa7b1443b16d0d3\n"
         )
         self.assertEqual(
             universal_only,
@@ -236,6 +250,8 @@ class RepositoryContractTests(unittest.TestCase):
             "setuptools==84.0.0\n"
             "wheel==0.48.0\n"
             "packaging==26.3\n"
+            "psycopg==3.3.4\n"
+            "psycopg-binary==3.3.4\n"
         )
         self.assertIn(
             "hash lock is not attached to a quality dependency", orphan_and_unpinned
@@ -248,6 +264,8 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn("setuptools must be hash locked", orphan_and_unpinned)
         self.assertIn("wheel must be hash locked", orphan_and_unpinned)
         self.assertIn("packaging must be hash locked", orphan_and_unpinned)
+        self.assertIn("psycopg must be hash locked", orphan_and_unpinned)
+        self.assertIn("psycopg-binary must be hash locked", orphan_and_unpinned)
 
         inline_valid = validate_quality_requirements(
             "coverage==7.15.4 "
@@ -259,6 +277,10 @@ class RepositoryContractTests(unittest.TestCase):
             "3217dcc807155e45db462d7ef2431f5ddda0d7273b700d05a67b271ceb1287ab\n"
             "packaging==26.3 --hash=sha256:"
             "d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c\n"
+            "psycopg==3.3.4 --hash=sha256:"
+            "b6bbc25ccf05c8fad3b061d9db2ef0909a555171b84b07f29458a447253d679a\n"
+            "psycopg-binary==3.3.4 --hash=sha256:"
+            "c677c4ad433cb7150c8cd304a0769ae3bcfbe5ea0676eb53faa7b1443b16d0d3\n"
             "# comment and blank lines are ignored\n\n"
         )
         self.assertEqual(inline_valid, ())

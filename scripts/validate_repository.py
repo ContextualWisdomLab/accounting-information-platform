@@ -23,6 +23,7 @@ REQUIRED_FILES = (
     ".github/workflows/ci.yml",
     "src/accounting_information_platform/__init__.py",
     "src/accounting_information_platform/core.py",
+    "src/accounting_information_platform/persistence.py",
     "src/accounting_information_platform/py.typed",
     "schemas/accounting-journal-proposal.schema.json",
     "schemas/accounting-posting-receipt.schema.json",
@@ -174,6 +175,20 @@ def validate_quality_requirements(requirements_text: str) -> tuple[str, ...]:
         )
     elif not package_hashes["packaging"]:
         errors.append("packaging must be hash locked")
+
+    if "psycopg" not in package_hashes:
+        errors.append(
+            "quality dependencies must pin psycopg for PostgreSQL persistence tests"
+        )
+    elif not package_hashes["psycopg"]:
+        errors.append("psycopg must be hash locked")
+
+    if "psycopg-binary" not in package_hashes:
+        errors.append(
+            "quality dependencies must pin psycopg-binary for PostgreSQL persistence tests"
+        )
+    elif not package_hashes["psycopg-binary"]:
+        errors.append("psycopg-binary must be hash locked")
 
     return tuple(errors)
 

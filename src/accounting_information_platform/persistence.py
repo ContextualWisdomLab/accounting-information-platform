@@ -1,0 +1,879 @@
+"""PostgreSQL adapter that preserves PostingLedger invariants on durable rows."""
+
+from __future__ import annotations
+
+import hashlib
+import importlib
+import json
+import uuid
+from contextlib import contextmanager
+from datetime import date
+from decimal import Decimal
+from pathlib import Path
+from typing import Iterator
+from uuid import UUID
+
+from .core import (
+    AccountBalance,
+    AccountingPolicy,
+    AccountingValidationError,
+    IdempotencyConflictError,
+    JournalProposal,
+    PostedJournalLine,
+    PostingLedger,
+    PostingReceipt,
+    _require_code,
+    _require_reference,
+)
+
+
+class PostgresPostingLedger:
+    """Authoritative posting, reversal, and trial balance against PostgreSQL 18."""
+
+    def __init__(self, database_url: str, tenant_reference: str) -> None:
+        """Bind one tenant to a PostgreSQL 18 database URL."""
+        if not database_url:
+            raise AccountingValidationError(
+                "ACCOUNTING_DATABASE_URL is empty. Set a PostgreSQL 18 URL and retry posting."
+            )
+        _require_reference(tenant_reference, "tenant reference")
+        self._database_url = database_url
+        self._tenant_reference = tenant_reference
+
+    @property
+    def journal_count(self) -> int:
+        """Return the number of original and reversal journals retained for the tenant."""
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            row = connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM accounting_core.general_journal
+                WHERE tenant_account_id = %s
+                """,
+                (tenant_id,),
+            ).fetchone()
+        return int(row[0])
+
+    def post(self, proposal: JournalProposal, policy: AccountingPolicy) -> PostingReceipt:
+        """Resolve and persist *proposal* or return its prior idempotent receipt."""
+        proposal_uuid = _require_proposal_uuid(proposal.proposal_id)
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            prior = connection.execute(
+                """
+                SELECT source_payload_hash
+                FROM accounting_integration.journal_proposal_record
+                WHERE tenant_account_id = %s AND idempotency_key = %s
+                """,
+                (tenant_id, proposal.idempotency_key),
+            ).fetchone()
+            if prior is not None:
+                if prior[0] != proposal.source_payload_hash:
+                    raise IdempotencyConflictError(
+                        "idempotency key was already used with a different payload"
+                    )
+                return self._receipt_for_idempotency_key(connection, tenant_id, proposal)
+            PostingLedger._validate_policy_scope(proposal, policy)
+            resolved_lines = tuple(
+                PostingLedger._resolve_line(line, policy) for line in proposal.lines
+            )
+            period_id = self._require_open_period(
+                connection, tenant_id, proposal.accounting_date
+            )
+            legal_entity_id = self._require_legal_entity(
+                connection, tenant_id, proposal.legal_entity_reference
+            )
+            book_id = self._require_book(
+                connection,
+                tenant_id,
+                legal_entity_id,
+                policy.intended_book_role_code,
+                policy.accounting_book_reference,
+            )
+            journal_reference = f"urn:cwl:accounting:general_journal:{proposal.proposal_id}"
+            receipt = PostingReceipt(
+                receipt_reference=f"urn:cwl:accounting:posting_receipt:{proposal.proposal_id}",
+                journal_reference=journal_reference,
+                posting_status_code="posted",
+                source_proposal_id=proposal.proposal_id,
+                source_payload_hash=proposal.source_payload_hash,
+                tenant_reference=proposal.tenant_reference,
+                legal_entity_reference=proposal.legal_entity_reference,
+                accounting_book_reference=policy.accounting_book_reference,
+                accounting_policy_version=policy.accounting_policy_version,
+                posting_rule_version=policy.posting_rule_version,
+                line_count=len(resolved_lines),
+            )
+            proposal_record_id = connection.execute(
+                """
+                INSERT INTO accounting_integration.journal_proposal_record (
+                    tenant_account_id, external_proposal_id, proposal_contract_version,
+                    idempotency_key, source_payload_hash, proposal_status_code, processed_at
+                )
+                VALUES (%s, %s, %s, %s, %s, 'posted', clock_timestamp())
+                RETURNING proposal_record_id
+                """,
+                (
+                    tenant_id,
+                    proposal_uuid,
+                    proposal.proposal_contract_version,
+                    proposal.idempotency_key,
+                    proposal.source_payload_hash,
+                ),
+            ).fetchone()[0]
+            journal_id = self._insert_journal(
+                connection,
+                tenant_id=tenant_id,
+                legal_entity_id=legal_entity_id,
+                book_id=book_id,
+                period_id=period_id,
+                journal_reference=journal_reference,
+                proposal=proposal,
+                policy=policy,
+                proposal_record_id=proposal_record_id,
+                lines=resolved_lines,
+            )
+            self._insert_receipt(
+                connection, tenant_id, proposal_record_id, journal_id, receipt
+            )
+            self._insert_outbox(
+                connection,
+                tenant_id,
+                "journal_posted",
+                journal_reference,
+                receipt.receipt_reference,
+                receipt,
+            )
+            return receipt
+
+    def reverse(
+        self,
+        journal_reference: str,
+        reversal_date: date,
+        reversal_reason_code: str,
+        policy: AccountingPolicy,
+    ) -> PostingReceipt:
+        """Append the exact opposite of one original journal and preserve lineage."""
+        _require_code(reversal_reason_code, "reversal reason code")
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            existing = connection.execute(
+                """
+                SELECT reversal_journal.journal_reference
+                FROM accounting_core.journal_reversal
+                JOIN accounting_core.general_journal AS original_journal
+                  ON original_journal.tenant_account_id = journal_reversal.tenant_account_id
+                 AND original_journal.general_journal_id = journal_reversal.original_journal_id
+                JOIN accounting_core.general_journal AS reversal_journal
+                  ON reversal_journal.tenant_account_id = journal_reversal.tenant_account_id
+                 AND reversal_journal.general_journal_id = journal_reversal.reversal_journal_id
+                WHERE journal_reversal.tenant_account_id = %s
+                  AND original_journal.journal_reference = %s
+                """,
+                (tenant_id, journal_reference),
+            ).fetchone()
+            if existing is not None:
+                return self._receipt_for_journal(connection, tenant_id, existing[0])
+            original = connection.execute(
+                """
+                SELECT general_journal_id, legal_entity_id, accounting_book_id,
+                       transaction_currency_code, functional_currency_code,
+                       source_proposal_record_id, transaction_date
+                FROM accounting_core.general_journal
+                WHERE tenant_account_id = %s AND journal_reference = %s
+                """,
+                (tenant_id, journal_reference),
+            ).fetchone()
+            if original is None:
+                raise AccountingValidationError(
+                    "journal does not exist. Supply a posted journal reference, then retry reversal."
+                )
+            already_reversal = connection.execute(
+                """
+                SELECT 1
+                FROM accounting_core.journal_reversal
+                WHERE tenant_account_id = %s AND reversal_journal_id = %s
+                """,
+                (tenant_id, original[0]),
+            ).fetchone()
+            if already_reversal is not None:
+                raise AccountingValidationError(
+                    "a reversal journal cannot itself be reversed. Reverse the original journal, or post a replacement."
+                )
+            if not policy.permits(reversal_date):
+                raise AccountingValidationError("reversal date belongs to a closed fiscal period")
+            if (
+                self._tenant_reference != policy.tenant_reference
+                or self._legal_entity_code(connection, tenant_id, original[1])
+                != policy.legal_entity_reference
+                or self._book_name(connection, tenant_id, original[2])
+                != policy.accounting_book_reference
+            ):
+                raise AccountingValidationError(
+                    "reversal policy scope does not match original journal"
+                )
+            period_id = self._require_open_period(connection, tenant_id, reversal_date)
+            original_lines = self._load_lines(connection, tenant_id, original[0])
+            reversal_lines = tuple(
+                PostedJournalLine(
+                    line_number=line.line_number,
+                    chart_account_code=line.chart_account_code,
+                    account_role_code=line.account_role_code,
+                    debit_amount=line.credit_amount,
+                    credit_amount=line.debit_amount,
+                )
+                for line in original_lines
+            )
+            reversal_reference = f"{journal_reference}:reversal"
+            source_hash, source_proposal_id = self._proposal_identity(
+                connection, tenant_id, original[5]
+            )
+            receipt = PostingReceipt(
+                receipt_reference=f"{reversal_reference}:receipt",
+                journal_reference=reversal_reference,
+                posting_status_code="posted",
+                source_proposal_id=source_proposal_id,
+                source_payload_hash=source_hash,
+                tenant_reference=policy.tenant_reference,
+                legal_entity_reference=policy.legal_entity_reference,
+                accounting_book_reference=policy.accounting_book_reference,
+                accounting_policy_version=policy.accounting_policy_version,
+                posting_rule_version=policy.posting_rule_version,
+                line_count=len(reversal_lines),
+                reversal_of_journal_reference=journal_reference,
+            )
+            reversal_proposal_id = connection.execute(
+                """
+                INSERT INTO accounting_integration.journal_proposal_record (
+                    tenant_account_id, external_proposal_id, proposal_contract_version,
+                    idempotency_key, source_payload_hash, proposal_status_code, processed_at
+                )
+                VALUES (%s, uuidv7(), 1, %s, %s, 'posted', clock_timestamp())
+                RETURNING proposal_record_id
+                """,
+                (tenant_id, f"reversal:{journal_reference}", source_hash),
+            ).fetchone()[0]
+            reversal_journal_id = self._insert_journal(
+                connection,
+                tenant_id=tenant_id,
+                legal_entity_id=original[1],
+                book_id=original[2],
+                period_id=period_id,
+                journal_reference=reversal_reference,
+                proposal=_ReversalProposal(
+                    source_payload_hash=source_hash,
+                    transaction_currency=original[3],
+                    transaction_date=original[6],
+                    accounting_date=reversal_date,
+                    source_event_references=(),
+                ),
+                policy=policy,
+                proposal_record_id=reversal_proposal_id,
+                lines=reversal_lines,
+            )
+            connection.execute(
+                """
+                INSERT INTO accounting_core.journal_reversal (
+                    tenant_account_id, original_journal_id, reversal_journal_id,
+                    reversal_reason_code
+                )
+                VALUES (%s, %s, %s, %s)
+                """,
+                (tenant_id, original[0], reversal_journal_id, reversal_reason_code),
+            )
+            self._insert_receipt(
+                connection, tenant_id, reversal_proposal_id, reversal_journal_id, receipt
+            )
+            self._insert_outbox(
+                connection,
+                tenant_id,
+                "journal_reversed",
+                reversal_reference,
+                receipt.receipt_reference,
+                receipt,
+            )
+            return receipt
+
+    def trial_balance(
+        self,
+        tenant_reference: str,
+        legal_entity_reference: str,
+        accounting_book_reference: str,
+        through_date: date,
+    ) -> dict[str, AccountBalance]:
+        """Aggregate posted lines in one tenant/entity/book scope through a date."""
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            if tenant_reference != self._tenant_reference:
+                return {}
+            legal_entity_id = connection.execute(
+                """
+                SELECT legal_entity_id
+                FROM accounting_core.legal_entity_record
+                WHERE tenant_account_id = %s AND legal_entity_code = %s
+                """,
+                (tenant_id, legal_entity_reference),
+            ).fetchone()
+            book_id = connection.execute(
+                """
+                SELECT accounting_book_id
+                FROM accounting_core.accounting_book
+                WHERE tenant_account_id = %s AND book_name = %s
+                """,
+                (tenant_id, accounting_book_reference),
+            ).fetchone()
+            if legal_entity_id is None or book_id is None:
+                return {}
+            rows = connection.execute(
+                """
+                SELECT chart_account.chart_account_code,
+                       SUM(journal_entry_line.debit_amount),
+                       SUM(journal_entry_line.credit_amount)
+                FROM accounting_core.journal_entry_line
+                JOIN accounting_core.general_journal
+                  ON general_journal.tenant_account_id = journal_entry_line.tenant_account_id
+                 AND general_journal.general_journal_id = journal_entry_line.general_journal_id
+                JOIN accounting_core.chart_account
+                  ON chart_account.tenant_account_id = journal_entry_line.tenant_account_id
+                 AND chart_account.chart_account_id = journal_entry_line.chart_account_id
+                WHERE general_journal.tenant_account_id = %s
+                  AND general_journal.legal_entity_id = %s
+                  AND general_journal.accounting_book_id = %s
+                  AND general_journal.accounting_date <= %s
+                GROUP BY chart_account.chart_account_code
+                ORDER BY chart_account.chart_account_code
+                """,
+                (tenant_id, legal_entity_id[0], book_id[0], through_date),
+            ).fetchall()
+        return {
+            account_code: AccountBalance(account_code, debit_total, credit_total)
+            for account_code, debit_total, credit_total in rows
+        }
+
+    @contextmanager
+    def _session(self) -> Iterator[object]:
+        psycopg = _import_psycopg()
+        try:
+            connection = psycopg.connect(self._database_url)
+        except Exception as error:
+            raise AccountingValidationError(
+                "PostgreSQL is not reachable. Start PostgreSQL 18, set ACCOUNTING_DATABASE_URL "
+                "to that server, then retry posting."
+            ) from error
+        try:
+            yield connection
+        except Exception:
+            connection.rollback()
+            raise
+        else:
+            connection.commit()
+        finally:
+            connection.close()
+
+    def _require_tenant(self, connection: object) -> UUID:
+        row = connection.execute(
+            """
+            SELECT tenant_account_id
+            FROM accounting_core.tenant_account
+            WHERE tenant_account_code = %s
+            """,
+            (self._tenant_reference,),
+        ).fetchone()
+        if row is None:
+            raise AccountingValidationError(
+                f"Tenant {self._tenant_reference} is not recorded. Create the tenant_account row, then retry posting."
+            )
+        connection.execute(
+            "SELECT set_config('app.tenant_account_id', %s, true)",
+            (str(row[0]),),
+        )
+        return row[0]
+
+    def _require_legal_entity(
+        self, connection: object, tenant_id: UUID, legal_entity_reference: str
+    ) -> UUID:
+        row = connection.execute(
+            """
+            SELECT legal_entity_id
+            FROM accounting_core.legal_entity_record
+            WHERE tenant_account_id = %s AND legal_entity_code = %s AND valid_to IS NULL
+            """,
+            (tenant_id, legal_entity_reference),
+        ).fetchone()
+        if row is None:
+            raise AccountingValidationError(
+                f"Legal entity {legal_entity_reference} is not recorded for this tenant. "
+                "Create the legal_entity_record row, then retry posting."
+            )
+        return row[0]
+
+    def _require_book(
+        self,
+        connection: object,
+        tenant_id: UUID,
+        legal_entity_id: UUID,
+        book_role_code: str,
+        accounting_book_reference: str,
+    ) -> UUID:
+        row = connection.execute(
+            """
+            SELECT accounting_book_id
+            FROM accounting_core.accounting_book
+            WHERE tenant_account_id = %s
+              AND legal_entity_id = %s
+              AND book_role_code = %s
+              AND valid_to IS NULL
+            """,
+            (tenant_id, legal_entity_id, book_role_code),
+        ).fetchone()
+        if row is None:
+            raise AccountingValidationError(
+                f"Accounting book {accounting_book_reference} is not recorded for this legal entity. "
+                "Create the accounting_book row, then retry posting."
+            )
+        return row[0]
+
+    def _require_open_period(
+        self, connection: object, tenant_id: UUID, accounting_date: date
+    ) -> UUID:
+        row = connection.execute(
+            """
+            SELECT fiscal_period_id, period_code, period_status_code
+            FROM accounting_core.fiscal_period
+            WHERE tenant_account_id = %s
+              AND period_start_date <= %s
+              AND period_end_date >= %s
+            """,
+            (tenant_id, accounting_date, accounting_date),
+        ).fetchone()
+        if row is None:
+            raise AccountingValidationError(
+                f"No fiscal period covers accounting date {accounting_date.isoformat()}. "
+                "Create an open fiscal period on the tenant calendar, then retry posting."
+            )
+        if row[2] != "open":
+            raise AccountingValidationError(
+                f"Fiscal period {row[1]} is {row[2]}. Open that period or post into an open period; "
+                "no journal was written."
+            )
+        return row[0]
+
+    def _insert_journal(
+        self,
+        connection: object,
+        *,
+        tenant_id: UUID,
+        legal_entity_id: UUID,
+        book_id: UUID,
+        period_id: UUID,
+        journal_reference: str,
+        proposal: JournalProposal | _ReversalProposal,
+        policy: AccountingPolicy,
+        proposal_record_id: UUID,
+        lines: tuple[PostedJournalLine, ...],
+    ) -> UUID:
+        journal_id = connection.execute(
+            """
+            INSERT INTO accounting_core.general_journal (
+                tenant_account_id, legal_entity_id, accounting_book_id, fiscal_period_id,
+                journal_reference, journal_status_code, transaction_currency_code,
+                functional_currency_code, transaction_date, accounting_date,
+                source_proposal_record_id, accounting_policy_version, posting_rule_version
+            )
+            VALUES (%s, %s, %s, %s, %s, 'posted', %s, %s, %s, %s, %s, %s, %s)
+            RETURNING general_journal_id
+            """,
+            (
+                tenant_id,
+                legal_entity_id,
+                book_id,
+                period_id,
+                journal_reference,
+                proposal.transaction_currency,
+                policy.functional_currency,
+                proposal.transaction_date,
+                proposal.accounting_date,
+                proposal_record_id,
+                policy.accounting_policy_version,
+                policy.posting_rule_version,
+            ),
+        ).fetchone()[0]
+        for line in lines:
+            chart_account_id = connection.execute(
+                """
+                SELECT chart_account_id
+                FROM accounting_core.chart_account
+                WHERE tenant_account_id = %s
+                  AND accounting_book_id = %s
+                  AND chart_account_code = %s
+                  AND valid_to IS NULL
+                """,
+                (tenant_id, book_id, line.chart_account_code),
+            ).fetchone()
+            if chart_account_id is None:
+                raise AccountingValidationError(
+                    f"Chart account {line.chart_account_code} is not recorded on this book. "
+                    "Create the chart_account row, then retry posting."
+                )
+            connection.execute(
+                """
+                INSERT INTO accounting_core.journal_entry_line (
+                    tenant_account_id, general_journal_id, line_number, chart_account_id,
+                    account_role_code, debit_amount, credit_amount
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    tenant_id,
+                    journal_id,
+                    line.line_number,
+                    chart_account_id[0],
+                    line.account_role_code,
+                    line.debit_amount,
+                    line.credit_amount,
+                ),
+            )
+        for reference in proposal.source_event_references:
+            connection.execute(
+                """
+                INSERT INTO accounting_core.journal_source_reference (
+                    tenant_account_id, general_journal_id, source_reference, source_payload_hash
+                )
+                VALUES (%s, %s, %s, %s)
+                """,
+                (tenant_id, journal_id, reference, proposal.source_payload_hash),
+            )
+        return journal_id
+
+    def _insert_receipt(
+        self,
+        connection: object,
+        tenant_id: UUID,
+        proposal_record_id: UUID,
+        journal_id: UUID,
+        receipt: PostingReceipt,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO accounting_integration.posting_receipt (
+                tenant_account_id, proposal_record_id, general_journal_id,
+                receipt_status_code, receipt_payload_hash
+            )
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (
+                tenant_id,
+                proposal_record_id,
+                journal_id,
+                receipt.posting_status_code,
+                _canonical_receipt_hash(receipt),
+            ),
+        )
+
+    def _insert_outbox(
+        self,
+        connection: object,
+        tenant_id: UUID,
+        event_type_code: str,
+        aggregate_reference: str,
+        payload_reference: str,
+        receipt: PostingReceipt,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO accounting_integration.outbox_event (
+                tenant_account_id, event_type_code, aggregate_reference,
+                payload_reference, payload_hash
+            )
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (
+                tenant_id,
+                event_type_code,
+                aggregate_reference,
+                payload_reference,
+                _canonical_receipt_hash(receipt),
+            ),
+        )
+
+    def _receipt_for_idempotency_key(
+        self, connection: object, tenant_id: UUID, proposal: JournalProposal
+    ) -> PostingReceipt:
+        return PostingReceipt(
+            receipt_reference=f"urn:cwl:accounting:posting_receipt:{proposal.proposal_id}",
+            journal_reference=f"urn:cwl:accounting:general_journal:{proposal.proposal_id}",
+            posting_status_code="posted",
+            source_proposal_id=proposal.proposal_id,
+            source_payload_hash=proposal.source_payload_hash,
+            tenant_reference=proposal.tenant_reference,
+            legal_entity_reference=proposal.legal_entity_reference,
+            accounting_book_reference=self._book_name_for_proposal(
+                connection, tenant_id, proposal.idempotency_key
+            ),
+            accounting_policy_version=self._policy_version_for_proposal(
+                connection, tenant_id, proposal.idempotency_key
+            )[0],
+            posting_rule_version=self._policy_version_for_proposal(
+                connection, tenant_id, proposal.idempotency_key
+            )[1],
+            line_count=self._line_count_for_proposal(
+                connection, tenant_id, proposal.idempotency_key
+            ),
+        )
+
+    def _receipt_for_journal(
+        self, connection: object, tenant_id: UUID, journal_reference: str
+    ) -> PostingReceipt:
+        row = connection.execute(
+            """
+            SELECT general_journal.journal_reference,
+                   journal_proposal_record.source_payload_hash,
+                   journal_proposal_record.external_proposal_id,
+                   general_journal.accounting_policy_version,
+                   general_journal.posting_rule_version,
+                   accounting_book.book_name,
+                   legal_entity_record.legal_entity_code,
+                   (
+                       SELECT COUNT(*)
+                       FROM accounting_core.journal_entry_line
+                       WHERE tenant_account_id = general_journal.tenant_account_id
+                         AND general_journal_id = general_journal.general_journal_id
+                   ),
+                   original_journal.journal_reference
+            FROM accounting_core.general_journal
+            JOIN accounting_integration.journal_proposal_record
+              ON journal_proposal_record.tenant_account_id = general_journal.tenant_account_id
+             AND journal_proposal_record.proposal_record_id = general_journal.source_proposal_record_id
+            JOIN accounting_core.accounting_book
+              ON accounting_book.tenant_account_id = general_journal.tenant_account_id
+             AND accounting_book.accounting_book_id = general_journal.accounting_book_id
+            JOIN accounting_core.legal_entity_record
+              ON legal_entity_record.tenant_account_id = general_journal.tenant_account_id
+             AND legal_entity_record.legal_entity_id = general_journal.legal_entity_id
+            LEFT JOIN accounting_core.journal_reversal
+              ON journal_reversal.tenant_account_id = general_journal.tenant_account_id
+             AND journal_reversal.reversal_journal_id = general_journal.general_journal_id
+            LEFT JOIN accounting_core.general_journal AS original_journal
+              ON original_journal.tenant_account_id = journal_reversal.tenant_account_id
+             AND original_journal.general_journal_id = journal_reversal.original_journal_id
+            WHERE general_journal.tenant_account_id = %s
+              AND general_journal.journal_reference = %s
+            """,
+            (tenant_id, journal_reference),
+        ).fetchone()
+        source_proposal_id = journal_reference.removeprefix(
+            "urn:cwl:accounting:general_journal:"
+        ).removesuffix(":reversal")
+        return PostingReceipt(
+            receipt_reference=f"{journal_reference}:receipt",
+            journal_reference=row[0],
+            posting_status_code="posted",
+            source_proposal_id=source_proposal_id,
+            source_payload_hash=row[1],
+            tenant_reference=self._tenant_reference,
+            legal_entity_reference=row[6],
+            accounting_book_reference=row[5],
+            accounting_policy_version=row[3],
+            posting_rule_version=row[4],
+            line_count=int(row[7]),
+            reversal_of_journal_reference=row[8],
+        )
+
+    def _book_name_for_proposal(
+        self, connection: object, tenant_id: UUID, idempotency_key: str
+    ) -> str:
+        return connection.execute(
+            """
+            SELECT accounting_book.book_name
+            FROM accounting_integration.journal_proposal_record
+            JOIN accounting_core.general_journal
+              ON general_journal.tenant_account_id = journal_proposal_record.tenant_account_id
+             AND general_journal.source_proposal_record_id = journal_proposal_record.proposal_record_id
+            JOIN accounting_core.accounting_book
+              ON accounting_book.tenant_account_id = general_journal.tenant_account_id
+             AND accounting_book.accounting_book_id = general_journal.accounting_book_id
+            WHERE journal_proposal_record.tenant_account_id = %s
+              AND journal_proposal_record.idempotency_key = %s
+            """,
+            (tenant_id, idempotency_key),
+        ).fetchone()[0]
+
+    def _policy_version_for_proposal(
+        self, connection: object, tenant_id: UUID, idempotency_key: str
+    ) -> tuple[str, str]:
+        return connection.execute(
+            """
+            SELECT general_journal.accounting_policy_version,
+                   general_journal.posting_rule_version
+            FROM accounting_integration.journal_proposal_record
+            JOIN accounting_core.general_journal
+              ON general_journal.tenant_account_id = journal_proposal_record.tenant_account_id
+             AND general_journal.source_proposal_record_id = journal_proposal_record.proposal_record_id
+            WHERE journal_proposal_record.tenant_account_id = %s
+              AND journal_proposal_record.idempotency_key = %s
+            """,
+            (tenant_id, idempotency_key),
+        ).fetchone()
+
+    def _line_count_for_proposal(
+        self, connection: object, tenant_id: UUID, idempotency_key: str
+    ) -> int:
+        return int(
+            connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM accounting_integration.journal_proposal_record
+                JOIN accounting_core.general_journal
+                  ON general_journal.tenant_account_id = journal_proposal_record.tenant_account_id
+                 AND general_journal.source_proposal_record_id = journal_proposal_record.proposal_record_id
+                JOIN accounting_core.journal_entry_line
+                  ON journal_entry_line.tenant_account_id = general_journal.tenant_account_id
+                 AND journal_entry_line.general_journal_id = general_journal.general_journal_id
+                WHERE journal_proposal_record.tenant_account_id = %s
+                  AND journal_proposal_record.idempotency_key = %s
+                """,
+                (tenant_id, idempotency_key),
+            ).fetchone()[0]
+        )
+
+    def _load_lines(
+        self, connection: object, tenant_id: UUID, journal_id: UUID
+    ) -> tuple[PostedJournalLine, ...]:
+        rows = connection.execute(
+            """
+            SELECT journal_entry_line.line_number,
+                   chart_account.chart_account_code,
+                   journal_entry_line.account_role_code,
+                   journal_entry_line.debit_amount,
+                   journal_entry_line.credit_amount
+            FROM accounting_core.journal_entry_line
+            JOIN accounting_core.chart_account
+              ON chart_account.tenant_account_id = journal_entry_line.tenant_account_id
+             AND chart_account.chart_account_id = journal_entry_line.chart_account_id
+            WHERE journal_entry_line.tenant_account_id = %s
+              AND journal_entry_line.general_journal_id = %s
+            ORDER BY journal_entry_line.line_number
+            """,
+            (tenant_id, journal_id),
+        ).fetchall()
+        return tuple(
+            PostedJournalLine(
+                line_number=row[0],
+                chart_account_code=row[1],
+                account_role_code=row[2],
+                debit_amount=Decimal(row[3]),
+                credit_amount=Decimal(row[4]),
+            )
+            for row in rows
+        )
+
+    def _proposal_identity(
+        self, connection: object, tenant_id: UUID, proposal_record_id: UUID
+    ) -> tuple[str, str]:
+        row = connection.execute(
+            """
+            SELECT source_payload_hash, external_proposal_id
+            FROM accounting_integration.journal_proposal_record
+            WHERE tenant_account_id = %s AND proposal_record_id = %s
+            """,
+            (tenant_id, proposal_record_id),
+        ).fetchone()
+        return row[0], str(row[1])
+
+    def _legal_entity_code(
+        self, connection: object, tenant_id: UUID, legal_entity_id: UUID
+    ) -> str:
+        return connection.execute(
+            """
+            SELECT legal_entity_code
+            FROM accounting_core.legal_entity_record
+            WHERE tenant_account_id = %s AND legal_entity_id = %s
+            """,
+            (tenant_id, legal_entity_id),
+        ).fetchone()[0]
+
+    def _book_name(self, connection: object, tenant_id: UUID, book_id: UUID) -> str:
+        return connection.execute(
+            """
+            SELECT book_name
+            FROM accounting_core.accounting_book
+            WHERE tenant_account_id = %s AND accounting_book_id = %s
+            """,
+            (tenant_id, book_id),
+        ).fetchone()[0]
+
+
+class _ReversalProposal:
+    """Minimal proposal shape used when persisting an equal-and-opposite journal."""
+
+    def __init__(
+        self,
+        *,
+        source_payload_hash: str,
+        transaction_currency: str,
+        transaction_date: date,
+        accounting_date: date,
+        source_event_references: tuple[str, ...],
+    ) -> None:
+        self.source_payload_hash = source_payload_hash
+        self.transaction_currency = transaction_currency
+        self.transaction_date = transaction_date
+        self.accounting_date = accounting_date
+        self.source_event_references = source_event_references
+
+
+def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
+    """Apply the checked-in PostgreSQL 18 foundation migration to *database_url*."""
+    if not migration_path.is_file():
+        raise AccountingValidationError(
+            f"Foundation migration is missing at {migration_path}. "
+            "Restore database/migrations/0001_accounting_foundation.sql, then retry."
+        )
+    psycopg = _import_psycopg()
+    try:
+        with psycopg.connect(
+            database_url, autocommit=True, cursor_factory=psycopg.ClientCursor
+        ) as connection:
+            connection.execute(migration_path.read_text(encoding="utf-8"))
+    except Exception as error:
+        raise AccountingValidationError(
+            "Foundation migration failed. Inspect the PostgreSQL error, restore a clean "
+            "database, then retry the migration."
+        ) from error
+
+
+def _import_psycopg():
+    try:
+        return importlib.import_module("psycopg")
+    except ImportError as error:
+        raise AccountingValidationError(
+            "psycopg is not installed. Install hash-locked dependencies from "
+            "requirements-quality.txt, then retry posting."
+        ) from error
+
+
+def _require_proposal_uuid(proposal_id: str) -> UUID:
+    try:
+        return uuid.UUID(proposal_id)
+    except ValueError as error:
+        raise AccountingValidationError(
+            "proposal_id must be a UUID. Supply the source proposal UUID, then retry posting."
+        ) from error
+
+
+def _canonical_receipt_hash(receipt: PostingReceipt) -> str:
+    payload = json.dumps(
+        {
+            "journal_reference": receipt.journal_reference,
+            "line_count": receipt.line_count,
+            "posting_status_code": receipt.posting_status_code,
+            "receipt_reference": receipt.receipt_reference,
+            "reversal_of_journal_reference": receipt.reversal_of_journal_reference,
+            "source_payload_hash": receipt.source_payload_hash,
+            "source_proposal_id": receipt.source_proposal_id,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()

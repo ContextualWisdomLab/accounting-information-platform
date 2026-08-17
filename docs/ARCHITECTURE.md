@@ -38,7 +38,7 @@ Operational systems         Metering Billing Platform
 
 ## Current implementation
 
-`accounting_information_platform.core` is the reference implementation for proposal validation, policy checks, posting, reversal, and trial balance. It has no network or database dependency. The PostgreSQL adapter must pass the same behavior fixtures before becoming authoritative.
+`accounting_information_platform.core` is the reference implementation for proposal validation, policy checks, posting, reversal, and trial balance. It has no network or database dependency. `PostgresPostingLedger` applies those same invariants to PostgreSQL 18 through `database/migrations/0001_accounting_foundation.sql`: one transaction writes the proposal, journal, lines, receipt, and outbox event; replay returns the original receipt; reversal is append-only; a closed fiscal period writes zero rows.
 
 ## Deployment evolution
 

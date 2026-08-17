@@ -9,6 +9,8 @@
 
 ### Added
 
+- PostgreSQL 18 posting adapter that persists a balanced journal, idempotent replay, append-only reversal, and trial-balance tie-out through the foundation migration in one commit boundary.
+- Hash-locked psycopg 3.3.4 and CPython 3.13 psycopg-binary wheels for exact-head persistence tests.
 - Initial Accounting Information Platform product and authority baseline.
 - Executable exact-decimal journal proposal, posting, reversal, and trial-balance reference core.
 - Consumer contract for Metering Billing Platform journal proposals.
