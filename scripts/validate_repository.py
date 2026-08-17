@@ -66,6 +66,7 @@ REQUIRED_FILES = (
     "docs/adr/0022-http-accounting-book-list.md",
     "docs/adr/0023-http-two-step-period-close.md",
     "docs/adr/0024-hard-close-retained-earnings.md",
+    "docs/adr/0025-http-financial-statement-comparison.md",
     "docs/doctoring/REFERENCES.md",
     "docs/doctoring/STANDARD_TRACEABILITY.md",
     "docs/superpowers/specs/2026-08-16-accounting-information-platform-design.md",

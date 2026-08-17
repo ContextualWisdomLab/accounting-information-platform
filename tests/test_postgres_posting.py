@@ -1706,6 +1706,9 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(sheet_status, 200)
         self.assertEqual(income, income_library)
         self.assertEqual(sheet, sheet_library)
+        self.assertNotIn("comparison_fiscal_period_reference", income)
+        self.assertNotIn("comparison_statement_lines", income)
+        self.assertNotIn("comparison_net_income_amount", sheet)
         self.assertEqual(income["tenant_reference"], self.policy.tenant_reference)
         self.assertEqual(income["legal_entity_reference"], self.policy.legal_entity_reference)
         self.assertEqual(income["accounting_book_reference"], self.policy.accounting_book_reference)
@@ -2023,6 +2026,228 @@ class PostgresPostingTests(unittest.TestCase):
             self._count_table("accounting_reporting.trial_balance_snapshot"), snapshots
         )
         self.assertEqual(self._count_closing_journals(), 1)
+        server.shutdown()
+
+    def test_http_compares_financial_statements_across_periods(self) -> None:
+        """Optional comparison_fiscal_period_reference returns prior-period lines on the same GET."""
+        self._seed_additional_period("2026-06", date(2026, 6, 1), date(2026, 6, 30))
+        self._seed_additional_period("2026-07", date(2026, 7, 1), date(2026, 7, 31))
+        prior = self._billing_validated_payload(
+            proposal_id=str(uuid.uuid4()),
+            idempotency_key=(
+                f"{self.policy.tenant_reference}:invoice_draft:july:"
+                f"sha256:{'4' * 64}:v1"
+            ),
+            source_payload_hash="sha256:" + "4" * 64,
+            transaction_date="2026-07-15",
+            accounting_date="2026-07-15",
+            proposed_at="2026-07-15T00:00:00Z",
+            source_event_references=(
+                f"{self.policy.tenant_reference}:invoice_draft:july",
+            ),
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "10000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "usage_revenue",
+                    "debit_amount": "0",
+                    "credit_amount": "10000",
+                },
+            ],
+        )
+        current = self._billing_taxed_payload()
+        server = self._start_http_server()
+        self._http_json("POST", "/journal-proposals", prior)
+        self._http_json("POST", "/journal-proposals", current)
+        journals_before = self._count_table("accounting_core.general_journal")
+        snapshots_before = self._count_table("accounting_reporting.trial_balance_snapshot")
+
+        omit_status, omit_income = self._http_financial_statement("income_statement")
+        omit_sheet_status, omit_sheet = self._http_financial_statement("balance_sheet")
+        compare_income_status, compare_income = self._http_financial_statement(
+            "income_statement",
+            comparison_fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-07",
+        )
+        compare_sheet_status, compare_sheet = self._http_financial_statement(
+            "balance_sheet",
+            comparison_fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-07",
+        )
+        empty_status, empty_compare = self._http_financial_statement(
+            "income_statement",
+            comparison_fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-06",
+        )
+        library = lookup_financial_statement(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-08",
+            "income_statement",
+            comparison_fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-07",
+        )
+        prior_only = lookup_financial_statement(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-07",
+            "income_statement",
+        )
+        comparison_keys = {
+            "comparison_fiscal_period_reference",
+            "comparison_statement_lines",
+            "comparison_total_debit_amount",
+            "comparison_total_credit_amount",
+            "comparison_net_income_amount",
+        }
+        current_income_by_code = {
+            str(item["chart_account_code"]): item
+            for item in compare_income["statement_lines"]
+        }
+        prior_income_by_code = {
+            str(item["chart_account_code"]): item
+            for item in compare_income["comparison_statement_lines"]
+        }
+        current_sheet_by_code = {
+            str(item["chart_account_code"]): item
+            for item in compare_sheet["statement_lines"]
+        }
+        prior_sheet_by_code = {
+            str(item["chart_account_code"]): item
+            for item in compare_sheet["comparison_statement_lines"]
+        }
+
+        self.assertEqual(omit_status, 200)
+        self.assertEqual(omit_sheet_status, 200)
+        self.assertEqual(compare_income_status, 200)
+        self.assertEqual(compare_sheet_status, 200)
+        self.assertEqual(empty_status, 200)
+        self.assertFalse(comparison_keys & set(omit_income))
+        self.assertFalse(comparison_keys & set(omit_sheet))
+        self.assertEqual(compare_income, library)
+        self.assertEqual(
+            compare_income["comparison_fiscal_period_reference"],
+            "urn:cwl:accounting:fiscal_period:2026-07",
+        )
+        self.assertEqual(compare_income["comparison_statement_lines"], prior_only["statement_lines"])
+        self.assertEqual(compare_income["comparison_net_income_amount"], prior_only["net_income_amount"])
+        self.assertEqual(Decimal(str(prior_only["net_income_amount"])), Decimal("10000"))
+        self.assertEqual(Decimal(str(compare_income["net_income_amount"])), Decimal("35000"))
+        self.assertEqual(
+            Decimal(str(current_income_by_code["410100"]["credit_amount"])),
+            Decimal("35000"),
+        )
+        self.assertEqual(
+            Decimal(str(prior_income_by_code["410100"]["credit_amount"])),
+            Decimal("10000"),
+        )
+        self.assertEqual(Decimal(str(compare_sheet["net_income_amount"])), Decimal("35000"))
+        self.assertEqual(
+            Decimal(str(compare_sheet["comparison_net_income_amount"])),
+            Decimal("10000"),
+        )
+        self.assertEqual(
+            Decimal(str(current_sheet_by_code["110100"]["debit_amount"])),
+            Decimal("37500"),
+        )
+        self.assertEqual(
+            Decimal(str(prior_sheet_by_code["110100"]["debit_amount"])),
+            Decimal("10000"),
+        )
+        self.assertEqual(empty_compare["comparison_statement_lines"], [])
+        self.assertEqual(
+            Decimal(str(empty_compare["comparison_total_debit_amount"])),
+            Decimal("0"),
+        )
+        self.assertEqual(
+            Decimal(str(empty_compare["comparison_total_credit_amount"])),
+            Decimal("0"),
+        )
+        self.assertEqual(
+            Decimal(str(empty_compare["comparison_net_income_amount"])),
+            Decimal("0"),
+        )
+
+        july_close_status, _july_close = self._http_json(
+            "POST",
+            "/period-closes",
+            self._period_close_payload(
+                fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-07"
+            ),
+        )
+        closed_compare_status, closed_compare = self._http_financial_statement(
+            "balance_sheet",
+            comparison_fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-07",
+        )
+        live_current_status, live_current = self._http_trial_balance()
+        closed_prior_status, closed_prior = self._http_trial_balance(
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-07"
+        )
+        closed_sheet_by_code = {
+            str(item["chart_account_code"]): item
+            for item in closed_compare["comparison_statement_lines"]
+        }
+        self.assertEqual(july_close_status, 200)
+        self.assertEqual(closed_compare_status, 200)
+        self.assertEqual(live_current_status, 200)
+        self.assertEqual(closed_prior_status, 200)
+        self.assertEqual(live_current["balance_source_code"], "live")
+        self.assertEqual(closed_prior["balance_source_code"], "snapshot")
+        self.assertEqual(Decimal(str(closed_compare["net_income_amount"])), Decimal("35000"))
+        self.assertEqual(
+            Decimal(str(closed_compare["comparison_net_income_amount"])),
+            Decimal("0"),
+        )
+        self.assertEqual(closed_sheet_by_code["310100"]["account_role_code"], "retained_earnings")
+        self.assertEqual(
+            Decimal(str(closed_sheet_by_code["310100"]["credit_amount"])),
+            Decimal("10000"),
+        )
+
+        unknown_status, _unknown = self._http_financial_statement(
+            "income_statement",
+            comparison_fiscal_period_reference="urn:cwl:accounting:fiscal_period:1999-01",
+        )
+        other_entity_status, _other_entity = self._http_financial_statement(
+            "income_statement",
+            legal_entity_reference="urn:cwl:legal_entity:missing",
+            comparison_fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-07",
+        )
+        other_book_status, _other_book = self._http_financial_statement(
+            "income_statement",
+            book_reference="urn:cwl:accounting_book:missing",
+            comparison_fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-07",
+        )
+        cross_status, _cross = self._http_financial_statement(
+            "income_statement",
+            comparison_fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-07",
+            tenant_header="urn:cwl:tenant_other",
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "Fiscal period 1999-01"):
+            lookup_financial_statement(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "urn:cwl:accounting:fiscal_period:2026-08",
+                "income_statement",
+                comparison_fiscal_period_reference="urn:cwl:accounting:fiscal_period:1999-01",
+            )
+
+        self.assertEqual(unknown_status, 404)
+        self.assertEqual(other_entity_status, 404)
+        self.assertEqual(other_book_status, 404)
+        self.assertEqual(cross_status, 403)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before + 1)
+        self.assertEqual(
+            self._count_table("accounting_reporting.trial_balance_snapshot"),
+            snapshots_before + 1,
+        )
         server.shutdown()
 
     def test_http_reads_posted_journal_lines(self) -> None:
@@ -5481,28 +5706,32 @@ class PostgresPostingTests(unittest.TestCase):
         legal_entity_reference: str | None = None,
         book_reference: str | None = None,
         fiscal_period_reference: str | None = None,
+        comparison_fiscal_period_reference: str | None = None,
         tenant_header: str | None = "",
     ) -> tuple[int, dict[str, object]]:
-        query = urllib.parse.urlencode(
-            {
-                "legal_entity_reference": (
-                    self.policy.legal_entity_reference
-                    if legal_entity_reference is None
-                    else legal_entity_reference
-                ),
-                "book_reference": (
-                    self.policy.accounting_book_reference
-                    if book_reference is None
-                    else book_reference
-                ),
-                "fiscal_period_reference": (
-                    "urn:cwl:accounting:fiscal_period:2026-08"
-                    if fiscal_period_reference is None
-                    else fiscal_period_reference
-                ),
-                "statement_type_code": statement_type_code,
-            }
-        )
+        fields = {
+            "legal_entity_reference": (
+                self.policy.legal_entity_reference
+                if legal_entity_reference is None
+                else legal_entity_reference
+            ),
+            "book_reference": (
+                self.policy.accounting_book_reference
+                if book_reference is None
+                else book_reference
+            ),
+            "fiscal_period_reference": (
+                "urn:cwl:accounting:fiscal_period:2026-08"
+                if fiscal_period_reference is None
+                else fiscal_period_reference
+            ),
+            "statement_type_code": statement_type_code,
+        }
+        if comparison_fiscal_period_reference is not None:
+            fields["comparison_fiscal_period_reference"] = (
+                comparison_fiscal_period_reference
+            )
+        query = urllib.parse.urlencode(fields)
         return self._http_json(
             "GET",
             f"/financial-statements?{query}",

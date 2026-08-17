@@ -393,6 +393,7 @@ def lookup_financial_statement(
     book_reference: str,
     fiscal_period_reference: str,
     statement_type_code: str,
+    comparison_fiscal_period_reference: str = "",
 ) -> dict[str, object]:
     """Return the income statement or balance sheet for one book and fiscal period."""
     if not legal_entity_reference or not book_reference or not fiscal_period_reference:
@@ -411,6 +412,9 @@ def lookup_financial_statement(
         book_reference,
         _period_code_from_reference(fiscal_period_reference),
         statement_type_code,
+        comparison_period_code=_period_code_from_reference(
+            comparison_fiscal_period_reference
+        ),
     )
 
 

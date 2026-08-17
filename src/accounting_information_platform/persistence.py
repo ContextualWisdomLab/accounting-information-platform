@@ -1395,6 +1395,7 @@ class PostgresPostingLedger:
         accounting_book_reference: str,
         period_code: str,
         statement_type_code: str,
+        comparison_period_code: str = "",
     ) -> dict[str, object]:
         """Project income-statement or balance-sheet lines from the period trial balance."""
         if statement_type_code == "income_statement":
@@ -1483,7 +1484,7 @@ class PostgresPostingLedger:
                 ),
                 Decimal("0"),
             )
-        return {
+        document = {
             "tenant_reference": self._tenant_reference,
             "legal_entity_reference": legal_entity_reference,
             "accounting_book_reference": accounting_book_reference,
@@ -1495,6 +1496,21 @@ class PostgresPostingLedger:
             "total_credit_amount": _exact_amount_text(total_credit_amount),
             "net_income_amount": _exact_amount_text(net_income_amount),
         }
+        if comparison_period_code.strip():
+            compared = self.load_financial_statement(
+                legal_entity_reference,
+                accounting_book_reference,
+                comparison_period_code.strip(),
+                statement_type_code,
+            )
+            document["comparison_fiscal_period_reference"] = compared[
+                "fiscal_period_reference"
+            ]
+            document["comparison_statement_lines"] = compared["statement_lines"]
+            document["comparison_total_debit_amount"] = compared["total_debit_amount"]
+            document["comparison_total_credit_amount"] = compared["total_credit_amount"]
+            document["comparison_net_income_amount"] = compared["net_income_amount"]
+        return document
 
     def _load_statement_account_facts(
         self, legal_entity_reference: str, accounting_book_reference: str

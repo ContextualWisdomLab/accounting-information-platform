@@ -289,6 +289,9 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         book_reference = _first_query(fields, "book_reference")
         fiscal_period_reference = _first_query(fields, "fiscal_period_reference")
         statement_type_code = _first_query(fields, "statement_type_code")
+        comparison_fiscal_period_reference = _first_query(
+            fields, "comparison_fiscal_period_reference"
+        )
         if (
             not legal_entity_reference
             or not book_reference
@@ -310,6 +313,7 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
                 book_reference,
                 fiscal_period_reference,
                 statement_type_code,
+                comparison_fiscal_period_reference,
             )
         except AccountingValidationError as error:
             message = str(error)
