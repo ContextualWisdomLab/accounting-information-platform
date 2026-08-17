@@ -334,6 +334,21 @@ def lookup_account_role_mappings(
     return ledger.load_account_role_mappings(legal_entity_reference, book_reference)
 
 
+def lookup_accounting_books(
+    database_url: str,
+    tenant_reference: str,
+    legal_entity_reference: str,
+) -> dict[str, object]:
+    """Return existing accounting books for one tenant legal entity."""
+    if not legal_entity_reference:
+        raise AccountingValidationError(
+            "legal_entity_reference is required. "
+            "Supply that catalog field, then retry the accounting-book list."
+        )
+    ledger = PostgresPostingLedger(database_url, tenant_reference)
+    return ledger.load_accounting_books(legal_entity_reference)
+
+
 def lookup_chart_accounts(
     database_url: str,
     tenant_reference: str,

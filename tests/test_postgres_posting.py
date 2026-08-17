@@ -36,6 +36,7 @@ from accounting_information_platform import (
     ingest_journal_proposal,
     lookup_account_ledger,
     lookup_account_role_mappings,
+    lookup_accounting_books,
     lookup_chart_accounts,
     lookup_financial_statement,
     lookup_fiscal_period,
@@ -1289,6 +1290,81 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(missing_book[0], 400)
         self.assertEqual(unknown_entity[0], 404)
         self.assertEqual(unknown_book[0], 404)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before)
+        server.shutdown()
+
+    def test_http_lists_accounting_books_for_legal_entity(self) -> None:
+        """GET returns existing accounting_book rows so a controller can discover book_reference."""
+        server = self._start_http_server()
+        journals_before = self._count_table("accounting_core.general_journal")
+        management_book = self._seed_book_without_chart_accounts()
+        empty_entity = self._seed_entity_without_books()
+
+        status, document = self._http_accounting_books()
+        library = lookup_accounting_books(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+        )
+        empty_status, empty_page = self._http_accounting_books(
+            legal_entity_reference=empty_entity
+        )
+        by_role = {
+            str(item["intended_book_role_code"]): item
+            for item in document["accounting_books"]
+        }
+
+        self.assertEqual(status, 200)
+        self.assertEqual(document, library)
+        self.assertEqual(document["tenant_reference"], self.policy.tenant_reference)
+        self.assertEqual(document["legal_entity_reference"], self.policy.legal_entity_reference)
+        self.assertNotIn("next_cursor", document)
+        self.assertEqual(set(by_role), {"primary_statutory", "management"})
+        self.assertEqual(
+            by_role["primary_statutory"]["accounting_book_reference"],
+            self.policy.accounting_book_reference,
+        )
+        self.assertEqual(
+            by_role["primary_statutory"]["book_reference"],
+            self.policy.accounting_book_reference,
+        )
+        self.assertEqual(
+            by_role["primary_statutory"]["book_name"],
+            self.policy.accounting_book_reference,
+        )
+        self.assertEqual(by_role["management"]["book_reference"], management_book)
+        self.assertEqual(by_role["management"]["accounting_book_reference"], management_book)
+        self.assertEqual(empty_status, 200)
+        self.assertEqual(empty_page["accounting_books"], [])
+        self.assertEqual(empty_page["legal_entity_reference"], empty_entity)
+
+        post_status, _post_body = self._http_json("POST", "/accounting-books", {})
+        missing_header = self._http_accounting_books(tenant_header=None)
+        cross_status, _cross = self._http_accounting_books(
+            tenant_header="urn:cwl:tenant_other"
+        )
+        missing_query = self._http_json("GET", "/accounting-books", None)
+        unknown_entity = self._http_accounting_books(
+            legal_entity_reference="urn:cwl:legal_entity:missing"
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "legal_entity_reference"):
+            lookup_accounting_books(DATABASE_URL, self.policy.tenant_reference, "")
+        with self.assertRaisesRegex(AccountingValidationError, "legal_entity_reference"):
+            PostgresPostingLedger(
+                DATABASE_URL, self.policy.tenant_reference
+            ).load_accounting_books("")
+        with self.assertRaisesRegex(AccountingValidationError, "legal_entity"):
+            lookup_accounting_books(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                "urn:cwl:legal_entity:missing",
+            )
+
+        self.assertEqual(post_status, 405)
+        self.assertEqual(missing_header[0], 400)
+        self.assertEqual(cross_status, 403)
+        self.assertEqual(missing_query[0], 400)
+        self.assertEqual(unknown_entity[0], 404)
         self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before)
         server.shutdown()
 
@@ -4472,6 +4548,26 @@ class PostgresPostingTests(unittest.TestCase):
         values.update(overrides)
         return values
 
+    def _seed_entity_without_books(self) -> str:
+        entity_code = f"urn:cwl:legal_entity:nobooks_{uuid.uuid4().hex[:8]}"
+        with psycopg.connect(DATABASE_URL) as connection:
+            connection.execute(
+                "SELECT set_config('app.tenant_account_id', %s, false)",
+                (self.tenant_id,),
+            )
+            connection.execute(
+                """
+                INSERT INTO accounting_core.legal_entity_record (
+                    tenant_account_id, legal_entity_code, entity_name,
+                    functional_currency_code, valid_from
+                )
+                VALUES (%s, %s, %s, 'KRW', %s)
+                """,
+                (self.tenant_id, entity_code, "Entity without books", VALID_FROM),
+            )
+            connection.commit()
+        return entity_code
+
     def _seed_book_without_chart_accounts(self) -> str:
         book_name = f"urn:cwl:accounting_book:empty_{uuid.uuid4().hex[:8]}"
         with psycopg.connect(DATABASE_URL) as connection:
@@ -4728,6 +4824,28 @@ class PostgresPostingTests(unittest.TestCase):
         if query:
             path = f"/journals?{urllib.parse.urlencode(query)}"
         return self._http_json("GET", path, None, tenant_header=tenant_header)
+
+    def _http_accounting_books(
+        self,
+        *,
+        legal_entity_reference: str | None = None,
+        tenant_header: str | None = "",
+    ) -> tuple[int, dict[str, object]]:
+        query = urllib.parse.urlencode(
+            {
+                "legal_entity_reference": (
+                    self.policy.legal_entity_reference
+                    if legal_entity_reference is None
+                    else legal_entity_reference
+                )
+            }
+        )
+        return self._http_json(
+            "GET",
+            f"/accounting-books?{query}",
+            None,
+            tenant_header=tenant_header,
+        )
 
     def _http_chart_accounts(
         self,

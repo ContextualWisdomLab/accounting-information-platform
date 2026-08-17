@@ -11,6 +11,7 @@
 
 ### Added
 
+- `lookup_accounting_books` and `GET /accounting-books?legal_entity_reference=` list existing `accounting_book` rows for one tenant entity (`accounting_book_reference` / `book_reference` from `book_name`, `intended_book_role_code` from `book_role_code`, and `book_name`). Empty entities return `accounting_books` []. The catalog is small, so the list is not paged. `POST /accounting-books` is 405.
 - `lookup_financial_statement` and `GET /financial-statements?legal_entity_reference=&book_reference=&fiscal_period_reference=&statement_type_code=` project an `income_statement` or `balance_sheet` from the same trial-balance totals as `GET /trial-balances`. Lines reuse TB `chart_account_code`, `debit_amount`, and `credit_amount`, plus catalog `account_role_code` and `account_class_code`. `net_income_amount` is credit-normal earnings on both statements. Empty books return `statement_lines` [] and zero totals. `POST /financial-statements` is 405.
 - `database/migrations/0002_chart_account_class.sql` adds durable `account_class_code` (`asset` | `liability` | `equity` | `revenue` | `expense`) on `chart_account`. Seeded 110100 and 110200 are `asset`, 210100 is `liability`, and 410100 is `revenue`.
 - `lookup_chart_accounts` and `GET /chart-accounts?legal_entity_reference=&book_reference=` return existing `chart_account` rows (`chart_account_code`, `account_name`, `normal_balance_code`, `account_class_code`) for one tenant entity and book. Empty books return `chart_accounts` []. `POST /chart-accounts` is 405.

@@ -16,6 +16,7 @@ from .accept import (
     accept_period_open,
     lookup_account_ledger,
     lookup_account_role_mappings,
+    lookup_accounting_books,
     lookup_chart_accounts,
     lookup_financial_statement,
     lookup_fiscal_period,
@@ -41,6 +42,7 @@ POSTING_RECEIPT_PATH = "/posting-receipts"
 TRIAL_BALANCE_PATH = "/trial-balances"
 FINANCIAL_STATEMENT_PATH = "/financial-statements"
 ACCOUNT_ROLE_MAPPING_PATH = "/account-role-mappings"
+ACCOUNTING_BOOK_PATH = "/accounting-books"
 CHART_ACCOUNT_PATH = "/chart-accounts"
 ACCOUNT_LEDGER_PATH = "/account-ledgers"
 JOURNAL_PATH = "/journals"
@@ -112,6 +114,9 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         if parsed.path == ACCOUNT_ROLE_MAPPING_PATH:
             self._get_account_role_mappings(parsed.query)
             return
+        if parsed.path == ACCOUNTING_BOOK_PATH:
+            self._get_accounting_books(parsed.query)
+            return
         if parsed.path == CHART_ACCOUNT_PATH:
             self._get_chart_accounts(parsed.query)
             return
@@ -137,8 +142,8 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         self._write_error(
             404,
             "unknown path. GET /posting-receipts?idempotency_key=, GET /trial-balances, "
-            "GET /financial-statements, GET /account-role-mappings, GET /chart-accounts, "
-            "GET /account-ledgers, GET /journals, GET /fiscal-periods, or "
+            "GET /financial-statements, GET /account-role-mappings, GET /accounting-books, "
+            "GET /chart-accounts, GET /account-ledgers, GET /journals, GET /fiscal-periods, or "
             "GET /outbox-events?event_type_code=, then retry.",
         )
 
@@ -158,6 +163,13 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
                 405,
                 "POST is not supported on the account role mapping endpoint. "
                 "GET the catalog mappings, then retry.",
+            )
+            return
+        if parsed_path == ACCOUNTING_BOOK_PATH:
+            self._write_error(
+                405,
+                "POST is not supported on the accounting book catalog endpoint. "
+                "GET the accounting books, then retry.",
             )
             return
         if parsed_path == FINANCIAL_STATEMENT_PATH:
@@ -330,6 +342,29 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
                 tenant_header,
                 legal_entity_reference,
                 book_reference,
+            )
+        except AccountingValidationError as error:
+            self._write_error(404, str(error))
+            return
+        self._write_json(200, document)
+
+    def _get_accounting_books(self, query: str) -> None:
+        tenant_header = self._bound_tenant_header("accounting-book list")
+        if tenant_header is None:
+            return
+        legal_entity_reference = _first_query(parse_qs(query), "legal_entity_reference")
+        if not legal_entity_reference:
+            self._write_error(
+                400,
+                "legal_entity_reference is required. "
+                "Supply that catalog field, then retry the accounting-book list.",
+            )
+            return
+        try:
+            document = lookup_accounting_books(
+                self.server.database_url,
+                tenant_header,
+                legal_entity_reference,
             )
         except AccountingValidationError as error:
             self._write_error(404, str(error))

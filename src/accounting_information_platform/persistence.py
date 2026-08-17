@@ -1151,6 +1151,44 @@ class PostgresPostingLedger:
                 ],
             }
 
+    def load_accounting_books(self, legal_entity_reference: str) -> dict[str, object]:
+        """Return existing accounting_book rows for one legal entity."""
+        if not legal_entity_reference:
+            raise AccountingValidationError(
+                "legal_entity_reference is required. "
+                "Supply that catalog field, then retry the accounting-book list."
+            )
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            legal_entity_id = self._load_legal_entity(
+                connection, tenant_id, legal_entity_reference, "the accounting-book list"
+            )[0]
+            rows = connection.execute(
+                """
+                SELECT accounting_book.book_name,
+                       accounting_book.book_role_code
+                FROM accounting_core.accounting_book
+                WHERE accounting_book.tenant_account_id = %s
+                  AND accounting_book.legal_entity_id = %s
+                  AND accounting_book.valid_to IS NULL
+                ORDER BY accounting_book.book_name
+                """,
+                (tenant_id, legal_entity_id),
+            ).fetchall()
+            return {
+                "tenant_reference": self._tenant_reference,
+                "legal_entity_reference": legal_entity_reference,
+                "accounting_books": [
+                    {
+                        "accounting_book_reference": book_name,
+                        "book_reference": book_name,
+                        "intended_book_role_code": book_role_code,
+                        "book_name": book_name,
+                    }
+                    for book_name, book_role_code in rows
+                ],
+            }
+
     def load_chart_accounts(
         self, legal_entity_reference: str, accounting_book_reference: str
     ) -> dict[str, object]:
