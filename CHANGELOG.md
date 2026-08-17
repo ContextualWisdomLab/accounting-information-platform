@@ -10,6 +10,7 @@
 
 ### Added
 
+- `accept_period_close`, `lookup_trial_balance`, `POST /period-closes`, and `GET /trial-balances` close a fiscal period and read snapshot or live trial-balance totals over the same purpose-limited HTTP surface; `GET /healthz` is an ops probe.
 - `lookup_published_receipt` and `GET /posting-receipts` return the persisted `accounting_posting_receipt` for a purpose-limited tenant and Billing idempotency key without inventing a missing receipt.
 - Catalog `account_role_mapping` for `cash_receipt` so a Billing `validated` cash proposal posts debit cash / credit accounts receivable through `post_proposal`.
 - `accept_journal_proposal` and a stdlib `POST /journal-proposals` boundary that return the AIS posting-receipt contract, scoped by purpose-limited `X-CWL-Tenant-Reference`.

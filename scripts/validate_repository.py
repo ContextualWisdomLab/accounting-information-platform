@@ -49,6 +49,7 @@ REQUIRED_FILES = (
     "docs/adr/0007-catalog-policy-resolution.md",
     "docs/adr/0008-http-journal-proposal-accept.md",
     "docs/adr/0009-http-posting-receipt-lookup.md",
+    "docs/adr/0010-http-period-close-and-trial-balance.md",
     "docs/doctoring/REFERENCES.md",
     "docs/doctoring/STANDARD_TRACEABILITY.md",
     "docs/superpowers/specs/2026-08-16-accounting-information-platform-design.md",

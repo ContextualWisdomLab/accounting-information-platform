@@ -1,4 +1,4 @@
-"""Thin stdlib HTTP boundary for Billing journal proposals and receipt lookup."""
+"""Thin stdlib HTTP boundary for Billing proposals, receipts, close, and trial balance."""
 
 from __future__ import annotations
 
@@ -8,13 +8,21 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
 from urllib.parse import parse_qs, urlparse
 
-from .accept import accept_journal_proposal, lookup_published_receipt
+from .accept import (
+    accept_journal_proposal,
+    accept_period_close,
+    lookup_published_receipt,
+    lookup_trial_balance,
+)
 from .core import AccountingValidationError, IdempotencyConflictError, _require_reference
 
 
 TENANT_HEADER = "X-CWL-Tenant-Reference"
+HEALTHZ_PATH = "/healthz"
 JOURNAL_PROPOSAL_PATH = "/journal-proposals"
+PERIOD_CLOSE_PATH = "/period-closes"
 POSTING_RECEIPT_PATH = "/posting-receipts"
+TRIAL_BALANCE_PATH = "/trial-balances"
 
 
 class JournalProposalServer(ThreadingHTTPServer):
@@ -33,13 +41,16 @@ class JournalProposalServer(ThreadingHTTPServer):
 
 
 class JournalProposalHandler(BaseHTTPRequestHandler):
-    """Accept POST /journal-proposals and GET /posting-receipts for one tenant."""
+    """Serve proposal POST, receipt GET, period close, trial balance, and healthz."""
 
     server: JournalProposalServer
 
     def do_GET(self) -> None:
-        """Return a persisted posting receipt by Billing idempotency key."""
+        """Route healthz, receipt lookup, and trial-balance reads."""
         parsed = urlparse(self.path)
+        if parsed.path == HEALTHZ_PATH:
+            self._write_json(200, {"status": "ok"})
+            return
         if parsed.path == JOURNAL_PROPOSAL_PATH:
             self._write_error(
                 405,
@@ -47,27 +58,42 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
                 "POST a Billing accounting_journal_proposal, then retry.",
             )
             return
-        if parsed.path != POSTING_RECEIPT_PATH:
-            self._write_error(
-                404,
-                "unknown path. GET /posting-receipts?idempotency_key=, then retry.",
-            )
+        if parsed.path == POSTING_RECEIPT_PATH:
+            self._get_posting_receipt(parsed.query)
             return
-        tenant_header = self.headers.get(TENANT_HEADER)
-        if not tenant_header:
-            self._write_error(
-                400,
-                f"{TENANT_HEADER} is required. Supply that tenant header, then retry.",
-            )
+        if parsed.path == TRIAL_BALANCE_PATH:
+            self._get_trial_balance(parsed.query)
             return
-        if tenant_header != self.server.tenant_reference:
-            self._write_error(
-                403,
-                f"{TENANT_HEADER} does not match this AIS tenant binding. "
-                "Send the lookup to that tenant's endpoint, then retry.",
-            )
+        self._write_error(
+            404,
+            "unknown path. GET /posting-receipts?idempotency_key= or GET /trial-balances, "
+            "then retry.",
+        )
+
+    def do_POST(self) -> None:
+        """Route journal-proposal accept and fiscal-period close."""
+        raw_body = self._read_body()
+        parsed_path = urlparse(self.path).path
+        if self.path == JOURNAL_PROPOSAL_PATH:
+            self._post_journal_proposal(raw_body)
             return
-        keys = parse_qs(parsed.query).get("idempotency_key", [])
+        if parsed_path == PERIOD_CLOSE_PATH:
+            self._post_period_close(raw_body)
+            return
+        self._write_error(
+            404,
+            "unknown path. POST /journal-proposals or POST /period-closes, then retry.",
+        )
+
+    def log_message(self, format: str, *args: object) -> None:
+        """Omit request logs so receipts and tenant URNs are not written to stdout."""
+        return
+
+    def _get_posting_receipt(self, query: str) -> None:
+        tenant_header = self._bound_tenant_header("lookup")
+        if tenant_header is None:
+            return
+        keys = parse_qs(query).get("idempotency_key", [])
         idempotency_key = keys[0] if keys else ""
         if not idempotency_key:
             self._write_error(
@@ -85,44 +111,40 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             return
         self._write_json(200, document)
 
-    def do_POST(self) -> None:
-        """Ingest one Billing proposal for the purpose-limited tenant header."""
-        raw_body = self._read_body()
-        if self.path != JOURNAL_PROPOSAL_PATH:
-            self._write_error(
-                404,
-                "unknown path. POST /journal-proposals, then retry.",
-            )
+    def _get_trial_balance(self, query: str) -> None:
+        tenant_header = self._bound_tenant_header("trial-balance read")
+        if tenant_header is None:
             return
-        tenant_header = self.headers.get(TENANT_HEADER)
-        if not tenant_header:
+        fields = parse_qs(query)
+        legal_entity_reference = _first_query(fields, "legal_entity_reference")
+        book_reference = _first_query(fields, "book_reference")
+        fiscal_period_reference = _first_query(fields, "fiscal_period_reference")
+        if not legal_entity_reference or not book_reference or not fiscal_period_reference:
             self._write_error(
                 400,
-                f"{TENANT_HEADER} is required. Supply that tenant header, then retry.",
-            )
-            return
-        if tenant_header != self.server.tenant_reference:
-            self._write_error(
-                403,
-                f"{TENANT_HEADER} does not match this AIS tenant binding. "
-                "Send the proposal to that tenant's endpoint, then retry.",
+                "legal_entity_reference, book_reference, and fiscal_period_reference are required. "
+                "Supply those trial-balance fields, then retry the trial-balance read.",
             )
             return
         try:
-            payload = json.loads(raw_body.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            self._write_error(
-                400,
-                "request body must be JSON. Supply a Billing accounting_journal_proposal, "
-                "then retry.",
+            document = lookup_trial_balance(
+                self.server.database_url,
+                tenant_header,
+                legal_entity_reference,
+                book_reference,
+                fiscal_period_reference,
             )
+        except AccountingValidationError as error:
+            self._write_error(404, str(error))
             return
-        if not isinstance(payload, dict):
-            self._write_error(
-                400,
-                "request body must be a JSON object. "
-                "Supply a Billing accounting_journal_proposal, then retry.",
-            )
+        self._write_json(200, document)
+
+    def _post_journal_proposal(self, raw_body: bytes) -> None:
+        tenant_header = self._bound_tenant_header("proposal")
+        if tenant_header is None:
+            return
+        payload = self._read_json_object(raw_body, "a Billing accounting_journal_proposal")
+        if payload is None:
             return
         if payload.get("tenant_reference") != tenant_header:
             self._write_error(
@@ -143,9 +165,62 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             return
         self._write_json(200, document)
 
-    def log_message(self, format: str, *args: object) -> None:
-        """Omit request logs so receipts and tenant URNs are not written to stdout."""
-        return
+    def _post_period_close(self, raw_body: bytes) -> None:
+        tenant_header = self._bound_tenant_header("close")
+        if tenant_header is None:
+            return
+        payload = self._read_json_object(raw_body, "a period-close command")
+        if payload is None:
+            return
+        if payload.get("tenant_reference") != tenant_header:
+            self._write_error(
+                403,
+                "close tenant_reference does not match X-CWL-Tenant-Reference. "
+                "Send the close to that tenant's AIS endpoint, then retry.",
+            )
+            return
+        try:
+            document = accept_period_close(
+                payload, self.server.database_url, tenant_header
+            )
+        except AccountingValidationError as error:
+            self._write_error(422, str(error))
+            return
+        self._write_json(200, document)
+
+    def _bound_tenant_header(self, mismatch_action: str) -> str | None:
+        tenant_header = self.headers.get(TENANT_HEADER)
+        if not tenant_header:
+            self._write_error(
+                400,
+                f"{TENANT_HEADER} is required. Supply that tenant header, then retry.",
+            )
+            return None
+        if tenant_header != self.server.tenant_reference:
+            self._write_error(
+                403,
+                f"{TENANT_HEADER} does not match this AIS tenant binding. "
+                f"Send the {mismatch_action} to that tenant's endpoint, then retry.",
+            )
+            return None
+        return tenant_header
+
+    def _read_json_object(self, raw_body: bytes, supply_what: str) -> dict[str, object] | None:
+        try:
+            payload = json.loads(raw_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._write_error(
+                400,
+                f"request body must be JSON. Supply {supply_what}, then retry.",
+            )
+            return None
+        if not isinstance(payload, dict):
+            self._write_error(
+                400,
+                f"request body must be a JSON object. Supply {supply_what}, then retry.",
+            )
+            return None
+        return payload
 
     def _read_body(self) -> bytes:
         length_text = self.headers.get("Content-Length", "0")
@@ -169,13 +244,18 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
 
+def _first_query(fields: dict[str, list[str]], name: str) -> str:
+    values = fields.get(name, [])
+    return values[0] if values else ""
+
+
 def create_journal_proposal_server(
     database_url: str,
     tenant_reference: str,
     host: str = "127.0.0.1",
     port: int = 0,
 ) -> JournalProposalServer:
-    """Create a stdlib HTTP server that posts proposals and looks up receipts."""
+    """Create a stdlib HTTP server that posts, looks up receipts, closes, and reads TB."""
     if not database_url:
         raise AccountingValidationError(
             "ACCOUNTING_DATABASE_URL is empty. Set a PostgreSQL 18 URL and retry posting."
@@ -191,7 +271,7 @@ def run_journal_proposal_server(
     port: int | None = None,
     serve: Callable[[], None] | None = None,
 ) -> JournalProposalServer:
-    """Bind 0.0.0.0:$PORT by default and serve proposal POST and receipt GET."""
+    """Bind 0.0.0.0:$PORT by default and serve AIS HTTP commands."""
     resolved_url = (
         database_url
         if database_url is not None

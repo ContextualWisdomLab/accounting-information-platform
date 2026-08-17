@@ -25,9 +25,11 @@ from accounting_information_platform import (
     PeriodCloseReceipt,
     PostgresPostingLedger,
     accept_journal_proposal,
+    accept_period_close,
     create_journal_proposal_server,
     ingest_journal_proposal,
     lookup_published_receipt,
+    lookup_trial_balance,
     run_journal_proposal_server,
 )
 import psycopg
@@ -665,6 +667,218 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(unknown_get_status, 404)
         self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before)
         self.assertEqual(self._count_table("accounting_integration.posting_receipt"), receipts_before)
+        server.shutdown()
+
+    def test_http_closes_period_and_reads_trial_balance(self) -> None:
+        """HTTP closes a posted period, replays the close, and reads snapshot or live TB."""
+        payload = self._billing_validated_payload()
+        accept_journal_proposal(payload, DATABASE_URL, self.policy.tenant_reference)
+        server = self._start_http_server()
+        close_body = self._period_close_payload()
+
+        health_status, health_body = self._http_json(
+            "GET", "/healthz", None, tenant_header=None
+        )
+        live_status, live_balance = self._http_trial_balance()
+        close_status, close_receipt = self._http_json("POST", "/period-closes", close_body)
+        replay_status, replay_receipt = self._http_json("POST", "/period-closes", close_body)
+        snapshot_status, snapshot_balance = self._http_trial_balance()
+        library_close = accept_period_close(
+            close_body, DATABASE_URL, self.policy.tenant_reference
+        )
+        library_balance = lookup_trial_balance(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-08",
+        )
+
+        self.assertEqual(health_status, 200)
+        self.assertEqual(health_body, {"status": "ok"})
+        self.assertEqual(live_status, 200)
+        self.assertEqual(live_balance["balance_source_code"], "live")
+        self.assertEqual(live_balance["period_status_code"], "open")
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(live_balance, "110100")["debit_amount"])),
+            Decimal("25000"),
+        )
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(live_balance, "410100")["credit_amount"])),
+            Decimal("25000"),
+        )
+        self.assertEqual(close_status, 200)
+        self.assertEqual(close_receipt["period_code"], "2026-08")
+        self.assertEqual(close_receipt["period_status_code"], "hard_closed")
+        self.assertFalse(close_receipt["replayed"])
+        self.assertEqual(close_receipt["source_journal_count"], 1)
+        self.assertEqual(self._period_status("2026-08"), "hard_closed")
+        self.assertEqual(self._count_table("accounting_reporting.trial_balance_snapshot"), 1)
+        self.assertEqual(replay_status, 200)
+        self.assertTrue(replay_receipt["replayed"])
+        self.assertEqual(replay_receipt["snapshot_record_id"], close_receipt["snapshot_record_id"])
+        self.assertEqual(replay_receipt["source_payload_hash"], close_receipt["source_payload_hash"])
+        self.assertEqual(self._count_table("accounting_reporting.trial_balance_snapshot"), 1)
+        self.assertEqual(snapshot_status, 200)
+        self.assertEqual(snapshot_balance["balance_source_code"], "snapshot")
+        self.assertEqual(snapshot_balance["period_status_code"], "hard_closed")
+        self.assertEqual(snapshot_balance["snapshot_record_id"], close_receipt["snapshot_record_id"])
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(snapshot_balance, "110100")["debit_amount"])),
+            Decimal("25000"),
+        )
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(snapshot_balance, "410100")["credit_amount"])),
+            Decimal("25000"),
+        )
+        self.assertEqual(library_close["snapshot_record_id"], close_receipt["snapshot_record_id"])
+        self.assertTrue(library_close["replayed"])
+        self.assertEqual(library_balance, snapshot_balance)
+        aliased_close = accept_period_close(
+            {
+                "tenant_reference": self.policy.tenant_reference,
+                "legal_entity_reference": self.policy.legal_entity_reference,
+                "accounting_book_reference": self.policy.accounting_book_reference,
+                "period_code": "2026-08",
+                "snapshot_currency_code": "KRW",
+            },
+            DATABASE_URL,
+            self.policy.tenant_reference,
+        )
+        self.assertTrue(aliased_close["replayed"])
+        self.assertEqual(aliased_close["snapshot_record_id"], close_receipt["snapshot_record_id"])
+
+        snapshots_before = self._count_table("accounting_reporting.trial_balance_snapshot")
+        journals_before = self._count_table("accounting_core.general_journal")
+        cross_close_status, cross_close_body = self._http_json(
+            "POST",
+            "/period-closes",
+            close_body,
+            tenant_header="urn:cwl:tenant_other",
+        )
+        body_mismatch_status, _body_mismatch = self._http_json(
+            "POST",
+            "/period-closes",
+            self._period_close_payload(tenant_reference="urn:cwl:tenant_other"),
+        )
+        missing_close_header = self._http_json(
+            "POST", "/period-closes", close_body, tenant_header=None
+        )
+        unknown_close_status, unknown_close_body = self._http_json(
+            "POST",
+            "/period-closes",
+            self._period_close_payload(
+                fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-10"
+            ),
+        )
+        cross_tb_status, cross_tb_body = self._http_trial_balance(
+            tenant_header="urn:cwl:tenant_other"
+        )
+        missing_tb_header = self._http_trial_balance(tenant_header=None)
+        missing_tb_query = self._http_json("GET", "/trial-balances", None)
+        unknown_tb_status, unknown_tb_body = self._http_trial_balance(
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-10"
+        )
+        missing_book_tb_status, missing_book_tb_body = self._http_trial_balance(
+            book_reference="urn:cwl:accounting_book:missing"
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "JSON object"):
+            accept_period_close(["not-an-object"], DATABASE_URL, self.policy.tenant_reference)
+        with self.assertRaisesRegex(AccountingValidationError, "bound tenant"):
+            accept_period_close(
+                self._period_close_payload(tenant_reference="urn:cwl:tenant_other"),
+                DATABASE_URL,
+                self.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "Supply the book reporting currency"):
+            accept_period_close(
+                {
+                    "tenant_reference": self.policy.tenant_reference,
+                    "legal_entity_reference": self.policy.legal_entity_reference,
+                    "book_reference": self.policy.accounting_book_reference,
+                    "fiscal_period_reference": "urn:cwl:accounting:fiscal_period:2026-08",
+                },
+                DATABASE_URL,
+                self.policy.tenant_reference,
+            )
+        bad_close_json = self._http_raw(
+            "POST", "/period-closes", b"{", self.policy.tenant_reference
+        )
+        incomplete_close_status, _incomplete_close = self._http_json(
+            "POST",
+            "/period-closes",
+            {"tenant_reference": self.policy.tenant_reference},
+        )
+        legal_only_tb = self._http_json(
+            "GET",
+            "/trial-balances?"
+            + urllib.parse.urlencode(
+                {"legal_entity_reference": self.policy.legal_entity_reference}
+            ),
+            None,
+        )
+        legal_and_book_tb = self._http_json(
+            "GET",
+            "/trial-balances?"
+            + urllib.parse.urlencode(
+                {
+                    "legal_entity_reference": self.policy.legal_entity_reference,
+                    "book_reference": self.policy.accounting_book_reference,
+                }
+            ),
+            None,
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "Supply those close command fields"):
+            accept_period_close(
+                {
+                    "tenant_reference": self.policy.tenant_reference,
+                    "snapshot_currency_code": "KRW",
+                },
+                DATABASE_URL,
+                self.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "Supply those trial-balance fields"):
+            lookup_trial_balance(DATABASE_URL, self.policy.tenant_reference, "", "", "")
+        with self.assertRaisesRegex(AccountingValidationError, "Supply the fiscal period code"):
+            self.ledger.load_period_trial_balance(
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "   ",
+            )
+        self.assertEqual(
+            self._count_table("accounting_reporting.trial_balance_snapshot"), snapshots_before
+        )
+        self._delete_snapshots()
+        with self.assertRaisesRegex(AccountingValidationError, "Restore the trial_balance_snapshot"):
+            lookup_trial_balance(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "urn:cwl:accounting:fiscal_period:2026-08",
+            )
+
+        self.assertEqual(cross_close_status, 403)
+        self.assertIn("Send the close to that tenant's endpoint", str(cross_close_body["error_message"]))
+        self.assertEqual(body_mismatch_status, 403)
+        self.assertEqual(missing_close_header[0], 400)
+        self.assertEqual(unknown_close_status, 422)
+        self.assertIn("Create the fiscal_period row", str(unknown_close_body["error_message"]))
+        self.assertEqual(cross_tb_status, 403)
+        self.assertIn("Send the trial-balance read to that tenant's endpoint", str(cross_tb_body["error_message"]))
+        self.assertEqual(missing_tb_header[0], 400)
+        self.assertEqual(missing_tb_query[0], 400)
+        self.assertEqual(unknown_tb_status, 404)
+        self.assertIn("Create the fiscal_period row", str(unknown_tb_body["error_message"]))
+        self.assertEqual(missing_book_tb_status, 404)
+        self.assertIn("Create the accounting_book row", str(missing_book_tb_body["error_message"]))
+        self.assertEqual(bad_close_json[0], 400)
+        self.assertEqual(incomplete_close_status, 422)
+        self.assertEqual(legal_only_tb[0], 400)
+        self.assertEqual(legal_and_book_tb[0], 400)
+        self.assertEqual(self._count_table("accounting_reporting.trial_balance_snapshot"), 0)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before)
+        self.assertEqual(self._period_status("2026-08"), "hard_closed")
         server.shutdown()
 
     def test_accept_and_http_guard_cross_tenant_and_operator_failures(self) -> None:
@@ -1403,6 +1617,63 @@ class PostgresPostingTests(unittest.TestCase):
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         return server
+
+    def _period_close_payload(self, **overrides: object) -> dict[str, object]:
+        values: dict[str, object] = {
+            "tenant_reference": self.policy.tenant_reference,
+            "legal_entity_reference": self.policy.legal_entity_reference,
+            "book_reference": self.policy.accounting_book_reference,
+            "fiscal_period_reference": "urn:cwl:accounting:fiscal_period:2026-08",
+            "closed_by_actor_reference": "urn:cwl:actor:controller",
+            "snapshot_currency_code": "KRW",
+        }
+        values.update(overrides)
+        return values
+
+    def _http_trial_balance(
+        self,
+        *,
+        legal_entity_reference: str | None = None,
+        book_reference: str | None = None,
+        fiscal_period_reference: str | None = None,
+        tenant_header: str | None = "",
+    ) -> tuple[int, dict[str, object]]:
+        query = urllib.parse.urlencode(
+            {
+                "legal_entity_reference": (
+                    self.policy.legal_entity_reference
+                    if legal_entity_reference is None
+                    else legal_entity_reference
+                ),
+                "book_reference": (
+                    self.policy.accounting_book_reference
+                    if book_reference is None
+                    else book_reference
+                ),
+                "fiscal_period_reference": (
+                    "urn:cwl:accounting:fiscal_period:2026-08"
+                    if fiscal_period_reference is None
+                    else fiscal_period_reference
+                ),
+            }
+        )
+        return self._http_json(
+            "GET",
+            f"/trial-balances?{query}",
+            None,
+            tenant_header=tenant_header,
+        )
+
+    def _trial_balance_line(
+        self, document: dict[str, object], chart_account_code: str
+    ) -> dict[str, object]:
+        lines = document["lines"]
+        assert isinstance(lines, list)
+        for line in lines:
+            assert isinstance(line, dict)
+            if line.get("chart_account_code") == chart_account_code:
+                return line
+        self.fail(f"trial-balance line {chart_account_code} is missing")
 
     def _http_lookup(
         self,

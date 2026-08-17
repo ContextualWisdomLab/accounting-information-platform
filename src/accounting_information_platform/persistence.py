@@ -450,6 +450,87 @@ class PostgresPostingLedger:
             for _account_id, account_code, debit_total, credit_total in rows
         }
 
+    def load_period_trial_balance(
+        self,
+        legal_entity_reference: str,
+        accounting_book_reference: str,
+        period_code: str,
+    ) -> dict[str, object]:
+        """Return snapshot balances for a closed period, or live totals for an open period."""
+        _require_reference(legal_entity_reference, "legal entity reference")
+        _require_reference(accounting_book_reference, "accounting book reference")
+        if not period_code.strip():
+            raise AccountingValidationError(
+                "period_code is required. Supply the fiscal period code, then retry the trial-balance read."
+            )
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            legal_entity_id = self._require_legal_entity(
+                connection,
+                tenant_id,
+                legal_entity_reference,
+                next_action="the trial-balance read",
+            )
+            book_id, _reporting_currency = self._require_book_for_close(
+                connection,
+                tenant_id,
+                legal_entity_id,
+                accounting_book_reference,
+                next_action="the trial-balance read",
+            )
+            period_id, period_status_code, period_end_date = self._require_fiscal_period(
+                connection,
+                tenant_id,
+                period_code,
+                next_action="the trial-balance read",
+            )
+            snapshot_record_id = None
+            if period_status_code in {"soft_closed", "hard_closed"}:
+                snapshot = self._latest_close_snapshot(
+                    connection, tenant_id, legal_entity_id, book_id, period_id
+                )
+                if snapshot is None:
+                    raise AccountingValidationError(
+                        f"Fiscal period {period_code} is {period_status_code} without a "
+                        "trial-balance snapshot. Restore the trial_balance_snapshot for this "
+                        "book from the journal population, then retry the trial-balance read."
+                    )
+                snapshot_record_id = str(snapshot[0])
+                line_rows = self._load_snapshot_balance_lines(
+                    connection, tenant_id, snapshot[0]
+                )
+                balance_source_code = "snapshot"
+            else:
+                line_rows = tuple(
+                    (account_code, debit_total, credit_total)
+                    for _account_id, account_code, debit_total, credit_total in self._aggregate_trial_balance(
+                        connection, tenant_id, legal_entity_id, book_id, period_end_date
+                    )
+                )
+                balance_source_code = "live"
+        document: dict[str, object] = {
+            "tenant_reference": self._tenant_reference,
+            "legal_entity_reference": legal_entity_reference,
+            "accounting_book_reference": accounting_book_reference,
+            "book_reference": accounting_book_reference,
+            "fiscal_period_reference": f"urn:cwl:accounting:fiscal_period:{period_code}",
+            "period_code": period_code,
+            "period_status_code": period_status_code,
+            "balance_source_code": balance_source_code,
+            "lines": [
+                {
+                    "chart_account_code": account_code,
+                    "debit_amount": _exact_amount_text(debit_total),
+                    "credit_amount": _exact_amount_text(credit_total),
+                    "net_balance_amount": _exact_amount_text(debit_total - credit_total),
+                }
+                for account_code, debit_total, credit_total in line_rows
+            ],
+        }
+        if snapshot_record_id is not None:
+            document["snapshot_record_id"] = snapshot_record_id
+        return document
+
     @contextmanager
     def _session(self) -> Iterator[object]:
         psycopg = _import_psycopg()
@@ -710,6 +791,7 @@ class PostgresPostingLedger:
         tenant_id: UUID,
         legal_entity_id: UUID,
         accounting_book_reference: str,
+        next_action: str = "the close",
     ) -> tuple[UUID, str]:
         row = connection.execute(
             """
@@ -725,12 +807,16 @@ class PostgresPostingLedger:
         if row is None:
             raise AccountingValidationError(
                 f"Accounting book {accounting_book_reference} is not recorded for this legal entity. "
-                "Create the accounting_book row, then retry the close."
+                f"Create the accounting_book row, then retry {next_action}."
             )
         return row[0], row[1]
 
     def _require_fiscal_period(
-        self, connection: object, tenant_id: UUID, period_code: str
+        self,
+        connection: object,
+        tenant_id: UUID,
+        period_code: str,
+        next_action: str = "the close",
     ) -> tuple[UUID, str, date]:
         row = connection.execute(
             """
@@ -743,7 +829,7 @@ class PostgresPostingLedger:
         if row is None:
             raise AccountingValidationError(
                 f"Fiscal period {period_code} is not recorded for this tenant. "
-                "Create the fiscal_period row, then retry the close."
+                f"Create the fiscal_period row, then retry {next_action}."
             )
         return row[0], row[1], row[2]
 
@@ -828,6 +914,26 @@ class PostgresPostingLedger:
         if row is None:
             return None
         return row[0], row[1], int(row[2]), row[3]
+
+    def _load_snapshot_balance_lines(
+        self, connection: object, tenant_id: UUID, snapshot_id: UUID
+    ) -> tuple[tuple[str, Decimal, Decimal], ...]:
+        rows = connection.execute(
+            """
+            SELECT chart_account.chart_account_code,
+                   trial_balance_line.debit_total_amount,
+                   trial_balance_line.credit_total_amount
+            FROM accounting_reporting.trial_balance_line
+            JOIN accounting_core.chart_account
+              ON chart_account.tenant_account_id = trial_balance_line.tenant_account_id
+             AND chart_account.chart_account_id = trial_balance_line.chart_account_id
+            WHERE trial_balance_line.tenant_account_id = %s
+              AND trial_balance_line.trial_balance_snapshot_id = %s
+            ORDER BY chart_account.chart_account_code
+            """,
+            (tenant_id, snapshot_id),
+        ).fetchall()
+        return tuple((row[0], Decimal(row[1]), Decimal(row[2])) for row in rows)
 
     def _replay_close_receipt(
         self,
@@ -1574,3 +1680,7 @@ def _canonical_receipt_hash(receipt: PostingReceipt) -> str:
 
 def _format_timestamp(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _exact_amount_text(value: Decimal) -> str:
+    return format(value, "f")
