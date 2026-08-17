@@ -32,6 +32,15 @@ class RepositoryContractTests(unittest.TestCase):
         """The complete initial repository must satisfy every deterministic gate."""
         self.assertEqual(validate_repository(ROOT), ())
 
+    def test_quality_requirements_pin_setuptools_build_backend(self) -> None:
+        """Offline editable and wheel installs need a hash-locked setuptools backend."""
+        requirements_text = (ROOT / "requirements-quality.txt").read_text(encoding="utf-8")
+        self.assertIn("setuptools==84.0.0", requirements_text)
+        self.assertIn(
+            "--hash=sha256:51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670",
+            requirements_text,
+        )
+
     def test_missing_files_are_reported(self) -> None:
         """A partial checkout produces an actionable missing-file error."""
         with tempfile.TemporaryDirectory() as temporary_directory:

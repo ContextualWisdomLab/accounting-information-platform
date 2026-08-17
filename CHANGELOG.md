@@ -7,6 +7,10 @@
 - Rewrote the README as a customer and operator page; moved local validation to `CONTRIBUTING.md` and the next durable-intake increment to `docs/doctoring/IMPLEMENTATION_SEQUENCE.md`.
 - Expanded ADRs 0001–0005 with Context and APA 7th References grounded in already claimed standards.
 
+### Fixed
+
+- Hash-locked `setuptools==84.0.0` so CI `--no-build-isolation` editable and wheel installs can import `setuptools.build_meta`.
+
 ### Added
 
 - ADR 0006 for reporting taxonomy as a versioned projection of the journal core.
