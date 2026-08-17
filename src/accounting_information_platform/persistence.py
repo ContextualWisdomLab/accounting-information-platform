@@ -81,6 +81,76 @@ class PostgresPostingLedger:
             tenant_id = self._require_tenant(connection)
             return self._load_published_receipt(connection, tenant_id, idempotency_key)
 
+    def load_posted_journal(
+        self, idempotency_key: str = "", journal_reference: str = ""
+    ) -> dict[str, object]:
+        """Return one persisted journal and its lines for a tenant key or reference."""
+        if not idempotency_key and not journal_reference:
+            raise AccountingValidationError(
+                "idempotency_key or journal_reference is required. "
+                "Supply the Billing key or the posted journal reference, then retry the journal read."
+            )
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            by_key = None
+            by_reference = None
+            if idempotency_key:
+                by_key = self._load_journal_row(
+                    connection, tenant_id, idempotency_key=idempotency_key
+                )
+                if by_key is None:
+                    raise AccountingValidationError(
+                        "posted journal is missing for this idempotency key. "
+                        "Accept the proposal, then retry the journal read."
+                    )
+            if journal_reference:
+                by_reference = self._load_journal_row(
+                    connection, tenant_id, journal_reference=journal_reference
+                )
+                if by_reference is None:
+                    raise AccountingValidationError(
+                        "posted journal is missing for this journal_reference. "
+                        "Accept the proposal, then retry the journal read."
+                    )
+            if (
+                by_key is not None
+                and by_reference is not None
+                and by_key[0] != by_reference[0]
+            ):
+                raise AccountingValidationError(
+                    "journal_reference and idempotency_key do not match the same posted journal. "
+                    "Supply one identity, then retry the journal read."
+                )
+            row = by_key if by_key is not None else by_reference
+            lines = self._load_lines(connection, tenant_id, row[0])
+            return {
+                "tenant_reference": self._tenant_reference,
+                "legal_entity_reference": row[8],
+                "accounting_book_reference": row[9],
+                "journal_reference": row[1],
+                "idempotency_key": row[10],
+                "journal_status_code": row[2],
+                "accounting_date": row[3].isoformat(),
+                "transaction_currency": row[4],
+                "functional_currency": row[5],
+                "accounting_policy_version": row[6],
+                "posting_rule_version": row[7],
+                "source_payload_hash": row[11],
+                "source_proposal_id": str(row[12]),
+                "reversal_of_journal_reference": row[13],
+                "reversal_reason_code": row[14],
+                "lines": [
+                    {
+                        "line_number": line.line_number,
+                        "chart_account_code": line.chart_account_code,
+                        "account_role_code": line.account_role_code,
+                        "debit_amount": _exact_amount_text(line.debit_amount),
+                        "credit_amount": _exact_amount_text(line.credit_amount),
+                    }
+                    for line in lines
+                ],
+            }
+
     def _persist_proposal(
         self, proposal: JournalProposal, policy: AccountingPolicy | None
     ) -> PostingReceipt:
@@ -1539,6 +1609,59 @@ class PostgresPostingLedger:
                 (tenant_id, idempotency_key),
             ).fetchone()[0]
         )
+
+    def _load_journal_row(
+        self,
+        connection: object,
+        tenant_id: UUID,
+        *,
+        idempotency_key: str = "",
+        journal_reference: str = "",
+    ) -> tuple[object, ...] | None:
+        if idempotency_key:
+            identity_clause = "journal_proposal_record.idempotency_key = %s"
+            identity_value = idempotency_key
+        else:
+            identity_clause = "general_journal.journal_reference = %s"
+            identity_value = journal_reference
+        return connection.execute(
+            f"""
+            SELECT general_journal.general_journal_id,
+                   general_journal.journal_reference,
+                   general_journal.journal_status_code,
+                   general_journal.accounting_date,
+                   general_journal.transaction_currency_code,
+                   general_journal.functional_currency_code,
+                   general_journal.accounting_policy_version,
+                   general_journal.posting_rule_version,
+                   legal_entity_record.legal_entity_code,
+                   accounting_book.book_name,
+                   journal_proposal_record.idempotency_key,
+                   journal_proposal_record.source_payload_hash,
+                   journal_proposal_record.external_proposal_id,
+                   original_journal.journal_reference,
+                   journal_reversal.reversal_reason_code
+            FROM accounting_core.general_journal
+            JOIN accounting_integration.journal_proposal_record
+              ON journal_proposal_record.tenant_account_id = general_journal.tenant_account_id
+             AND journal_proposal_record.proposal_record_id = general_journal.source_proposal_record_id
+            JOIN accounting_core.accounting_book
+              ON accounting_book.tenant_account_id = general_journal.tenant_account_id
+             AND accounting_book.accounting_book_id = general_journal.accounting_book_id
+            JOIN accounting_core.legal_entity_record
+              ON legal_entity_record.tenant_account_id = general_journal.tenant_account_id
+             AND legal_entity_record.legal_entity_id = general_journal.legal_entity_id
+            LEFT JOIN accounting_core.journal_reversal
+              ON journal_reversal.tenant_account_id = general_journal.tenant_account_id
+             AND journal_reversal.reversal_journal_id = general_journal.general_journal_id
+            LEFT JOIN accounting_core.general_journal AS original_journal
+              ON original_journal.tenant_account_id = journal_reversal.tenant_account_id
+             AND original_journal.general_journal_id = journal_reversal.original_journal_id
+            WHERE general_journal.tenant_account_id = %s
+              AND {identity_clause}
+            """,
+            (tenant_id, identity_value),
+        ).fetchone()
 
     def _load_published_receipt(
         self, connection: object, tenant_id: UUID, idempotency_key: str

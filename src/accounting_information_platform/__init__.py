@@ -18,6 +18,7 @@ from .accept import (
     accept_journal_reversal,
     accept_period_close,
     lookup_account_role_mappings,
+    lookup_posted_journal,
     lookup_published_receipt,
     lookup_trial_balance,
 )
@@ -55,6 +56,7 @@ __all__ = [
     "create_journal_proposal_server",
     "ingest_journal_proposal",
     "lookup_account_role_mappings",
+    "lookup_posted_journal",
     "lookup_published_receipt",
     "lookup_trial_balance",
     "pull_journal_proposal",

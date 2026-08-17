@@ -132,6 +132,22 @@ def accept_period_close(
     return _period_close_document(receipt)
 
 
+def lookup_posted_journal(
+    database_url: str,
+    tenant_reference: str,
+    idempotency_key: str = "",
+    journal_reference: str = "",
+) -> dict[str, object]:
+    """Return the persisted journal and lines for one tenant key or journal reference."""
+    if not idempotency_key and not journal_reference:
+        raise AccountingValidationError(
+            "idempotency_key or journal_reference is required. "
+            "Supply the Billing key or the posted journal reference, then retry the journal read."
+        )
+    ledger = PostgresPostingLedger(database_url, tenant_reference)
+    return ledger.load_posted_journal(idempotency_key, journal_reference)
+
+
 def lookup_account_role_mappings(
     database_url: str,
     tenant_reference: str,

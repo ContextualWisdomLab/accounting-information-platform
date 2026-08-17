@@ -1,4 +1,4 @@
-"""Thin stdlib HTTP boundary for Billing proposals, pulls, receipts, close, TB, and catalog reads."""
+"""Thin stdlib HTTP boundary for Billing proposals, pulls, receipts, close, TB, catalog, and journals."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from .accept import (
     accept_journal_reversal,
     accept_period_close,
     lookup_account_role_mappings,
+    lookup_posted_journal,
     lookup_published_receipt,
     lookup_trial_balance,
 )
@@ -29,6 +30,7 @@ PERIOD_CLOSE_PATH = "/period-closes"
 POSTING_RECEIPT_PATH = "/posting-receipts"
 TRIAL_BALANCE_PATH = "/trial-balances"
 ACCOUNT_ROLE_MAPPING_PATH = "/account-role-mappings"
+JOURNAL_PATH = "/journals"
 
 
 class JournalProposalServer(ThreadingHTTPServer):
@@ -47,12 +49,12 @@ class JournalProposalServer(ThreadingHTTPServer):
 
 
 class JournalProposalHandler(BaseHTTPRequestHandler):
-    """Serve proposal POST, reverse, Billing pull, receipt GET, close, TB, catalog mapping, and healthz."""
+    """Serve proposal POST, reverse, pull, receipt GET, close, TB, catalog, journal inquiry, and healthz."""
 
     server: JournalProposalServer
 
     def do_GET(self) -> None:
-        """Route healthz, receipt lookup, trial-balance and catalog-mapping reads, and GET 405s."""
+        """Route healthz, receipt, trial-balance, catalog, and journal-inquiry reads, and GET 405s."""
         parsed = urlparse(self.path)
         if parsed.path == HEALTHZ_PATH:
             self._write_json(200, {"status": "ok"})
@@ -87,16 +89,26 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         if parsed.path == ACCOUNT_ROLE_MAPPING_PATH:
             self._get_account_role_mappings(parsed.query)
             return
+        if parsed.path == JOURNAL_PATH:
+            self._get_posted_journal(parsed.query)
+            return
         self._write_error(
             404,
             "unknown path. GET /posting-receipts?idempotency_key=, GET /trial-balances, "
-            "or GET /account-role-mappings, then retry.",
+            "GET /account-role-mappings, or GET /journals, then retry.",
         )
 
     def do_POST(self) -> None:
-        """Route journal-proposal accept, reverse, Billing pull, close, and mapping POST 405."""
+        """Route journal-proposal accept, reverse, Billing pull, close, and GET-only POST 405s."""
         raw_body = self._read_body()
         parsed_path = urlparse(self.path).path
+        if parsed_path == JOURNAL_PATH:
+            self._write_error(
+                405,
+                "POST is not supported on the journal inquiry endpoint. "
+                "GET the posted journal, then retry.",
+            )
+            return
         if parsed_path == ACCOUNT_ROLE_MAPPING_PATH:
             self._write_error(
                 405,
@@ -198,6 +210,32 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
                 tenant_header,
                 legal_entity_reference,
                 book_reference,
+            )
+        except AccountingValidationError as error:
+            self._write_error(404, str(error))
+            return
+        self._write_json(200, document)
+
+    def _get_posted_journal(self, query: str) -> None:
+        tenant_header = self._bound_tenant_header("journal read")
+        if tenant_header is None:
+            return
+        fields = parse_qs(query)
+        idempotency_key = _first_query(fields, "idempotency_key")
+        journal_reference = _first_query(fields, "journal_reference")
+        if not idempotency_key and not journal_reference:
+            self._write_error(
+                400,
+                "idempotency_key or journal_reference is required. "
+                "Supply the Billing key or the posted journal reference, then retry the journal read.",
+            )
+            return
+        try:
+            document = lookup_posted_journal(
+                self.server.database_url,
+                tenant_header,
+                idempotency_key=idempotency_key,
+                journal_reference=journal_reference,
             )
         except AccountingValidationError as error:
             self._write_error(404, str(error))
@@ -366,7 +404,7 @@ def create_journal_proposal_server(
     host: str = "127.0.0.1",
     port: int = 0,
 ) -> JournalProposalServer:
-    """Create a stdlib HTTP server that posts, pulls, closes, and reads TB and catalog mappings."""
+    """Create a stdlib HTTP server that posts, pulls, closes, and reads TB, catalog, and journals."""
     if not database_url:
         raise AccountingValidationError(
             "ACCOUNTING_DATABASE_URL is empty. Set a PostgreSQL 18 URL and retry posting."

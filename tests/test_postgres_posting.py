@@ -33,6 +33,7 @@ from accounting_information_platform import (
     create_journal_proposal_server,
     ingest_journal_proposal,
     lookup_account_role_mappings,
+    lookup_posted_journal,
     lookup_published_receipt,
     lookup_trial_balance,
     pull_journal_proposal,
@@ -985,6 +986,132 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(unknown_entity[0], 404)
         self.assertEqual(unknown_book[0], 404)
         self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before)
+        server.shutdown()
+
+    def test_http_reads_posted_journal_lines(self) -> None:
+        """GET returns persisted journal lines and keeps original vs reversing journals distinct."""
+        invoice = self._billing_validated_payload()
+        posted = accept_journal_proposal(invoice, DATABASE_URL, self.policy.tenant_reference)
+        server = self._start_http_server()
+        journals_before = self._count_table("accounting_core.general_journal")
+
+        status, document = self._http_journal(idempotency_key=str(invoice["idempotency_key"]))
+        by_reference_status, by_reference = self._http_journal(
+            journal_reference=str(posted["journal_reference"])
+        )
+        both_status, both = self._http_journal(
+            idempotency_key=str(invoice["idempotency_key"]),
+            journal_reference=str(posted["journal_reference"]),
+        )
+        library = lookup_posted_journal(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            idempotency_key=str(invoice["idempotency_key"]),
+        )
+        by_code = {
+            str(item["chart_account_code"]): item for item in document["lines"]
+        }
+
+        self.assertEqual(status, 200)
+        self.assertEqual(by_reference_status, 200)
+        self.assertEqual(both_status, 200)
+        self.assertEqual(document, library)
+        self.assertEqual(document, by_reference)
+        self.assertEqual(document, both)
+        self.assertEqual(document["tenant_reference"], self.policy.tenant_reference)
+        self.assertEqual(document["journal_reference"], posted["journal_reference"])
+        self.assertEqual(document["idempotency_key"], invoice["idempotency_key"])
+        self.assertEqual(document["journal_status_code"], "posted")
+        self.assertIsNone(document["reversal_of_journal_reference"])
+        self.assertEqual(set(by_code), {"110100", "410100"})
+        self.assertEqual(by_code["110100"]["line_number"], 1)
+        self.assertEqual(by_code["110100"]["account_role_code"], "accounts_receivable")
+        self.assertEqual(Decimal(str(by_code["110100"]["debit_amount"])), Decimal("25000"))
+        self.assertEqual(Decimal(str(by_code["110100"]["credit_amount"])), Decimal("0"))
+        self.assertEqual(by_code["410100"]["line_number"], 2)
+        self.assertEqual(by_code["410100"]["account_role_code"], "usage_revenue")
+        self.assertEqual(Decimal(str(by_code["410100"]["debit_amount"])), Decimal("0"))
+        self.assertEqual(Decimal(str(by_code["410100"]["credit_amount"])), Decimal("25000"))
+
+        reverse_status, reversing_receipt = self._http_json(
+            "POST",
+            "/journal-reversals",
+            {
+                "tenant_reference": self.policy.tenant_reference,
+                "journal_reference": posted["journal_reference"],
+                "reversal_date": "2026-08-31",
+                "reversal_reason_code": "billing_correction",
+            },
+        )
+        original_after_status, original_after = self._http_journal(
+            idempotency_key=str(invoice["idempotency_key"])
+        )
+        reversing_key = f"reversal:{posted['journal_reference']}"
+        reversing_status, reversing = self._http_journal(idempotency_key=reversing_key)
+        reversing_ref_status, reversing_by_ref = self._http_journal(
+            journal_reference=str(reversing_receipt["journal_reference"])
+        )
+        reversing_lines = {
+            str(item["chart_account_code"]): item for item in reversing["lines"]
+        }
+
+        self.assertEqual(reverse_status, 200)
+        self.assertEqual(original_after_status, 200)
+        self.assertEqual(original_after, document)
+        self.assertEqual(reversing_status, 200)
+        self.assertEqual(reversing_ref_status, 200)
+        self.assertEqual(reversing, reversing_by_ref)
+        self.assertEqual(reversing["journal_reference"], reversing_receipt["journal_reference"])
+        self.assertEqual(reversing["idempotency_key"], reversing_key)
+        self.assertEqual(reversing["reversal_of_journal_reference"], posted["journal_reference"])
+        self.assertEqual(reversing["reversal_reason_code"], "billing_correction")
+        self.assertEqual(Decimal(str(reversing_lines["110100"]["debit_amount"])), Decimal("0"))
+        self.assertEqual(Decimal(str(reversing_lines["110100"]["credit_amount"])), Decimal("25000"))
+        self.assertEqual(Decimal(str(reversing_lines["410100"]["debit_amount"])), Decimal("25000"))
+        self.assertEqual(Decimal(str(reversing_lines["410100"]["credit_amount"])), Decimal("0"))
+
+        post_status, _post_body = self._http_json("POST", "/journals", {})
+        missing_header = self._http_journal(
+            idempotency_key=str(invoice["idempotency_key"]), tenant_header=None
+        )
+        cross_status, _cross = self._http_journal(
+            idempotency_key=str(invoice["idempotency_key"]),
+            tenant_header="urn:cwl:tenant_other",
+        )
+        missing_query = self._http_json("GET", "/journals", None)
+        unknown_key = self._http_journal(
+            idempotency_key=f"{self.policy.tenant_reference}:invoice_draft:missing:sha256:{'b' * 64}:v1"
+        )
+        unknown_reference = self._http_journal(
+            journal_reference="urn:cwl:accounting:general_journal:missing"
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "idempotency_key"):
+            lookup_posted_journal(DATABASE_URL, self.policy.tenant_reference)
+        with self.assertRaisesRegex(AccountingValidationError, "idempotency_key"):
+            lookup_posted_journal(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                journal_reference=str(posted["journal_reference"]),
+                idempotency_key=reversing_key,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "posted journal"):
+            lookup_posted_journal(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                journal_reference="urn:cwl:accounting:general_journal:missing",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "idempotency_key"):
+            PostgresPostingLedger(
+                DATABASE_URL, self.policy.tenant_reference
+            ).load_posted_journal()
+
+        self.assertEqual(post_status, 405)
+        self.assertEqual(missing_header[0], 400)
+        self.assertEqual(cross_status, 403)
+        self.assertEqual(missing_query[0], 400)
+        self.assertEqual(unknown_key[0], 404)
+        self.assertEqual(unknown_reference[0], 404)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before + 1)
         server.shutdown()
 
     def test_http_closes_period_and_reads_trial_balance(self) -> None:
@@ -2516,6 +2643,23 @@ class PostgresPostingTests(unittest.TestCase):
         }
         values.update(overrides)
         return values
+
+    def _http_journal(
+        self,
+        *,
+        idempotency_key: str | None = None,
+        journal_reference: str | None = None,
+        tenant_header: str | None = "",
+    ) -> tuple[int, dict[str, object]]:
+        query: dict[str, str] = {}
+        if idempotency_key is not None:
+            query["idempotency_key"] = idempotency_key
+        if journal_reference is not None:
+            query["journal_reference"] = journal_reference
+        path = "/journals"
+        if query:
+            path = f"/journals?{urllib.parse.urlencode(query)}"
+        return self._http_json("GET", path, None, tenant_header=tenant_header)
 
     def _http_account_role_mappings(
         self,
