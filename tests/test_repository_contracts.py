@@ -88,9 +88,14 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertEqual(proposal["x-cwl-authority"], "metering-billing-platform")
         self.assertEqual(receipt["x-cwl-authority"], "accounting-information-platform")
         self.assertEqual(policy["x-cwl-authority"], "accounting-information-platform")
-        self.assertNotIn(
-            "posted", proposal["properties"]["proposal_status_code"]["enum"]
+        self.assertNotIn("proposal_status_code", proposal["required"])
+        self.assertNotIn("proposal_status_code", proposal["properties"])
+        self.assertIn("proposal_status", proposal["required"])
+        self.assertEqual(
+            set(proposal["properties"]["proposal_status"]["enum"]),
+            {"draft", "validated", "exported", "rejected"},
         )
+        self.assertNotIn("posted", proposal["properties"]["proposal_status"]["enum"])
         self.assertEqual(
             set(receipt["properties"]["posting_status_code"]["enum"]),
             {"posted", "held", "rejected", "reversed"},

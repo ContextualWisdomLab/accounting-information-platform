@@ -9,7 +9,7 @@
 5. **Reversal behavior:** original preservation, equal-and-opposite lines, duplicate reversal idempotency.
 6. **Trial balance:** scope and date filters, exact debit/credit equality, reversal net-zero fixture.
 7. **Persistence:** clean migration, upgrade rehearsal, concurrent idempotency, transaction rollback, RLS.
-8. **Contracts:** producer and consumer fixtures for proposal, policy, receipt, and outbox events.
+8. **Contracts:** producer and consumer fixtures for proposal, policy, receipt, and outbox events, including Billing `proposal_status` ingest (`validated`/`exported` accept; `draft`/`rejected`/`posted` and operational reject rows fail closed).
 9. **Security:** cross-tenant references, oversized payloads, malformed decimals, replay storms, unauthorized close or reversal.
 
 ## Merge gates

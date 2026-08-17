@@ -2,7 +2,7 @@
 
 ## Persistence adapter
 
-Set `ACCOUNTING_DATABASE_URL` to a PostgreSQL 18 database, apply `database/migrations/0001_accounting_foundation.sql`, then post and close through `PostgresPostingLedger`. If posting is rejected, the receipt is not written; open the fiscal period or correct the catalog row named in the error, then retry. If close is rejected, restore the named catalog or snapshot row, then retry the close. Re-closing a hard-closed period replays the existing snapshot and writes no second close event.
+Set `ACCOUNTING_DATABASE_URL` to a PostgreSQL 18 database, apply `database/migrations/0001_accounting_foundation.sql`, then post and close through `PostgresPostingLedger`. Ingest Billing JSON through `ingest_journal_proposal`; if the payload is a Billing operational reject or `proposal_status` is `draft` or `rejected`, do not ingest it—ask Billing for a `validated` proposal, then retry. If posting is rejected, the receipt is not written; open the fiscal period or correct the catalog row named in the error, then retry. If close is rejected, restore the named catalog or snapshot row, then retry the close. Re-closing a hard-closed period replays the existing snapshot and writes no second close event. After AIS emits `posting_receipt`, do not expect Billing to flip the proposal to `posted`.
 
 ## Initial service objectives
 

@@ -23,6 +23,7 @@ REQUIRED_FILES = (
     ".github/workflows/ci.yml",
     "src/accounting_information_platform/__init__.py",
     "src/accounting_information_platform/core.py",
+    "src/accounting_information_platform/ingest.py",
     "src/accounting_information_platform/persistence.py",
     "src/accounting_information_platform/py.typed",
     "schemas/accounting-journal-proposal.schema.json",

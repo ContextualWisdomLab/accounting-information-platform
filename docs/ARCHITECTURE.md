@@ -38,7 +38,7 @@ Operational systems         Metering Billing Platform
 
 ## Current implementation
 
-`accounting_information_platform.core` is the reference implementation for proposal validation, policy checks, posting, reversal, and trial balance. It has no network or database dependency. `PostgresPostingLedger` applies those same invariants to PostgreSQL 18 through `database/migrations/0001_accounting_foundation.sql`: one transaction writes the proposal, journal, lines, receipt, and outbox event; replay returns the original receipt; reversal is append-only; `close_fiscal_period` writes a trial-balance snapshot and the period status in one commit; a non-open fiscal period writes zero ordinary-posting rows.
+`accounting_information_platform.core` is the reference implementation for proposal validation, policy checks, posting, reversal, and trial balance. It has no network or database dependency. `ingest_journal_proposal` reads the Billing-owned JSON contract field `proposal_status` and accepts only `validated` or `exported` before constructing a status-free `JournalProposal`. `PostgresPostingLedger` applies those same invariants to PostgreSQL 18 through `database/migrations/0001_accounting_foundation.sql`: one transaction writes the proposal, journal, lines, receipt, and outbox event; replay returns the original receipt; reversal is append-only; `close_fiscal_period` writes a trial-balance snapshot and the period status in one commit; a non-open fiscal period writes zero ordinary-posting rows.
 
 ## Deployment evolution
 

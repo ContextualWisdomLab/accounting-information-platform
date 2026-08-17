@@ -18,7 +18,7 @@
     "accounting_date",
     "source_payload_hash",
     "proposed_at",
-    "proposal_status_code",
+    "proposal_status",
     "source_event_references",
     "lines"
   ],
@@ -34,7 +34,7 @@
     "accounting_date": {"type": "string", "format": "date"},
     "source_payload_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
     "proposed_at": {"type": "string", "format": "date-time"},
-    "proposal_status_code": {
+    "proposal_status": {
       "type": "string",
       "enum": ["draft", "validated", "exported", "rejected"]
     },

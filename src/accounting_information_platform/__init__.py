@@ -13,6 +13,7 @@ from .core import (
     PostingLedger,
     PostingReceipt,
 )
+from .ingest import ingest_journal_proposal
 from .persistence import PostgresPostingLedger, apply_foundation_migration
 
 __all__ = [
@@ -29,4 +30,5 @@ __all__ = [
     "PostingLedger",
     "PostingReceipt",
     "apply_foundation_migration",
+    "ingest_journal_proposal",
 ]
