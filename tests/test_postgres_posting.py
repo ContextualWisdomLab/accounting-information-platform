@@ -69,6 +69,9 @@ class FakeBillingServer(ThreadingHTTPServer):
         self.get_status = get_status
         self.list_raw = list_raw
         self.get_raw = get_raw
+        self.last_list_query: dict[str, list[str]] = {}
+        self.last_list_body: dict[str, object] = {}
+        self.list_queries: list[dict[str, list[str]]] = []
         super().__init__(server_address, FakeBillingHandler)
 
 
@@ -91,6 +94,8 @@ class FakeBillingHandler(BaseHTTPRequestHandler):
             if server.list_status != 200:
                 self._json(server.list_status, {"rejection_reason_code": "request_invalid"})
                 return
+            server.last_list_query = query
+            server.list_queries.append(query)
             if server.list_raw is not None:
                 self._raw(200, server.list_raw)
                 return
@@ -99,6 +104,12 @@ class FakeBillingHandler(BaseHTTPRequestHandler):
                 for item in server.proposals
                 if isinstance(item, dict) and item.get("tenant_reference") == header_tenant
             ]
+            filtered.sort(
+                key=lambda item: (
+                    str(item.get("proposed_at", "")),
+                    str(item.get("proposal_id", "")),
+                )
+            )
             proposed_after = query.get("proposed_after", [None])[0]
             if proposed_after:
                 filtered = [
@@ -108,22 +119,35 @@ class FakeBillingHandler(BaseHTTPRequestHandler):
                 ]
             cursor = query.get("cursor", [None])[0]
             if cursor:
-                after_id = cursor.split("|", 1)[-1]
-                start = len(filtered)
-                for index, item in enumerate(filtered):
-                    if str(item.get("proposal_id")) == after_id:
-                        start = index + 1
-                        break
-                filtered = filtered[start:]
+                cursor_at, separator, cursor_id = cursor.partition("|")
+                if separator:
+                    filtered = [
+                        item
+                        for item in filtered
+                        if (
+                            str(item.get("proposed_at", "")),
+                            str(item.get("proposal_id", "")),
+                        )
+                        > (cursor_at, cursor_id)
+                    ]
             limit_values = query.get("page_limit", [])
-            limit = int(limit_values[0]) if limit_values else len(filtered)
+            try:
+                limit = int(limit_values[0]) if limit_values else 50
+            except ValueError:
+                limit = 50
+            if limit < 1:
+                limit = 50
+            if limit > 100:
+                limit = 100
             page = filtered[:limit]
             remainder = filtered[limit:]
             next_cursor = None
             if remainder and page:
                 last = page[-1]
                 next_cursor = f"{last['proposed_at']}|{last['proposal_id']}"
-            self._json(200, {"journal_proposals": page, "next_cursor": next_cursor})
+            body = {"journal_proposals": page, "next_cursor": next_cursor}
+            server.last_list_body = body
+            self._json(200, body)
             return
         if parsed.path.startswith("/v1/journal-proposals/"):
             if server.get_status != 200:
@@ -1037,8 +1061,9 @@ class PostgresPostingTests(unittest.TestCase):
             ],
         )
         billing_url = self._start_fake_billing(
-            [draft, exported, rejected, invoice, cash, unmapped]
+            [cash, draft, unmapped, exported, invoice, rejected]
         )
+        billing = self._last_fake_billing
         ais_server = self._start_http_server()
 
         page = pull_validated_journal_proposals(
@@ -1046,6 +1071,14 @@ class PostgresPostingTests(unittest.TestCase):
             self.policy.tenant_reference,
             proposed_after="2026-08-01T00:00:00Z",
             page_limit=10,
+        )
+        default_page = pull_validated_journal_proposals(
+            billing_url, self.policy.tenant_reference
+        )
+        inclusive_page = pull_validated_journal_proposals(
+            billing_url,
+            self.policy.tenant_reference,
+            proposed_after=str(invoice["proposed_at"]),
         )
         receipts = accept_pulled_proposals(
             billing_url,
@@ -1078,6 +1111,32 @@ class PostgresPostingTests(unittest.TestCase):
             [invoice["proposal_id"], cash["proposal_id"], unmapped["proposal_id"]],
         )
         self.assertIsNone(page.next_cursor)
+        self.assertEqual(set(billing.last_list_body), {"journal_proposals", "next_cursor"})
+        self.assertNotIn("items", billing.last_list_body)
+        self.assertNotIn("cursor", billing.last_list_body)
+        self.assertEqual(billing.list_queries[0].get("page_limit"), ["10"])
+        self.assertEqual(billing.list_queries[0].get("proposal_status"), ["validated"])
+        self.assertEqual(billing.list_queries[1].get("page_limit"), ["50"])
+        paged_queries = [query for query in billing.list_queries if query.get("page_limit") == ["1"]]
+        self.assertGreaterEqual(len(paged_queries), 2)
+        self.assertNotIn("cursor", paged_queries[0])
+        self.assertIn("cursor", paged_queries[1])
+        self.assertEqual(
+            paged_queries[1]["cursor"][0],
+            f"{draft['proposed_at']}|{draft['proposal_id']}",
+        )
+        self.assertEqual(
+            [item["proposal_id"] for item in default_page.journal_proposals],
+            [invoice["proposal_id"], cash["proposal_id"], unmapped["proposal_id"]],
+        )
+        self.assertEqual(
+            [item["proposal_id"] for item in inclusive_page.journal_proposals],
+            [invoice["proposal_id"], cash["proposal_id"], unmapped["proposal_id"]],
+        )
+        self.assertNotIn("journal_proposals", pulled_invoice)
+        self.assertNotIn("next_cursor", pulled_invoice)
+        self.assertNotIn("items", pulled_invoice)
+        self.assertNotIn("cursor", pulled_invoice)
         self.assertEqual(len(receipts), 2)
         self.assertEqual(receipts[0], invoice_lookup)
         self.assertEqual(receipts[1], cash_lookup)
@@ -1179,6 +1238,30 @@ class PostgresPostingTests(unittest.TestCase):
                 DATABASE_URL,
                 self.policy.tenant_reference,
             )
+        with self.assertRaisesRegex(AccountingValidationError, "page_limit"):
+            pull_validated_journal_proposals(
+                billing_url, self.policy.tenant_reference, page_limit=0
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "page_limit"):
+            pull_validated_journal_proposals(
+                billing_url, self.policy.tenant_reference, page_limit=101
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "items or cursor"):
+            pull_validated_journal_proposals(
+                self._start_fake_billing(
+                    [],
+                    list_raw=b'{"items":[],"journal_proposals":[],"next_cursor":null}',
+                ),
+                self.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "items or cursor"):
+            pull_validated_journal_proposals(
+                self._start_fake_billing(
+                    [],
+                    list_raw=b'{"cursor":"x","journal_proposals":[],"next_cursor":null}',
+                ),
+                self.policy.tenant_reference,
+            )
         with self.assertRaisesRegex(AccountingValidationError, "proposal_id"):
             pull_journal_proposal(billing_url, self.policy.tenant_reference, "")
         with self.assertRaisesRegex(AccountingValidationError, "must be a CWL URN"):
@@ -1235,6 +1318,9 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(missing_url_status, 422)
         self.assertEqual(from_env["posting_receipts"], list(replayed))
         self.assertEqual(empty_page["posting_receipts"], [])
+        self.assertEqual(billing.last_list_body["journal_proposals"], [])
+        self.assertIsNone(billing.last_list_body["next_cursor"])
+        self.assertEqual(set(billing.last_list_body), {"journal_proposals", "next_cursor"})
         self.assertEqual(len(mixed_page.journal_proposals), 1)
         self.assertIsNone(mixed_page.next_cursor)
         self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before)
@@ -1998,6 +2084,7 @@ class PostgresPostingTests(unittest.TestCase):
         thread.start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
+        self._last_fake_billing = server
         host, port = server.server_address
         return f"http://{host}:{port}"
 

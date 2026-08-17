@@ -18,6 +18,8 @@ TENANT_HEADER = "X-CWL-Tenant-Reference"
 VALIDATED_PROPOSAL_STATUS = "validated"
 LIST_COLLECTION_KEY = "journal_proposals"
 LIST_CURSOR_KEY = "next_cursor"
+DEFAULT_PAGE_LIMIT = 50
+MAX_PAGE_LIMIT = 100
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,22 +38,27 @@ def pull_validated_journal_proposals(
     cursor: str | None = None,
     page_limit: int | None = None,
 ) -> JournalProposalPage:
-    """GET one Billing journal-proposal page and keep `validated` items only."""
+    """GET one Billing journal-proposal page and keep `validated` proposals only."""
     query: dict[str, str] = {
         "tenant_reference": tenant_reference,
         "proposal_status": VALIDATED_PROPOSAL_STATUS,
+        "page_limit": str(_resolve_page_limit(page_limit)),
     }
     if proposed_after:
         query["proposed_after"] = proposed_after
     if cursor:
         query["cursor"] = cursor
-    if page_limit is not None:
-        query["page_limit"] = str(page_limit)
     document = _billing_get(
         f"{_require_billing_base_url(billing_base_url)}/v1/journal-proposals",
         tenant_reference,
         query,
     )
+    if "items" in document or "cursor" in document:
+        raise AccountingValidationError(
+            "Billing list envelope used items or cursor. "
+            "Ask Billing to correct the published list contract "
+            "(journal_proposals + next_cursor), then retry the pull."
+        )
     raw_items = document.get(LIST_COLLECTION_KEY)
     if not isinstance(raw_items, list):
         raise AccountingValidationError(
@@ -166,6 +173,17 @@ def accept_billing_proposal_pull(
         page_limit=page_limit,
     )
     return {"posting_receipts": list(receipts)}
+
+
+def _resolve_page_limit(page_limit: int | None) -> int:
+    if page_limit is None:
+        return DEFAULT_PAGE_LIMIT
+    if page_limit < 1 or page_limit > MAX_PAGE_LIMIT:
+        raise AccountingValidationError(
+            "page_limit must be between 1 and 100. "
+            "Supply a Billing page_limit, then retry the pull."
+        )
+    return page_limit
 
 
 def _require_billing_base_url(billing_base_url: str) -> str:
