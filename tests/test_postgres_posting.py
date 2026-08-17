@@ -42,6 +42,7 @@ from accounting_information_platform import (
     lookup_financial_statement,
     lookup_fiscal_period,
     lookup_fiscal_periods,
+    lookup_audit_events,
     lookup_outbox_events,
     lookup_period_journals,
     lookup_posted_journal,
@@ -2877,6 +2878,130 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(self._count_outbox("period_close"), 1)
         server.shutdown()
 
+    def test_http_reads_audit_event_history_without_publishing(self) -> None:
+        """GET /audit-events lists published and unpublished outbox rows and never publishes."""
+        invoice = self._billing_validated_payload()
+        server = self._start_http_server()
+        outbox_before = self._count_table("accounting_integration.outbox_event")
+
+        empty_status, empty_page = self._http_audit_events()
+        empty_library = lookup_audit_events(DATABASE_URL, self.policy.tenant_reference)
+        self.assertEqual(empty_status, 200)
+        self.assertEqual(empty_page, empty_library)
+        self.assertEqual(empty_page["audit_events"], [])
+        self.assertIsNone(empty_page["next_cursor"])
+        self.assertEqual(empty_page["tenant_reference"], self.policy.tenant_reference)
+        self.assertNotIn("event_type_code", empty_page)
+
+        post_status, _receipt = self._http_json("POST", "/journal-proposals", invoice)
+        close_status, _close = self._http_json(
+            "POST", "/period-closes", self._period_close_payload()
+        )
+        history_status, history = self._http_audit_events()
+        library = lookup_audit_events(DATABASE_URL, self.policy.tenant_reference)
+        persist = PostgresPostingLedger(
+            DATABASE_URL, self.policy.tenant_reference
+        ).load_audit_events()
+        typed_status, typed = self._http_audit_events(event_type_code="period_close")
+        first_page_status, first_page = self._http_audit_events(page_limit=1)
+        second_page_status, second_page = self._http_audit_events(
+            page_limit=1,
+            cursor=str(first_page["next_cursor"]),
+        )
+        drain_status, drain = self._http_outbox_events("posting_receipt")
+        by_type = {str(item["event_type_code"]) for item in history["audit_events"]}
+        receipt_event = next(
+            item
+            for item in history["audit_events"]
+            if item["event_type_code"] == "posting_receipt"
+        )
+
+        self.assertEqual(post_status, 200)
+        self.assertEqual(close_status, 200)
+        self.assertEqual(history_status, 200)
+        self.assertEqual(history, library)
+        self.assertEqual(history, persist)
+        self.assertEqual(by_type, {"posting_receipt", "period_close"})
+        self.assertEqual(len(history["audit_events"]), 2)
+        self.assertTrue(all("published_at" in item for item in history["audit_events"]))
+        self.assertTrue(all(item["published_at"] is None for item in history["audit_events"]))
+        self.assertTrue(
+            str(receipt_event["payload_reference"]).startswith(
+                "urn:cwl:accounting:posting_receipt:"
+            )
+        )
+        self.assertEqual(typed_status, 200)
+        self.assertEqual(typed["event_type_code"], "period_close")
+        self.assertEqual(len(typed["audit_events"]), 1)
+        self.assertEqual(typed["audit_events"][0]["event_type_code"], "period_close")
+        self.assertEqual(first_page_status, 200)
+        self.assertEqual(second_page_status, 200)
+        self.assertEqual(len(first_page["audit_events"]), 1)
+        self.assertTrue(first_page["next_cursor"])
+        self.assertEqual(len(second_page["audit_events"]), 1)
+        self.assertIsNone(second_page["next_cursor"])
+        self.assertEqual(
+            [item["outbox_event_id"] for item in first_page["audit_events"]]
+            + [item["outbox_event_id"] for item in second_page["audit_events"]],
+            [item["outbox_event_id"] for item in history["audit_events"]],
+        )
+        typed_paged_status, typed_paged = self._http_audit_events(
+            event_type_code="period_close",
+            page_limit=1,
+            cursor=str(first_page["next_cursor"]),
+        )
+        self.assertEqual(typed_paged_status, 200)
+        self.assertTrue(
+            all(item["event_type_code"] == "period_close" for item in typed_paged["audit_events"])
+        )
+        self.assertEqual(drain_status, 200)
+        self.assertEqual(len(drain["outbox_events"]), 1)
+
+        publish_status, published = self._http_publish_outbox(
+            str(receipt_event["outbox_event_id"])
+        )
+        after_audit_status, after_audit = self._http_audit_events()
+        after_drain_status, after_drain = self._http_outbox_events("posting_receipt")
+        after_receipt = next(
+            item
+            for item in after_audit["audit_events"]
+            if item["outbox_event_id"] == receipt_event["outbox_event_id"]
+        )
+        self.assertEqual(publish_status, 200)
+        self.assertEqual(after_audit_status, 200)
+        self.assertEqual(after_drain_status, 200)
+        self.assertEqual(len(after_audit["audit_events"]), 2)
+        self.assertTrue(after_receipt["published_at"])
+        self.assertEqual(after_receipt["published_at"], published["published_at"])
+        self.assertEqual(after_drain["outbox_events"], [])
+        self.assertEqual(self._count_table("accounting_integration.outbox_event"), outbox_before + 2)
+
+        post_status_code, _post_body = self._http_json("POST", "/audit-events", {})
+        missing_header = self._http_audit_events(tenant_header=None)
+        cross_status, _cross = self._http_audit_events(tenant_header="urn:cwl:tenant_other")
+        unknown_type = self._http_audit_events(event_type_code="not_an_event")
+        bad_limit = self._http_audit_events(page_limit="abc")
+        high_limit = self._http_audit_events(page_limit=101)
+        bad_cursor = self._http_audit_events(cursor="not-a-cursor")
+        with self.assertRaisesRegex(AccountingValidationError, "event_type_code"):
+            lookup_audit_events(
+                DATABASE_URL, self.policy.tenant_reference, event_type_code="not_an_event"
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "page_limit"):
+            lookup_audit_events(
+                DATABASE_URL, self.policy.tenant_reference, page_limit=0
+            )
+
+        self.assertEqual(post_status_code, 405)
+        self.assertEqual(missing_header[0], 400)
+        self.assertEqual(cross_status, 403)
+        self.assertEqual(unknown_type[0], 400)
+        self.assertEqual(bad_limit[0], 400)
+        self.assertEqual(high_limit[0], 400)
+        self.assertEqual(bad_cursor[0], 400)
+        self.assertEqual(self._count_table("accounting_integration.outbox_event"), outbox_before + 2)
+        server.shutdown()
+
     def test_http_opens_fiscal_period_and_accepts_later_posts(self) -> None:
         """HTTP opens the next fiscal period, replays the open, and still closes over HTTP."""
         server = self._start_http_server()
@@ -5606,6 +5731,26 @@ class PostgresPostingTests(unittest.TestCase):
             None,
             tenant_header=tenant_header,
         )
+
+    def _http_audit_events(
+        self,
+        *,
+        event_type_code: str | None = None,
+        page_limit: object | None = None,
+        cursor: str | None = None,
+        tenant_header: str | None = "",
+    ) -> tuple[int, dict[str, object]]:
+        query: dict[str, str] = {}
+        if event_type_code is not None:
+            query["event_type_code"] = event_type_code
+        if page_limit is not None:
+            query["page_limit"] = str(page_limit)
+        if cursor is not None:
+            query["cursor"] = cursor
+        path = "/audit-events"
+        if query:
+            path = f"/audit-events?{urllib.parse.urlencode(query)}"
+        return self._http_json("GET", path, None, tenant_header=tenant_header)
 
     def _http_outbox_events(
         self,

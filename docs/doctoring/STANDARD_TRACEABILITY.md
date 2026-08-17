@@ -10,6 +10,7 @@
 | PostgreSQL 18.4 | Use current supported minor release, UUIDv7, exact numeric types, composite foreign keys, and row-level security | Initial migration |
 | RFC 9562 | New persistence identifiers use UUIDv7 | Initial migration |
 | CloudEvents 1.0.2 | Commit authoritative events through a transactional outbox and replay by event identity | Outbox table and architecture |
+| AICPA Trust Services Criteria (SOC 2) | Auditors read an append-only history of posted, reversed, and closed facts from existing `outbox_event` rows, including already-published rows, without marking publish | HTTP audit-event history and ADR 0027 |
 | W3C PROV-O | Preserve entity, activity, agent, derivation, and attribution references across source proposal and posting | Source-reference and receipt contracts |
 | ISO/IEC/IEEE 42010:2022 | Keep stakeholder concerns, authority boundaries, architecture views, and decisions explicit | Architecture and ADR set |
 | JSON Schema Draft 2020-12 | Close external objects, version contracts, reject extra fields, and validate exact value formats | Three contract schemas |

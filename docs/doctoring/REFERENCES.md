@@ -1,5 +1,7 @@
 # References
 
+American Institute of Certified Public Accountants. (2017). *Trust Services Criteria for Security, Availability, Processing Integrity, Confidentiality, and Privacy*. https://www.aicpa-cima.com/resources/download/2017-trust-services-criteria-for-security-availability-processing-integrity-confidentiality-and-privacy
+
 Cloud Native Computing Foundation. (2022). *CloudEvents specification, version 1.0.2*. https://github.com/cloudevents/spec
 
 Financial Accounting Standards Board. (2024). *Accounting Standards Codification Topic 606: Revenue from contracts with customers*. https://asc.fasb.org/topic&trid=2121986

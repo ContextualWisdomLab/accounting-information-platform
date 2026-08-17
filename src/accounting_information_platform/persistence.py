@@ -313,6 +313,76 @@ class PostgresPostingLedger:
                 "next_cursor": next_cursor,
             }
 
+    def load_audit_events(
+        self,
+        event_type_code: str = "",
+        *,
+        page_limit: int = 50,
+        cursor_after: tuple[datetime, UUID] | None = None,
+    ) -> dict[str, object]:
+        """Return one page of published and unpublished outbox rows for one tenant."""
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            parameters: list[object] = [tenant_id]
+            type_clause = ""
+            if event_type_code:
+                type_clause = "AND outbox_event.event_type_code = %s"
+                parameters.append(event_type_code)
+            cursor_clause = ""
+            if cursor_after is not None:
+                cursor_clause = (
+                    "AND (outbox_event.created_at, outbox_event.outbox_event_id) "
+                    "> (%s, %s)"
+                )
+                parameters.extend(cursor_after)
+            parameters.append(page_limit + 1)
+            rows = connection.execute(
+                f"""
+                SELECT outbox_event.outbox_event_id,
+                       outbox_event.event_type_code,
+                       outbox_event.aggregate_reference,
+                       outbox_event.payload_reference,
+                       outbox_event.payload_hash,
+                       outbox_event.created_at,
+                       outbox_event.published_at
+                FROM accounting_integration.outbox_event
+                WHERE outbox_event.tenant_account_id = %s
+                  {type_clause}
+                  {cursor_clause}
+                ORDER BY outbox_event.created_at, outbox_event.outbox_event_id
+                LIMIT %s
+                """,
+                tuple(parameters),
+            ).fetchall()
+            has_more = len(rows) > page_limit
+            page_rows = rows[:page_limit]
+            events = [
+                {
+                    "outbox_event_id": str(row[0]),
+                    "event_type_code": row[1],
+                    "aggregate_reference": row[2],
+                    "payload_reference": row[3],
+                    "payload_hash": row[4],
+                    "created_at": _format_timestamp(row[5]),
+                    "published_at": (
+                        None if row[6] is None else _format_timestamp(row[6])
+                    ),
+                }
+                for row in page_rows
+            ]
+            next_cursor = None
+            if has_more:
+                last = page_rows[-1]
+                next_cursor = f"{_format_timestamp(last[5])}|{last[0]}"
+            document: dict[str, object] = {
+                "tenant_reference": self._tenant_reference,
+                "audit_events": events,
+                "next_cursor": next_cursor,
+            }
+            if event_type_code:
+                document["event_type_code"] = event_type_code
+            return document
+
     def publish_outbox_event(self, outbox_event_id: str) -> dict[str, object]:
         """Set published_at on one tenant outbox row, or replay an already-published row."""
         if not outbox_event_id:

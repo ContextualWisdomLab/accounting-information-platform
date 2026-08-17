@@ -1,4 +1,4 @@
-"""Thin stdlib HTTP boundary for Billing proposals, pulls, receipts, close, open, TB, statements, catalog, journals, and outbox."""
+"""Thin stdlib HTTP boundary for Billing proposals, pulls, receipts, close, open, TB, statements, catalog, journals, outbox, and audit history."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from .accept import (
     lookup_account_role_mappings,
     lookup_accounting_books,
     lookup_chart_accounts,
+    lookup_audit_events,
     lookup_legal_entities,
     lookup_financial_statement,
     lookup_fiscal_period,
@@ -50,6 +51,7 @@ ACCOUNT_LEDGER_PATH = "/account-ledgers"
 JOURNAL_PATH = "/journals"
 FISCAL_PERIOD_PATH = "/fiscal-periods"
 OUTBOX_PATH = "/outbox-events"
+AUDIT_EVENT_PATH = "/audit-events"
 _OUTBOX_PUBLISH_PATH = re.compile(
     r"^/outbox-events/"
     r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
@@ -73,12 +75,12 @@ class JournalProposalServer(ThreadingHTTPServer):
 
 
 class JournalProposalHandler(BaseHTTPRequestHandler):
-    """Serve proposal POST, reverse, pull, receipt GET, close, TB, catalog, journal, outbox, and healthz."""
+    """Serve proposal POST, reverse, pull, receipt GET, close, TB, catalog, journal, outbox, audit history, and healthz."""
 
     server: JournalProposalServer
 
     def do_GET(self) -> None:
-        """Route healthz, receipt, trial-balance, catalog, journal, outbox, and GET 405s."""
+        """Route healthz, receipt, trial-balance, catalog, journal, outbox, audit history, and GET 405s."""
         parsed = urlparse(self.path)
         if parsed.path == HEALTHZ_PATH:
             self._write_json(200, {"status": "ok"})
@@ -137,6 +139,9 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         if parsed.path == OUTBOX_PATH:
             self._get_outbox_events(parsed.query)
             return
+        if parsed.path == AUDIT_EVENT_PATH:
+            self._get_audit_events(parsed.query)
+            return
         if _OUTBOX_PUBLISH_PATH.fullmatch(parsed.path):
             self._write_error(
                 405,
@@ -149,12 +154,12 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             "unknown path. GET /posting-receipts?idempotency_key=, GET /trial-balances, "
             "GET /financial-statements, GET /account-role-mappings, GET /accounting-books, "
             "GET /legal-entities, GET /chart-accounts, GET /account-ledgers, GET /journals, "
-            "GET /fiscal-periods, or "
-            "GET /outbox-events?event_type_code=, then retry.",
+            "GET /fiscal-periods, GET /outbox-events?event_type_code=, or "
+            "GET /audit-events, then retry.",
         )
 
     def do_POST(self) -> None:
-        """Route journal-proposal accept, reverse, Billing pull, close, outbox publish, and GET-only POST 405s."""
+        """Route journal-proposal accept, reverse, Billing pull, close, outbox publish, audit-history 405, and GET-only POST 405s."""
         raw_body = self._read_body()
         parsed_path = urlparse(self.path).path
         if parsed_path == JOURNAL_PATH:
@@ -226,6 +231,14 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
                 405,
                 "POST is not supported on the outbox-event list endpoint. "
                 "GET unpublished outbox events, then retry.",
+            )
+            return
+        if parsed_path == AUDIT_EVENT_PATH:
+            self._write_error(
+                405,
+                "POST is not supported on the audit-event history endpoint. "
+                "GET the audit-event history, then retry. Drain unpublished rows with "
+                "GET /outbox-events then POST /outbox-events/{outbox_event_id}/publish.",
             )
             return
         publish_match = _OUTBOX_PUBLISH_PATH.fullmatch(parsed_path)
@@ -585,6 +598,36 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             return
         self._write_json(200, document)
 
+    def _get_audit_events(self, query: str) -> None:
+        tenant_header = self._bound_tenant_header("audit-event read")
+        if tenant_header is None:
+            return
+        fields = parse_qs(query)
+        raw_limit = _first_query(fields, "page_limit")
+        page_limit: int | None = None
+        if raw_limit:
+            try:
+                page_limit = int(raw_limit)
+            except ValueError:
+                self._write_error(
+                    400,
+                    "page_limit must be an integer. "
+                    "Supply an audit-event page_limit, then retry the audit-event read.",
+                )
+                return
+        try:
+            document = lookup_audit_events(
+                self.server.database_url,
+                tenant_header,
+                _first_query(fields, "event_type_code"),
+                page_limit=page_limit,
+                cursor=_first_query(fields, "cursor"),
+            )
+        except AccountingValidationError as error:
+            self._write_error(400, str(error))
+            return
+        self._write_json(200, document)
+
     def _post_outbox_publish(self, outbox_event_id: str) -> None:
         tenant_header = self._bound_tenant_header("outbox publish")
         if tenant_header is None:
@@ -839,7 +882,7 @@ def create_journal_proposal_server(
     host: str = "127.0.0.1",
     port: int = 0,
 ) -> JournalProposalServer:
-    """Create a stdlib HTTP server that posts, pulls, closes, opens periods, and reads TB, statements, journals, and outbox."""
+    """Create a stdlib HTTP server that posts, pulls, closes, opens periods, and reads TB, statements, journals, outbox, and audit history."""
     if not database_url:
         raise AccountingValidationError(
             "ACCOUNTING_DATABASE_URL is empty. Set a PostgreSQL 18 URL and retry posting."

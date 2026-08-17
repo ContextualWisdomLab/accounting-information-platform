@@ -292,6 +292,27 @@ def lookup_outbox_events(
     )
 
 
+def lookup_audit_events(
+    database_url: str,
+    tenant_reference: str,
+    event_type_code: str = "",
+    page_limit: int | None = None,
+    cursor: str = "",
+) -> dict[str, object]:
+    """Return published and unpublished outbox rows for one tenant without marking publish."""
+    if event_type_code and event_type_code not in _ALLOWED_OUTBOX_EVENT_TYPE_CODES:
+        raise AccountingValidationError(
+            "event_type_code must be posting_receipt, period_close, or journal_reversal. "
+            "Supply a supported audit event_type_code, then retry the audit-event read."
+        )
+    ledger = PostgresPostingLedger(database_url, tenant_reference)
+    return ledger.load_audit_events(
+        event_type_code,
+        page_limit=_resolve_audit_event_page_limit(page_limit),
+        cursor_after=_parse_outbox_cursor(cursor),
+    )
+
+
 def publish_outbox_event(
     database_url: str,
     tenant_reference: str,
@@ -458,6 +479,13 @@ def _resolve_outbox_page_limit(page_limit: int | None) -> int:
     return _resolve_bounded_page_limit(
         page_limit,
         "Supply an outbox-event page_limit, then retry the outbox read.",
+    )
+
+
+def _resolve_audit_event_page_limit(page_limit: int | None) -> int:
+    return _resolve_bounded_page_limit(
+        page_limit,
+        "Supply an audit-event page_limit, then retry the audit-event read.",
     )
 
 
