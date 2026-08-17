@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Replaced the engineer-oriented root README with a buyer/operator document:
+  current foundation readiness, independent run without Naruon or sibling
+  checkouts, and the sibling call path through the published file contracts.
+- Recorded pull-request stacking, exact-head CI, writer-boundary, and
+  review-bot procedure in `docs/CONTRIBUTING.md` so they stay out of the
+  buyer/operator README.
+
 ### Added
 
 - Initial Accounting Information Platform product and authority baseline.
