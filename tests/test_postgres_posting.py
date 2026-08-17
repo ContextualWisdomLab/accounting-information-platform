@@ -890,6 +890,91 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before)
         server.shutdown()
 
+    def test_http_posts_and_pulls_billing_taxed_credit(self) -> None:
+        """Billing #20 taxed credit posts Billing's three-line unwind without AIS tax math."""
+        taxed_credit = self._billing_taxed_credit_payload()
+        untaxed_credit = self._billing_credit_payload()
+        billing_url = self._start_fake_billing([taxed_credit])
+        server = self._start_http_server()
+
+        self.assertEqual(
+            taxed_credit["idempotency_key"],
+            (
+                f"{self.policy.tenant_reference}:credit_adjustment:"
+                f"{taxed_credit['proposal_id']}:{taxed_credit['source_payload_hash']}:v1"
+            ),
+        )
+        self.assertNotIn(":tax_", str(taxed_credit["idempotency_key"]))
+        self.assertNotIn("tax_receivable", json.dumps(taxed_credit))
+        self.assertEqual(taxed_credit["lines"][0]["account_role_code"], "usage_revenue")
+        self.assertEqual(taxed_credit["lines"][1]["account_role_code"], "tax_payable")
+        self.assertEqual(taxed_credit["lines"][2]["account_role_code"], "accounts_receivable")
+
+        production = Path(__file__).resolve().parents[1] / "src" / "accounting_information_platform"
+        for path in production.rglob("*.py"):
+            text = path.read_text(encoding="utf-8")
+            self.assertNotIn("credit_tax_amount", text)
+            self.assertNotIn("tax_receivable", text)
+
+        pull_status, pull_body = self._http_json(
+            "POST",
+            "/billing-proposal-pulls",
+            {"tenant_reference": self.policy.tenant_reference, "billing_base_url": billing_url},
+        )
+        post_status, post_receipt = self._http_json("POST", "/journal-proposals", taxed_credit)
+        replay_status, replay_receipt = self._http_json("POST", "/journal-proposals", taxed_credit)
+        journal_status, journal = self._http_journal(
+            idempotency_key=str(taxed_credit["idempotency_key"])
+        )
+        untaxed_status, untaxed_receipt = self._http_json(
+            "POST", "/journal-proposals", untaxed_credit
+        )
+        untaxed_journal_status, untaxed_journal = self._http_journal(
+            idempotency_key=str(untaxed_credit["idempotency_key"])
+        )
+        by_code = {str(item["chart_account_code"]): item for item in journal["lines"]}
+
+        self.assertEqual(pull_status, 200)
+        self.assertEqual(post_status, 200)
+        self.assertEqual(replay_status, 200)
+        self.assertEqual(post_receipt, replay_receipt)
+        self.assertEqual(post_receipt, pull_body["posting_receipts"][0])
+        self.assertEqual(post_receipt["line_count"], 3)
+        self.assertEqual(post_receipt["idempotency_key"], taxed_credit["idempotency_key"])
+        self.assertEqual(journal_status, 200)
+        self.assertEqual(set(by_code), {"410100", "210100", "110100"})
+        self.assertEqual(Decimal(str(by_code["410100"]["debit_amount"])), Decimal("25000"))
+        self.assertEqual(Decimal(str(by_code["410100"]["credit_amount"])), Decimal("0"))
+        self.assertEqual(by_code["410100"]["account_role_code"], "usage_revenue")
+        self.assertEqual(Decimal(str(by_code["210100"]["debit_amount"])), Decimal("2500"))
+        self.assertEqual(Decimal(str(by_code["210100"]["credit_amount"])), Decimal("0"))
+        self.assertEqual(by_code["210100"]["account_role_code"], "tax_payable")
+        self.assertEqual(Decimal(str(by_code["110100"]["debit_amount"])), Decimal("0"))
+        self.assertEqual(Decimal(str(by_code["110100"]["credit_amount"])), Decimal("27500"))
+        self.assertEqual(by_code["110100"]["account_role_code"], "accounts_receivable")
+        self.assertEqual(untaxed_status, 200)
+        self.assertEqual(untaxed_journal_status, 200)
+        self.assertEqual(untaxed_receipt["line_count"], 2)
+        untaxed_by_code = {
+            str(item["chart_account_code"]): item for item in untaxed_journal["lines"]
+        }
+        self.assertEqual(set(untaxed_by_code), {"410100", "110100"})
+        self.assertEqual(Decimal(str(untaxed_by_code["410100"]["debit_amount"])), Decimal("4000"))
+        self.assertEqual(Decimal(str(untaxed_by_code["110100"]["credit_amount"])), Decimal("4000"))
+        self.assertNotIn("210100", untaxed_by_code)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), 2)
+
+        journals_before = self._count_table("accounting_core.general_journal")
+        cross_post = self._http_json(
+            "POST",
+            "/journal-proposals",
+            taxed_credit,
+            tenant_header="urn:cwl:tenant_other",
+        )
+        self.assertEqual(cross_post[0], 403)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before)
+        server.shutdown()
+
     def test_http_posts_and_pulls_billing_taxed_invoice(self) -> None:
         """Billing #19 taxed invoice posts AR inclusive, revenue exclusive, and tax_payable."""
         taxed = self._billing_taxed_payload()
@@ -2807,6 +2892,52 @@ class PostgresPostingTests(unittest.TestCase):
                     "account_role_code": "accounts_receivable",
                     "debit_amount": "0",
                     "credit_amount": "4000",
+                },
+            ],
+        }
+        values.update(overrides)
+        return values
+
+    def _billing_taxed_credit_payload(self, **overrides: object) -> dict[str, object]:
+        source_payload_hash = "sha256:" + "3" * 64
+        credit_adjustment_id = "22222222-2222-2222-2222-222222222222"
+        values: dict[str, object] = {
+            "proposal_id": credit_adjustment_id,
+            "proposal_contract_version": 1,
+            "idempotency_key": (
+                f"{self.policy.tenant_reference}:credit_adjustment:{credit_adjustment_id}"
+                f":{source_payload_hash}:v1"
+            ),
+            "tenant_reference": self.policy.tenant_reference,
+            "legal_entity_reference": self.policy.legal_entity_reference,
+            "intended_book_role_code": "primary_statutory",
+            "transaction_currency": "KRW",
+            "transaction_date": "2026-08-31",
+            "accounting_date": "2026-08-31",
+            "source_payload_hash": source_payload_hash,
+            "proposed_at": "2026-08-31T00:00:00Z",
+            "proposal_status": "validated",
+            "source_event_references": (
+                f"{self.policy.tenant_reference}:credit_adjustment:{credit_adjustment_id}",
+            ),
+            "lines": [
+                {
+                    "line_number": 1,
+                    "account_role_code": "usage_revenue",
+                    "debit_amount": "25000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "tax_payable",
+                    "debit_amount": "2500",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 3,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "0",
+                    "credit_amount": "27500",
                 },
             ],
         }

@@ -11,6 +11,7 @@
 
 ### Added
 
+- Billing #20 taxed `credit_adjustment` proposals post the exact three-line Billing split (debit `usage_revenue` 410100, debit `tax_payable` 210100, credit `accounts_receivable` 110100) on the existing `{tenant}:credit_adjustment:{credit_adjustment_id}:{source_payload_hash}:v{version}` key; AIS does not recompute `credit_tax_amount` and does not add `tax_receivable`.
 - Catalog `account_role_mapping` for `tax_payable` → 210100 (credit-normal current liability) so a Billing #19 three-line taxed invoice posts AR inclusive / revenue exclusive / tax payable through `post_proposal`; the invoice `invoice_draft` idempotency key is unchanged.
 - `accept_period_open`, `lookup_fiscal_period`, `POST /fiscal-periods`, and `GET /fiscal-periods` open the next `fiscal_period` row (or replay an already-open period) and read existing period status and dates; hard-closed and soft-closed periods cannot be reopened.
 - `lookup_posted_journal` and `GET /journals` return the persisted posted journal and its lines (`chart_account_code`, exact decimal debit/credit, `line_number`) by Billing `idempotency_key` or `journal_reference`; a reversing journal is returned when that identity is a reversal, missing journals fail closed, and `POST /journals` is 405.
