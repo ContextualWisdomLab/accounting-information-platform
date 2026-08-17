@@ -27,6 +27,7 @@ from accounting_information_platform import (
     PostgresPostingLedger,
     accept_billing_proposal_pull,
     accept_journal_proposal,
+    accept_journal_reversal,
     accept_period_close,
     accept_pulled_proposals,
     create_journal_proposal_server,
@@ -1325,6 +1326,199 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertIsNone(mixed_page.next_cursor)
         self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before)
         ais_server.shutdown()
+
+    def test_http_reverses_posted_journal_and_preserves_original_receipt(self) -> None:
+        """HTTP reverse appends equal-and-opposite lines and keeps the original receipt."""
+        invoice = self._billing_validated_payload()
+        posted = accept_journal_proposal(invoice, DATABASE_URL, self.policy.tenant_reference)
+        original_lookup = lookup_published_receipt(
+            DATABASE_URL, self.policy.tenant_reference, str(invoice["idempotency_key"])
+        )
+        server = self._start_http_server()
+        reverse_body = {
+            "tenant_reference": self.policy.tenant_reference,
+            "journal_reference": posted["journal_reference"],
+            "reversal_date": "2026-08-31",
+            "reversal_reason_code": "billing_correction",
+        }
+
+        status, reversing = self._http_json("POST", "/journal-reversals", reverse_body)
+        replay_status, replayed = self._http_json("POST", "/journal-reversals", reverse_body)
+        key_status, key_reversing = self._http_json(
+            "POST",
+            "/journal-reversals",
+            {
+                "tenant_reference": self.policy.tenant_reference,
+                "idempotency_key": invoice["idempotency_key"],
+                "reversal_date": "2026-08-31",
+                "reversal_reason_code": "billing_correction",
+            },
+        )
+        both_status, both_reversing = self._http_json(
+            "POST",
+            "/journal-reversals",
+            {
+                "tenant_reference": self.policy.tenant_reference,
+                "journal_reference": posted["journal_reference"],
+                "idempotency_key": invoice["idempotency_key"],
+                "reversal_date": "2026-08-31",
+                "reversal_reason_code": "billing_correction",
+            },
+        )
+        original_status, original_after = self._http_lookup(str(invoice["idempotency_key"]))
+        reversing_key = f"reversal:{posted['journal_reference']}"
+        reversing_status, reversing_lookup = self._http_lookup(reversing_key)
+        library_reversing = lookup_published_receipt(
+            DATABASE_URL, self.policy.tenant_reference, reversing_key
+        )
+        live_status, live_balance = self._http_trial_balance()
+
+        self.assertEqual(status, 200)
+        self.assertEqual(replay_status, 200)
+        self.assertEqual(key_status, 200)
+        self.assertEqual(both_status, 200)
+        self.assertEqual(reversing, replayed)
+        self.assertEqual(reversing, key_reversing)
+        self.assertEqual(reversing, both_reversing)
+        self.assertEqual(reversing, reversing_lookup)
+        self.assertEqual(reversing, library_reversing)
+        self.assertEqual(reversing["posting_status_code"], "posted")
+        self.assertEqual(reversing["idempotency_key"], reversing_key)
+        self.assertEqual(reversing["journal_reference"], f"{posted['journal_reference']}:reversal")
+        self.assertEqual(original_status, 200)
+        self.assertEqual(original_after, original_lookup)
+        self.assertEqual(original_after, posted)
+        self.assertEqual(reversing_status, 200)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), 2)
+        self.assertEqual(self._count_table("accounting_core.journal_reversal"), 1)
+        self.assertEqual(self._original_journal_status(str(posted["journal_reference"])), "posted")
+        self.assertEqual(live_status, 200)
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(live_balance, "110100")["net_balance_amount"])),
+            Decimal("0"),
+        )
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(live_balance, "410100")["net_balance_amount"])),
+            Decimal("0"),
+        )
+
+        journals_before = self._count_table("accounting_core.general_journal")
+        get_status, _get_body = self._http_json("GET", "/journal-reversals", None)
+        missing_header = self._http_json(
+            "POST", "/journal-reversals", reverse_body, tenant_header=None
+        )
+        cross_status, _cross = self._http_json(
+            "POST",
+            "/journal-reversals",
+            reverse_body,
+            tenant_header="urn:cwl:tenant_other",
+        )
+        body_mismatch = self._http_json(
+            "POST",
+            "/journal-reversals",
+            {**reverse_body, "tenant_reference": "urn:cwl:tenant_other"},
+        )
+        bad_json = self._http_raw(
+            "POST", "/journal-reversals", b"{", self.policy.tenant_reference
+        )
+        unknown_journal = self._http_json(
+            "POST",
+            "/journal-reversals",
+            {
+                "tenant_reference": self.policy.tenant_reference,
+                "journal_reference": "urn:cwl:accounting:general_journal:missing",
+                "reversal_date": "2026-08-31",
+                "reversal_reason_code": "billing_correction",
+            },
+        )
+        unknown_key = self._http_json(
+            "POST",
+            "/journal-reversals",
+            {
+                "tenant_reference": self.policy.tenant_reference,
+                "idempotency_key": f"{self.policy.tenant_reference}:invoice_draft:missing:sha256:{'b' * 64}:v1",
+                "reversal_date": "2026-08-31",
+                "reversal_reason_code": "billing_correction",
+            },
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "JSON object"):
+            accept_journal_reversal(["not-an-object"], DATABASE_URL, self.policy.tenant_reference)
+        with self.assertRaisesRegex(AccountingValidationError, "bound tenant"):
+            accept_journal_reversal(
+                {**reverse_body, "tenant_reference": "urn:cwl:tenant_other"},
+                DATABASE_URL,
+                self.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "journal_reference"):
+            accept_journal_reversal(
+                {
+                    "tenant_reference": self.policy.tenant_reference,
+                    "reversal_date": "2026-08-31",
+                    "reversal_reason_code": "billing_correction",
+                },
+                DATABASE_URL,
+                self.policy.tenant_reference,
+            )
+        cash = self._billing_cash_payload()
+        accept_journal_proposal(cash, DATABASE_URL, self.policy.tenant_reference)
+        with self.assertRaisesRegex(AccountingValidationError, "do not match"):
+            accept_journal_reversal(
+                {
+                    "tenant_reference": self.policy.tenant_reference,
+                    "journal_reference": posted["journal_reference"],
+                    "idempotency_key": cash["idempotency_key"],
+                    "reversal_date": "2026-08-31",
+                    "reversal_reason_code": "billing_correction",
+                },
+                DATABASE_URL,
+                self.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "reversal_date"):
+            accept_journal_reversal(
+                {
+                    "tenant_reference": self.policy.tenant_reference,
+                    "journal_reference": posted["journal_reference"],
+                    "reversal_date": "31-08-2026",
+                    "reversal_reason_code": "billing_correction",
+                },
+                DATABASE_URL,
+                self.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "reversal_reason_code"):
+            accept_journal_reversal(
+                {
+                    "tenant_reference": self.policy.tenant_reference,
+                    "journal_reference": posted["journal_reference"],
+                    "reversal_date": "2026-08-31",
+                },
+                DATABASE_URL,
+                self.policy.tenant_reference,
+            )
+        close_status, _close = self._http_json(
+            "POST", "/period-closes", self._period_close_payload()
+        )
+        closed_reverse = self._http_json(
+            "POST",
+            "/journal-reversals",
+            {
+                "tenant_reference": self.policy.tenant_reference,
+                "idempotency_key": cash["idempotency_key"],
+                "reversal_date": "2026-08-31",
+                "reversal_reason_code": "billing_correction",
+            },
+        )
+
+        self.assertEqual(get_status, 405)
+        self.assertEqual(missing_header[0], 400)
+        self.assertEqual(cross_status, 403)
+        self.assertEqual(body_mismatch[0], 403)
+        self.assertEqual(bad_json[0], 400)
+        self.assertEqual(unknown_journal[0], 422)
+        self.assertEqual(unknown_key[0], 422)
+        self.assertEqual(close_status, 200)
+        self.assertEqual(closed_reverse[0], 422)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before + 1)
+        server.shutdown()
 
     def test_accept_and_http_guard_cross_tenant_and_operator_failures(self) -> None:
         """The tenant header is purpose-limited and cross-tenant posts write zero rows."""

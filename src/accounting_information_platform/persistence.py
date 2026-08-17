@@ -412,6 +412,58 @@ class PostgresPostingLedger:
             )
             return receipt
 
+    def load_reversal_policy(
+        self, journal_reference: str, reversal_date: date
+    ) -> AccountingPolicy:
+        """Build catalog policy for reversing *journal_reference* on *reversal_date*."""
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            row = connection.execute(
+                """
+                SELECT legal_entity_record.legal_entity_code,
+                       accounting_book.book_name,
+                       accounting_book.book_role_code,
+                       general_journal.transaction_currency_code,
+                       general_journal.functional_currency_code,
+                       general_journal.accounting_policy_version,
+                       general_journal.posting_rule_version,
+                       general_journal.general_journal_id
+                FROM accounting_core.general_journal
+                JOIN accounting_core.legal_entity_record
+                  ON legal_entity_record.tenant_account_id = general_journal.tenant_account_id
+                 AND legal_entity_record.legal_entity_id = general_journal.legal_entity_id
+                JOIN accounting_core.accounting_book
+                  ON accounting_book.tenant_account_id = general_journal.tenant_account_id
+                 AND accounting_book.accounting_book_id = general_journal.accounting_book_id
+                WHERE general_journal.tenant_account_id = %s
+                  AND general_journal.journal_reference = %s
+                """,
+                (tenant_id, journal_reference),
+            ).fetchone()
+            if row is None:
+                raise AccountingValidationError(
+                    "journal does not exist. Supply a posted journal reference, then retry reversal."
+                )
+            _period_id, period_start, period_end = self._require_open_period_bounds(
+                connection, tenant_id, reversal_date
+            )
+            lines = self._load_lines(connection, tenant_id, row[7])
+            return AccountingPolicy(
+                tenant_reference=self._tenant_reference,
+                legal_entity_reference=row[0],
+                accounting_book_reference=row[1],
+                intended_book_role_code=row[2],
+                transaction_currency=row[3],
+                functional_currency=row[4],
+                open_period_start=period_start,
+                open_period_end=period_end,
+                chart_account_mapping={
+                    line.account_role_code: line.chart_account_code for line in lines
+                },
+                accounting_policy_version=row[5],
+                posting_rule_version=row[6],
+            )
+
     def trial_balance(
         self,
         tenant_reference: str,

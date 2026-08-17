@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .accept import (
     accept_journal_proposal,
+    accept_journal_reversal,
     accept_period_close,
     lookup_published_receipt,
     lookup_trial_balance,
@@ -22,6 +23,7 @@ TENANT_HEADER = "X-CWL-Tenant-Reference"
 HEALTHZ_PATH = "/healthz"
 BILLING_PROPOSAL_PULL_PATH = "/billing-proposal-pulls"
 JOURNAL_PROPOSAL_PATH = "/journal-proposals"
+JOURNAL_REVERSAL_PATH = "/journal-reversals"
 PERIOD_CLOSE_PATH = "/period-closes"
 POSTING_RECEIPT_PATH = "/posting-receipts"
 TRIAL_BALANCE_PATH = "/trial-balances"
@@ -43,12 +45,12 @@ class JournalProposalServer(ThreadingHTTPServer):
 
 
 class JournalProposalHandler(BaseHTTPRequestHandler):
-    """Serve proposal POST, Billing pull, receipt GET, period close, trial balance, and healthz."""
+    """Serve proposal POST, reverse, Billing pull, receipt GET, period close, trial balance, and healthz."""
 
     server: JournalProposalServer
 
     def do_GET(self) -> None:
-        """Route healthz, receipt lookup, trial-balance reads, and pull 405."""
+        """Route healthz, receipt lookup, trial-balance reads, and method-not-allowed GETs."""
         parsed = urlparse(self.path)
         if parsed.path == HEALTHZ_PATH:
             self._write_json(200, {"status": "ok"})
@@ -58,6 +60,13 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
                 405,
                 "GET is not supported on the billing proposal pull endpoint. "
                 "POST a billing-proposal-pull command, then retry.",
+            )
+            return
+        if parsed.path == JOURNAL_REVERSAL_PATH:
+            self._write_error(
+                405,
+                "GET is not supported on the journal reversal endpoint. "
+                "POST a journal-reversal command, then retry.",
             )
             return
         if parsed.path == JOURNAL_PROPOSAL_PATH:
@@ -80,11 +89,14 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         )
 
     def do_POST(self) -> None:
-        """Route journal-proposal accept, Billing pull, and fiscal-period close."""
+        """Route journal-proposal accept, reverse, Billing pull, and fiscal-period close."""
         raw_body = self._read_body()
         parsed_path = urlparse(self.path).path
         if self.path == JOURNAL_PROPOSAL_PATH:
             self._post_journal_proposal(raw_body)
+            return
+        if parsed_path == JOURNAL_REVERSAL_PATH:
+            self._post_journal_reversal(raw_body)
             return
         if parsed_path == BILLING_PROPOSAL_PULL_PATH:
             self._post_billing_proposal_pull(raw_body)
@@ -94,8 +106,8 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             return
         self._write_error(
             404,
-            "unknown path. POST /journal-proposals, POST /billing-proposal-pulls, "
-            "or POST /period-closes, then retry.",
+            "unknown path. POST /journal-proposals, POST /journal-reversals, "
+            "POST /billing-proposal-pulls, or POST /period-closes, then retry.",
         )
 
     def log_message(self, format: str, *args: object) -> None:
@@ -173,6 +185,29 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         except IdempotencyConflictError as error:
             self._write_error(409, f"{error}. Supply a new idempotency key, then retry.")
             return
+        except AccountingValidationError as error:
+            self._write_error(422, str(error))
+            return
+        self._write_json(200, document)
+
+    def _post_journal_reversal(self, raw_body: bytes) -> None:
+        tenant_header = self._bound_tenant_header("reversal")
+        if tenant_header is None:
+            return
+        payload = self._read_json_object(raw_body, "a journal-reversal command")
+        if payload is None:
+            return
+        if payload.get("tenant_reference") != tenant_header:
+            self._write_error(
+                403,
+                "reversal tenant_reference does not match X-CWL-Tenant-Reference. "
+                "Send the reverse to that tenant's AIS endpoint, then retry.",
+            )
+            return
+        try:
+            document = accept_journal_reversal(
+                payload, self.server.database_url, tenant_header
+            )
         except AccountingValidationError as error:
             self._write_error(422, str(error))
             return

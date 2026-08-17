@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Mapping
 
 from .core import AccountingValidationError, PeriodCloseReceipt
@@ -42,6 +43,49 @@ def lookup_published_receipt(
         )
     ledger = PostgresPostingLedger(database_url, tenant_reference)
     return ledger.load_published_receipt_by_key(idempotency_key)
+
+
+def accept_journal_reversal(
+    payload: object, database_url: str, tenant_reference: str
+) -> dict[str, object]:
+    """Reverse one posted journal for *tenant_reference* and return the reversing receipt."""
+    if not isinstance(payload, Mapping):
+        raise AccountingValidationError(
+            "journal reversal payload must be a JSON object. "
+            "Supply a journal-reversal command, then retry the reverse."
+        )
+    if payload.get("tenant_reference") != tenant_reference:
+        raise AccountingValidationError(
+            "reversal tenant_reference does not match the bound tenant. "
+            "Call accept_journal_reversal with that tenant_reference, then retry."
+        )
+    journal_reference = str(payload.get("journal_reference") or "")
+    idempotency_key = str(payload.get("idempotency_key") or "")
+    reversal_reason_code = str(payload.get("reversal_reason_code") or "")
+    if not journal_reference and not idempotency_key:
+        raise AccountingValidationError(
+            "journal_reference or idempotency_key is required. "
+            "Supply the posted journal or the Billing idempotency key, then retry the reverse."
+        )
+    if not reversal_reason_code:
+        raise AccountingValidationError(
+            "reversal_reason_code is required. "
+            "Supply a reversal reason code, then retry the reverse."
+        )
+    reversal_date = _parse_reversal_date(str(payload.get("reversal_date") or ""))
+    ledger = PostgresPostingLedger(database_url, tenant_reference)
+    if idempotency_key:
+        original = lookup_published_receipt(database_url, tenant_reference, idempotency_key)
+        resolved_reference = str(original["journal_reference"])
+        if journal_reference and journal_reference != resolved_reference:
+            raise AccountingValidationError(
+                "journal_reference and idempotency_key do not match the same posted journal. "
+                "Supply one identity, then retry the reverse."
+            )
+        journal_reference = resolved_reference
+    policy = ledger.load_reversal_policy(journal_reference, reversal_date)
+    ledger.reverse(journal_reference, reversal_date, reversal_reason_code, policy)
+    return ledger.load_published_receipt_by_key(f"reversal:{journal_reference}")
 
 
 def accept_period_close(
@@ -107,6 +151,16 @@ def lookup_trial_balance(
         accounting_book_reference=book_reference,
         period_code=_period_code_from_reference(fiscal_period_reference),
     )
+
+
+def _parse_reversal_date(value: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as error:
+        raise AccountingValidationError(
+            "reversal_date must be an ISO-8601 date. "
+            "Supply reversal_date, then retry the reverse."
+        ) from error
 
 
 def _period_code_from_reference(value: str) -> str:

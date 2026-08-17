@@ -15,6 +15,7 @@ from .core import (
 )
 from .accept import (
     accept_journal_proposal,
+    accept_journal_reversal,
     accept_period_close,
     lookup_published_receipt,
     lookup_trial_balance,
@@ -46,6 +47,7 @@ __all__ = [
     "PostingReceipt",
     "accept_billing_proposal_pull",
     "accept_journal_proposal",
+    "accept_journal_reversal",
     "accept_period_close",
     "accept_pulled_proposals",
     "apply_foundation_migration",
