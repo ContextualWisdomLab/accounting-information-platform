@@ -97,7 +97,7 @@ def accept_journal_reversal(
 def accept_period_close(
     payload: object, database_url: str, tenant_reference: str
 ) -> dict[str, object]:
-    """Close one fiscal period for *tenant_reference* and return the close receipt."""
+    """Close one fiscal period for *tenant_reference*; omit period_status_code to hard-close."""
     if not isinstance(payload, Mapping):
         raise AccountingValidationError(
             "period close payload must be a JSON object. "

@@ -582,14 +582,30 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(self._period_status("2026-08"), "hard_closed")
         self.assertEqual(self._period_status("2026-09"), "open")
 
-    def test_soft_close_rejects_posts_and_hard_close_reuses_snapshot(self) -> None:
-        """soft_closed rejects ordinary posting; hard close upgrades without a second snapshot."""
-        self.ledger.post(self._two_line_proposal(), self.policy)
+    def test_soft_close_rejects_ordinary_posts_and_allows_reversal_until_hard_close(
+        self,
+    ) -> None:
+        """soft_closed locks ordinary posts, keeps live TB, and allows adjusting reversal."""
+        posted = self.ledger.post(self._two_line_proposal(), self.policy)
+        later_posted = self.ledger.post(
+            self._two_line_proposal(
+                proposal_id=str(uuid.uuid4()),
+                idempotency_key="invoice-two-line-later-v1",
+                source_payload_hash="sha256:" + "d" * 64,
+            ),
+            self.policy,
+        )
         soft = self._close_period(period_status_code="soft_closed")
         replayed_soft = self._close_period(period_status_code="soft_closed")
         self.assertEqual(soft.period_status_code, "soft_closed")
+        self.assertEqual(soft.snapshot_record_id, "")
+        self.assertFalse(soft.replayed)
         self.assertTrue(replayed_soft.replayed)
-        self.assertEqual(replayed_soft.snapshot_record_id, soft.snapshot_record_id)
+        self.assertEqual(replayed_soft.period_status_code, "soft_closed")
+        self.assertEqual(replayed_soft.snapshot_record_id, "")
+        self.assertEqual(replayed_soft.snapshot_generated_at, soft.snapshot_generated_at)
+        self.assertEqual(replayed_soft.source_payload_hash, soft.source_payload_hash)
+        self.assertEqual(self._count_table("accounting_reporting.trial_balance_snapshot"), 0)
         self.assertEqual(self._count_outbox("period_close"), 1)
 
         with self.assertRaisesRegex(
@@ -604,19 +620,75 @@ class PostgresPostingTests(unittest.TestCase):
                 ),
                 self.policy,
             )
+        self.assertEqual(self.ledger.journal_count, 2)
 
-        hard = self._close_period(period_status_code="hard_closed")
-        ignored_soft = self._close_period(period_status_code="soft_closed")
+        reversal = self.ledger.reverse(
+            posted.journal_reference,
+            date(2026, 8, 31),
+            "billing_correction",
+            self.policy,
+        )
+        live = self.ledger.load_period_trial_balance(
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "2026-08",
+        )
+        self.assertEqual(reversal.reversal_of_journal_reference, posted.journal_reference)
+        self.assertEqual(self.ledger.journal_count, 3)
+        self.assertEqual(live["balance_source_code"], "live")
+        self.assertEqual(live["period_status_code"], "soft_closed")
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(live, "110100")["net_balance_amount"])),
+            Decimal("25000"),
+        )
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(live, "410100")["net_balance_amount"])),
+            Decimal("-25000"),
+        )
 
+        hard = self._close_period()
+        snapshot = self.ledger.load_period_trial_balance(
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "2026-08",
+        )
+        snapshots_after_hard = self._count_table("accounting_reporting.trial_balance_snapshot")
+        outbox_after_hard = self._count_outbox("period_close")
         self.assertFalse(hard.replayed)
         self.assertEqual(hard.period_status_code, "hard_closed")
-        self.assertEqual(hard.snapshot_record_id, soft.snapshot_record_id)
-        self.assertEqual(self._count_table("accounting_reporting.trial_balance_snapshot"), 1)
-        self.assertEqual(self._count_outbox("period_close"), 2)
-        self.assertTrue(ignored_soft.replayed)
-        self.assertEqual(ignored_soft.period_status_code, "hard_closed")
+        self.assertTrue(hard.snapshot_record_id)
+        self.assertEqual(hard.source_journal_count, 3)
+        self.assertEqual(snapshots_after_hard, 1)
+        self.assertEqual(outbox_after_hard, 2)
+        self.assertEqual(snapshot["balance_source_code"], "snapshot")
+        self.assertEqual(snapshot["period_status_code"], "hard_closed")
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(snapshot, "110100")["net_balance_amount"])),
+            Decimal("25000"),
+        )
+
+        with self.assertRaisesRegex(
+            AccountingValidationError,
+            "Reverse into an open or soft-closed period",
+        ):
+            self.ledger.reverse(
+                later_posted.journal_reference,
+                date(2026, 8, 31),
+                "billing_correction",
+                self.policy,
+            )
+        with self.assertRaisesRegex(
+            AccountingValidationError,
+            "cannot be soft-closed",
+        ):
+            self._close_period(period_status_code="soft_closed")
+        self.assertEqual(self.ledger.journal_count, 3)
+        self.assertEqual(
+            self._count_table("accounting_reporting.trial_balance_snapshot"),
+            snapshots_after_hard,
+        )
+        self.assertEqual(self._count_outbox("period_close"), outbox_after_hard)
         self.assertEqual(self._period_status("2026-08"), "hard_closed")
-        self.assertEqual(self._count_table("accounting_integration.journal_proposal_record"), 1)
 
     def test_close_empty_period_and_catalog_failures_name_the_next_action(self) -> None:
         """Empty-period close is durable; catalog and status errors name the retry action."""
@@ -3129,6 +3201,122 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(self._count_table("accounting_reporting.trial_balance_snapshot"), 0)
         self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before)
         self.assertEqual(self._period_status("2026-08"), "hard_closed")
+        server.shutdown()
+
+    def test_http_soft_closes_then_hard_closes_period(self) -> None:
+        """POST /period-closes soft-closes, then hard-closes, without a second close route."""
+        invoice = self._billing_validated_payload()
+        later_invoice = self._billing_validated_payload(
+            proposal_id="019d7b92-1aa0-7a7f-b61c-962c0f4bf699",
+            source_payload_hash="sha256:" + "c" * 64,
+            idempotency_key=(
+                f"{self.policy.tenant_reference}:invoice_draft:"
+                "019d7b92-1aa0-7a7f-b61c-962c0f4bf699:"
+                f"sha256:{'c' * 64}:v1"
+            ),
+        )
+        server = self._start_http_server()
+        post_status, posted = self._http_json("POST", "/journal-proposals", invoice)
+        soft_body = self._period_close_payload(period_status_code="soft_closed")
+        soft_status, soft_receipt = self._http_json("POST", "/period-closes", soft_body)
+        replay_status, replay_receipt = self._http_json("POST", "/period-closes", soft_body)
+        later_status, later_body = self._http_json("POST", "/journal-proposals", later_invoice)
+        reverse_status, reversing = self._http_json(
+            "POST",
+            "/journal-reversals",
+            {
+                "tenant_reference": self.policy.tenant_reference,
+                "journal_reference": posted["journal_reference"],
+                "reversal_date": "2026-08-31",
+                "reversal_reason_code": "billing_correction",
+            },
+        )
+        live_status, live_balance = self._http_trial_balance()
+        listed_soft_status, listed_soft = self._http_fiscal_periods()
+        hard_status, hard_receipt = self._http_json(
+            "POST", "/period-closes", self._period_close_payload()
+        )
+        snapshot_status, snapshot_balance = self._http_trial_balance()
+        listed_hard_status, listed_hard = self._http_fiscal_periods()
+        snapshots_after_hard = self._count_table("accounting_reporting.trial_balance_snapshot")
+        outbox_after_hard = self._count_outbox("period_close")
+        journals_after_hard = self._count_table("accounting_core.general_journal")
+        closed_reverse_status, _closed_reverse = self._http_json(
+            "POST",
+            "/journal-reversals",
+            {
+                "tenant_reference": self.policy.tenant_reference,
+                "journal_reference": posted["journal_reference"],
+                "reversal_date": "2026-08-31",
+                "reversal_reason_code": "billing_correction",
+            },
+        )
+        unhard_status, unhard_body = self._http_json("POST", "/period-closes", soft_body)
+        cross_status, _cross = self._http_json(
+            "POST",
+            "/period-closes",
+            soft_body,
+            tenant_header="urn:cwl:tenant_other",
+        )
+        by_code_soft = {
+            str(item["period_code"]): item for item in listed_soft["fiscal_periods"]
+        }
+        by_code_hard = {
+            str(item["period_code"]): item for item in listed_hard["fiscal_periods"]
+        }
+
+        self.assertEqual(post_status, 200)
+        self.assertEqual(soft_status, 200)
+        self.assertEqual(soft_receipt["period_status_code"], "soft_closed")
+        self.assertEqual(soft_receipt["snapshot_record_id"], "")
+        self.assertFalse(soft_receipt["replayed"])
+        self.assertEqual(replay_status, 200)
+        self.assertTrue(replay_receipt["replayed"])
+        self.assertEqual(replay_receipt["period_status_code"], "soft_closed")
+        self.assertEqual(replay_receipt["snapshot_record_id"], "")
+        self.assertEqual(
+            replay_receipt["snapshot_generated_at"], soft_receipt["snapshot_generated_at"]
+        )
+        self.assertEqual(later_status, 422)
+        self.assertIn("open period", str(later_body["error_message"]))
+        self.assertEqual(reverse_status, 200)
+        self.assertEqual(
+            reversing["journal_reference"], f"{posted['journal_reference']}:reversal"
+        )
+        self.assertEqual(live_status, 200)
+        self.assertEqual(live_balance["balance_source_code"], "live")
+        self.assertEqual(live_balance["period_status_code"], "soft_closed")
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(live_balance, "110100")["net_balance_amount"])),
+            Decimal("0"),
+        )
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(live_balance, "410100")["net_balance_amount"])),
+            Decimal("0"),
+        )
+        self.assertEqual(listed_soft_status, 200)
+        self.assertEqual(by_code_soft["2026-08"]["period_status_code"], "soft_closed")
+        self.assertEqual(hard_status, 200)
+        self.assertEqual(hard_receipt["period_status_code"], "hard_closed")
+        self.assertTrue(hard_receipt["snapshot_record_id"])
+        self.assertFalse(hard_receipt["replayed"])
+        self.assertEqual(hard_receipt["source_journal_count"], 2)
+        self.assertEqual(snapshots_after_hard, 1)
+        self.assertEqual(snapshot_status, 200)
+        self.assertEqual(snapshot_balance["balance_source_code"], "snapshot")
+        self.assertEqual(snapshot_balance["period_status_code"], "hard_closed")
+        self.assertEqual(listed_hard_status, 200)
+        self.assertEqual(by_code_hard["2026-08"]["period_status_code"], "hard_closed")
+        self.assertEqual(closed_reverse_status, 422)
+        self.assertEqual(unhard_status, 422)
+        self.assertIn("cannot be soft-closed", str(unhard_body["error_message"]))
+        self.assertEqual(cross_status, 403)
+        self.assertEqual(
+            self._count_table("accounting_reporting.trial_balance_snapshot"),
+            snapshots_after_hard,
+        )
+        self.assertEqual(self._count_outbox("period_close"), outbox_after_hard)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), journals_after_hard)
         server.shutdown()
 
     def test_pulls_validated_billing_proposals_and_posts(self) -> None:

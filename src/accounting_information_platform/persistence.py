@@ -471,7 +471,7 @@ class PostgresPostingLedger:
         snapshot_currency_code: str,
         period_status_code: str = "hard_closed",
     ) -> PeriodCloseReceipt:
-        """Snapshot the book population through period end and close that fiscal period."""
+        """Soft-close or hard-close one fiscal period; only hard-close snapshots the book."""
         _require_reference(legal_entity_reference, "legal entity reference")
         _require_reference(accounting_book_reference, "accounting book reference")
         if not period_code.strip():
@@ -510,7 +510,14 @@ class PostgresPostingLedger:
             period_id, current_status, period_end_date = self._require_fiscal_period(
                 connection, tenant_id, period_code
             )
-            if current_status == "hard_closed" or current_status == period_status_code:
+            if current_status == "hard_closed":
+                if period_status_code == "soft_closed":
+                    raise AccountingValidationError(
+                        f"Fiscal period {period_code} is hard_closed. "
+                        "Hard-closed periods cannot be soft-closed. "
+                        "Open a later period or leave this period hard_closed; "
+                        "no close row was written."
+                    )
                 return self._replay_close_receipt(
                     connection,
                     tenant_id=tenant_id,
@@ -522,19 +529,31 @@ class PostgresPostingLedger:
                     legal_entity_reference=legal_entity_reference,
                     accounting_book_reference=accounting_book_reference,
                 )
-            existing = self._latest_close_snapshot(
-                connection, tenant_id, legal_entity_id, book_id, period_id
-            )
-            if existing is not None:
-                return self._upgrade_closed_period(
+            if current_status == period_status_code:
+                return self._replay_soft_close_receipt(
                     connection,
                     tenant_id=tenant_id,
+                    legal_entity_id=legal_entity_id,
+                    book_id=book_id,
                     period_id=period_id,
                     period_code=period_code,
-                    period_status_code=period_status_code,
+                    period_end_date=period_end_date,
+                    snapshot_currency_code=snapshot_currency_code,
                     legal_entity_reference=legal_entity_reference,
                     accounting_book_reference=accounting_book_reference,
-                    snapshot=existing,
+                )
+            if period_status_code == "soft_closed":
+                return self._persist_soft_close(
+                    connection,
+                    tenant_id=tenant_id,
+                    legal_entity_id=legal_entity_id,
+                    book_id=book_id,
+                    period_id=period_id,
+                    period_code=period_code,
+                    period_end_date=period_end_date,
+                    snapshot_currency_code=snapshot_currency_code,
+                    legal_entity_reference=legal_entity_reference,
+                    accounting_book_reference=accounting_book_reference,
                 )
             return self._persist_period_close(
                 connection,
@@ -958,7 +977,7 @@ class PostgresPostingLedger:
                 raise AccountingValidationError(
                     "reversal policy scope does not match original journal"
                 )
-            period_id = self._require_open_period(connection, tenant_id, reversal_date)
+            period_id = self._require_adjusting_period(connection, tenant_id, reversal_date)
             original_lines = self._load_lines(connection, tenant_id, original[0])
             reversal_lines = tuple(
                 PostedJournalLine(
@@ -1072,7 +1091,7 @@ class PostgresPostingLedger:
                 raise AccountingValidationError(
                     "journal does not exist. Supply a posted journal reference, then retry reversal."
                 )
-            _period_id, period_start, period_end = self._require_open_period_bounds(
+            _period_id, period_start, period_end = self._require_adjusting_period_bounds(
                 connection, tenant_id, reversal_date
             )
             lines = self._load_lines(connection, tenant_id, row[7])
@@ -1289,7 +1308,7 @@ class PostgresPostingLedger:
         accounting_book_reference: str,
         period_code: str,
     ) -> dict[str, object]:
-        """Return snapshot balances for a closed period, or live totals for an open period."""
+        """Return snapshot balances for a hard-closed period, or live totals otherwise."""
         _require_reference(legal_entity_reference, "legal entity reference")
         _require_reference(accounting_book_reference, "accounting book reference")
         if not period_code.strip():
@@ -1318,7 +1337,7 @@ class PostgresPostingLedger:
                 next_action="the trial-balance read",
             )
             snapshot_record_id = None
-            if period_status_code in {"soft_closed", "hard_closed"}:
+            if period_status_code == "hard_closed":
                 snapshot = self._latest_close_snapshot(
                     connection, tenant_id, legal_entity_id, book_id, period_id
                 )
@@ -1572,8 +1591,41 @@ class PostgresPostingLedger:
     ) -> UUID:
         return self._require_open_period_bounds(connection, tenant_id, accounting_date)[0]
 
+    def _require_adjusting_period(
+        self, connection: object, tenant_id: UUID, accounting_date: date
+    ) -> UUID:
+        return self._require_adjusting_period_bounds(connection, tenant_id, accounting_date)[0]
+
     def _require_open_period_bounds(
         self, connection: object, tenant_id: UUID, accounting_date: date
+    ) -> tuple[UUID, date, date]:
+        return self._require_period_bounds(
+            connection,
+            tenant_id,
+            accounting_date,
+            allowed_status_codes=frozenset({"open"}),
+            next_action="Open that period or post into an open period",
+        )
+
+    def _require_adjusting_period_bounds(
+        self, connection: object, tenant_id: UUID, accounting_date: date
+    ) -> tuple[UUID, date, date]:
+        return self._require_period_bounds(
+            connection,
+            tenant_id,
+            accounting_date,
+            allowed_status_codes=frozenset({"open", "soft_closed"}),
+            next_action="Reverse into an open or soft-closed period",
+        )
+
+    def _require_period_bounds(
+        self,
+        connection: object,
+        tenant_id: UUID,
+        accounting_date: date,
+        *,
+        allowed_status_codes: frozenset[str],
+        next_action: str,
     ) -> tuple[UUID, date, date]:
         row = connection.execute(
             """
@@ -1591,9 +1643,9 @@ class PostgresPostingLedger:
                 f"No fiscal period covers accounting date {accounting_date.isoformat()}. "
                 "Create an open fiscal period on the tenant calendar, then retry posting."
             )
-        if row[2] != "open":
+        if row[2] not in allowed_status_codes:
             raise AccountingValidationError(
-                f"Fiscal period {row[1]} is {row[2]}. Open that period or post into an open period; "
+                f"Fiscal period {row[1]} is {row[2]}. {next_action}; "
                 "no journal was written."
             )
         return row[0], row[3], row[4]
@@ -1959,35 +2011,130 @@ class PostgresPostingLedger:
             replayed=True,
         )
 
-    def _upgrade_closed_period(
+    def _replay_soft_close_receipt(
         self,
         connection: object,
         *,
         tenant_id: UUID,
+        legal_entity_id: UUID,
+        book_id: UUID,
         period_id: UUID,
         period_code: str,
-        period_status_code: str,
+        period_end_date: date,
+        snapshot_currency_code: str,
         legal_entity_reference: str,
         accounting_book_reference: str,
-        snapshot: tuple[UUID, datetime, int, str],
     ) -> PeriodCloseReceipt:
-        self._set_period_closed(connection, tenant_id, period_id, period_status_code)
+        period_closed_at = connection.execute(
+            """
+            SELECT COALESCE(period_closed_at, clock_timestamp())
+            FROM accounting_core.fiscal_period
+            WHERE tenant_account_id = %s AND fiscal_period_id = %s
+            """,
+            (tenant_id, period_id),
+        ).fetchone()[0]
+        _lines, source_journal_count, source_payload_hash = self._live_close_source(
+            connection,
+            tenant_id=tenant_id,
+            legal_entity_id=legal_entity_id,
+            book_id=book_id,
+            period_end_date=period_end_date,
+            period_code=period_code,
+            snapshot_currency_code=snapshot_currency_code,
+            legal_entity_reference=legal_entity_reference,
+            accounting_book_reference=accounting_book_reference,
+        )
+        return PeriodCloseReceipt(
+            tenant_reference=self._tenant_reference,
+            legal_entity_reference=legal_entity_reference,
+            accounting_book_reference=accounting_book_reference,
+            period_code=period_code,
+            period_status_code="soft_closed",
+            snapshot_record_id="",
+            snapshot_generated_at=period_closed_at,
+            source_journal_count=source_journal_count,
+            source_payload_hash=source_payload_hash,
+            replayed=True,
+        )
+
+    def _persist_soft_close(
+        self,
+        connection: object,
+        *,
+        tenant_id: UUID,
+        legal_entity_id: UUID,
+        book_id: UUID,
+        period_id: UUID,
+        period_code: str,
+        period_end_date: date,
+        snapshot_currency_code: str,
+        legal_entity_reference: str,
+        accounting_book_reference: str,
+    ) -> PeriodCloseReceipt:
+        _lines, source_journal_count, source_payload_hash = self._live_close_source(
+            connection,
+            tenant_id=tenant_id,
+            legal_entity_id=legal_entity_id,
+            book_id=book_id,
+            period_end_date=period_end_date,
+            period_code=period_code,
+            snapshot_currency_code=snapshot_currency_code,
+            legal_entity_reference=legal_entity_reference,
+            accounting_book_reference=accounting_book_reference,
+        )
+        period_closed_at = self._set_period_closed(
+            connection, tenant_id, period_id, "soft_closed"
+        )
         self._insert_period_close_event(
             connection,
             tenant_id,
             period_code,
             accounting_book_reference,
-            snapshot[0],
-            snapshot[3],
+            None,
+            source_payload_hash,
         )
-        return self._close_receipt_from_snapshot(
-            snapshot,
-            period_code=period_code,
-            period_status_code=period_status_code,
+        return PeriodCloseReceipt(
+            tenant_reference=self._tenant_reference,
             legal_entity_reference=legal_entity_reference,
             accounting_book_reference=accounting_book_reference,
+            period_code=period_code,
+            period_status_code="soft_closed",
+            snapshot_record_id="",
+            snapshot_generated_at=period_closed_at,
+            source_journal_count=source_journal_count,
+            source_payload_hash=source_payload_hash,
             replayed=False,
         )
+
+    def _live_close_source(
+        self,
+        connection: object,
+        *,
+        tenant_id: UUID,
+        legal_entity_id: UUID,
+        book_id: UUID,
+        period_end_date: date,
+        period_code: str,
+        snapshot_currency_code: str,
+        legal_entity_reference: str,
+        accounting_book_reference: str,
+    ) -> tuple[tuple[tuple[UUID, str, Decimal, Decimal], ...], int, str]:
+        lines = self._aggregate_trial_balance(
+            connection, tenant_id, legal_entity_id, book_id, period_end_date
+        )
+        source_journal_count = self._count_source_journals(
+            connection, tenant_id, legal_entity_id, book_id, period_end_date
+        )
+        source_payload_hash = _canonical_snapshot_hash(
+            tenant_reference=self._tenant_reference,
+            legal_entity_reference=legal_entity_reference,
+            accounting_book_reference=accounting_book_reference,
+            period_code=period_code,
+            snapshot_currency_code=snapshot_currency_code,
+            source_journal_count=source_journal_count,
+            lines=lines,
+        )
+        return lines, source_journal_count, source_payload_hash
 
     def _persist_period_close(
         self,
@@ -2004,20 +2151,16 @@ class PostgresPostingLedger:
         legal_entity_reference: str,
         accounting_book_reference: str,
     ) -> PeriodCloseReceipt:
-        lines = self._aggregate_trial_balance(
-            connection, tenant_id, legal_entity_id, book_id, period_end_date
-        )
-        source_journal_count = self._count_source_journals(
-            connection, tenant_id, legal_entity_id, book_id, period_end_date
-        )
-        source_payload_hash = _canonical_snapshot_hash(
-            tenant_reference=self._tenant_reference,
-            legal_entity_reference=legal_entity_reference,
-            accounting_book_reference=accounting_book_reference,
+        lines, source_journal_count, source_payload_hash = self._live_close_source(
+            connection,
+            tenant_id=tenant_id,
+            legal_entity_id=legal_entity_id,
+            book_id=book_id,
+            period_end_date=period_end_date,
             period_code=period_code,
             snapshot_currency_code=snapshot_currency_code,
-            source_journal_count=source_journal_count,
-            lines=lines,
+            legal_entity_reference=legal_entity_reference,
+            accounting_book_reference=accounting_book_reference,
         )
         snapshot_id, snapshot_generated_at = connection.execute(
             """
@@ -2084,16 +2227,17 @@ class PostgresPostingLedger:
         tenant_id: UUID,
         period_id: UUID,
         period_status_code: str,
-    ) -> None:
-        connection.execute(
+    ) -> datetime:
+        return connection.execute(
             """
             UPDATE accounting_core.fiscal_period
             SET period_status_code = %s,
                 period_closed_at = clock_timestamp()
             WHERE tenant_account_id = %s AND fiscal_period_id = %s
+            RETURNING period_closed_at
             """,
             (period_status_code, tenant_id, period_id),
-        )
+        ).fetchone()[0]
 
     def _insert_period_close_event(
         self,
@@ -2101,9 +2245,14 @@ class PostgresPostingLedger:
         tenant_id: UUID,
         period_code: str,
         accounting_book_reference: str,
-        snapshot_id: UUID,
+        snapshot_id: UUID | None,
         payload_hash: str,
     ) -> None:
+        payload_reference = (
+            f"urn:cwl:accounting:trial_balance_snapshot:{snapshot_id}"
+            if snapshot_id is not None
+            else f"urn:cwl:accounting:fiscal_period:{period_code}"
+        )
         connection.execute(
             """
             INSERT INTO accounting_integration.outbox_event (
@@ -2115,7 +2264,7 @@ class PostgresPostingLedger:
             (
                 tenant_id,
                 f"{accounting_book_reference}:fiscal_period:{period_code}",
-                f"urn:cwl:accounting:trial_balance_snapshot:{snapshot_id}",
+                payload_reference,
                 payload_hash,
             ),
         )

@@ -4,7 +4,7 @@
 
 ## Decision
 
-AIS exposes `accept_period_close` / `POST /period-closes` and `lookup_trial_balance` / `GET /trial-balances` on the same stdlib HTTP surface as journal-proposal accept. Close calls `PostgresPostingLedger.close_fiscal_period` in one transaction (trial-balance snapshot plus period status) and returns `PeriodCloseReceipt` as JSON. Replay of an already-closed period returns the same snapshot identity. A closed-period trial-balance read returns the persisted snapshot; an open period returns a live aggregation through period end. Missing catalog or period facts fail closed and do not invent a close or balances. `GET /healthz` is an unauthenticated ops probe and returns no accounting data.
+AIS exposes `accept_period_close` / `POST /period-closes` and `lookup_trial_balance` / `GET /trial-balances` on the same stdlib HTTP surface as journal-proposal accept. Close calls `PostgresPostingLedger.close_fiscal_period` in one transaction (trial-balance snapshot plus period status) and returns `PeriodCloseReceipt` as JSON. Replay of an already-closed period returns the same snapshot identity. A closed-period trial-balance read returns the persisted snapshot; an open period returns a live aggregation through period end. Missing catalog or period facts fail closed and do not invent a close or balances. `GET /healthz` is an unauthenticated ops probe and returns no accounting data. ADR 0023 keeps this route and receipt; `soft_closed` no longer writes or reads a snapshot, and `GET /trial-balances` stays live until `hard_closed`.
 
 ## Consequences
 

@@ -8,4 +8,4 @@
 
 ## Consequences
 
-Controllers close books through the posting adapter instead of a raw status update. Ordinary posting remains rejected for every non-open period status and writes zero proposal, journal, line, or receipt rows. Soft-close may later upgrade to hard-close by reusing the same snapshot. A hard-closed period without a snapshot fails closed and names the restore-and-retry action.
+Controllers close books through the posting adapter instead of a raw status update. Ordinary posting remains rejected for every non-open period status and writes zero proposal, journal, line, or receipt rows. Soft-close may later upgrade to hard-close by reusing the same snapshot. A hard-closed period without a snapshot fails closed and names the restore-and-retry action. ADR 0023 supersedes the snapshot-on-soft-close and reuse-on-upgrade parts: soft-close writes no snapshot, and hard-close after soft-close snapshots the live book once.
