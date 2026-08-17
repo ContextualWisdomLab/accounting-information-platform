@@ -2430,6 +2430,10 @@ class PostgresPostingTests(unittest.TestCase):
             PostgresPostingLedger(
                 DATABASE_URL, self.policy.tenant_reference
             ).load_account_ledger("", "110100")
+        with self.assertRaisesRegex(AccountingValidationError, "chart_account_code"):
+            PostgresPostingLedger(
+                DATABASE_URL, self.policy.tenant_reference
+            ).load_account_ledger(self.policy.legal_entity_reference, "")
 
         self.assertEqual(missing_query[0], 400)
         self.assertEqual(missing_account[0], 400)
