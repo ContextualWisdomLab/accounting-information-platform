@@ -334,6 +334,22 @@ def lookup_account_role_mappings(
     return ledger.load_account_role_mappings(legal_entity_reference, book_reference)
 
 
+def lookup_chart_accounts(
+    database_url: str,
+    tenant_reference: str,
+    legal_entity_reference: str,
+    book_reference: str,
+) -> dict[str, object]:
+    """Return existing chart accounts for one tenant, legal entity, and book."""
+    if not legal_entity_reference or not book_reference:
+        raise AccountingValidationError(
+            "legal_entity_reference and book_reference are required. "
+            "Supply those catalog fields, then retry the chart-account read."
+        )
+    ledger = PostgresPostingLedger(database_url, tenant_reference)
+    return ledger.load_chart_accounts(legal_entity_reference, book_reference)
+
+
 def lookup_trial_balance(
     database_url: str,
     tenant_reference: str,

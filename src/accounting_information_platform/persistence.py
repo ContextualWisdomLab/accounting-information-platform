@@ -1151,6 +1151,55 @@ class PostgresPostingLedger:
                 ],
             }
 
+    def load_chart_accounts(
+        self, legal_entity_reference: str, accounting_book_reference: str
+    ) -> dict[str, object]:
+        """Return existing chart_account rows for one legal entity and book."""
+        if not legal_entity_reference or not accounting_book_reference:
+            raise AccountingValidationError(
+                "legal_entity_reference and book_reference are required. "
+                "Supply those catalog fields, then retry the chart-account read."
+            )
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            legal_entity_id = self._load_legal_entity(
+                connection, tenant_id, legal_entity_reference, "the chart-account read"
+            )[0]
+            book_id = self._require_book_for_close(
+                connection,
+                tenant_id,
+                legal_entity_id,
+                accounting_book_reference,
+                "the chart-account read",
+            )[0]
+            rows = connection.execute(
+                """
+                SELECT chart_account.chart_account_code,
+                       chart_account.account_name,
+                       chart_account.normal_balance_code
+                FROM accounting_core.chart_account
+                WHERE chart_account.tenant_account_id = %s
+                  AND chart_account.accounting_book_id = %s
+                  AND chart_account.valid_to IS NULL
+                ORDER BY chart_account.chart_account_code
+                """,
+                (tenant_id, book_id),
+            ).fetchall()
+            return {
+                "tenant_reference": self._tenant_reference,
+                "legal_entity_reference": legal_entity_reference,
+                "accounting_book_reference": accounting_book_reference,
+                "book_reference": accounting_book_reference,
+                "chart_accounts": [
+                    {
+                        "chart_account_code": account_code,
+                        "account_name": account_name,
+                        "normal_balance_code": normal_balance_code,
+                    }
+                    for account_code, account_name, normal_balance_code in rows
+                ],
+            }
+
     def trial_balance(
         self,
         tenant_reference: str,
