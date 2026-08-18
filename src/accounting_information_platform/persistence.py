@@ -1188,6 +1188,117 @@ class PostgresPostingLedger:
                 "next_cursor": next_cursor,
             }
 
+    def load_account_balances(
+        self,
+        legal_entity_reference: str,
+        accounting_book_reference: str,
+        period_code: str,
+        chart_account_code: str = "",
+        *,
+        page_limit: int = 50,
+        cursor: str = "",
+    ) -> dict[str, object]:
+        """Return as-of chart-account balances from the close snapshot or live journals."""
+        trial_balance = self.load_period_trial_balance(
+            legal_entity_reference=legal_entity_reference,
+            accounting_book_reference=accounting_book_reference,
+            period_code=period_code,
+        )
+        account_classes = self._load_chart_account_classes(
+            legal_entity_reference, accounting_book_reference
+        )
+        requested_code = chart_account_code.strip()
+        if requested_code and requested_code not in account_classes:
+            raise AccountingValidationError(
+                f"Chart account {requested_code} is not recorded for this book. "
+                "Create the chart_account row, then retry the account-balance read."
+            )
+        source_lines = [
+            {
+                "chart_account_code": str(raw_line["chart_account_code"]),
+                "debit_amount": str(raw_line["debit_amount"]),
+                "credit_amount": str(raw_line["credit_amount"]),
+            }
+            for raw_line in trial_balance["lines"]
+        ]
+        if requested_code:
+            source_lines = [
+                raw_line
+                for raw_line in source_lines
+                if raw_line["chart_account_code"] == requested_code
+            ]
+            if not source_lines:
+                source_lines = [
+                    {
+                        "chart_account_code": requested_code,
+                        "debit_amount": "0",
+                        "credit_amount": "0",
+                    }
+                ]
+        if cursor:
+            source_lines = [
+                raw_line
+                for raw_line in source_lines
+                if raw_line["chart_account_code"] > cursor
+            ]
+        has_more = len(source_lines) > page_limit
+        page_lines = source_lines[:page_limit]
+        account_balances = [
+            {
+                "chart_account_code": raw_line["chart_account_code"],
+                "account_class_code": account_classes[str(raw_line["chart_account_code"])],
+                "debit_amount": _exact_amount_text(Decimal(str(raw_line["debit_amount"]))),
+                "credit_amount": _exact_amount_text(Decimal(str(raw_line["credit_amount"]))),
+            }
+            for raw_line in page_lines
+        ]
+        next_cursor = None
+        if has_more:
+            next_cursor = str(page_lines[-1]["chart_account_code"])
+        return {
+            "tenant_reference": self._tenant_reference,
+            "legal_entity_reference": legal_entity_reference,
+            "accounting_book_reference": accounting_book_reference,
+            "book_reference": accounting_book_reference,
+            "fiscal_period_reference": str(trial_balance["fiscal_period_reference"]),
+            "account_balances": account_balances,
+            "next_cursor": next_cursor,
+        }
+
+    def _load_chart_account_classes(
+        self, legal_entity_reference: str, accounting_book_reference: str
+    ) -> dict[str, str]:
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            legal_entity_id = self._require_legal_entity(
+                connection,
+                tenant_id,
+                legal_entity_reference,
+                next_action="the account-balance read",
+            )
+            book_id = self._require_book_for_close(
+                connection,
+                tenant_id,
+                legal_entity_id,
+                accounting_book_reference,
+                next_action="the account-balance read",
+            )[0]
+            rows = connection.execute(
+                """
+                SELECT chart_account.chart_account_code,
+                       chart_account.account_class_code
+                FROM accounting_core.chart_account
+                WHERE chart_account.tenant_account_id = %s
+                  AND chart_account.accounting_book_id = %s
+                  AND chart_account.valid_to IS NULL
+                """,
+                (tenant_id, book_id),
+            ).fetchall()
+        return {
+            str(account_code): str(account_class_code)
+            for account_code, account_class_code in rows
+        }
+
     def load_account_ledger(
         self,
         legal_entity_reference: str,

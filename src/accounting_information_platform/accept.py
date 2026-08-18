@@ -293,6 +293,33 @@ def lookup_fiscal_periods(
     )
 
 
+def lookup_account_balances(
+    database_url: str,
+    tenant_reference: str,
+    legal_entity_reference: str,
+    book_reference: str,
+    fiscal_period_reference: str,
+    chart_account_code: str = "",
+    page_limit: int | None = None,
+    cursor: str = "",
+) -> dict[str, object]:
+    """Return as-of chart-account balances for one tenant book and fiscal period."""
+    if not legal_entity_reference or not book_reference or not fiscal_period_reference:
+        raise AccountingValidationError(
+            "legal_entity_reference, book_reference, and fiscal_period_reference are required. "
+            "Supply those account-balance fields, then retry the account-balance read."
+        )
+    ledger = PostgresPostingLedger(database_url, tenant_reference)
+    return ledger.load_account_balances(
+        legal_entity_reference,
+        book_reference,
+        _period_code_from_reference(fiscal_period_reference),
+        chart_account_code,
+        page_limit=_resolve_account_balance_page_limit(page_limit),
+        cursor=cursor,
+    )
+
+
 def lookup_account_ledger(
     database_url: str,
     tenant_reference: str,
@@ -763,6 +790,13 @@ def _resolve_fiscal_period_list_page_limit(page_limit: int | None) -> int:
     return _resolve_bounded_page_limit(
         page_limit,
         "Supply a fiscal-period-list page_limit, then retry the period list.",
+    )
+
+
+def _resolve_account_balance_page_limit(page_limit: int | None) -> int:
+    return _resolve_bounded_page_limit(
+        page_limit,
+        "Supply an account-balance page_limit, then retry the account-balance read.",
     )
 
 

@@ -1,4 +1,4 @@
-"""Thin stdlib HTTP boundary for Billing proposals, AIS adjusting journals, pulls, receipts, close, open, TB, statements, catalog, journals, reversals, outbox, and audit history."""
+"""Thin stdlib HTTP boundary for Billing proposals, AIS adjusting journals, pulls, receipts, close, open, TB, statements, catalog, ledgers, balances, journals, reversals, outbox, and audit history."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from .accept import (
     accept_journal_reversal,
     accept_period_close,
     accept_period_open,
+    lookup_account_balances,
     lookup_account_ledger,
     lookup_account_role_mappings,
     lookup_accounting_books,
@@ -51,6 +52,7 @@ ACCOUNTING_BOOK_PATH = "/accounting-books"
 LEGAL_ENTITY_PATH = "/legal-entities"
 CHART_ACCOUNT_PATH = "/chart-accounts"
 ACCOUNT_LEDGER_PATH = "/account-ledgers"
+ACCOUNT_BALANCE_PATH = "/account-balances"
 JOURNAL_PATH = "/journals"
 FISCAL_PERIOD_PATH = "/fiscal-periods"
 OUTBOX_PATH = "/outbox-events"
@@ -129,6 +131,9 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         if parsed.path == ACCOUNT_LEDGER_PATH:
             self._get_account_ledger(parsed.query)
             return
+        if parsed.path == ACCOUNT_BALANCE_PATH:
+            self._get_account_balances(parsed.query)
+            return
         if parsed.path == JOURNAL_PATH:
             self._get_posted_journal(parsed.query)
             return
@@ -155,7 +160,8 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             404,
             "unknown path. GET /posting-receipts?idempotency_key=, GET /trial-balances, "
             "GET /financial-statements, GET /account-role-mappings, GET /accounting-books, "
-            "GET /legal-entities, GET /chart-accounts, GET /account-ledgers, GET /journals, "
+            "GET /legal-entities, GET /chart-accounts, GET /account-ledgers, "
+            "GET /account-balances, GET /journals, "
             "GET /journal-reversals, GET /period-closes, GET /fiscal-periods, "
             "GET /outbox-events?event_type_code=, or GET /audit-events, then retry.",
         )
@@ -207,6 +213,13 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
                 405,
                 "POST is not supported on the account ledger endpoint. "
                 "GET the account ledger, then retry.",
+            )
+            return
+        if parsed_path == ACCOUNT_BALANCE_PATH:
+            self._write_error(
+                405,
+                "POST is not supported on the account balance endpoint. "
+                "GET the account balances, then retry.",
             )
             return
         if self.path == JOURNAL_PROPOSAL_PATH:
@@ -440,6 +453,53 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             )
         except AccountingValidationError as error:
             self._write_error(404, str(error))
+            return
+        self._write_json(200, document)
+
+    def _get_account_balances(self, query: str) -> None:
+        tenant_header = self._bound_tenant_header("account-balance read")
+        if tenant_header is None:
+            return
+        fields = parse_qs(query)
+        legal_entity_reference = _first_query(fields, "legal_entity_reference")
+        book_reference = _first_query(fields, "book_reference")
+        fiscal_period_reference = _first_query(fields, "fiscal_period_reference")
+        if not legal_entity_reference or not book_reference or not fiscal_period_reference:
+            self._write_error(
+                400,
+                "legal_entity_reference, book_reference, and fiscal_period_reference are required. "
+                "Supply those account-balance fields, then retry the account-balance read.",
+            )
+            return
+        raw_limit = _first_query(fields, "page_limit")
+        page_limit: int | None = None
+        if raw_limit:
+            try:
+                page_limit = int(raw_limit)
+            except ValueError:
+                self._write_error(
+                    400,
+                    "page_limit must be an integer. "
+                    "Supply an account-balance page_limit, then retry the account-balance read.",
+                )
+                return
+        try:
+            document = lookup_account_balances(
+                self.server.database_url,
+                tenant_header,
+                legal_entity_reference,
+                book_reference,
+                fiscal_period_reference,
+                chart_account_code=_first_query(fields, "chart_account_code"),
+                page_limit=page_limit,
+                cursor=_first_query(fields, "cursor"),
+            )
+        except AccountingValidationError as error:
+            message = str(error)
+            if "page_limit" in message:
+                self._write_error(400, message)
+                return
+            self._write_error(404, message)
             return
         self._write_json(200, document)
 
