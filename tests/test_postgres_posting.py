@@ -7425,6 +7425,23 @@ class PostgresPostingTests(unittest.TestCase):
             pull_validated_journal_proposals(
                 "https://127.0.0.1", self.policy.tenant_reference
             )
+        https_origin = urllib.parse.urlparse(self._start_fake_billing([]))
+        tls_context = mock.Mock()
+        tls_context.wrap_socket.side_effect = lambda sock, server_hostname=None: sock
+        with mock.patch(
+            "accounting_information_platform.billing_pull.ssl.create_default_context",
+            return_value=tls_context,
+        ):
+            https_page = pull_validated_journal_proposals(
+                f"https://{https_origin.hostname}:{https_origin.port}",
+                self.policy.tenant_reference,
+            )
+        tls_context.wrap_socket.assert_called_once()
+        self.assertEqual(
+            tls_context.wrap_socket.call_args.kwargs["server_hostname"],
+            https_origin.hostname,
+        )
+        self.assertEqual(https_page.journal_proposals, ())
         with self.assertRaisesRegex(AccountingValidationError, "http or https origin"):
             pull_validated_journal_proposals(
                 "file:///tmp/billing", self.policy.tenant_reference

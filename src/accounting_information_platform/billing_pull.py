@@ -208,42 +208,41 @@ def _billing_get(
             "BILLING_BASE_URL must be an http or https origin. "
             "Set BILLING_BASE_URL to the Billing origin, then retry the pull."
         )
-    connection: http.client.HTTPConnection | None = None
     request_path = f"{parsed.path}?{urlencode(query)}"
     try:
         connection = _open_billing_connection(parsed)
-        connection.request(
-            "GET",
-            request_path,
-            headers={TENANT_HEADER: tenant_reference, "Accept": "application/json"},
-        )
-        response = connection.getresponse()
-        raw = response.read()
-        status = response.status
+        try:
+            connection.request(
+                "GET",
+                request_path,
+                headers={TENANT_HEADER: tenant_reference, "Accept": "application/json"},
+            )
+            response = connection.getresponse()
+            raw = response.read()
+            status = response.status
+        finally:
+            connection.close()
     except OSError as error:
         raise AccountingValidationError(
             "Billing journal-proposal pull could not be reached. "
             "Retry the Billing pull after Billing recovers."
         ) from error
-    finally:
-        if connection is not None:
-            connection.close()
     if status >= 400:
         raise _billing_http_error(status)
     return _parse_billing_object(raw)
 
 
 def _open_billing_connection(parsed: ParseResult) -> http.client.HTTPConnection:
+    port = parsed.port
+    if parsed.scheme == "https" and port is None:
+        port = 443
+    connection = http.client.HTTPConnection(parsed.hostname, port, timeout=5)
     if parsed.scheme == "https":
-        connection = http.client.HTTPConnection(
-            parsed.hostname, parsed.port or 443, timeout=5
-        )
         connection.connect()
         connection.sock = ssl.create_default_context().wrap_socket(
             connection.sock, server_hostname=parsed.hostname
         )
-        return connection
-    return http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=5)
+    return connection
 
 
 def _billing_http_error(status: int) -> AccountingValidationError:
