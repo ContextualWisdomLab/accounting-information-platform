@@ -47,7 +47,9 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-quality.txt
       - name: Apply exact review and database repairs
-        run: python scripts/repair_pr2_ledger_invariants.py
+        run: |
+          python scripts/repair_pr2_ledger_invariants.py
+          python scripts/repair_pr2_command_idempotency.py
       - name: Install hash-locked quality dependencies
         run: >-
           python -m pip install
@@ -74,10 +76,15 @@ jobs:
           rm .github/workflows/repair-pr2-followup.yml
           rm .github/workflows/repair-pr2-ledger-invariants.yml
           rm scripts/repair_pr2_ledger_invariants.py
+          rm scripts/repair_pr2_command_idempotency.py
           python - <<'PY'
           from pathlib import Path
 
-          for path_name in ("tests/test_http_api.py", "tests/test_postgres_posting.py"):
+          for path_name in (
+              "tests/test_accounting_core.py",
+              "tests/test_http_api.py",
+              "tests/test_postgres_posting.py",
+          ):
               path = Path(path_name)
               path.write_text(path.read_text(encoding="utf-8").rstrip() + "\n", encoding="utf-8")
           PY
@@ -85,5 +92,5 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git diff --cached --check
-          git commit -m "fix: enforce database-owned journal invariants"
+          git commit -m "fix: enforce exact accounting command invariants"
           git push origin HEAD:agent/accounting-pr2-ledger-invariants
