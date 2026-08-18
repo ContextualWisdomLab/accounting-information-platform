@@ -1510,6 +1510,214 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before + 2)
         server.shutdown()
 
+    def test_collection_write_off_fifo_clears_and_exposes_unapplied_credit(self) -> None:
+        """Write-off credits consume the oldest AR debit; excess stays unsigned."""
+        self._seed_additional_period("2026-06", date(2026, 6, 1), date(2026, 6, 30))
+        june_invoice = self._billing_validated_payload(
+            proposal_id=str(uuid.uuid4()),
+            idempotency_key=(
+                f"{self.policy.tenant_reference}:invoice_draft:june-write-off:"
+                f"sha256:{'6' * 64}:v1"
+            ),
+            source_payload_hash="sha256:" + "6" * 64,
+            transaction_date="2026-06-01",
+            accounting_date="2026-06-01",
+            proposed_at="2026-06-01T00:00:00Z",
+            source_event_references=(
+                f"{self.policy.tenant_reference}:invoice_draft:june-write-off",
+            ),
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "5000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "usage_revenue",
+                    "debit_amount": "0",
+                    "credit_amount": "5000",
+                },
+            ],
+        )
+        august_invoice = self._billing_validated_payload(
+            proposal_id=str(uuid.uuid4()),
+            idempotency_key=(
+                f"{self.policy.tenant_reference}:invoice_draft:august-write-off:"
+                f"sha256:{'8' * 64}:v1"
+            ),
+            source_payload_hash="sha256:" + "8" * 64,
+            transaction_date="2026-08-15",
+            accounting_date="2026-08-15",
+            proposed_at="2026-08-15T00:00:00Z",
+            source_event_references=(
+                f"{self.policy.tenant_reference}:invoice_draft:august-write-off",
+            ),
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "12000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "usage_revenue",
+                    "debit_amount": "0",
+                    "credit_amount": "12000",
+                },
+            ],
+        )
+        oldest_write_off = self._billing_write_off_payload(
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "write_off_expense",
+                    "debit_amount": "5000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "0",
+                    "credit_amount": "5000",
+                },
+            ],
+        )
+        clearing_write_off = self._billing_write_off_payload(
+            proposal_id="019d7b92-5ee4-7a7f-b61c-962c0f4bf619",
+            idempotency_key=(
+                f"{self.policy.tenant_reference}:collection_write_off:"
+                f"019d7b92-5ee4-7a7f-b61c-962c0f4bf619:sha256:{'7' * 64}:v1"
+            ),
+            source_payload_hash="sha256:" + "7" * 64,
+            source_event_references=(
+                f"{self.policy.tenant_reference}:collection_write_off:"
+                "019d7b92-5ee4-7a7f-b61c-962c0f4bf619",
+            ),
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "write_off_expense",
+                    "debit_amount": "12000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "0",
+                    "credit_amount": "12000",
+                },
+            ],
+        )
+        excess_write_off = self._billing_write_off_payload(
+            proposal_id="019d7b92-5ee4-7a7f-b61c-962c0f4bf61a",
+            idempotency_key=(
+                f"{self.policy.tenant_reference}:collection_write_off:"
+                f"019d7b92-5ee4-7a7f-b61c-962c0f4bf61a:sha256:{'9' * 64}:v1"
+            ),
+            source_payload_hash="sha256:" + "9" * 64,
+            source_event_references=(
+                f"{self.policy.tenant_reference}:collection_write_off:"
+                "019d7b92-5ee4-7a7f-b61c-962c0f4bf61a",
+            ),
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "write_off_expense",
+                    "debit_amount": "3000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "0",
+                    "credit_amount": "3000",
+                },
+            ],
+        )
+        server = self._start_http_server()
+        june_status, _june = self._http_json("POST", "/journal-proposals", june_invoice)
+        august_status, _august = self._http_json("POST", "/journal-proposals", august_invoice)
+        before_status, before = self._http_receivable_aging()
+        oldest_status, _oldest = self._http_json("POST", "/journal-proposals", oldest_write_off)
+        fifo_status, fifo = self._http_receivable_aging()
+        fifo_balances_status, fifo_balances = self._http_account_balances(
+            chart_account_code="110100"
+        )
+        persisted = self.ledger.load_receivable_aging(
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "2026-08",
+        )
+        looked_up = lookup_receivable_aging(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-08",
+        )
+
+        self.assertEqual(june_status, 200)
+        self.assertEqual(august_status, 200)
+        self.assertEqual(before_status, 200)
+        self.assertEqual(before["days_over_90_amount"], "5000")
+        self.assertEqual(before["current_amount"], "12000")
+        self.assertEqual(before["total_outstanding_amount"], "17000")
+        self.assertEqual(oldest_status, 200)
+        self.assertEqual(fifo_status, 200)
+        self.assertEqual(fifo_balances_status, 200)
+        self.assertEqual(fifo["days_over_90_amount"], "0")
+        self.assertEqual(fifo["days_31_60_amount"], "0")
+        self.assertEqual(fifo["days_61_90_amount"], "0")
+        self.assertEqual(fifo["current_amount"], "12000")
+        self.assertEqual(fifo["total_outstanding_amount"], "12000")
+        self.assertEqual(
+            Decimal(str(fifo["total_outstanding_amount"])),
+            Decimal(str(before["total_outstanding_amount"])) - Decimal("5000"),
+        )
+        self.assertEqual(
+            Decimal(str(fifo["total_outstanding_amount"])),
+            self._account_balance_net(fifo_balances, "110100"),
+        )
+        self.assertNotIn("unapplied_credit_amount", fifo)
+        self.assertEqual(fifo, persisted)
+        self.assertEqual(fifo, looked_up)
+
+        clear_status, _clear = self._http_json("POST", "/journal-proposals", clearing_write_off)
+        cleared_status, cleared = self._http_receivable_aging()
+        excess_status, _excess = self._http_json("POST", "/journal-proposals", excess_write_off)
+        excess_aging_status, excess_aging = self._http_receivable_aging()
+        excess_balances_status, excess_balances = self._http_account_balances(
+            chart_account_code="110100"
+        )
+        excess_net = self._account_balance_net(excess_balances, "110100")
+
+        self.assertEqual(clear_status, 200)
+        self.assertEqual(cleared_status, 200)
+        self.assertEqual(cleared["current_amount"], "0")
+        self.assertEqual(cleared["days_31_60_amount"], "0")
+        self.assertEqual(cleared["days_61_90_amount"], "0")
+        self.assertEqual(cleared["days_over_90_amount"], "0")
+        self.assertEqual(cleared["total_outstanding_amount"], "0")
+        self.assertNotIn("unapplied_credit_amount", cleared)
+        self.assertEqual(excess_status, 200)
+        self.assertEqual(excess_aging_status, 200)
+        self.assertEqual(excess_balances_status, 200)
+        self.assertEqual(excess_aging["current_amount"], "0")
+        self.assertEqual(excess_aging["days_31_60_amount"], "0")
+        self.assertEqual(excess_aging["days_61_90_amount"], "0")
+        self.assertEqual(excess_aging["days_over_90_amount"], "0")
+        self.assertEqual(excess_aging["total_outstanding_amount"], "0")
+        self.assertEqual(excess_aging["unapplied_credit_amount"], "3000")
+        self.assertEqual(excess_net, Decimal("-3000"))
+        self.assertEqual(
+            Decimal(str(excess_aging["total_outstanding_amount"])),
+            excess_net + Decimal(str(excess_aging["unapplied_credit_amount"])),
+        )
+        server.shutdown()
+
     def test_http_reads_account_role_mappings_from_catalog(self) -> None:
         """GET returns seeded role-to-chart mappings and rejects cross-tenant or unknown books."""
         server = self._start_http_server()

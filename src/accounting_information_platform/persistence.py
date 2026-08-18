@@ -1774,7 +1774,7 @@ class PostgresPostingLedger:
             + bucket_amounts["days_61_90"]
             + bucket_amounts["days_over_90"]
         )
-        return {
+        document: dict[str, object] = {
             "tenant_reference": self._tenant_reference,
             "legal_entity_reference": legal_entity_reference,
             "accounting_book_reference": book_reference,
@@ -1789,6 +1789,17 @@ class PostgresPostingLedger:
             "days_over_90_amount": _unsigned_aging_amount_text(bucket_amounts["days_over_90"]),
             "total_outstanding_amount": _unsigned_aging_amount_text(total_outstanding_amount),
         }
+        if increase_is_debit:
+            unapplied_credit_amount = Decimal("0")
+            for _date, _reference, _line_number, debit_amount, credit_amount in line_rows:
+                unapplied_credit_amount += Decimal(str(credit_amount)) - Decimal(
+                    str(debit_amount)
+                )
+            if unapplied_credit_amount > 0:
+                document["unapplied_credit_amount"] = _unsigned_aging_amount_text(
+                    unapplied_credit_amount
+                )
+        return document
 
     def _load_chart_account_classes(
         self, legal_entity_reference: str, accounting_book_reference: str

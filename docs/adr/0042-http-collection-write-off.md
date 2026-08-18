@@ -12,6 +12,8 @@ The catalog seed adds chart account `510100` (`account_class_code=expense`, `nor
 
 The write-off journal is ordinary Billing activity (`journal_source_code=billing`). It is not `period_closing`. After hard-close, the existing closer zeros `510100` into `retained_earnings` 310100 like other P&L. `GET /financial-statements?statement_type_code=income_statement` includes the write-off expense and still excludes the AIS closing journal. Soft-close still rejects a new ordinary post; replay of an already-posted write-off key returns the original receipt.
 
+After the write-off posts, `GET /receivable-agings` (ADR 0039) drops `total_outstanding_amount` by the write-off amount and still equals `GET /account-balances` 110100 (`debit_amount` − `credit_amount`). The write-off credit consumes the oldest remaining AR debit first. Query keys and the ordinary aging JSON stay unchanged. Soft-close does not open a special write-off gate.
+
 IFRS 9 requires an entity to write off a financial asset, or a portion of it, when the entity has no reasonable expectations of recovering the contractual cash flows, and to recognize that write-off in profit or loss (IFRS Foundation, 2023). This catalog map is that statutory expense. It is not an expected-credit-loss allowance and does not invent a party dimension.
 
 ## Consequences
