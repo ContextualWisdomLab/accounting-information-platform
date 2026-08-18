@@ -1614,10 +1614,49 @@ class PostgresPostingLedger:
         chart_account_code: str = "",
     ) -> dict[str, object]:
         """Return entity-level FIFO receivable aging as of the fiscal period end date."""
+        return self._load_account_aging(
+            legal_entity_reference,
+            book_reference,
+            period_code,
+            chart_account_code,
+            catalog_role_code="accounts_receivable",
+            increase_is_debit=True,
+            read_name="receivable-aging",
+        )
+
+    def load_payable_aging(
+        self,
+        legal_entity_reference: str,
+        book_reference: str,
+        period_code: str,
+        chart_account_code: str = "",
+    ) -> dict[str, object]:
+        """Return entity-level FIFO payable aging as of the fiscal period end date."""
+        return self._load_account_aging(
+            legal_entity_reference,
+            book_reference,
+            period_code,
+            chart_account_code,
+            catalog_role_code="tax_payable",
+            increase_is_debit=False,
+            read_name="payable-aging",
+        )
+
+    def _load_account_aging(
+        self,
+        legal_entity_reference: str,
+        book_reference: str,
+        period_code: str,
+        chart_account_code: str,
+        *,
+        catalog_role_code: str,
+        increase_is_debit: bool,
+        read_name: str,
+    ) -> dict[str, object]:
         if not legal_entity_reference or not book_reference or not period_code:
             raise AccountingValidationError(
                 "legal_entity_reference, book_reference, and fiscal_period_reference are required. "
-                "Supply those receivable-aging fields, then retry the receivable-aging read."
+                f"Supply those {read_name} fields, then retry the {read_name} read."
             )
         with self._session() as connection:
             tenant_id = self._require_tenant(connection)
@@ -1625,20 +1664,20 @@ class PostgresPostingLedger:
                 connection,
                 tenant_id,
                 legal_entity_reference,
-                next_action="the receivable-aging read",
+                next_action=f"the {read_name} read",
             )
             book_id = self._require_book_for_close(
                 connection,
                 tenant_id,
                 legal_entity_id,
                 book_reference,
-                next_action="the receivable-aging read",
+                next_action=f"the {read_name} read",
             )[0]
             _period_id, _status, period_end_date = self._require_fiscal_period(
                 connection,
                 tenant_id,
                 period_code,
-                next_action="the receivable-aging read",
+                next_action=f"the {read_name} read",
             )
             account_rows = connection.execute(
                 """
@@ -1660,24 +1699,24 @@ class PostgresPostingLedger:
                 str(account_code): str(account_class_code)
                 for account_code, _role_code, account_class_code in account_rows
             }
-            catalog_receivable_code = next(
+            catalog_account_code = next(
                 (
                     str(account_code)
                     for account_code, role_code, _class in account_rows
-                    if role_code == "accounts_receivable"
+                    if role_code == catalog_role_code
                 ),
                 "",
             )
-            resolved_account_code = chart_account_code.strip() or catalog_receivable_code
+            resolved_account_code = chart_account_code.strip() or catalog_account_code
             if resolved_account_code not in account_classes:
                 raise AccountingValidationError(
                     f"Chart account {resolved_account_code} is not recorded for this book. "
-                    "Create the chart_account row, then retry the receivable-aging read."
+                    f"Create the chart_account row, then retry the {read_name} read."
                 )
-            if resolved_account_code != catalog_receivable_code:
+            if resolved_account_code != catalog_account_code:
                 raise AccountingValidationError(
-                    "chart_account_code must be the catalog accounts_receivable account. "
-                    "Supply that receivable-aging account, then retry the receivable-aging read."
+                    f"chart_account_code must be the catalog {catalog_role_code} account. "
+                    f"Supply that {read_name} account, then retry the {read_name} read."
                 )
             line_rows = connection.execute(
                 """
@@ -1700,7 +1739,11 @@ class PostgresPostingLedger:
                   AND general_journal.accounting_date <= %s
                   AND general_journal.journal_reference NOT LIKE %s
                 ORDER BY general_journal.accounting_date,
-                         CASE WHEN journal_entry_line.debit_amount > 0 THEN 0 ELSE 1 END,
+                         CASE
+                           WHEN %s AND journal_entry_line.debit_amount > 0 THEN 0
+                           WHEN NOT %s AND journal_entry_line.credit_amount > 0 THEN 0
+                           ELSE 1
+                         END,
                          general_journal.journal_reference,
                          journal_entry_line.line_number
                 """,
@@ -1710,28 +1753,19 @@ class PostgresPostingLedger:
                     book_id,
                     resolved_account_code,
                     period_end_date,
-                    "urn:cwl:accounting:general_journal:period_closing:%",
+                    _CLOSING_JOURNAL_PATTERN,
+                    increase_is_debit,
+                    increase_is_debit,
                 ),
             ).fetchall()
-        open_debits: list[list[object]] = []
-        for accounting_date, _journal_reference, _line_number, debit_amount, credit_amount in line_rows:
-            debit_total = Decimal(debit_amount)
-            if debit_total > 0:
-                open_debits.append([accounting_date, debit_total])
-                continue
-            remaining_credit = Decimal(credit_amount)
-            for open_item in open_debits:
-                applied_amount = min(open_item[1], remaining_credit)
-                open_item[1] = open_item[1] - applied_amount
-                remaining_credit = remaining_credit - applied_amount
-            open_debits = [open_item for open_item in open_debits if open_item[1] > 0]
+        open_items = _fifo_aging_open_items(line_rows, increase_is_debit=increase_is_debit)
         bucket_amounts = {
             "current": Decimal("0"),
             "days_31_60": Decimal("0"),
             "days_61_90": Decimal("0"),
             "days_over_90": Decimal("0"),
         }
-        for open_item in open_debits:
+        for open_item in open_items:
             outstanding_days = (period_end_date - open_item[0]).days
             bucket_amounts[_receivable_aging_bucket(outstanding_days)] += open_item[1]
         total_outstanding_amount = (
@@ -4978,6 +5012,31 @@ def _unsigned_aging_amount_text(value: Decimal) -> str:
     if "." not in amount_text:
         return amount_text
     return amount_text.rstrip("0").rstrip(".")
+
+
+def _fifo_aging_open_items(
+    line_rows: list[tuple[object, ...]],
+    *,
+    increase_is_debit: bool,
+) -> list[list[object]]:
+    open_items: list[list[object]] = []
+    for accounting_date, _journal_reference, _line_number, debit_amount, credit_amount in line_rows:
+        increase_amount = Decimal(str(debit_amount)) if increase_is_debit else Decimal(
+            str(credit_amount)
+        )
+        decrease_amount = Decimal(str(credit_amount)) if increase_is_debit else Decimal(
+            str(debit_amount)
+        )
+        if increase_amount > 0:
+            open_items.append([accounting_date, increase_amount])
+            continue
+        remaining_decrease = decrease_amount
+        for open_item in open_items:
+            applied_amount = min(open_item[1], remaining_decrease)
+            open_item[1] = open_item[1] - applied_amount
+            remaining_decrease = remaining_decrease - applied_amount
+        open_items = [open_item for open_item in open_items if open_item[1] > 0]
+    return open_items
 
 
 def _receivable_aging_bucket(outstanding_days: int) -> str:

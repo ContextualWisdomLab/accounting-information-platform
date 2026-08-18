@@ -378,6 +378,29 @@ def lookup_receivable_aging(
     )
 
 
+def lookup_payable_aging(
+    database_url: str,
+    tenant_reference: str,
+    legal_entity_reference: str,
+    book_reference: str,
+    fiscal_period_reference: str,
+    chart_account_code: str = "",
+) -> dict[str, object]:
+    """Return entity-level FIFO payable aging as of one tenant book and fiscal period end."""
+    if not legal_entity_reference or not book_reference or not fiscal_period_reference:
+        raise AccountingValidationError(
+            "legal_entity_reference, book_reference, and fiscal_period_reference are required. "
+            "Supply those payable-aging fields, then retry the payable-aging read."
+        )
+    ledger = PostgresPostingLedger(database_url, tenant_reference)
+    return ledger.load_payable_aging(
+        legal_entity_reference,
+        book_reference,
+        _period_code_from_reference(fiscal_period_reference),
+        chart_account_code,
+    )
+
+
 def lookup_account_ledger(
     database_url: str,
     tenant_reference: str,

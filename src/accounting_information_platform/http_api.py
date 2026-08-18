@@ -1,4 +1,4 @@
-"""Thin stdlib HTTP boundary for Billing proposals, AIS adjusting journals, pulls, receipts, close, open, TB, statements, catalog, ledgers, balances, rollforwards, receivable aging, period-close packages, journals, reversals, outbox, and audit history."""
+"""Thin stdlib HTTP boundary for Billing proposals, AIS adjusting journals, pulls, receipts, close, open, TB, statements, catalog, ledgers, balances, rollforwards, receivable aging, payable aging, period-close packages, journals, reversals, outbox, and audit history."""
 
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ from .accept import (
     lookup_fiscal_period,
     lookup_fiscal_periods,
     lookup_journal_reversals,
+    lookup_payable_aging,
     lookup_period_close_package,
     lookup_period_closes,
     lookup_outbox_events,
@@ -60,6 +61,7 @@ ACCOUNT_LEDGER_PATH = "/account-ledgers"
 ACCOUNT_BALANCE_PATH = "/account-balances"
 ACCOUNT_ROLLFORWARD_PATH = "/account-rollforwards"
 RECEIVABLE_AGING_PATH = "/receivable-agings"
+PAYABLE_AGING_PATH = "/payable-agings"
 PERIOD_CLOSE_PACKAGE_PATH = "/period-close-packages"
 JOURNAL_PATH = "/journals"
 FISCAL_PERIOD_PATH = "/fiscal-periods"
@@ -88,12 +90,12 @@ class JournalProposalServer(ThreadingHTTPServer):
 
 
 class JournalProposalHandler(BaseHTTPRequestHandler):
-    """Serve proposal POST, reverse, reversal list, pull, receipt GET, close, TB, catalog, journal, receivable aging, period-close package, outbox, audit history, and healthz."""
+    """Serve proposal POST, reverse, reversal list, pull, receipt GET, close, TB, catalog, journal, receivable aging, payable aging, period-close package, outbox, audit history, and healthz."""
 
     server: JournalProposalServer
 
     def do_GET(self) -> None:
-        """Route healthz, receipt, trial-balance, catalog, journal, reversal list, close list, outbox, audit history, and GET 405s."""
+        """Route healthz, receipt, trial-balance, catalog, journal, reversal list, close list, outbox, audit history, aging, and GET 405s."""
         parsed = urlparse(self.path)
         if parsed.path == HEALTHZ_PATH:
             self._write_json(200, {"status": "ok"})
@@ -151,6 +153,9 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         if parsed.path == RECEIVABLE_AGING_PATH:
             self._get_receivable_aging(parsed.query)
             return
+        if parsed.path == PAYABLE_AGING_PATH:
+            self._get_payable_aging(parsed.query)
+            return
         if parsed.path == PERIOD_CLOSE_PACKAGE_PATH:
             self._get_period_close_package(parsed.query)
             return
@@ -183,7 +188,7 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             "GET /account-role-mappings, GET /accounting-books, "
             "GET /legal-entities, GET /chart-accounts, GET /account-ledgers, "
             "GET /account-balances, GET /account-rollforwards, GET /receivable-agings, "
-            "GET /period-close-packages, GET /journals, "
+            "GET /payable-agings, GET /period-close-packages, GET /journals, "
             "GET /journal-reversals, GET /period-closes, GET /fiscal-periods, "
             "GET /outbox-events?event_type_code=, or GET /audit-events, then retry.",
         )
@@ -263,6 +268,13 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
                 405,
                 "POST is not supported on the receivable aging endpoint. "
                 "GET the receivable aging, then retry.",
+            )
+            return
+        if parsed_path == PAYABLE_AGING_PATH:
+            self._write_error(
+                405,
+                "POST is not supported on the payable aging endpoint. "
+                "GET the payable aging, then retry.",
             )
             return
         if parsed_path == PERIOD_CLOSE_PACKAGE_PATH:
@@ -669,6 +681,39 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         except AccountingValidationError as error:
             message = str(error)
             if "must be the catalog accounts_receivable" in message:
+                self._write_error(422, message)
+                return
+            self._write_error(404, message)
+            return
+        self._write_json(200, document)
+
+    def _get_payable_aging(self, query: str) -> None:
+        tenant_header = self._bound_tenant_header("payable-aging read")
+        if tenant_header is None:
+            return
+        fields = parse_qs(query)
+        legal_entity_reference = _first_query(fields, "legal_entity_reference")
+        book_reference = _first_query(fields, "book_reference")
+        fiscal_period_reference = _first_query(fields, "fiscal_period_reference")
+        if not legal_entity_reference or not book_reference or not fiscal_period_reference:
+            self._write_error(
+                400,
+                "legal_entity_reference, book_reference, and fiscal_period_reference are required. "
+                "Supply those payable-aging fields, then retry the payable-aging read.",
+            )
+            return
+        try:
+            document = lookup_payable_aging(
+                self.server.database_url,
+                tenant_header,
+                legal_entity_reference,
+                book_reference,
+                fiscal_period_reference,
+                chart_account_code=_first_query(fields, "chart_account_code"),
+            )
+        except AccountingValidationError as error:
+            message = str(error)
+            if "must be the catalog tax_payable" in message:
                 self._write_error(422, message)
                 return
             self._write_error(404, message)
@@ -1286,7 +1331,7 @@ def create_journal_proposal_server(
     host: str = "127.0.0.1",
     port: int = 0,
 ) -> JournalProposalServer:
-    """Create a stdlib HTTP server that posts Billing proposals, AIS adjusting journals, pulls, closes, opens periods, and reads TB, statements, journals, reversals, receivable aging, outbox, and audit history."""
+    """Create a stdlib HTTP server that posts Billing proposals, AIS adjusting journals, pulls, closes, opens periods, and reads TB, statements, journals, reversals, receivable aging, payable aging, outbox, and audit history."""
     if not database_url:
         raise AccountingValidationError(
             "ACCOUNTING_DATABASE_URL is empty. Set a PostgreSQL 18 URL and retry posting."
