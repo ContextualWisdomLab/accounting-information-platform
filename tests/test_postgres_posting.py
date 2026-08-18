@@ -54,6 +54,7 @@ from accounting_information_platform import (
     lookup_posted_journal,
     publish_outbox_event,
     lookup_published_receipt,
+    lookup_period_close_package,
     lookup_receivable_aging,
     lookup_trial_balance,
     pull_journal_proposal,
@@ -5478,6 +5479,286 @@ class PostgresPostingTests(unittest.TestCase):
         )
         server.shutdown()
 
+    def test_http_reads_period_close_package(self) -> None:
+        """GET /period-close-packages composes the existing close-binder reads."""
+        self._seed_additional_period("2026-07", date(2026, 7, 1), date(2026, 7, 31))
+        server = self._start_http_server()
+        journals_before = self._count_table("accounting_core.general_journal")
+
+        july = self._billing_validated_payload(
+            proposal_id=str(uuid.uuid4()),
+            idempotency_key=(
+                f"{self.policy.tenant_reference}:invoice_draft:july-binder:"
+                f"sha256:{'7' * 64}:v1"
+            ),
+            source_payload_hash="sha256:" + "7" * 64,
+            transaction_date="2026-07-15",
+            accounting_date="2026-07-15",
+            proposed_at="2026-07-15T00:00:00Z",
+            source_event_references=(
+                f"{self.policy.tenant_reference}:invoice_draft:july-binder",
+            ),
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "10000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "usage_revenue",
+                    "debit_amount": "0",
+                    "credit_amount": "10000",
+                },
+            ],
+        )
+        july_status, _july = self._http_json("POST", "/journal-proposals", july)
+        july_close_status, _july_close = self._http_json(
+            "POST",
+            "/period-closes",
+            self._period_close_payload(
+                fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-07"
+            ),
+        )
+        invoice_status, _invoice = self._http_json(
+            "POST", "/journal-proposals", self._billing_validated_payload()
+        )
+        cash_status, _cash = self._http_json(
+            "POST", "/journal-proposals", self._billing_cash_payload()
+        )
+        open_status, opened = self._http_period_close_package()
+        open_library = lookup_period_close_package(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-08",
+        )
+        fiscal_status, fiscal_period = self._http_fiscal_period()
+        trial_status, trial_balance = self._http_trial_balance()
+        package_status, statement_package = self._http_financial_statement_package()
+        aging_status, receivable_aging = self._http_receivable_aging()
+        balance_status, account_balances = self._http_account_balances(
+            chart_account_code="110100"
+        )
+        self.assertEqual(july_status, 200)
+        self.assertEqual(july_close_status, 200)
+        self.assertEqual(invoice_status, 200)
+        self.assertEqual(cash_status, 200)
+        self.assertEqual(open_status, 200)
+        self.assertEqual(opened, open_library)
+        self.assertEqual(opened["tenant_reference"], self.policy.tenant_reference)
+        self.assertEqual(opened["legal_entity_reference"], self.policy.legal_entity_reference)
+        self.assertEqual(opened["accounting_book_reference"], self.policy.accounting_book_reference)
+        self.assertEqual(opened["book_reference"], self.policy.accounting_book_reference)
+        self.assertEqual(
+            opened["fiscal_period_reference"],
+            "urn:cwl:accounting:fiscal_period:2026-08",
+        )
+        self.assertNotIn("statement_scope_code", opened)
+        self.assertNotIn("comparison_fiscal_period_reference", opened)
+        self.assertEqual(fiscal_status, 200)
+        self.assertEqual(opened["fiscal_period"], fiscal_period)
+        self.assertEqual(opened["fiscal_period"]["period_status_code"], "open")
+        self.assertEqual(trial_status, 200)
+        self.assertEqual(opened["trial_balance"], trial_balance)
+        self.assertNotIn("balance_basis_code", opened["trial_balance"])
+        self.assertEqual(package_status, 200)
+        self.assertEqual(opened["financial_statement_package"], statement_package)
+        self.assertEqual(aging_status, 200)
+        self.assertEqual(opened["receivable_aging"], receivable_aging)
+        self.assertIsNone(opened["period_close"])
+        self.assertEqual(balance_status, 200)
+        aging_total = Decimal(str(opened["receivable_aging"]["total_outstanding_amount"]))
+        self.assertEqual(aging_total, Decimal(str(receivable_aging["total_outstanding_amount"])))
+        self.assertEqual(aging_total, self._trial_balance_account_net(trial_balance, "110100"))
+        self.assertEqual(aging_total, self._account_balance_net(account_balances, "110100"))
+
+        soft_status, _soft = self._http_json(
+            "POST",
+            "/period-closes",
+            self._period_close_payload(period_status_code="soft_closed"),
+        )
+        soft_package_status, soft_package = self._http_period_close_package()
+        soft_fiscal_status, soft_fiscal = self._http_fiscal_period()
+        self.assertEqual(soft_status, 200)
+        self.assertEqual(soft_package_status, 200)
+        self.assertEqual(soft_fiscal_status, 200)
+        self.assertEqual(soft_package["fiscal_period"], soft_fiscal)
+        self.assertEqual(soft_package["fiscal_period"]["period_status_code"], "soft_closed")
+        self.assertIsNone(soft_package["period_close"])
+        self.assertEqual(soft_package["trial_balance"], self._http_trial_balance()[1])
+        self.assertEqual(
+            soft_package["financial_statement_package"],
+            self._http_financial_statement_package()[1],
+        )
+        self.assertEqual(soft_package["receivable_aging"], self._http_receivable_aging()[1])
+
+        hard_status, _hard = self._http_json("POST", "/period-closes", self._period_close_payload())
+        hard_package_status, hard_package = self._http_period_close_package()
+        hard_library = lookup_period_close_package(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-08",
+        )
+        hard_fiscal_status, hard_fiscal = self._http_fiscal_period()
+        hard_trial_status, hard_trial = self._http_trial_balance()
+        hard_package_statements = self._http_financial_statement_package()[1]
+        hard_aging_status, hard_aging = self._http_receivable_aging()
+        hard_balance_status, hard_balances = self._http_account_balances(
+            chart_account_code="110100"
+        )
+        closes_status, closes = self._http_period_closes(
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-08"
+        )
+        self.assertEqual(hard_status, 200)
+        self.assertEqual(hard_package_status, 200)
+        self.assertEqual(hard_package, hard_library)
+        self.assertEqual(hard_fiscal_status, 200)
+        self.assertEqual(hard_package["fiscal_period"], hard_fiscal)
+        self.assertEqual(hard_package["fiscal_period"]["period_status_code"], "hard_closed")
+        self.assertEqual(hard_trial_status, 200)
+        self.assertEqual(hard_package["trial_balance"], hard_trial)
+        self.assertEqual(hard_package["trial_balance"]["balance_source_code"], "snapshot")
+        self.assertIn("snapshot_record_id", hard_package["trial_balance"])
+        self.assertEqual(hard_package["financial_statement_package"], hard_package_statements)
+        self.assertEqual(hard_aging_status, 200)
+        self.assertEqual(hard_package["receivable_aging"], hard_aging)
+        self.assertEqual(hard_balance_status, 200)
+        hard_aging_total = Decimal(
+            str(hard_package["receivable_aging"]["total_outstanding_amount"])
+        )
+        self.assertEqual(hard_aging_total, Decimal(str(hard_aging["total_outstanding_amount"])))
+        self.assertEqual(hard_aging_total, self._trial_balance_account_net(hard_trial, "110100"))
+        self.assertEqual(hard_aging_total, self._account_balance_net(hard_balances, "110100"))
+        self.assertEqual(closes_status, 200)
+        self.assertIsNotNone(hard_package["period_close"])
+        self.assertEqual(hard_package["period_close"], closes["period_closes"][-1])
+
+        explicit_period_status, explicit_period = self._http_period_close_package(
+            statement_scope_code="period"
+        )
+        ytd_status, ytd = self._http_period_close_package(statement_scope_code="year_to_date")
+        ytd_library = lookup_period_close_package(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-08",
+            statement_scope_code="year_to_date",
+        )
+        ytd_statements = self._http_financial_statement_package(
+            statement_scope_code="year_to_date"
+        )[1]
+        compare_status, compared = self._http_period_close_package(
+            comparison_fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-07",
+        )
+        compare_statements = self._http_financial_statement_package(
+            comparison_fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-07",
+        )[1]
+        self.assertEqual(explicit_period_status, 200)
+        self.assertNotIn("statement_scope_code", explicit_period)
+        self.assertEqual(
+            explicit_period["financial_statement_package"],
+            hard_package["financial_statement_package"],
+        )
+        self.assertEqual(ytd_status, 200)
+        self.assertEqual(ytd, ytd_library)
+        self.assertNotIn("statement_scope_code", ytd)
+        self.assertEqual(ytd["financial_statement_package"], ytd_statements)
+        self.assertEqual(ytd["financial_statement_package"]["statement_scope_code"], "year_to_date")
+        self.assertEqual(ytd["trial_balance"], hard_package["trial_balance"])
+        self.assertEqual(ytd["receivable_aging"], hard_package["receivable_aging"])
+        self.assertEqual(ytd["period_close"], hard_package["period_close"])
+        self.assertEqual(compare_status, 200)
+        self.assertNotIn("comparison_fiscal_period_reference", compared)
+        self.assertEqual(compared["financial_statement_package"], compare_statements)
+        self.assertIn(
+            "comparison_statement_lines",
+            compared["financial_statement_package"]["income_statement"],
+        )
+        self.assertEqual(compared["trial_balance"], hard_package["trial_balance"])
+        self.assertEqual(compared["receivable_aging"], hard_package["receivable_aging"])
+
+        missing_query = self._http_json("GET", "/period-close-packages", None)
+        missing_book = self._http_json(
+            "GET",
+            "/period-close-packages?"
+            + urllib.parse.urlencode(
+                {
+                    "legal_entity_reference": self.policy.legal_entity_reference,
+                    "fiscal_period_reference": "urn:cwl:accounting:fiscal_period:2026-08",
+                }
+            ),
+            None,
+        )
+        post_status, _post = self._http_json("POST", "/period-close-packages", {})
+        bad_scope = self._http_period_close_package(statement_scope_code="life_to_date")
+        unknown_period = self._http_period_close_package(
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:1999-01"
+        )
+        unknown_entity = self._http_period_close_package(
+            legal_entity_reference="urn:cwl:legal_entity:missing"
+        )
+        unknown_book = self._http_period_close_package(
+            book_reference="urn:cwl:accounting:book:missing"
+        )
+        missing_header = self._http_period_close_package(tenant_header=None)
+        cross_status, _cross = self._http_period_close_package(
+            tenant_header="urn:cwl:tenant_other"
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "legal_entity_reference"):
+            lookup_period_close_package(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                "",
+                self.policy.accounting_book_reference,
+                "urn:cwl:accounting:fiscal_period:2026-08",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "book_reference"):
+            lookup_period_close_package(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                "",
+                "urn:cwl:accounting:fiscal_period:2026-08",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "fiscal_period_reference"):
+            lookup_period_close_package(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "statement_scope_code"):
+            lookup_period_close_package(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "urn:cwl:accounting:fiscal_period:2026-08",
+                statement_scope_code="life_to_date",
+            )
+
+        self.assertEqual(missing_query[0], 400)
+        self.assertEqual(missing_book[0], 400)
+        self.assertEqual(post_status, 405)
+        self.assertEqual(bad_scope[0], 400)
+        self.assertEqual(unknown_period[0], 404)
+        self.assertEqual(unknown_entity[0], 404)
+        self.assertEqual(unknown_book[0], 404)
+        self.assertEqual(missing_header[0], 400)
+        self.assertEqual(cross_status, 403)
+        self.assertEqual(
+            self._count_table("accounting_core.general_journal"),
+            journals_before + 5,
+        )
+        server.shutdown()
+
     def test_http_reads_and_publishes_outbox_events(self) -> None:
         """GET lists unpublished outbox rows; POST publish marks one row idempotently."""
         invoice = self._billing_validated_payload()
@@ -9821,6 +10102,47 @@ class PostgresPostingTests(unittest.TestCase):
             tenant_header=tenant_header,
         )
 
+    def _http_period_close_package(
+        self,
+        *,
+        legal_entity_reference: str | None = None,
+        book_reference: str | None = None,
+        fiscal_period_reference: str | None = None,
+        comparison_fiscal_period_reference: str | None = None,
+        statement_scope_code: str | None = None,
+        tenant_header: str | None = "",
+    ) -> tuple[int, dict[str, object]]:
+        fields = {
+            "legal_entity_reference": (
+                self.policy.legal_entity_reference
+                if legal_entity_reference is None
+                else legal_entity_reference
+            ),
+            "book_reference": (
+                self.policy.accounting_book_reference
+                if book_reference is None
+                else book_reference
+            ),
+            "fiscal_period_reference": (
+                "urn:cwl:accounting:fiscal_period:2026-08"
+                if fiscal_period_reference is None
+                else fiscal_period_reference
+            ),
+        }
+        if comparison_fiscal_period_reference is not None:
+            fields["comparison_fiscal_period_reference"] = (
+                comparison_fiscal_period_reference
+            )
+        if statement_scope_code is not None:
+            fields["statement_scope_code"] = statement_scope_code
+        query = urllib.parse.urlencode(fields)
+        return self._http_json(
+            "GET",
+            f"/period-close-packages?{query}",
+            None,
+            tenant_header=tenant_header,
+        )
+
     def _assert_financial_statement_package_tie_outs(
         self, package: dict[str, object]
     ) -> None:
@@ -9910,6 +10232,25 @@ class PostgresPostingTests(unittest.TestCase):
             if line.get("chart_account_code") == chart_account_code:
                 return line
         self.fail(f"trial-balance line {chart_account_code} is missing")
+
+    def _trial_balance_account_net(
+        self, document: dict[str, object], chart_account_code: str
+    ) -> Decimal:
+        line = self._trial_balance_line(document, chart_account_code)
+        return Decimal(str(line["debit_amount"])) - Decimal(str(line["credit_amount"]))
+
+    def _account_balance_net(
+        self, document: dict[str, object], chart_account_code: str
+    ) -> Decimal:
+        balances = document["account_balances"]
+        assert isinstance(balances, list)
+        for item in balances:
+            assert isinstance(item, dict)
+            if item.get("chart_account_code") == chart_account_code:
+                return Decimal(str(item["debit_amount"])) - Decimal(
+                    str(item["credit_amount"])
+                )
+        self.fail(f"account-balance {chart_account_code} is missing")
 
     def _http_lookup(
         self,

@@ -1,4 +1,4 @@
-"""Thin stdlib HTTP boundary for Billing proposals, AIS adjusting journals, pulls, receipts, close, open, TB, statements, catalog, ledgers, balances, rollforwards, receivable aging, journals, reversals, outbox, and audit history."""
+"""Thin stdlib HTTP boundary for Billing proposals, AIS adjusting journals, pulls, receipts, close, open, TB, statements, catalog, ledgers, balances, rollforwards, receivable aging, period-close packages, journals, reversals, outbox, and audit history."""
 
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ from .accept import (
     lookup_fiscal_period,
     lookup_fiscal_periods,
     lookup_journal_reversals,
+    lookup_period_close_package,
     lookup_period_closes,
     lookup_outbox_events,
     lookup_period_journals,
@@ -59,6 +60,7 @@ ACCOUNT_LEDGER_PATH = "/account-ledgers"
 ACCOUNT_BALANCE_PATH = "/account-balances"
 ACCOUNT_ROLLFORWARD_PATH = "/account-rollforwards"
 RECEIVABLE_AGING_PATH = "/receivable-agings"
+PERIOD_CLOSE_PACKAGE_PATH = "/period-close-packages"
 JOURNAL_PATH = "/journals"
 FISCAL_PERIOD_PATH = "/fiscal-periods"
 OUTBOX_PATH = "/outbox-events"
@@ -86,7 +88,7 @@ class JournalProposalServer(ThreadingHTTPServer):
 
 
 class JournalProposalHandler(BaseHTTPRequestHandler):
-    """Serve proposal POST, reverse, reversal list, pull, receipt GET, close, TB, catalog, journal, receivable aging, outbox, audit history, and healthz."""
+    """Serve proposal POST, reverse, reversal list, pull, receipt GET, close, TB, catalog, journal, receivable aging, period-close package, outbox, audit history, and healthz."""
 
     server: JournalProposalServer
 
@@ -149,6 +151,9 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         if parsed.path == RECEIVABLE_AGING_PATH:
             self._get_receivable_aging(parsed.query)
             return
+        if parsed.path == PERIOD_CLOSE_PACKAGE_PATH:
+            self._get_period_close_package(parsed.query)
+            return
         if parsed.path == JOURNAL_PATH:
             self._get_posted_journal(parsed.query)
             return
@@ -178,7 +183,7 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             "GET /account-role-mappings, GET /accounting-books, "
             "GET /legal-entities, GET /chart-accounts, GET /account-ledgers, "
             "GET /account-balances, GET /account-rollforwards, GET /receivable-agings, "
-            "GET /journals, "
+            "GET /period-close-packages, GET /journals, "
             "GET /journal-reversals, GET /period-closes, GET /fiscal-periods, "
             "GET /outbox-events?event_type_code=, or GET /audit-events, then retry.",
         )
@@ -258,6 +263,13 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
                 405,
                 "POST is not supported on the receivable aging endpoint. "
                 "GET the receivable aging, then retry.",
+            )
+            return
+        if parsed_path == PERIOD_CLOSE_PACKAGE_PATH:
+            self._write_error(
+                405,
+                "POST is not supported on the period-close package endpoint. "
+                "GET the period-close package, then retry.",
             )
             return
         if self.path == JOURNAL_PROPOSAL_PATH:
@@ -658,6 +670,44 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             message = str(error)
             if "must be the catalog accounts_receivable" in message:
                 self._write_error(422, message)
+                return
+            self._write_error(404, message)
+            return
+        self._write_json(200, document)
+
+    def _get_period_close_package(self, query: str) -> None:
+        tenant_header = self._bound_tenant_header("period-close-package read")
+        if tenant_header is None:
+            return
+        fields = parse_qs(query)
+        legal_entity_reference = _first_query(fields, "legal_entity_reference")
+        book_reference = _first_query(fields, "book_reference")
+        fiscal_period_reference = _first_query(fields, "fiscal_period_reference")
+        comparison_fiscal_period_reference = _first_query(
+            fields, "comparison_fiscal_period_reference"
+        )
+        statement_scope_code = _first_query(fields, "statement_scope_code")
+        if not legal_entity_reference or not book_reference or not fiscal_period_reference:
+            self._write_error(
+                400,
+                "legal_entity_reference, book_reference, and fiscal_period_reference are required. "
+                "Supply those period-close-package fields, then retry the period-close-package read.",
+            )
+            return
+        try:
+            document = lookup_period_close_package(
+                self.server.database_url,
+                tenant_header,
+                legal_entity_reference,
+                book_reference,
+                fiscal_period_reference,
+                comparison_fiscal_period_reference,
+                statement_scope_code,
+            )
+        except AccountingValidationError as error:
+            message = str(error)
+            if "statement_scope_code" in message:
+                self._write_error(400, message)
                 return
             self._write_error(404, message)
             return

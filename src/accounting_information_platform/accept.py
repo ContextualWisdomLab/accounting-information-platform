@@ -776,6 +776,77 @@ def lookup_financial_statement_package(
     return document
 
 
+def lookup_period_close_package(
+    database_url: str,
+    tenant_reference: str,
+    legal_entity_reference: str,
+    book_reference: str,
+    fiscal_period_reference: str,
+    comparison_fiscal_period_reference: str = "",
+    statement_scope_code: str = "",
+) -> dict[str, object]:
+    """Return the fiscal-period, trial-balance, statement-package, aging, and close-receipt binder for one book and period."""
+    if not legal_entity_reference or not book_reference or not fiscal_period_reference:
+        raise AccountingValidationError(
+            "legal_entity_reference, book_reference, and fiscal_period_reference are required. "
+            "Supply those period-close-package fields, then retry the period-close-package read."
+        )
+    if statement_scope_code and statement_scope_code not in {"period", "year_to_date"}:
+        raise AccountingValidationError(
+            "statement_scope_code must be period or year_to_date. "
+            "Supply a known statement scope, then retry the period-close-package read."
+        )
+    fiscal_period = lookup_fiscal_period(
+        database_url,
+        tenant_reference,
+        legal_entity_reference,
+        fiscal_period_reference,
+    )
+    trial_balance = lookup_trial_balance(
+        database_url,
+        tenant_reference,
+        legal_entity_reference,
+        book_reference,
+        fiscal_period_reference,
+    )
+    financial_statement_package = lookup_financial_statement_package(
+        database_url,
+        tenant_reference,
+        legal_entity_reference,
+        book_reference,
+        fiscal_period_reference,
+        comparison_fiscal_period_reference,
+        statement_scope_code,
+    )
+    receivable_aging = lookup_receivable_aging(
+        database_url,
+        tenant_reference,
+        legal_entity_reference,
+        book_reference,
+        fiscal_period_reference,
+    )
+    close_page = lookup_period_closes(
+        database_url,
+        tenant_reference,
+        legal_entity_reference,
+        fiscal_period_reference,
+    )
+    stored_closes = close_page["period_closes"]
+    period_close = stored_closes[-1] if stored_closes else None
+    return {
+        "tenant_reference": trial_balance["tenant_reference"],
+        "legal_entity_reference": trial_balance["legal_entity_reference"],
+        "accounting_book_reference": trial_balance["accounting_book_reference"],
+        "book_reference": trial_balance["book_reference"],
+        "fiscal_period_reference": trial_balance["fiscal_period_reference"],
+        "fiscal_period": fiscal_period,
+        "trial_balance": trial_balance,
+        "financial_statement_package": financial_statement_package,
+        "receivable_aging": receivable_aging,
+        "period_close": period_close,
+    }
+
+
 def _parse_period_date(value: str, field_name: str) -> date:
     try:
         return date.fromisoformat(value)
