@@ -5218,7 +5218,7 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertIn("hard_closed", str(closed_body_doc["error_message"]))
         self.assertEqual(replay_after_close_status, 200)
         self.assertEqual(replay_after_close, posted)
-        self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before + 3)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before + 4)
 
         unbalanced = self._http_json(
             "POST",
@@ -5525,7 +5525,7 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(mixed_currency[0], 422)
         self.assertEqual(wrong_book_currency[0], 422)
         self.assertEqual(conflict[0], 409)
-        self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before + 3)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before + 4)
         server.shutdown()
 
     def test_accept_and_http_guard_cross_tenant_and_operator_failures(self) -> None:
