@@ -83,6 +83,7 @@ REQUIRED_FILES = (
     "docs/adr/0039-http-receivable-aging.md",
     "docs/adr/0040-http-period-close-package.md",
     "docs/adr/0041-http-payable-aging.md",
+    "docs/adr/0042-http-collection-write-off.md",
     "docs/doctoring/REFERENCES.md",
     "docs/doctoring/STANDARD_TRACEABILITY.md",
     "docs/superpowers/specs/2026-08-16-accounting-information-platform-design.md",

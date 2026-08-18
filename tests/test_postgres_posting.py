@@ -235,6 +235,7 @@ class PostgresPostingTests(unittest.TestCase):
                 "usage_revenue": "410100",
                 "cash_receipt": "110200",
                 "tax_payable": "210100",
+                "write_off_expense": "510100",
             },
             accounting_policy_version="ifrs-v1",
             posting_rule_version="billing-issued-v1",
@@ -877,24 +878,18 @@ class PostgresPostingTests(unittest.TestCase):
         self,
     ) -> None:
         """Zero net income still closes income-statement balances when they are non-zero."""
-        self._seed_expense_account()
         self.ledger.post(self._two_line_proposal(), self.policy)
         self.ledger.post(
             self._two_line_proposal(
                 proposal_id=str(uuid.uuid4()),
-                idempotency_key="usage-cost-v1",
+                idempotency_key="write-off-expense-v1",
                 source_payload_hash="sha256:" + "7" * 64,
                 lines=(
-                    JournalLineProposal(1, "usage_cost", "25000", "0"),
+                    JournalLineProposal(1, "write_off_expense", "25000", "0"),
                     JournalLineProposal(2, "accounts_receivable", "0", "25000"),
                 ),
             ),
-            self._policy_with(
-                chart_account_mapping={
-                    **self.policy.chart_account_mapping,
-                    "usage_cost": "510100",
-                }
-            ),
+            self.policy,
         )
         receipt = self._close_period()
         snapshot = self.ledger.load_period_trial_balance(
@@ -1354,6 +1349,167 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before)
         server.shutdown()
 
+    def test_http_posts_and_pulls_billing_collection_write_off(self) -> None:
+        """Billing #51 collection write-off posts expense / AR and parks into RE on hard-close."""
+        write_off = self._billing_write_off_payload()
+        unknown_role = self._billing_write_off_payload(
+            proposal_id=str(uuid.uuid4()),
+            idempotency_key=(
+                f"{self.policy.tenant_reference}:collection_write_off:unknown:"
+                f"sha256:{'9' * 64}:v1"
+            ),
+            source_payload_hash="sha256:" + "9" * 64,
+            source_event_references=(
+                f"{self.policy.tenant_reference}:collection_write_off:unknown",
+            ),
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "not_a_catalog_role",
+                    "debit_amount": "7000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "0",
+                    "credit_amount": "7000",
+                },
+            ],
+        )
+        billing_url = self._start_fake_billing([write_off])
+        server = self._start_http_server()
+        journals_before = self._count_table("accounting_core.general_journal")
+
+        self.assertEqual(
+            write_off["idempotency_key"],
+            (
+                f"{self.policy.tenant_reference}:collection_write_off:"
+                f"{write_off['proposal_id']}:{write_off['source_payload_hash']}:v1"
+            ),
+        )
+        self.assertEqual(write_off["proposal_status"], "validated")
+        self.assertEqual(write_off["intended_book_role_code"], "primary_statutory")
+        self.assertEqual(write_off["lines"][0]["account_role_code"], "write_off_expense")
+        self.assertEqual(write_off["lines"][1]["account_role_code"], "accounts_receivable")
+        self.assertNotIn("510100", json.dumps(write_off["lines"]))
+        self.assertNotIn("110100", json.dumps(write_off["lines"]))
+
+        mapping_status, mappings = self._http_account_role_mappings()
+        pull_status, pull_body = self._http_json(
+            "POST",
+            "/billing-proposal-pulls",
+            {"tenant_reference": self.policy.tenant_reference, "billing_base_url": billing_url},
+        )
+        post_status, post_receipt = self._http_json("POST", "/journal-proposals", write_off)
+        replay_status, replay_receipt = self._http_json("POST", "/journal-proposals", write_off)
+        journal_status, journal = self._http_journal(
+            idempotency_key=str(write_off["idempotency_key"])
+        )
+        billing_list_status, billing_list = self._http_period_journals(
+            journal_source_code="billing"
+        )
+        unknown_status, unknown_body = self._http_json("POST", "/journal-proposals", unknown_role)
+        by_code = {str(item["chart_account_code"]): item for item in journal["lines"]}
+        mapping_by_role = {
+            str(item["account_role_code"]): item for item in mappings["mappings"]
+        }
+
+        self.assertEqual(mapping_status, 200)
+        self.assertEqual(mapping_by_role["write_off_expense"]["chart_account_code"], "510100")
+        self.assertEqual(pull_status, 200)
+        self.assertEqual(post_status, 200)
+        self.assertEqual(replay_status, 200)
+        self.assertEqual(post_receipt, replay_receipt)
+        self.assertEqual(post_receipt, pull_body["posting_receipts"][0])
+        self.assertEqual(post_receipt["line_count"], 2)
+        self.assertEqual(post_receipt["idempotency_key"], write_off["idempotency_key"])
+        self.assertEqual(journal_status, 200)
+        self.assertEqual(set(by_code), {"510100", "110100"})
+        self.assertEqual(by_code["510100"]["account_role_code"], "write_off_expense")
+        self.assertEqual(Decimal(str(by_code["510100"]["debit_amount"])), Decimal("7000"))
+        self.assertEqual(Decimal(str(by_code["110100"]["credit_amount"])), Decimal("7000"))
+        self.assertEqual(billing_list_status, 200)
+        self.assertEqual(
+            [item["idempotency_key"] for item in billing_list["journals"]],
+            [write_off["idempotency_key"]],
+        )
+        self.assertFalse(
+            str(journal["journal_reference"]).startswith(
+                "urn:cwl:accounting:general_journal:period_closing:"
+            )
+        )
+        self.assertEqual(unknown_status, 422)
+        self.assertIn("not_a_catalog_role", str(unknown_body["error_message"]))
+
+        income_status, income = self._http_financial_statement("income_statement")
+        income_by_code = {
+            str(item["chart_account_code"]): item for item in income["statement_lines"]
+        }
+        self.assertEqual(income_status, 200)
+        self.assertEqual(income_by_code["510100"]["account_role_code"], "write_off_expense")
+        self.assertEqual(income_by_code["510100"]["account_class_code"], "expense")
+        self.assertEqual(Decimal(str(income_by_code["510100"]["debit_amount"])), Decimal("7000"))
+
+        soft_status, _soft = self._http_json(
+            "POST",
+            "/period-closes",
+            self._period_close_payload(period_status_code="soft_closed"),
+        )
+        replay_after_soft_status, replay_after_soft = self._http_json(
+            "POST", "/journal-proposals", write_off
+        )
+        hard_status, _hard = self._http_json(
+            "POST", "/period-closes", self._period_close_payload()
+        )
+        closed_income_status, closed_income = self._http_financial_statement("income_statement")
+        closed_tb_status, closed_tb = self._http_json(
+            "GET",
+            "/trial-balances?"
+            + urllib.parse.urlencode(
+                {
+                    "legal_entity_reference": self.policy.legal_entity_reference,
+                    "book_reference": self.policy.accounting_book_reference,
+                    "fiscal_period_reference": "urn:cwl:accounting:fiscal_period:2026-08",
+                }
+            ),
+            None,
+        )
+        closed_income_by_code = {
+            str(item["chart_account_code"]): item for item in closed_income["statement_lines"]
+        }
+        closing_list_status, closing_list = self._http_period_journals(
+            journal_source_code="period_closing"
+        )
+
+        self.assertEqual(soft_status, 200)
+        self.assertEqual(replay_after_soft_status, 200)
+        self.assertEqual(replay_after_soft, post_receipt)
+        self.assertEqual(hard_status, 200)
+        self.assertEqual(closed_income_status, 200)
+        self.assertEqual(closed_tb_status, 200)
+        self.assertEqual(self._count_closing_journals(), 1)
+        self.assertEqual(
+            Decimal(str(closed_income_by_code["510100"]["debit_amount"])),
+            Decimal("7000"),
+        )
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(closed_tb, "510100")["net_balance_amount"])),
+            Decimal("0"),
+        )
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(closed_tb, "310100")["debit_amount"])),
+            Decimal("7000"),
+        )
+        self.assertEqual(closing_list_status, 200)
+        self.assertEqual(len(closing_list["journals"]), 1)
+        self.assertNotEqual(
+            closing_list["journals"][0]["idempotency_key"],
+            write_off["idempotency_key"],
+        )
+        self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before + 2)
+        server.shutdown()
+
     def test_http_reads_account_role_mappings_from_catalog(self) -> None:
         """GET returns seeded role-to-chart mappings and rejects cross-tenant or unknown books."""
         server = self._start_http_server()
@@ -1395,6 +1551,7 @@ class PostgresPostingTests(unittest.TestCase):
                 "cash_receipt",
                 "tax_payable",
                 "retained_earnings",
+                "write_off_expense",
             },
         )
         self.assertEqual(by_code["accounts_receivable"]["chart_account_code"], "110100")
@@ -1402,6 +1559,7 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(by_code["cash_receipt"]["chart_account_code"], "110200")
         self.assertEqual(by_code["tax_payable"]["chart_account_code"], "210100")
         self.assertEqual(by_code["retained_earnings"]["chart_account_code"], "310100")
+        self.assertEqual(by_code["write_off_expense"]["chart_account_code"], "510100")
         self.assertEqual(by_code["cash_receipt"]["accounting_policy_version"], "ifrs-v1")
         self.assertEqual(by_code["cash_receipt"]["posting_rule_version"], "billing-issued-v1")
 
@@ -1498,7 +1656,7 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(document["legal_entity_reference"], self.policy.legal_entity_reference)
         self.assertEqual(document["accounting_book_reference"], self.policy.accounting_book_reference)
         self.assertEqual(document["book_reference"], self.policy.accounting_book_reference)
-        self.assertEqual(set(by_code), {"110100", "410100", "110200", "210100", "310100"})
+        self.assertEqual(set(by_code), {"110100", "410100", "110200", "210100", "310100", "510100"})
         self.assertEqual(by_code["110100"]["account_name"], "Accounts receivable")
         self.assertEqual(by_code["110100"]["normal_balance_code"], "debit")
         self.assertEqual(by_code["110100"]["account_class_code"], "asset")
@@ -1514,6 +1672,9 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(by_code["310100"]["account_name"], "Retained earnings")
         self.assertEqual(by_code["310100"]["normal_balance_code"], "credit")
         self.assertEqual(by_code["310100"]["account_class_code"], "equity")
+        self.assertEqual(by_code["510100"]["account_name"], "Write-off expense")
+        self.assertEqual(by_code["510100"]["normal_balance_code"], "debit")
+        self.assertEqual(by_code["510100"]["account_class_code"], "expense")
         self.assertEqual(empty_status, 200)
         self.assertEqual(empty_page["chart_accounts"], [])
         self.assertEqual(empty_page["book_reference"], empty_book)
@@ -2536,7 +2697,6 @@ class PostgresPostingTests(unittest.TestCase):
     def test_http_reads_changes_in_equity_statement(self) -> None:
         """GET /financial-statements?statement_type_code=changes_in_equity ties opening + NI + other to closing equity."""
         self._seed_issued_capital_account()
-        self._seed_expense_account()
         self._seed_additional_period("2026-06", date(2026, 6, 1), date(2026, 6, 30))
         self._seed_additional_period("2026-07", date(2026, 7, 1), date(2026, 7, 31))
         july = self._billing_validated_payload(
@@ -9071,6 +9231,7 @@ class PostgresPostingTests(unittest.TestCase):
                 ("110200", "Cash receipts", "debit", "asset", "cash_receipt"),
                 ("210100", "Tax payable", "credit", "liability", "tax_payable"),
                 ("310100", "Retained earnings", "credit", "equity", "retained_earnings"),
+                ("510100", "Write-off expense", "debit", "expense", "write_off_expense"),
             ):
                 chart_account_id = connection.execute(
                     """
@@ -9307,44 +9468,6 @@ class PostgresPostingTests(unittest.TestCase):
             )
             connection.commit()
 
-    def _seed_expense_account(self) -> None:
-        with psycopg.connect(DATABASE_URL) as connection:
-            connection.execute(
-                "SELECT set_config('app.tenant_account_id', %s, false)",
-                (self.tenant_id,),
-            )
-            book_id = connection.execute(
-                """
-                SELECT accounting_book_id
-                FROM accounting_core.accounting_book
-                WHERE tenant_account_id = %s
-                """,
-                (self.tenant_id,),
-            ).fetchone()[0]
-            chart_account_id = connection.execute(
-                """
-                INSERT INTO accounting_core.chart_account (
-                    tenant_account_id, accounting_book_id, chart_account_code,
-                    account_name, normal_balance_code, account_class_code, valid_from
-                )
-                VALUES (%s, %s, '510100', 'Usage cost', 'debit', 'expense', %s)
-                RETURNING chart_account_id
-                """,
-                (self.tenant_id, book_id, VALID_FROM),
-            ).fetchone()[0]
-            connection.execute(
-                """
-                INSERT INTO accounting_core.account_role_mapping (
-                    tenant_account_id, accounting_book_id, account_role_code,
-                    chart_account_id, accounting_policy_version, posting_rule_version,
-                    valid_from
-                )
-                VALUES (%s, %s, 'usage_cost', %s, 'ifrs-v1', 'billing-issued-v1', %s)
-                """,
-                (self.tenant_id, book_id, chart_account_id, VALID_FROM),
-            )
-            connection.commit()
-
     def _snapshot_line_totals(self) -> dict[str, tuple[Decimal, Decimal, Decimal]]:
         with psycopg.connect(DATABASE_URL) as connection:
             connection.execute(
@@ -9573,6 +9696,46 @@ class PostgresPostingTests(unittest.TestCase):
                     "account_role_code": "accounts_receivable",
                     "debit_amount": "0",
                     "credit_amount": "27500",
+                },
+            ],
+        }
+        values.update(overrides)
+        return values
+
+    def _billing_write_off_payload(self, **overrides: object) -> dict[str, object]:
+        source_payload_hash = "sha256:" + "5" * 64
+        collection_write_off_id = "019d7b92-5ee4-7a7f-b61c-962c0f4bf617"
+        values: dict[str, object] = {
+            "proposal_id": collection_write_off_id,
+            "proposal_contract_version": 1,
+            "idempotency_key": (
+                f"{self.policy.tenant_reference}:collection_write_off:"
+                f"{collection_write_off_id}:{source_payload_hash}:v1"
+            ),
+            "tenant_reference": self.policy.tenant_reference,
+            "legal_entity_reference": self.policy.legal_entity_reference,
+            "intended_book_role_code": "primary_statutory",
+            "transaction_currency": "KRW",
+            "transaction_date": "2026-08-31",
+            "accounting_date": "2026-08-31",
+            "source_payload_hash": source_payload_hash,
+            "proposed_at": "2026-08-31T00:00:00Z",
+            "proposal_status": "validated",
+            "source_event_references": (
+                f"{self.policy.tenant_reference}:collection_write_off:{collection_write_off_id}",
+            ),
+            "lines": [
+                {
+                    "line_number": 1,
+                    "account_role_code": "write_off_expense",
+                    "debit_amount": "7000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "0",
+                    "credit_amount": "7000",
                 },
             ],
         }

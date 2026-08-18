@@ -30,7 +30,7 @@ billing invoice or settlement fact
 -> source-to-posting reconciliation reference
 ```
 
-A proposal may name `accounts_receivable`, `usage_revenue`, `cash_receipt`, `contract_liability`, `tax_payable`, `cash_clearing`, or `provider_fee_expense`. Accounting maps those roles to chart accounts under an effective policy version. Source systems cannot bypass this mapping by sending chart-account IDs.
+A proposal may name `accounts_receivable`, `usage_revenue`, `cash_receipt`, `contract_liability`, `tax_payable`, `cash_clearing`, `provider_fee_expense`, or `write_off_expense`. Accounting maps those roles to chart accounts under an effective policy version. Source systems cannot bypass this mapping by sending chart-account IDs.
 
 ## Revenue caution
 
