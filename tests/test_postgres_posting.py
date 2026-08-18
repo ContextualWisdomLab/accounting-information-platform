@@ -5290,6 +5290,7 @@ class PostgresPostingTests(unittest.TestCase):
             ),
         )
         missing_header = self._http_json("POST", "/journals", body, tenant_header=None)
+        bad_json = self._http_raw("POST", "/journals", b"{", self.policy.tenant_reference)
         cross_status, _cross = self._http_json(
             "POST", "/journals", body, tenant_header="urn:cwl:tenant_other"
         )
@@ -5515,6 +5516,7 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(outside_period[0], 422)
         self.assertEqual(before_period[0], 422)
         self.assertEqual(missing_header[0], 400)
+        self.assertEqual(bad_json[0], 400)
         self.assertEqual(cross_status, 403)
         self.assertEqual(body_mismatch[0], 403)
         self.assertEqual(unknown_entity[0], 404)
