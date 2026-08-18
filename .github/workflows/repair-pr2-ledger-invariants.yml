@@ -50,6 +50,7 @@ jobs:
         run: |
           python scripts/repair_pr2_ledger_invariants.py
           python scripts/repair_pr2_command_idempotency.py
+          python scripts/repair_pr2_followup_adjustments.py
       - name: Install hash-locked quality dependencies
         run: >-
           python -m pip install
@@ -77,6 +78,7 @@ jobs:
           rm .github/workflows/repair-pr2-ledger-invariants.yml
           rm scripts/repair_pr2_ledger_invariants.py
           rm scripts/repair_pr2_command_idempotency.py
+          rm scripts/repair_pr2_followup_adjustments.py
           python - <<'PY'
           from pathlib import Path
 
