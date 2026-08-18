@@ -38,6 +38,8 @@
       "type": "array",
       "minItems": 1,
       "uniqueItems": true,
+      "x-cwl-unique-items-by": "account_role_code",
+      "description": "At most one mapping per account_role_code. JSON Schema uniqueItems compares whole objects and is not sufficient when the same role maps to two chart accounts.",
       "items": {
         "type": "object",
         "additionalProperties": false,

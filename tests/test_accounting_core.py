@@ -14,6 +14,8 @@ from accounting_information_platform import (
     JournalProposal,
     PostingLedger,
     PostingReceipt,
+    load_accounting_policy,
+    load_chart_account_mapping,
 )
 
 
@@ -497,6 +499,74 @@ class AccountingCoreTests(unittest.TestCase):
                 posting_rule_version="billing-issued-v1",
             )
 
+    def test_duplicate_account_role_mapping_fails_closed_before_policy_load(self) -> None:
+        """A role may map to only one chart account before AccountingPolicy is built."""
+        catalog = self._catalog_account_mappings()
+        duplicate_role = (
+            *catalog,
+            {
+                "account_role_code": "accounts_receivable",
+                "chart_account_code": "119900",
+            },
+        )
+        with self.assertRaisesRegex(
+            AccountingValidationError,
+            "account role accounts_receivable is mapped more than once",
+        ):
+            load_chart_account_mapping(duplicate_role)
+        with self.assertRaisesRegex(
+            AccountingValidationError,
+            "account role accounts_receivable is mapped more than once",
+        ):
+            load_accounting_policy(self._policy_manifest(account_mappings=duplicate_role))
+        identical_duplicate = (
+            *catalog,
+            {
+                "account_role_code": "tax_payable",
+                "chart_account_code": "210100",
+            },
+        )
+        with self.assertRaisesRegex(
+            AccountingValidationError, "tax_payable is mapped more than once"
+        ):
+            load_chart_account_mapping(identical_duplicate)
+        with self.assertRaisesRegex(AccountingValidationError, "at least one role"):
+            load_chart_account_mapping(())
+        with self.assertRaisesRegex(AccountingValidationError, "must be an object"):
+            load_chart_account_mapping(("not-a-mapping",))  # type: ignore[arg-type]
+        with self.assertRaisesRegex(AccountingValidationError, "must include account_role_code"):
+            load_chart_account_mapping(({"account_role_code": "accounts_receivable"},))
+        with self.assertRaisesRegex(AccountingValidationError, "must include account_role_code"):
+            load_chart_account_mapping(({"chart_account_code": "110100"},))
+        with self.assertRaisesRegex(AccountingValidationError, "must be an array"):
+            load_accounting_policy(self._policy_manifest(account_mappings="not-an-array"))
+        with self.assertRaisesRegex(AccountingValidationError, "must be an array"):
+            load_accounting_policy(self._policy_manifest(account_mappings=b"not-an-array"))
+        with self.assertRaisesRegex(AccountingValidationError, "must be an array"):
+            load_accounting_policy(self._policy_manifest(account_mappings=None))
+        with self.assertRaisesRegex(AccountingValidationError, "must be an ISO date"):
+            load_accounting_policy(self._policy_manifest(open_period_start="31-08-2026"))
+
+    def test_catalog_account_mappings_load_once_per_role(self) -> None:
+        """The seven catalog roles load uniquely and invent no withholding role."""
+        catalog = self._catalog_account_mappings()
+        mapping = load_chart_account_mapping(catalog)
+        policy = load_accounting_policy(self._policy_manifest(account_mappings=catalog))
+        expected = {
+            "accounts_receivable": "110100",
+            "cash_receipt": "110200",
+            "tax_payable": "210100",
+            "unapplied_cash": "210200",
+            "retained_earnings": "310100",
+            "usage_revenue": "410100",
+            "write_off_expense": "510100",
+        }
+        self.assertEqual(mapping, expected)
+        self.assertEqual(dict(policy.chart_account_mapping), expected)
+        self.assertNotIn("wage_withholding", mapping)
+        self.assertNotIn("year_end_settlement", mapping)
+        self.assertNotIn("payroll_withholding", mapping)
+
     def test_remaining_validation_and_reversal_branches_fail_closed(self) -> None:
         proposal = self._invoice_proposal()
         self.assertEqual(proposal.debit_total, Decimal("110000"))
@@ -642,6 +712,36 @@ class AccountingCoreTests(unittest.TestCase):
         }
         values.update(overrides)
         return JournalProposal(**values)
+
+    def _catalog_account_mappings(self) -> tuple[dict[str, str], ...]:
+        return (
+            {"account_role_code": "accounts_receivable", "chart_account_code": "110100"},
+            {"account_role_code": "cash_receipt", "chart_account_code": "110200"},
+            {"account_role_code": "tax_payable", "chart_account_code": "210100"},
+            {"account_role_code": "unapplied_cash", "chart_account_code": "210200"},
+            {"account_role_code": "retained_earnings", "chart_account_code": "310100"},
+            {"account_role_code": "usage_revenue", "chart_account_code": "410100"},
+            {"account_role_code": "write_off_expense", "chart_account_code": "510100"},
+        )
+
+    def _policy_manifest(self, **overrides: object) -> dict[str, object]:
+        manifest: dict[str, object] = {
+            "policy_manifest_id": "019d7b92-1aa0-7a7f-b61c-962c0f4bf612",
+            "policy_contract_version": 1,
+            "tenant_reference": self.policy.tenant_reference,
+            "legal_entity_reference": self.policy.legal_entity_reference,
+            "accounting_book_reference": self.policy.accounting_book_reference,
+            "intended_book_role_code": self.policy.intended_book_role_code,
+            "transaction_currency": "KRW",
+            "functional_currency": "KRW",
+            "open_period_start": "2026-08-01",
+            "open_period_end": "2026-08-31",
+            "accounting_policy_version": "ifrs-v1",
+            "posting_rule_version": "billing-issued-v1",
+            "account_mappings": list(self._catalog_account_mappings()),
+        }
+        manifest.update(overrides)
+        return manifest
 
 
 if __name__ == "__main__":

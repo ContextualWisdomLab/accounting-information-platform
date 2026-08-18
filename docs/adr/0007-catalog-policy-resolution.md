@@ -4,7 +4,7 @@
 
 ## Decision
 
-Ordinary posting of a Billing `JournalProposal` resolves `AccountingPolicy` from AIS catalog rows in the same PostgreSQL transaction: tenant, legal entity, book by `intended_book_role_code`, the open fiscal period covering `accounting_date`, and effective `account_role_mapping` rows. Policy and posting-rule versions come from those mapping rows. The adapter does not invent chart-account codes. Caller-supplied `post(proposal, policy)` remains the in-memory reference path.
+Ordinary posting of a Billing `JournalProposal` resolves `AccountingPolicy` from AIS catalog rows in the same PostgreSQL transaction: tenant, legal entity, book by `intended_book_role_code`, the open fiscal period covering `accounting_date`, and effective `account_role_mapping` rows. Policy and posting-rule versions come from those mapping rows. The adapter does not invent chart-account codes. More than one effective catalog row for the same `account_role_code` already fails closed. A published policy manifest is subject to the same uniqueness before in-memory load (ADR 0005). Caller-supplied `post(proposal, policy)` remains the in-memory reference path.
 
 ## Consequences
 

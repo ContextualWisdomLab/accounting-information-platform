@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from types import MappingProxyType
-from typing import Mapping
+from typing import Mapping, Sequence
 
 
 _CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
@@ -149,6 +149,69 @@ class AccountingPolicy:
     def permits(self, accounting_date: date) -> bool:
         """Return whether *accounting_date* belongs to the open period."""
         return self.open_period_start <= accounting_date <= self.open_period_end
+
+
+def load_chart_account_mapping(
+    account_mappings: Sequence[Mapping[str, object]],
+) -> dict[str, str]:
+    """Require at most one chart account per semantic account role."""
+    if not account_mappings:
+        raise AccountingValidationError(
+            "account mappings must include at least one role. "
+            "Supply a unique role-to-chart mapping, then retry policy load."
+        )
+    mapping: dict[str, str] = {}
+    for item in account_mappings:
+        if not isinstance(item, Mapping):
+            raise AccountingValidationError(
+                "account mapping must be an object with account_role_code and "
+                "chart_account_code. Correct the policy manifest, then retry policy load."
+            )
+        role_code = item.get("account_role_code")
+        account_code = item.get("chart_account_code")
+        if not isinstance(role_code, str) or not isinstance(account_code, str):
+            raise AccountingValidationError(
+                "account mapping must include account_role_code and chart_account_code. "
+                "Correct the policy manifest, then retry policy load."
+            )
+        if role_code in mapping:
+            raise AccountingValidationError(
+                f"account role {role_code} is mapped more than once. "
+                "Keep one chart_account_code per account_role_code, then retry policy load."
+            )
+        mapping[role_code] = account_code
+    return mapping
+
+
+def load_accounting_policy(manifest: Mapping[str, object]) -> AccountingPolicy:
+    """Build AccountingPolicy from a published manifest after unique role mapping."""
+    raw_mappings = manifest.get("account_mappings")
+    if not isinstance(raw_mappings, Sequence) or isinstance(raw_mappings, (str, bytes)):
+        raise AccountingValidationError(
+            "policy manifest account_mappings must be an array. "
+            "Correct the policy manifest, then retry policy load."
+        )
+    try:
+        open_period_start = date.fromisoformat(str(manifest.get("open_period_start", "")))
+        open_period_end = date.fromisoformat(str(manifest.get("open_period_end", "")))
+    except ValueError as error:
+        raise AccountingValidationError(
+            "policy manifest open period must be an ISO date. "
+            "Correct the policy manifest, then retry policy load."
+        ) from error
+    return AccountingPolicy(
+        tenant_reference=str(manifest.get("tenant_reference", "")),
+        legal_entity_reference=str(manifest.get("legal_entity_reference", "")),
+        accounting_book_reference=str(manifest.get("accounting_book_reference", "")),
+        intended_book_role_code=str(manifest.get("intended_book_role_code", "")),
+        transaction_currency=str(manifest.get("transaction_currency", "")),
+        functional_currency=str(manifest.get("functional_currency", "")),
+        open_period_start=open_period_start,
+        open_period_end=open_period_end,
+        chart_account_mapping=load_chart_account_mapping(raw_mappings),
+        accounting_policy_version=str(manifest.get("accounting_policy_version", "")),
+        posting_rule_version=str(manifest.get("posting_rule_version", "")),
+    )
 
 
 @dataclass(frozen=True, slots=True)
