@@ -548,6 +548,34 @@ class PostgresPostingTests(unittest.TestCase):
                 AccountingValidationError, "0004_close_idempotency_key"
             ):
                 apply_foundation_migration(DATABASE_URL, foundation)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            foundation = temporary_root / "0001_accounting_foundation.sql"
+            foundation.write_text(
+                MIGRATION_PATH.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            (temporary_root / "0002_chart_account_class.sql").write_text(
+                (ROOT / "database/migrations/0002_chart_account_class.sql").read_text(
+                    encoding="utf-8"
+                ),
+                encoding="utf-8",
+            )
+            (temporary_root / "0003_home_tax_submission.sql").write_text(
+                (ROOT / "database/migrations/0003_home_tax_submission.sql").read_text(
+                    encoding="utf-8"
+                ),
+                encoding="utf-8",
+            )
+            (temporary_root / "0004_close_idempotency_key.sql").write_text(
+                (ROOT / "database/migrations/0004_close_idempotency_key.sql").read_text(
+                    encoding="utf-8"
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                AccountingValidationError, "0005_closed_period_guard"
+            ):
+                apply_foundation_migration(DATABASE_URL, foundation)
         with self.assertRaisesRegex(AccountingValidationError, "restore a clean database"):
             apply_foundation_migration(DATABASE_URL, MIGRATION_PATH)
 
@@ -1065,6 +1093,49 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(self.ledger.journal_count, journals_after_close)
         self.assertEqual(self._period_status("2026-08"), "hard_closed")
         self.assertEqual(self._count_closing_journals(), 1)
+
+    def test_privileged_sql_cannot_insert_journal_into_closed_period(self) -> None:
+        """Closed-period truth holds at INSERT, not only in the Python closer."""
+        posted = self.ledger.post(self._two_line_proposal(), self.policy)
+        soft = self._close_period(
+            period_status_code="soft_closed",
+            idempotency_key="period-close-db-guard-soft",
+        )
+        self.assertEqual(soft.period_status_code, "soft_closed")
+        journals_after_soft = self._count_table("accounting_core.general_journal")
+
+        with self.assertRaisesRegex(psycopg.Error, "period_closed"):
+            self._raw_insert_general_journal(
+                f"urn:cwl:accounting:general_journal:{uuid.uuid4()}"
+            )
+        with self.assertRaisesRegex(psycopg.Error, "period_closed"):
+            self._raw_insert_general_journal(f"{posted.journal_reference}:reversal")
+        self.assertEqual(
+            self._count_table("accounting_core.general_journal"), journals_after_soft
+        )
+
+        hard = self._close_period(idempotency_key="period-close-db-guard")
+        replayed = self._close_period(idempotency_key="period-close-db-guard")
+        self.assertFalse(hard.replayed)
+        self.assertTrue(replayed.replayed)
+        self.assertEqual(replayed.snapshot_record_id, hard.snapshot_record_id)
+        self.assertEqual(self._period_status("2026-08"), "hard_closed")
+        journals_after_hard = self._count_table("accounting_core.general_journal")
+        self.assertEqual(self._count_closing_journals(), 1)
+
+        with self.assertRaisesRegex(psycopg.Error, "period_closed"):
+            self._raw_insert_general_journal(
+                f"urn:cwl:accounting:general_journal:{uuid.uuid4()}"
+            )
+        with self.assertRaisesRegex(psycopg.Error, "period_closed"):
+            self._raw_insert_general_journal(
+                "urn:cwl:accounting:general_journal:period_closing:2026-08-forged"
+            )
+        with self.assertRaisesRegex(psycopg.Error, "period_closed"):
+            self._raw_insert_general_journal(f"{posted.journal_reference}:later-reversal")
+        self.assertEqual(
+            self._count_table("accounting_core.general_journal"), journals_after_hard
+        )
 
     def test_hard_close_rejects_unbalanced_trial_balance(self) -> None:
         """Close fails closed when the binder trial balance does not balance."""
@@ -11668,6 +11739,69 @@ class PostgresPostingTests(unittest.TestCase):
             self.ledger.resolve_accounting_policy(
                 ingest_journal_proposal(self._billing_validated_payload())
             )
+
+    def _raw_insert_general_journal(self, journal_reference: str) -> None:
+        with psycopg.connect(DATABASE_URL) as connection:
+            connection.execute(
+                "SELECT set_config('app.tenant_account_id', %s, false)",
+                (self.tenant_id,),
+            )
+            legal_entity_id, book_id, period_id = connection.execute(
+                """
+                SELECT legal_entity_record.legal_entity_id,
+                       accounting_book.accounting_book_id,
+                       fiscal_period.fiscal_period_id
+                FROM accounting_core.legal_entity_record
+                JOIN accounting_core.accounting_book
+                  ON accounting_book.tenant_account_id = legal_entity_record.tenant_account_id
+                 AND accounting_book.legal_entity_id = legal_entity_record.legal_entity_id
+                JOIN accounting_core.fiscal_period
+                  ON fiscal_period.tenant_account_id = legal_entity_record.tenant_account_id
+                WHERE legal_entity_record.tenant_account_id = %s
+                  AND fiscal_period.period_code = '2026-08'
+                """,
+                (self.tenant_id,),
+            ).fetchone()
+            proposal_record_id = connection.execute(
+                """
+                INSERT INTO accounting_integration.journal_proposal_record (
+                    tenant_account_id, external_proposal_id, proposal_contract_version,
+                    idempotency_key, source_payload_hash, proposal_status_code, processed_at
+                )
+                VALUES (%s, uuidv7(), 1, %s, %s, 'posted', clock_timestamp())
+                RETURNING proposal_record_id
+                """,
+                (
+                    self.tenant_id,
+                    f"privileged:{journal_reference}",
+                    "sha256:" + "c" * 64,
+                ),
+            ).fetchone()[0]
+            connection.execute(
+                """
+                INSERT INTO accounting_core.general_journal (
+                    tenant_account_id, legal_entity_id, accounting_book_id, fiscal_period_id,
+                    journal_reference, journal_status_code, transaction_currency_code,
+                    functional_currency_code, transaction_date, accounting_date,
+                    source_proposal_record_id, accounting_policy_version, posting_rule_version
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s, 'posted', 'KRW', 'KRW', %s, %s, %s, 'ifrs-v1',
+                    'billing-issued-v1'
+                )
+                """,
+                (
+                    self.tenant_id,
+                    legal_entity_id,
+                    book_id,
+                    period_id,
+                    journal_reference,
+                    date(2026, 8, 31),
+                    date(2026, 8, 31),
+                    proposal_record_id,
+                ),
+            )
+            connection.commit()
 
     def _close_period(self, **overrides: object) -> PeriodCloseReceipt:
         values: dict[str, object] = {

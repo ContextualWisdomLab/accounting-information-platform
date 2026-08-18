@@ -5018,6 +5018,10 @@ class PostgresPostingLedger:
         proposal_record_id: UUID,
         lines: tuple[PostedJournalLine, ...],
     ) -> UUID:
+        connection.execute(
+            "SELECT set_config('accounting_core.journal_write_role', %s, true)",
+            (_journal_write_role(proposal),),
+        )
         journal_id = connection.execute(
             """
             INSERT INTO accounting_core.general_journal (
@@ -5533,8 +5537,21 @@ class _ReversalProposal:
         self.source_event_references = source_event_references
 
 
+def _journal_write_role(
+    proposal: JournalProposal | _ReversalProposal | _ClosingProposal | _AdjustingProposal,
+) -> str:
+    """Return the session-local role AIS sets before a journal INSERT."""
+    if isinstance(proposal, _ClosingProposal):
+        return "period_closing"
+    if isinstance(proposal, _AdjustingProposal):
+        return "adjusting"
+    if isinstance(proposal, _ReversalProposal):
+        return "reversal"
+    return ""
+
+
 def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
-    """Apply the checked-in PostgreSQL 18 foundation through close-key migrations."""
+    """Apply the checked-in PostgreSQL 18 foundation through the closed-period guard."""
     if not migration_path.is_file():
         raise AccountingValidationError(
             f"Foundation migration is missing at {migration_path}. "
@@ -5558,6 +5575,12 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             f"Close-idempotency-key migration is missing at {close_key_migration_path}. "
             "Restore database/migrations/0004_close_idempotency_key.sql, then retry."
         )
+    period_guard_migration_path = migration_path.parent / "0005_closed_period_guard.sql"
+    if not period_guard_migration_path.is_file():
+        raise AccountingValidationError(
+            f"Closed-period guard migration is missing at {period_guard_migration_path}. "
+            "Restore database/migrations/0005_closed_period_guard.sql, then retry."
+        )
     psycopg = _import_psycopg()
     try:
         with psycopg.connect(
@@ -5567,6 +5590,7 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             connection.execute(class_migration_path.read_text(encoding="utf-8"))
             connection.execute(submission_migration_path.read_text(encoding="utf-8"))
             connection.execute(close_key_migration_path.read_text(encoding="utf-8"))
+            connection.execute(period_guard_migration_path.read_text(encoding="utf-8"))
     except Exception as error:
         raise AccountingValidationError(
             "Foundation migration failed. Inspect the PostgreSQL error, restore a clean "
