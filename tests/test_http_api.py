@@ -125,7 +125,7 @@ class CollectionWriteOffAgingHttpTests(unittest.TestCase):
 
 
 class IssuedInvoiceVoidAgingHttpTests(unittest.TestCase):
-    """GET /receivable-agings drops by a posted Billing issued-invoice void."""
+    """GET /receivable-agings and GET /payable-agings drop by a posted Billing void."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -169,12 +169,19 @@ class IssuedInvoiceVoidAgingHttpTests(unittest.TestCase):
         invoice_status, _invoice = case._http_json("POST", "/journal-proposals", invoice)
         before_status, before = case._http_receivable_aging()
         before_payable_status, before_payable = case._http_payable_aging()
+        before_tax_balances_status, before_tax_balances = case._http_account_balances(
+            chart_account_code="210100"
+        )
+        clearing_payable = case._http_payable_aging(chart_account_code="210200")
         void_status, receipt = case._http_json("POST", "/journal-proposals", void)
         replay_status, replay = case._http_json("POST", "/journal-proposals", void)
         conflict_status, _conflict = case._http_json("POST", "/journal-proposals", conflict)
         after_status, after = case._http_receivable_aging()
         after_payable_status, after_payable = case._http_payable_aging()
         balances_status, balances = case._http_account_balances(chart_account_code="110100")
+        after_tax_balances_status, after_tax_balances = case._http_account_balances(
+            chart_account_code="210100"
+        )
         mapping_status, mappings = case._http_account_role_mappings()
         billing_status, billing_list = case._http_period_journals(journal_source_code="billing")
         mapping_by_role = {
@@ -230,9 +237,19 @@ class IssuedInvoiceVoidAgingHttpTests(unittest.TestCase):
         self.assertEqual(invoice_status, 200)
         self.assertEqual(before_status, 200)
         self.assertEqual(before_payable_status, 200)
+        self.assertEqual(before_tax_balances_status, 200)
+        self.assertEqual(clearing_payable[0], 422)
+        self.assertIn("tax_payable", str(clearing_payable[1]["error_message"]))
         self.assertEqual(before["current_amount"], "27500")
         self.assertEqual(before["total_outstanding_amount"], "27500")
+        self.assertEqual(before_payable["chart_account_code"], "210100")
+        self.assertEqual(before_payable["current_amount"], "2500")
         self.assertEqual(before_payable["total_outstanding_amount"], "2500")
+        self.assertEqual(
+            Decimal(str(before_payable["total_outstanding_amount"])),
+            Decimal(str(before_tax_balances["account_balances"][0]["credit_amount"]))
+            - Decimal(str(before_tax_balances["account_balances"][0]["debit_amount"])),
+        )
         self.assertEqual(void_status, 200)
         self.assertEqual(replay_status, 200)
         self.assertEqual(receipt, replay)
@@ -240,6 +257,7 @@ class IssuedInvoiceVoidAgingHttpTests(unittest.TestCase):
         self.assertEqual(after_status, 200)
         self.assertEqual(after_payable_status, 200)
         self.assertEqual(balances_status, 200)
+        self.assertEqual(after_tax_balances_status, 200)
         self.assertEqual(after["current_amount"], "0")
         self.assertEqual(after["days_31_60_amount"], "0")
         self.assertEqual(after["days_61_90_amount"], "0")
@@ -253,7 +271,21 @@ class IssuedInvoiceVoidAgingHttpTests(unittest.TestCase):
             Decimal(str(after["total_outstanding_amount"])),
             case._account_balance_net(balances, "110100"),
         )
+        self.assertEqual(after_payable["chart_account_code"], "210100")
+        self.assertEqual(after_payable["current_amount"], "0")
+        self.assertEqual(after_payable["days_31_60_amount"], "0")
+        self.assertEqual(after_payable["days_61_90_amount"], "0")
+        self.assertEqual(after_payable["days_over_90_amount"], "0")
         self.assertEqual(after_payable["total_outstanding_amount"], "0")
+        self.assertEqual(
+            Decimal(str(after_payable["total_outstanding_amount"])),
+            Decimal(str(before_payable["total_outstanding_amount"])) - Decimal("2500"),
+        )
+        self.assertEqual(
+            Decimal(str(after_payable["total_outstanding_amount"])),
+            Decimal(str(after_tax_balances["account_balances"][0]["credit_amount"]))
+            - Decimal(str(after_tax_balances["account_balances"][0]["debit_amount"])),
+        )
         self.assertNotIn("unapplied_credit_amount", after)
         self.assertNotIn("party_reference", after)
         self.assertEqual(mapping_status, 200)
@@ -284,6 +316,70 @@ class IssuedInvoiceVoidAgingHttpTests(unittest.TestCase):
         self.assertEqual(hard_status, 200)
         self.assertEqual(closed_status, 200)
         self.assertEqual(closed["total_outstanding_amount"], "0")
+        server.shutdown()
+        server.server_close()
+
+    def test_http_untaxed_issued_invoice_void_leaves_payable_aging_zero(self) -> None:
+        """Untaxed invoice then published void does not move 210100 payable aging."""
+        case = self.case
+        invoice = case._billing_validated_payload()
+        void = case._billing_issued_invoice_void_payload(
+            proposal_id="019d7b92-9ee8-7a7f-b61c-962c0f4bf642",
+            issued_invoice_void_id="019d7b92-9dd6-7a7f-b61c-962c0f4bf632",
+            void_source_payload_hash="sha256:" + "5" * 64,
+            issued_invoice_void_contract_version=1,
+            source_payload_hash="sha256:" + "6" * 64,
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "usage_revenue",
+                    "debit_amount": "25000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "0",
+                    "credit_amount": "25000",
+                },
+            ],
+        )
+        server = case._start_http_server()
+
+        invoice_status, _invoice = case._http_json("POST", "/journal-proposals", invoice)
+        before_status, before = case._http_payable_aging()
+        void_status, _receipt = case._http_json("POST", "/journal-proposals", void)
+        after_status, after = case._http_payable_aging()
+        explicit_status, explicit = case._http_payable_aging(chart_account_code="210100")
+        clearing_payable = case._http_payable_aging(chart_account_code="210200")
+
+        self.assertEqual(
+            void["idempotency_key"],
+            (
+                f"{case.policy.tenant_reference}:issued_invoice_void:"
+                "019d7b92-9dd6-7a7f-b61c-962c0f4bf632:"
+                f"sha256:{'5' * 64}:v1"
+            ),
+        )
+        self.assertEqual(
+            [line["account_role_code"] for line in void["lines"]],
+            ["usage_revenue", "accounts_receivable"],
+        )
+        self.assertNotIn("tax_payable", json.dumps(void["lines"]))
+        self.assertEqual(invoice_status, 200)
+        self.assertEqual(before_status, 200)
+        self.assertEqual(void_status, 200)
+        self.assertEqual(after_status, 200)
+        self.assertEqual(explicit_status, 200)
+        self.assertEqual(before["chart_account_code"], "210100")
+        self.assertEqual(before["total_outstanding_amount"], "0")
+        self.assertEqual(after["chart_account_code"], "210100")
+        self.assertEqual(after["current_amount"], "0")
+        self.assertEqual(after["total_outstanding_amount"], "0")
+        self.assertEqual(after, before)
+        self.assertEqual(explicit, after)
+        self.assertEqual(clearing_payable[0], 422)
+        self.assertIn("tax_payable", str(clearing_payable[1]["error_message"]))
         server.shutdown()
         server.server_close()
 

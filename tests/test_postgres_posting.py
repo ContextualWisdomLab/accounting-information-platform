@@ -1574,6 +1574,7 @@ class PostgresPostingTests(unittest.TestCase):
 
         invoice_status, _invoice = self._http_json("POST", "/journal-proposals", invoice)
         before_status, before = self._http_receivable_aging()
+        before_payable_status, before_payable = self._http_payable_aging()
         mapping_status, mappings = self._http_account_role_mappings()
         pull_status, pull_body = self._http_json(
             "POST",
@@ -1584,6 +1585,11 @@ class PostgresPostingTests(unittest.TestCase):
         replay_status, replay_receipt = self._http_json("POST", "/journal-proposals", void)
         conflict_status, _conflict = self._http_json("POST", "/journal-proposals", conflict)
         after_status, after = self._http_receivable_aging()
+        after_payable_status, after_payable = self._http_payable_aging()
+        tax_balances_status, tax_balances = self._http_account_balances(
+            chart_account_code="210100"
+        )
+        clearing_payable = self._http_payable_aging(chart_account_code="210200")
         journal_status, journal = self._http_journal(
             idempotency_key=str(void["idempotency_key"])
         )
@@ -1599,6 +1605,9 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(invoice_status, 200)
         self.assertEqual(before_status, 200)
         self.assertEqual(before["total_outstanding_amount"], "27500")
+        self.assertEqual(before_payable_status, 200)
+        self.assertEqual(before_payable["chart_account_code"], "210100")
+        self.assertEqual(before_payable["total_outstanding_amount"], "2500")
         self.assertEqual(mapping_status, 200)
         self.assertEqual(mapping_by_role["accounts_receivable"]["chart_account_code"], "110100")
         self.assertEqual(mapping_by_role["usage_revenue"]["chart_account_code"], "410100")
@@ -1614,6 +1623,17 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(post_receipt["idempotency_key"], void["idempotency_key"])
         self.assertEqual(after_status, 200)
         self.assertEqual(after["total_outstanding_amount"], "0")
+        self.assertEqual(after_payable_status, 200)
+        self.assertEqual(tax_balances_status, 200)
+        self.assertEqual(after_payable["chart_account_code"], "210100")
+        self.assertEqual(after_payable["total_outstanding_amount"], "0")
+        self.assertEqual(
+            Decimal(str(after_payable["total_outstanding_amount"])),
+            Decimal(str(tax_balances["account_balances"][0]["credit_amount"]))
+            - Decimal(str(tax_balances["account_balances"][0]["debit_amount"])),
+        )
+        self.assertEqual(clearing_payable[0], 422)
+        self.assertIn("tax_payable", str(clearing_payable[1]["error_message"]))
         self.assertEqual(balances_status, 200)
         self.assertEqual(
             Decimal(str(after["total_outstanding_amount"])),
