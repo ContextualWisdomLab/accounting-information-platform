@@ -16,7 +16,7 @@ jobs:
   repair:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     env:
       ACCOUNTING_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/accounting_test
     services:
@@ -34,7 +34,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - name: Check out repair head
+      - name: Check out exact repair head
         uses: actions/checkout@631c942040754b6e095e929c1677c07e10ed4f87
         with:
           ref: agent/accounting-posting-foundation
@@ -66,8 +66,7 @@ jobs:
                   raise SystemExit(f"{path}: expected one replacement, found {count}")
               write(path, text.replace(old, new, 1))
 
-          # RFC 9110 Content-Length syntax: ASCII digits only. Python int() also
-          # accepts signs, underscores, whitespace, and non-ASCII digits.
+          # RFC 9110 field syntax accepts one or more ASCII decimal digits only.
           replace_once(
               "src/accounting_information_platform/http_api.py",
               '''        length_text = self.headers.get("Content-Length", "0")
@@ -83,18 +82,18 @@ jobs:
           ''',
           )
 
-          # Review-owned HTTP servers and delegated unittest cases must always
-          # clean up even when an assertion fails.
+          # All auxiliary TestCase instances and HTTP servers are cleaned up on
+          # assertion failure, not only on the successful tail of each test.
           path = "tests/test_http_api.py"
           text = read(path)
           if "import io\n" not in text:
               text = text.replace("import http.client\n", "import http.client\nimport io\n", 1)
           if "from unittest import mock\n" not in text:
               text = text.replace("import unittest\n", "import unittest\nfrom unittest import mock\n", 1)
-          if "JournalProposalHandler" not in text:
+          if "from accounting_information_platform.http_api import JournalProposalHandler\n" not in text:
               text = text.replace(
-                  "from accounting_information_platform import AccountingValidationError\n",
-                  "from accounting_information_platform import AccountingValidationError\n"
+                  "from accounting_information_platform.billing_pull import accept_billing_proposal_pull\n",
+                  "from accounting_information_platform.billing_pull import accept_billing_proposal_pull\n"
                   "from accounting_information_platform.http_api import JournalProposalHandler\n",
                   1,
               )
@@ -111,16 +110,14 @@ jobs:
           )
           text = re.sub(r"(?m)^\s*server\.shutdown\(\)\n", "", text)
           text = re.sub(r"(?m)^\s*server\.server_close\(\)\n", "", text)
-          marker = '\n\nif __name__ == "__main__":\n'
-          if marker not in text:
-              raise SystemExit("tests/test_http_api.py: main marker missing")
           content_length_test = '''
+
 
           class StrictContentLengthSyntaxTests(unittest.TestCase):
               """HTTP body reads reject Python-only integer spellings."""
 
               def test_read_body_accepts_ascii_digits_only(self) -> None:
-                  """Signs, underscores, whitespace, and Unicode digits are not field syntax."""
+                  """Signs, underscores, whitespace, and Unicode digits are invalid."""
                   for value in ("+2", "1_0", " 2", "٢"):
                       with self.subTest(value=value):
                           handler = object.__new__(JournalProposalHandler)
@@ -152,24 +149,26 @@ jobs:
                   oversized._write_error.assert_called_once()
           '''
           if "class StrictContentLengthSyntaxTests" not in text:
-              text = text.replace(marker, content_length_test + marker, 1)
+              text = text.rstrip() + content_length_test + "\n"
           write(path, text)
 
-          # APA 7th same-author/same-year suffixes.
+          # APA 7th same-author/same-year disambiguation.
           path = "docs/doctoring/REFERENCES.md"
           text = read(path)
           text = text.replace(
-              "Korea Legislation Research Institute. (2024). *Value-Added Tax Act*.",
-              "Korea Legislation Research Institute. (2024a). *Value-Added Tax Act*.",
+              "Korea Legislation Research Institute. (2024). *Income Tax Act*",
+              "Korea Legislation Research Institute. (2024b). *Income Tax Act*",
+              1,
           )
           text = text.replace(
-              "Korea Legislation Research Institute. (2024). *Income Tax Act*.",
-              "Korea Legislation Research Institute. (2024b). *Income Tax Act*.",
+              "Korea Legislation Research Institute. (2024). *Value-Added Tax Act*",
+              "Korea Legislation Research Institute. (2024a). *Value-Added Tax Act*",
+              1,
           )
           write(path, text)
 
-          # Append-only migrations also reject TRUNCATE, DROP TABLE, and quoted
-          # journal identifiers rather than only simple UPDATE/DELETE spellings.
+          # The repository-level immutability gate covers destructive DDL and
+          # quoted identifiers as well as simple UPDATE/DELETE spellings.
           path = "scripts/validate_repository.py"
           text = read(path)
           old = '''APPEND_ONLY_JOURNAL_MUTATION_ERROR = (
@@ -239,8 +238,8 @@ jobs:
               raise SystemExit("append-only test snippet drifted")
           write(path, text.replace(old, new, 1))
 
-          # Operator configuration must never turn loopback/link-local origins
-          # into a trusted Billing destination.
+          # Configured Billing origins are trusted configuration only after they
+          # pass the same local-network prohibition documented for operations.
           path = "src/accounting_information_platform/billing_pull.py"
           text = read(path)
           if "import ipaddress\n" not in text:
@@ -249,8 +248,8 @@ jobs:
               """Map operator-configured origins to the fetch base they authorize."""
           '''
           helper = '''def _require_safe_configured_billing_origin(origin: str) -> None:
-              """Reject loopback and link-local hosts even when an operator lists them."""
-              hostname = urlparse(origin).hostname or ""
+              """Reject loopback and link-local hosts in trusted Billing configuration."""
+              hostname = (urlparse(origin).hostname or "").rstrip(".")
               if hostname.lower() == "localhost":
                   raise AccountingValidationError(
                       "Billing configured origins must not use loopback or link-local hosts. "
@@ -272,31 +271,27 @@ jobs:
               if anchor not in text:
                   raise SystemExit("billing configured origin anchor drifted")
               text = text.replace(anchor, helper + anchor, 1)
-          text = text.replace(
-              "        origin = _canonical_billing_origin(fetch_base)\n",
-              "        origin = _canonical_billing_origin(fetch_base)\n"
-              "        _require_safe_configured_billing_origin(origin)\n",
-              1,
-          )
+          needle = "        origin = _canonical_billing_origin(fetch_base)\n"
+          replacement = needle + "        _require_safe_configured_billing_origin(origin)\n"
+          if replacement not in text:
+              if text.count(needle) != 1:
+                  raise SystemExit("configured Billing origin normalization drifted")
+              text = text.replace(needle, replacement, 1)
           write(path, text)
 
           path = "tests/test_billing_pull.py"
           text = read(path)
-          old = '''                loopback_env = dict(env)
+          loopback_block = '''                loopback_env = dict(env)
                           loopback_env["BILLING_BASE_URL"] = "http://127.0.0.1:18765"
                           with mock.patch.dict(os.environ, loopback_env, clear=False):
                               allowlisted_loopback = _accept_pull(
                                   _pull_payload("http://127.0.0.1:18765")
                               )
           '''
-          if old not in text:
+          if loopback_block not in text:
               raise SystemExit("loopback success fixture drifted")
-          text = text.replace(old, "", 1)
-          text = text.replace(
-              "        self.assertEqual(allowlisted_loopback, omitted)\n",
-              "",
-              1,
-          )
+          text = text.replace(loopback_block, "", 1)
+          text = text.replace("        self.assertEqual(allowlisted_loopback, omitted)\n", "", 1)
           text = text.replace(
               '''                _DR_ORIGIN,
                           "http://127.0.0.1:18765",
@@ -320,11 +315,10 @@ jobs:
               '"http://[2001:4860:4860::8888]:18765",',
               1,
           )
-          marker = '\n\nif __name__ == "__main__":\n'
           configured_test = '''
 
               def test_configured_loopback_and_link_local_origins_fail_closed(self) -> None:
-                  """Neither primary nor additional configured origins may target local networks."""
+                  """Primary and additional configured origins reject local networks."""
                   unsafe_environments = (
                       {
                           "BILLING_BASE_URL": "http://127.0.0.1:18765",
@@ -369,12 +363,11 @@ jobs:
                           )
                           safe_pull.assert_called_once()
           '''
-          class_end = '\n\nif __name__ == "__main__":\n'
+          main_marker = '\n\nif __name__ == "__main__":\n'
           if "test_configured_loopback_and_link_local_origins_fail_closed" not in text:
-              if class_end not in text:
+              if main_marker not in text:
                   raise SystemExit("tests/test_billing_pull.py: main marker missing")
-              # Keep the new method inside BillingPullOriginAllowlistTests.
-              text = text.replace(class_end, configured_test + class_end, 1)
+              text = text.replace(main_marker, configured_test + main_marker, 1)
           write(path, text)
           PY
       - name: Install hash-locked quality dependencies
@@ -392,7 +385,7 @@ jobs:
         env:
           PYTHONPATH: src:.
         run: python -m coverage run --branch -m unittest discover -s tests -p 'test_*.py'
-      - name: Enforce complete coverage and repository contracts
+      - name: Enforce coverage and repository contracts
         run: |
           python -m coverage report --fail-under=100 --show-missing
           python scripts/validate_repository.py .
