@@ -23,8 +23,9 @@ Normative development rules are in [AGENTS.md](../AGENTS.md) and
 Run the commands in the root README from this checkout only. Do not require a
 Naruon or sibling worktree. Production statement and branch coverage must
 remain 100%. `scripts/validate_repository.py` rejects missing required files,
-unresolved placeholder tokens, mutable GitHub Action tags, SQL naming, and
-`UPDATE`/`DELETE` of `general_journal` or `journal_entry_line`.
+unresolved placeholder tokens, mutable GitHub Action tags, SQL naming for
+schemas, tables, columns, policies, and functions, and `UPDATE`/`DELETE` of
+`general_journal` or `journal_entry_line`.
 
 ## Exact-head CI
 

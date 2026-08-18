@@ -83,6 +83,39 @@ class RepositoryContractTests(unittest.TestCase):
             ),
         )
 
+    def test_single_word_policy_and_function_names_are_rejected(self) -> None:
+        """Policies and functions require two-word snake_case names."""
+        sql = """
+        CREATE POLICY isolation ON accounting_core.general_journal
+            USING (true);
+        CREATE POLICY IF NOT EXISTS tenant ON accounting_core.journal_entry_line
+            USING (true);
+        CREATE FUNCTION helper() RETURNS uuid LANGUAGE sql AS $$ SELECT uuidv7(); $$;
+        CREATE OR REPLACE FUNCTION accounting_core.guard() RETURNS uuid LANGUAGE sql AS $$ SELECT uuidv7(); $$;
+        """
+        self.assertEqual(
+            validate_sql_object_names(sql),
+            (
+                "policy name must contain at least two snake_case words: isolation",
+                "policy name must contain at least two snake_case words: tenant",
+                "function name must contain at least two snake_case words: helper",
+                "function name must contain at least two snake_case words: guard",
+            ),
+        )
+
+    def test_two_word_policy_and_function_names_are_accepted(self) -> None:
+        """Valid two-word policy and function names still pass the naming gate."""
+        sql = """
+        CREATE POLICY tenant_isolation ON accounting_core.general_journal
+            USING (true);
+        CREATE POLICY IF NOT EXISTS journal_entry_isolation
+            ON accounting_core.journal_entry_line
+            USING (true);
+        CREATE FUNCTION current_tenant_id() RETURNS uuid LANGUAGE sql AS $$ SELECT uuidv7(); $$;
+        CREATE OR REPLACE FUNCTION accounting_core.current_tenant_account_id() RETURNS uuid LANGUAGE sql AS $$ SELECT uuidv7(); $$;
+        """
+        self.assertEqual(validate_sql_object_names(sql), ())
+
     def test_placeholders_are_rejected(self) -> None:
         """Accepted architecture and plans cannot retain unresolved placeholders."""
         self.assertEqual(

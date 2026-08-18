@@ -125,6 +125,15 @@ COLUMN_NAME_PATTERN = re.compile(
     r"(?:uuid|text|timestamptz|timestamp|date|integer|bigint|numeric|boolean|jsonb)\b",
     re.IGNORECASE | re.MULTILINE,
 )
+POLICY_NAME_PATTERN = re.compile(
+    r"\bCREATE\s+POLICY(?:\s+IF\s+NOT\s+EXISTS)?\s+([A-Za-z_][A-Za-z0-9_]*)",
+    re.IGNORECASE,
+)
+FUNCTION_NAME_PATTERN = re.compile(
+    r"\bCREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+"
+    r"(?:(?:[A-Za-z_][A-Za-z0-9_]*)\.)?([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+    re.IGNORECASE,
+)
 APPEND_ONLY_JOURNAL_MUTATION_ERROR = (
     "accounting migrations must not UPDATE or DELETE "
     "general_journal or journal_entry_line"
@@ -159,23 +168,22 @@ def validate_append_only_journal_sql(sql_text: str) -> tuple[str, ...]:
 
 
 def validate_sql_object_names(sql_text: str) -> tuple[str, ...]:
-    """Require created schemas, tables, and columns to use two-word snake case."""
+    """Require created schemas, tables, columns, policies, and functions to use two-word snake case."""
     errors: list[str] = []
-    for schema_name in SCHEMA_NAME_PATTERN.findall(sql_text):
-        if TWO_WORD_SNAKE_PATTERN.fullmatch(schema_name) is None:
-            errors.append(
-                f"schema name must contain at least two snake_case words: {schema_name}"
-            )
-    for table_name in TABLE_NAME_PATTERN.findall(sql_text):
-        if TWO_WORD_SNAKE_PATTERN.fullmatch(table_name) is None:
-            errors.append(
-                f"table name must contain at least two snake_case words: {table_name}"
-            )
-    for column_name in COLUMN_NAME_PATTERN.findall(sql_text):
-        if TWO_WORD_SNAKE_PATTERN.fullmatch(column_name) is None:
-            errors.append(
-                f"column name must contain at least two snake_case words: {column_name}"
-            )
+    named_objects = (
+        ("schema", SCHEMA_NAME_PATTERN.findall(sql_text)),
+        ("table", TABLE_NAME_PATTERN.findall(sql_text)),
+        ("column", COLUMN_NAME_PATTERN.findall(sql_text)),
+        ("policy", POLICY_NAME_PATTERN.findall(sql_text)),
+        ("function", FUNCTION_NAME_PATTERN.findall(sql_text)),
+    )
+    for object_type, object_names in named_objects:
+        for object_name in object_names:
+            if TWO_WORD_SNAKE_PATTERN.fullmatch(object_name) is None:
+                errors.append(
+                    f"{object_type} name must contain at least two snake_case words: "
+                    f"{object_name}"
+                )
     return tuple(errors)
 
 

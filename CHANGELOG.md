@@ -4,6 +4,7 @@
 
 ### Changed
 
+- Repository migration validation now collects `CREATE POLICY` and `CREATE FUNCTION` names and rejects any that fail the existing two-word `snake_case` rule. The exact diagnostic is `{policy|function} name must contain at least two snake_case words: {name}`. Valid two-word names, including checked-in `*_isolation` policies and `current_tenant_account_id`, still pass. This slice does not rewrite the foundation migration, add deferred balance triggers, or `FORCE ROW LEVEL SECURITY`.
 - Repository migration validation now rejects `UPDATE` or `DELETE` of append-only `general_journal` and `journal_entry_line`. The exact rule is `accounting migrations must not UPDATE or DELETE general_journal or journal_entry_line`. Unrelated `UPDATE` or `DELETE` of other tables remains valid, including the existing `chart_account` class backfill. ADR 0003 records that CI gate. This slice does not rewrite the foundation migration, add deferred balance triggers, or `FORCE ROW LEVEL SECURITY`.
 - Replaced the engineer-oriented root README with a buyer/operator document:
   current foundation readiness, independent run without Naruon or sibling
