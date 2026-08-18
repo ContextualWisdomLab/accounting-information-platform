@@ -141,17 +141,11 @@ class IssuedInvoiceVoidAgingHttpTests(unittest.TestCase):
         invoice = case._billing_taxed_payload()
         void = case._billing_issued_invoice_void_payload()
         later_void = case._billing_issued_invoice_void_payload(
-            proposal_id="019d7b92-9dd6-7a7f-b61c-962c0f4bf631",
-            idempotency_key=(
-                f"{case.policy.tenant_reference}:issued_invoice_void:"
-                f"019d7b92-9dd6-7a7f-b61c-962c0f4bf631:sha256:{'2' * 64}:v1"
-            ),
-            source_payload_hash="sha256:" + "2" * 64,
-            source_event_references=(
-                f"{case.policy.tenant_reference}:issued_invoice_void:"
-                "019d7b92-9dd6-7a7f-b61c-962c0f4bf631",
-                f"{case.policy.tenant_reference}:invoice_draft:{invoice['proposal_id']}",
-            ),
+            proposal_id="019d7b92-9ee8-7a7f-b61c-962c0f4bf641",
+            issued_invoice_void_id="019d7b92-9dd6-7a7f-b61c-962c0f4bf631",
+            void_source_payload_hash="sha256:" + "2" * 64,
+            issued_invoice_void_contract_version=1,
+            source_payload_hash="sha256:" + "3" * 64,
         )
         conflict = case._billing_issued_invoice_void_payload(
             source_payload_hash="sha256:" + "9" * 64,
@@ -191,7 +185,20 @@ class IssuedInvoiceVoidAgingHttpTests(unittest.TestCase):
             path.read_text(encoding="utf-8") for path in production.rglob("*.py")
         )
 
+        issued_invoice_void_id = "019d7b92-9dd6-7a7f-b61c-962c0f4bf630"
+        void_source_payload_hash = "sha256:" + "7" * 64
+        issued_invoice_void_contract_version = 1
         self.assertEqual(
+            void["idempotency_key"],
+            (
+                f"{case.policy.tenant_reference}:issued_invoice_void:"
+                f"{issued_invoice_void_id}:{void_source_payload_hash}"
+                f":v{issued_invoice_void_contract_version}"
+            ),
+        )
+        self.assertNotEqual(void["proposal_id"], issued_invoice_void_id)
+        self.assertNotEqual(void["source_payload_hash"], void_source_payload_hash)
+        self.assertNotEqual(
             void["idempotency_key"],
             (
                 f"{case.policy.tenant_reference}:issued_invoice_void:"
@@ -203,16 +210,23 @@ class IssuedInvoiceVoidAgingHttpTests(unittest.TestCase):
         self.assertEqual(void["lines"][0]["account_role_code"], "usage_revenue")
         self.assertEqual(void["lines"][1]["account_role_code"], "tax_payable")
         self.assertEqual(void["lines"][2]["account_role_code"], "accounts_receivable")
-        self.assertTrue(
-            str(void["source_event_references"][1]).endswith(f":{invoice['proposal_id']}")
+        self.assertEqual(
+            list(void["source_event_references"]),
+            [f"{case.policy.tenant_reference}:issued_invoice_void:{issued_invoice_void_id}"],
         )
         self.assertNotIn("journal_entry_id", json.dumps(void))
+        self.assertNotIn("reversed_journal_proposal_id", json.dumps(void))
+        self.assertNotIn("invoice_draft_id", json.dumps(void))
         self.assertNotIn("invoice.voided", json.dumps(void))
         self.assertNotIn("collection_status", json.dumps(void))
+        self.assertNotIn("duplicate_replay", json.dumps(void))
         self.assertNotIn("110100", json.dumps(void["lines"]))
         self.assertNotIn("journal_entry_id", production_text)
+        self.assertNotIn("reversed_journal_proposal_id", production_text)
+        self.assertNotIn("invoice_draft_id", production_text)
         self.assertNotIn("invoice.voided", production_text)
         self.assertNotIn("collection_status", production_text)
+        self.assertNotIn("duplicate_replay", production_text)
         self.assertEqual(invoice_status, 200)
         self.assertEqual(before_status, 200)
         self.assertEqual(before_payable_status, 200)

@@ -1537,7 +1537,20 @@ class PostgresPostingTests(unittest.TestCase):
         billing_url = self._start_fake_billing([void])
         server = self._start_http_server()
 
+        issued_invoice_void_id = "019d7b92-9dd6-7a7f-b61c-962c0f4bf630"
+        void_source_payload_hash = "sha256:" + "7" * 64
+        issued_invoice_void_contract_version = 1
         self.assertEqual(
+            void["idempotency_key"],
+            (
+                f"{self.policy.tenant_reference}:issued_invoice_void:"
+                f"{issued_invoice_void_id}:{void_source_payload_hash}"
+                f":v{issued_invoice_void_contract_version}"
+            ),
+        )
+        self.assertNotEqual(void["proposal_id"], issued_invoice_void_id)
+        self.assertNotEqual(void["source_payload_hash"], void_source_payload_hash)
+        self.assertNotEqual(
             void["idempotency_key"],
             (
                 f"{self.policy.tenant_reference}:issued_invoice_void:"
@@ -1550,10 +1563,13 @@ class PostgresPostingTests(unittest.TestCase):
             [line["account_role_code"] for line in void["lines"]],
             ["usage_revenue", "tax_payable", "accounts_receivable"],
         )
-        self.assertTrue(
-            str(void["source_event_references"][1]).endswith(f":{invoice['proposal_id']}")
+        self.assertEqual(
+            list(void["source_event_references"]),
+            [f"{self.policy.tenant_reference}:issued_invoice_void:{issued_invoice_void_id}"],
         )
         self.assertNotIn("journal_entry_id", json.dumps(void))
+        self.assertNotIn("reversed_journal_proposal_id", json.dumps(void))
+        self.assertNotIn("invoice_draft_id", json.dumps(void))
         self.assertNotIn("110100", json.dumps(void["lines"]))
 
         invoice_status, _invoice = self._http_json("POST", "/journal-proposals", invoice)
@@ -11132,15 +11148,24 @@ class PostgresPostingTests(unittest.TestCase):
         return values
 
     def _billing_issued_invoice_void_payload(self, **overrides: object) -> dict[str, object]:
-        source_payload_hash = "sha256:" + "7" * 64
-        issued_invoice_void_id = "019d7b92-9dd6-7a7f-b61c-962c0f4bf630"
-        original_invoice_proposal_id = "019d7b92-3cc2-7a7f-b61c-962c0f4bf614"
+        issued_invoice_void_id = str(
+            overrides.pop("issued_invoice_void_id", "019d7b92-9dd6-7a7f-b61c-962c0f4bf630")
+        )
+        void_source_payload_hash = str(
+            overrides.pop("void_source_payload_hash", "sha256:" + "7" * 64)
+        )
+        issued_invoice_void_contract_version = int(
+            overrides.pop("issued_invoice_void_contract_version", 1)
+        )
+        source_payload_hash = "sha256:" + "4" * 64
+        proposal_id = "019d7b92-9ee8-7a7f-b61c-962c0f4bf640"
         values: dict[str, object] = {
-            "proposal_id": issued_invoice_void_id,
+            "proposal_id": proposal_id,
             "proposal_contract_version": 1,
             "idempotency_key": (
                 f"{self.policy.tenant_reference}:issued_invoice_void:"
-                f"{issued_invoice_void_id}:{source_payload_hash}:v1"
+                f"{issued_invoice_void_id}:{void_source_payload_hash}"
+                f":v{issued_invoice_void_contract_version}"
             ),
             "tenant_reference": self.policy.tenant_reference,
             "legal_entity_reference": self.policy.legal_entity_reference,
@@ -11154,8 +11179,6 @@ class PostgresPostingTests(unittest.TestCase):
             "source_event_references": (
                 f"{self.policy.tenant_reference}:issued_invoice_void:"
                 f"{issued_invoice_void_id}",
-                f"{self.policy.tenant_reference}:invoice_draft:"
-                f"{original_invoice_proposal_id}",
             ),
             "lines": [
                 {
