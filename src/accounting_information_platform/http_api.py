@@ -1,4 +1,4 @@
-"""Thin stdlib HTTP boundary for Billing proposals, AIS adjusting journals, pulls, receipts, close, open, TB, statements, catalog, ledgers, balances, rollforwards, leftover-cash rollforward, VAT period register, receivable aging, payable aging, period-close packages, journals, reversals, outbox, and audit history."""
+"""Thin stdlib HTTP boundary for Billing proposals, AIS adjusting journals, pulls, receipts, close, open, TB, statements, catalog, ledgers, balances, rollforwards, leftover-cash rollforward, VAT period register, HomeTax submission, receivable aging, payable aging, period-close packages, journals, reversals, outbox, and audit history."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .accept import (
     accept_adjusting_journal,
+    accept_home_tax_submission,
     accept_journal_proposal,
     accept_journal_reversal,
     accept_period_close,
@@ -37,6 +38,7 @@ from .accept import (
     lookup_published_receipt,
     lookup_receivable_aging,
     lookup_trial_balance,
+    lookup_home_tax_submissions,
     lookup_unapplied_cash_rollforward,
     lookup_vat_period_register,
     publish_outbox_event,
@@ -64,6 +66,7 @@ ACCOUNT_BALANCE_PATH = "/account-balances"
 ACCOUNT_ROLLFORWARD_PATH = "/account-rollforwards"
 UNAPPLIED_CASH_ROLLFORWARD_PATH = "/unapplied-cash-rollforwards"
 VAT_PERIOD_REGISTER_PATH = "/vat-period-registers"
+HOME_TAX_SUBMISSION_PATH = "/home-tax-submissions"
 RECEIVABLE_AGING_PATH = "/receivable-agings"
 PAYABLE_AGING_PATH = "/payable-agings"
 PERIOD_CLOSE_PACKAGE_PATH = "/period-close-packages"
@@ -161,6 +164,9 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         if parsed.path == VAT_PERIOD_REGISTER_PATH:
             self._get_vat_period_register(parsed.query)
             return
+        if parsed.path == HOME_TAX_SUBMISSION_PATH:
+            self._get_home_tax_submissions(parsed.query)
+            return
         if parsed.path == RECEIVABLE_AGING_PATH:
             self._get_receivable_aging(parsed.query)
             return
@@ -199,7 +205,7 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             "GET /account-role-mappings, GET /accounting-books, "
             "GET /legal-entities, GET /chart-accounts, GET /account-ledgers, "
             "GET /account-balances, GET /account-rollforwards, GET /unapplied-cash-rollforwards, "
-            "GET /vat-period-registers, GET /receivable-agings, "
+            "GET /vat-period-registers, GET /home-tax-submissions, GET /receivable-agings, "
             "GET /payable-agings, GET /period-close-packages, GET /journals, "
             "GET /journal-reversals, GET /period-closes, GET /fiscal-periods, "
             "GET /outbox-events?event_type_code=, or GET /audit-events, then retry.",
@@ -324,6 +330,9 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         if parsed_path == PERIOD_CLOSE_PATH:
             self._post_period_close(raw_body)
             return
+        if parsed_path == HOME_TAX_SUBMISSION_PATH:
+            self._post_home_tax_submission(raw_body)
+            return
         if parsed_path == FISCAL_PERIOD_PATH:
             self._post_fiscal_period(raw_body)
             return
@@ -349,7 +358,8 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         self._write_error(
             404,
             "unknown path. POST /journal-proposals, POST /journals, POST /journal-reversals, "
-            "POST /billing-proposal-pulls, POST /period-closes, POST /fiscal-periods, "
+            "POST /billing-proposal-pulls, POST /period-closes, POST /home-tax-submissions, "
+            "POST /fiscal-periods, "
             "or POST /outbox-events/{outbox_event_id}/publish, then retry.",
         )
 
@@ -684,6 +694,36 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             return
         try:
             document = lookup_vat_period_register(
+                self.server.database_url,
+                tenant_header,
+                legal_entity_reference,
+                book_reference,
+                fiscal_period_reference,
+            )
+        except AccountingValidationError as error:
+            self._write_error(404, str(error))
+            return
+        self._write_json(200, document)
+
+    def _get_home_tax_submissions(self, query: str) -> None:
+        tenant_header = self._bound_tenant_header("home-tax-submission read")
+        if tenant_header is None:
+            return
+        fields = parse_qs(query)
+        legal_entity_reference = _first_query(fields, "legal_entity_reference")
+        book_reference = _first_query(fields, "book_reference")
+        if not book_reference:
+            book_reference = _first_query(fields, "accounting_book_reference")
+        fiscal_period_reference = _first_query(fields, "fiscal_period_reference")
+        if not legal_entity_reference or not book_reference or not fiscal_period_reference:
+            self._write_error(
+                400,
+                "legal_entity_reference, book_reference, and fiscal_period_reference are required. "
+                "Supply those home-tax-submission fields, then retry the home-tax-submission read.",
+            )
+            return
+        try:
+            document = lookup_home_tax_submissions(
                 self.server.database_url,
                 tenant_header,
                 legal_entity_reference,
@@ -1317,6 +1357,29 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             self._write_error(422, str(error))
             return
         self._write_json(200, document)
+
+    def _post_home_tax_submission(self, raw_body: bytes) -> None:
+        tenant_header = self._bound_tenant_header("home-tax-submission")
+        if tenant_header is None:
+            return
+        payload = self._read_json_object(raw_body, "a home-tax-submission command")
+        if payload is None:
+            return
+        if payload.get("tenant_reference") != tenant_header:
+            self._write_error(
+                403,
+                "home-tax-submission tenant_reference does not match X-CWL-Tenant-Reference. "
+                "Send the home-tax-submission to that tenant's AIS endpoint, then retry.",
+            )
+            return
+        try:
+            document = accept_home_tax_submission(
+                payload, self.server.database_url, tenant_header
+            )
+        except AccountingValidationError as error:
+            self._write_error(404, str(error))
+            return
+        self._write_json(422, document)
 
     def _post_billing_proposal_pull(self, raw_body: bytes) -> None:
         tenant_header = self._bound_tenant_header("pull")

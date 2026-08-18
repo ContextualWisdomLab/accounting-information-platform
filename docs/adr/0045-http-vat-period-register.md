@@ -18,4 +18,4 @@ IAS 1 requires presentation that helps users assess financial position, includin
 
 ## Consequences
 
-Controllers can reconcile period VAT on 210100 without SQL, without a new catalog role, and without an NTS adapter. Account-balance, payable-aging, leftover-cash, and period-close-package reads stay on their existing routes. Billing still assesses commercial tax and still posts issued invoices and issued-invoice voids on the existing ingest path.
+Controllers can reconcile period VAT on 210100 without SQL, without a new catalog role, and without an NTS adapter. Account-balance, payable-aging, leftover-cash, and period-close-package reads stay on their existing routes. Billing still assesses commercial tax and still posts issued invoices and issued-invoice voids on the existing ingest path. AIS now also exposes a fail-closed HomeTax command (ADR 0046) that requires this register before any filing attempt and still does not transmit to NTS.

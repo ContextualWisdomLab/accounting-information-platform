@@ -1758,6 +1758,153 @@ class PostgresPostingLedger:
             )
         return document
 
+    def persist_home_tax_submission(
+        self,
+        *,
+        legal_entity_reference: str,
+        accounting_book_reference: str,
+        period_code: str,
+        register_document: dict[str, object],
+        rejection_reason_code: str,
+    ) -> dict[str, object]:
+        """Persist one rejected HomeTax receipt for a resolved entity, book, and period."""
+        register_payload_hash = "sha256:" + hashlib.sha256(
+            json.dumps(
+                register_document, separators=(",", ":"), sort_keys=True, default=str
+            ).encode("utf-8")
+        ).hexdigest()
+        raw_as_of_date = str(register_document.get("as_of_date") or "")
+        as_of_date = date.fromisoformat(raw_as_of_date) if raw_as_of_date else date.min
+        closing_amount = Decimal(str(register_document.get("closing_amount") or "0"))
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            legal_entity_id = self._require_legal_entity(
+                connection,
+                tenant_id,
+                legal_entity_reference,
+                next_action="the home-tax-submission",
+            )
+            book_id = self._require_book_for_close(
+                connection,
+                tenant_id,
+                legal_entity_id,
+                accounting_book_reference,
+                next_action="the home-tax-submission",
+            )[0]
+            period_id, _period_status, _period_end_date = self._require_fiscal_period(
+                connection,
+                tenant_id,
+                period_code,
+                next_action="the home-tax-submission",
+            )
+            row = connection.execute(
+                """
+                INSERT INTO accounting_integration.home_tax_submission (
+                    tenant_account_id,
+                    legal_entity_id,
+                    accounting_book_id,
+                    fiscal_period_id,
+                    submission_status_code,
+                    rejection_reason_code,
+                    as_of_date,
+                    closing_amount,
+                    register_payload_hash
+                ) VALUES (%s, %s, %s, %s, 'rejected', %s, %s, %s, %s)
+                RETURNING home_tax_submission_id
+                """,
+                (
+                    tenant_id,
+                    legal_entity_id,
+                    book_id,
+                    period_id,
+                    rejection_reason_code,
+                    as_of_date,
+                    closing_amount,
+                    register_payload_hash,
+                ),
+            ).fetchone()
+        return _home_tax_submission_document(
+            home_tax_submission_id=str(row[0]),
+            tenant_reference=self._tenant_reference,
+            legal_entity_reference=legal_entity_reference,
+            book_reference=accounting_book_reference,
+            period_code=period_code,
+            vat_period_register=_home_tax_register_view(register_document),
+            rejection_reason_code=rejection_reason_code,
+        )
+
+    def load_home_tax_submissions(
+        self,
+        legal_entity_reference: str,
+        accounting_book_reference: str,
+        period_code: str,
+    ) -> dict[str, object]:
+        """Return persisted HomeTax receipts for one tenant entity, book, and period."""
+        if not legal_entity_reference or not accounting_book_reference or not period_code:
+            raise AccountingValidationError(
+                "legal_entity_reference, book_reference, and fiscal_period_reference are required. "
+                "Supply those home-tax-submission fields, then retry the home-tax-submission read."
+            )
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            legal_entity_id = self._require_legal_entity(
+                connection,
+                tenant_id,
+                legal_entity_reference,
+                next_action="the home-tax-submission read",
+            )
+            book_id = self._require_book_for_close(
+                connection,
+                tenant_id,
+                legal_entity_id,
+                accounting_book_reference,
+                next_action="the home-tax-submission read",
+            )[0]
+            period_id, _period_status, _period_end_date = self._require_fiscal_period(
+                connection,
+                tenant_id,
+                period_code,
+                next_action="the home-tax-submission read",
+            )
+            rows = connection.execute(
+                """
+                SELECT home_tax_submission_id,
+                       submission_status_code,
+                       rejection_reason_code,
+                       as_of_date,
+                       closing_amount
+                FROM accounting_integration.home_tax_submission
+                WHERE tenant_account_id = %s
+                  AND legal_entity_id = %s
+                  AND accounting_book_id = %s
+                  AND fiscal_period_id = %s
+                ORDER BY created_at, home_tax_submission_id
+                """,
+                (tenant_id, legal_entity_id, book_id, period_id),
+            ).fetchall()
+        return {
+            "tenant_reference": self._tenant_reference,
+            "legal_entity_reference": legal_entity_reference,
+            "book_reference": accounting_book_reference,
+            "fiscal_period_reference": f"urn:cwl:accounting:fiscal_period:{period_code}",
+            "home_tax_submissions": [
+                _home_tax_submission_document(
+                    home_tax_submission_id=str(row[0]),
+                    tenant_reference=self._tenant_reference,
+                    legal_entity_reference=legal_entity_reference,
+                    book_reference=accounting_book_reference,
+                    period_code=period_code,
+                    vat_period_register={
+                        "as_of_date": row[3].isoformat(),
+                        "closing_amount": _unsigned_aging_amount_text(Decimal(row[4])),
+                    },
+                    rejection_reason_code=str(row[2]),
+                    submission_status_code=str(row[1]),
+                )
+                for row in rows
+            ],
+        }
+
     def _opening_account_sides(
         self,
         connection: object,
@@ -5314,7 +5461,7 @@ class _ReversalProposal:
 
 
 def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
-    """Apply the checked-in PostgreSQL 18 foundation migrations to *database_url*."""
+    """Apply the checked-in PostgreSQL 18 foundation, class, and HomeTax migrations."""
     if not migration_path.is_file():
         raise AccountingValidationError(
             f"Foundation migration is missing at {migration_path}. "
@@ -5326,6 +5473,12 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             f"Chart-account class migration is missing at {class_migration_path}. "
             "Restore database/migrations/0002_chart_account_class.sql, then retry."
         )
+    submission_migration_path = migration_path.parent / "0003_home_tax_submission.sql"
+    if not submission_migration_path.is_file():
+        raise AccountingValidationError(
+            f"Home-tax submission migration is missing at {submission_migration_path}. "
+            "Restore database/migrations/0003_home_tax_submission.sql, then retry."
+        )
     psycopg = _import_psycopg()
     try:
         with psycopg.connect(
@@ -5333,6 +5486,7 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
         ) as connection:
             connection.execute(migration_path.read_text(encoding="utf-8"))
             connection.execute(class_migration_path.read_text(encoding="utf-8"))
+            connection.execute(submission_migration_path.read_text(encoding="utf-8"))
     except Exception as error:
         raise AccountingValidationError(
             "Foundation migration failed. Inspect the PostgreSQL error, restore a clean "
@@ -5506,6 +5660,59 @@ def _unsigned_aging_amount_text(value: Decimal) -> str:
     if "." not in amount_text:
         return amount_text
     return amount_text.rstrip("0").rstrip(".")
+
+
+_VAT_REGISTER_REQUIRED_KEYS = frozenset(
+    {
+        "tenant_reference",
+        "legal_entity_reference",
+        "accounting_book_reference",
+        "book_reference",
+        "fiscal_period_reference",
+        "as_of_date",
+        "chart_account_code",
+        "account_role_code",
+        "issued_amount",
+        "voided_amount",
+        "closing_amount",
+    }
+)
+
+
+def _vat_register_is_loadable(register_document: dict[str, object]) -> bool:
+    return _VAT_REGISTER_REQUIRED_KEYS.issubset(register_document.keys())
+
+
+def _home_tax_register_view(register_document: dict[str, object]) -> dict[str, object]:
+    if _vat_register_is_loadable(register_document):
+        return dict(register_document)
+    return {
+        "as_of_date": str(register_document.get("as_of_date") or ""),
+        "closing_amount": str(register_document.get("closing_amount") or "0"),
+    }
+
+
+def _home_tax_submission_document(
+    *,
+    home_tax_submission_id: str,
+    tenant_reference: str,
+    legal_entity_reference: str,
+    book_reference: str,
+    period_code: str,
+    vat_period_register: dict[str, object],
+    rejection_reason_code: str,
+    submission_status_code: str = "rejected",
+) -> dict[str, object]:
+    return {
+        "home_tax_submission_id": home_tax_submission_id,
+        "tenant_reference": tenant_reference,
+        "legal_entity_reference": legal_entity_reference,
+        "book_reference": book_reference,
+        "fiscal_period_reference": f"urn:cwl:accounting:fiscal_period:{period_code}",
+        "vat_period_register": vat_period_register,
+        "submission_status_code": submission_status_code,
+        "rejection_reason_code": rejection_reason_code,
+    }
 
 
 def _fifo_aging_open_items(

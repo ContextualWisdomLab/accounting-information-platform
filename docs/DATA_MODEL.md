@@ -23,6 +23,7 @@
 
 - `trial_balance_snapshot`: immutable population and currency snapshot for one book and period.
 - `trial_balance_line`: exact debit, credit, and net values per chart account.
+- `home_tax_submission`: fail-closed HomeTax filing receipt for one entity, book, and period. The row stores `submission_status_code`, `rejection_reason_code`, `as_of_date`, `closing_amount`, and `register_payload_hash`. It does not store raw register JSON, NTS payloads, or secrets.
 
 ## Normalization rules
 

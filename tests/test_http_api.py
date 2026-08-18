@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 import unittest
 from decimal import Decimal
 from pathlib import Path
@@ -11,9 +12,11 @@ from pathlib import Path
 from accounting_information_platform import AccountingValidationError
 from accounting_information_platform.billing_pull import accept_billing_proposal_pull
 from accounting_information_platform.accept import (
+    accept_home_tax_submission,
     accept_period_close,
     lookup_account_ledger,
     lookup_audit_events,
+    lookup_home_tax_submissions,
     lookup_journal_reversals,
     lookup_outbox_events,
     lookup_period_closes,
@@ -842,6 +845,83 @@ class VatPeriodRegisterHttpTests(unittest.TestCase):
         self.assertNotIn("next_cursor", voided)
         server.shutdown()
         server.server_close()
+
+
+class HomeTaxSubmissionHttpTests(unittest.TestCase):
+    """POST /home-tax-submissions fail-closes unless a VAT register and credential exist."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        postgres_posting.PostgresPostingTests.setUpClass()
+
+    def setUp(self) -> None:
+        self.case = postgres_posting.PostgresPostingTests("setUp")
+        self.case.setUp()
+
+    def test_http_home_tax_submission_requires_register_then_credential(self) -> None:
+        """Unknown period is 404; a live register without a credential is 422 rejected."""
+        case = self.case
+        server = case._start_http_server()
+        unknown_status, unknown = case._http_home_tax_submission(
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:1999-01"
+        )
+        empty_list_status, empty_list = case._http_home_tax_submissions()
+        register_status, register = case._http_vat_period_register()
+        previous_credential = os.environ.pop("ACCOUNTING_HOMETAX_CREDENTIAL", None)
+        try:
+            submit_status, submitted = case._http_home_tax_submission()
+        finally:
+            if previous_credential is not None:
+                os.environ["ACCOUNTING_HOMETAX_CREDENTIAL"] = previous_credential
+        listed_status, listed = case._http_home_tax_submissions()
+        vat_after_status, vat_after = case._http_vat_period_register()
+        vat_post_status, _vat_post = case._http_json("POST", "/vat-period-registers", {})
+
+        self.assertEqual(unknown_status, 404)
+        self.assertIn("error_message", unknown)
+        self.assertEqual(empty_list_status, 200)
+        self.assertEqual(empty_list["home_tax_submissions"], [])
+        self.assertEqual(register_status, 200)
+        self.assertEqual(submit_status, 422)
+        self.assertEqual(submitted["submission_status_code"], "rejected")
+        self.assertEqual(submitted["rejection_reason_code"], "hometax_credential_missing")
+        self.assertNotEqual(submitted["submission_status_code"], "transmitted")
+        self.assertEqual(submitted["vat_period_register"], register)
+        self.assertEqual(listed_status, 200)
+        self.assertEqual(len(listed["home_tax_submissions"]), 1)
+        self.assertEqual(vat_after_status, 200)
+        self.assertEqual(vat_after, register)
+        self.assertEqual(vat_post_status, 405)
+        server.shutdown()
+        server.server_close()
+
+    def test_accept_home_tax_submission_requires_object_and_matching_tenant(self) -> None:
+        """Library accept fail-closes before a ledger write when the command is unbound."""
+        with self.assertRaisesRegex(AccountingValidationError, "JSON object"):
+            accept_home_tax_submission(
+                "nope",
+                postgres_posting.DATABASE_URL,
+                self.case.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "does not match"):
+            accept_home_tax_submission(
+                {
+                    "tenant_reference": "urn:cwl:tenant_other",
+                    "legal_entity_reference": self.case.policy.legal_entity_reference,
+                    "book_reference": self.case.policy.accounting_book_reference,
+                    "fiscal_period_reference": "urn:cwl:accounting:fiscal_period:2026-08",
+                },
+                postgres_posting.DATABASE_URL,
+                self.case.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "are required"):
+            lookup_home_tax_submissions(
+                postgres_posting.DATABASE_URL,
+                self.case.policy.tenant_reference,
+                "",
+                self.case.policy.accounting_book_reference,
+                "urn:cwl:accounting:fiscal_period:2026-08",
+            )
 
 
 class PeriodClosePackageHttpTests(unittest.TestCase):

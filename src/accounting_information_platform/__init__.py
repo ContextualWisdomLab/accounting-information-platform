@@ -15,6 +15,7 @@ from .core import (
 )
 from .accept import (
     accept_adjusting_journal,
+    accept_home_tax_submission,
     accept_journal_proposal,
     accept_journal_reversal,
     accept_period_close,
@@ -41,6 +42,7 @@ from .accept import (
     lookup_published_receipt,
     lookup_receivable_aging,
     lookup_trial_balance,
+    lookup_home_tax_submissions,
     lookup_unapplied_cash_rollforward,
     lookup_vat_period_register,
     publish_outbox_event,
@@ -71,6 +73,7 @@ __all__ = [
     "PostingLedger",
     "PostingReceipt",
     "accept_adjusting_journal",
+    "accept_home_tax_submission",
     "accept_billing_proposal_pull",
     "accept_journal_proposal",
     "accept_journal_reversal",
@@ -102,6 +105,7 @@ __all__ = [
     "lookup_published_receipt",
     "lookup_receivable_aging",
     "lookup_trial_balance",
+    "lookup_home_tax_submissions",
     "lookup_unapplied_cash_rollforward",
     "lookup_vat_period_register",
     "publish_outbox_event",

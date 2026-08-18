@@ -22,7 +22,7 @@
 - Tenant-scoped composite foreign keys and PostgreSQL row-level security.
 - Maker-checker approval for policy changes, period close/reopen, high-risk manual journals, and reversal outside normal operations.
 - Append-only audit events and immutable source payload storage.
-- Secrets in KMS or an approved secret store; no credentials in journal payloads or logs.
+- Secrets in KMS or an approved secret store; no credentials in journal payloads or logs. `ACCOUNTING_HOMETAX_CREDENTIAL` is a purpose-limited AIS secret: check presence only, never log it, and never echo it on a HomeTax receipt.
 - Bounded payload sizes and line counts, strict decimal parsing, and controlled event replay.
 - Backup, restore, point-in-time recovery, and evidence-integrity rehearsal before release.
 

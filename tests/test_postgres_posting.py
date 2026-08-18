@@ -61,6 +61,7 @@ from accounting_information_platform import (
     lookup_trial_balance,
     lookup_unapplied_cash_rollforward,
     lookup_vat_period_register,
+    lookup_home_tax_submissions,
     pull_journal_proposal,
     pull_validated_journal_proposals,
     run_journal_proposal_server,
@@ -509,6 +510,22 @@ class PostgresPostingTests(unittest.TestCase):
                 AccountingValidationError, "0002_chart_account_class"
             ):
                 apply_foundation_migration(DATABASE_URL, only_foundation)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            foundation = temporary_root / "0001_accounting_foundation.sql"
+            foundation.write_text(
+                MIGRATION_PATH.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            (temporary_root / "0002_chart_account_class.sql").write_text(
+                (ROOT / "database/migrations/0002_chart_account_class.sql").read_text(
+                    encoding="utf-8"
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                AccountingValidationError, "0003_home_tax_submission"
+            ):
+                apply_foundation_migration(DATABASE_URL, foundation)
         with self.assertRaisesRegex(AccountingValidationError, "restore a clean database"):
             apply_foundation_migration(DATABASE_URL, MIGRATION_PATH)
 
@@ -3236,6 +3253,218 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(
             Decimal(str(register["closing_amount"])),
             Decimal(str(aging["total_outstanding_amount"])),
+        )
+        server.shutdown()
+
+    def test_http_rejects_home_tax_submission_without_register(self) -> None:
+        """POST /home-tax-submissions fail-closes when the VAT register cannot load."""
+        server = self._start_http_server()
+        submissions_before = self._count_table(
+            "accounting_integration.home_tax_submission"
+        )
+        empty_list_status, empty_list = self._http_home_tax_submissions()
+        missing_fields_status, missing_fields = self._http_home_tax_submission(
+            legal_entity_reference="",
+            book_reference="",
+            fiscal_period_reference="",
+        )
+        unknown_period = self._http_home_tax_submission(
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:1999-01"
+        )
+        unknown_entity = self._http_home_tax_submission(
+            legal_entity_reference="urn:cwl:legal_entity:missing"
+        )
+        unknown_book = self._http_home_tax_submission(
+            book_reference="urn:cwl:accounting_book:missing"
+        )
+        missing_header = self._http_home_tax_submission(tenant_header=None)
+        cross_status, _cross = self._http_home_tax_submission(
+            tenant_header="urn:cwl:tenant_other"
+        )
+        body_mismatch_status, _body_mismatch = self._http_json(
+            "POST",
+            "/home-tax-submissions",
+            {
+                "tenant_reference": "urn:cwl:tenant_other",
+                "legal_entity_reference": self.policy.legal_entity_reference,
+                "book_reference": self.policy.accounting_book_reference,
+                "fiscal_period_reference": "urn:cwl:accounting:fiscal_period:2026-08",
+            },
+        )
+        vat_post_status, _vat_post = self._http_json("POST", "/vat-period-registers", {})
+        vat_get_status, vat_get = self._http_vat_period_register()
+        missing_query = self._http_json("GET", "/home-tax-submissions", None)
+        unknown_list = self._http_home_tax_submissions(
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:1999-01"
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "are required"):
+            PostgresPostingLedger(
+                DATABASE_URL, self.policy.tenant_reference
+            ).load_home_tax_submissions("", self.policy.accounting_book_reference, "2026-08")
+
+        self.assertEqual(empty_list_status, 200)
+        self.assertEqual(empty_list["home_tax_submissions"], [])
+        self.assertEqual(empty_list["tenant_reference"], self.policy.tenant_reference)
+        self.assertEqual(
+            empty_list["legal_entity_reference"], self.policy.legal_entity_reference
+        )
+        self.assertEqual(empty_list["book_reference"], self.policy.accounting_book_reference)
+        self.assertEqual(
+            empty_list["fiscal_period_reference"],
+            "urn:cwl:accounting:fiscal_period:2026-08",
+        )
+        self.assertEqual(missing_fields_status, 422)
+        self.assertEqual(missing_fields["submission_status_code"], "rejected")
+        self.assertEqual(missing_fields["rejection_reason_code"], "register_unavailable")
+        self.assertNotEqual(missing_fields["submission_status_code"], "transmitted")
+        self.assertEqual(unknown_period[0], 404)
+        self.assertEqual(unknown_entity[0], 404)
+        self.assertEqual(unknown_book[0], 404)
+        self.assertIn("error_message", unknown_period[1])
+        self.assertEqual(missing_header[0], 400)
+        self.assertEqual(cross_status, 403)
+        self.assertEqual(body_mismatch_status, 403)
+        self.assertEqual(vat_post_status, 405)
+        self.assertEqual(vat_get_status, 200)
+        self.assertEqual(vat_get["chart_account_code"], "210100")
+        self.assertEqual(missing_query[0], 400)
+        self.assertEqual(unknown_list[0], 404)
+        self.assertEqual(
+            self._count_table("accounting_integration.home_tax_submission"),
+            submissions_before,
+        )
+        server.shutdown()
+
+    def test_http_rejects_home_tax_submission_without_credential(self) -> None:
+        """A loadable VAT register without ACCOUNTING_HOMETAX_CREDENTIAL is 422 rejected."""
+        server = self._start_http_server()
+        previous_credential = os.environ.pop("ACCOUNTING_HOMETAX_CREDENTIAL", None)
+        try:
+            empty_register_status, empty_register = self._http_vat_period_register()
+            empty_status, empty = self._http_home_tax_submission()
+            taxed_status, _taxed = self._http_json(
+                "POST", "/journal-proposals", self._billing_taxed_payload()
+            )
+            live_register_status, live_register = self._http_vat_period_register()
+            live_status, live = self._http_home_tax_submission()
+            listed_status, listed = self._http_home_tax_submissions()
+            alias_query = urllib.parse.urlencode(
+                {
+                    "legal_entity_reference": self.policy.legal_entity_reference,
+                    "accounting_book_reference": self.policy.accounting_book_reference,
+                    "fiscal_period_reference": "urn:cwl:accounting:fiscal_period:2026-08",
+                }
+            )
+            alias_status, alias_listed = self._http_json(
+                "GET", f"/home-tax-submissions?{alias_query}", None
+            )
+            library = lookup_home_tax_submissions(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "urn:cwl:accounting:fiscal_period:2026-08",
+            )
+        finally:
+            if previous_credential is not None:
+                os.environ["ACCOUNTING_HOMETAX_CREDENTIAL"] = previous_credential
+
+        self.assertEqual(empty_register_status, 200)
+        self.assertEqual(empty_status, 422)
+        self.assertEqual(empty["submission_status_code"], "rejected")
+        self.assertEqual(empty["rejection_reason_code"], "hometax_credential_missing")
+        self.assertNotEqual(empty["submission_status_code"], "transmitted")
+        self.assertEqual(empty["vat_period_register"], empty_register)
+        self.assertEqual(empty["tenant_reference"], self.policy.tenant_reference)
+        self.assertEqual(empty["legal_entity_reference"], self.policy.legal_entity_reference)
+        self.assertEqual(empty["book_reference"], self.policy.accounting_book_reference)
+        self.assertEqual(
+            empty["fiscal_period_reference"],
+            "urn:cwl:accounting:fiscal_period:2026-08",
+        )
+        self.assertNotIn("party_reference", empty)
+        self.assertNotIn("nts_payload", empty)
+        self.assertEqual(taxed_status, 200)
+        self.assertEqual(live_register_status, 200)
+        self.assertEqual(live_status, 422)
+        self.assertEqual(live["rejection_reason_code"], "hometax_credential_missing")
+        self.assertEqual(live["vat_period_register"]["closing_amount"], "2500")
+        self.assertEqual(live["vat_period_register"], live_register)
+        self.assertNotEqual(live["submission_status_code"], "transmitted")
+        self.assertEqual(listed_status, 200)
+        self.assertEqual(len(listed["home_tax_submissions"]), 2)
+        self.assertEqual(alias_status, 200)
+        self.assertEqual(alias_listed, listed)
+        self.assertEqual(listed, library)
+        self.assertEqual(
+            listed["home_tax_submissions"][0]["rejection_reason_code"],
+            "hometax_credential_missing",
+        )
+        self.assertEqual(
+            listed["home_tax_submissions"][0]["submission_status_code"],
+            "rejected",
+        )
+        self.assertEqual(
+            listed["home_tax_submissions"][0]["vat_period_register"]["closing_amount"],
+            "0",
+        )
+        self.assertEqual(
+            listed["home_tax_submissions"][1]["vat_period_register"]["closing_amount"],
+            "2500",
+        )
+        self.assertEqual(
+            listed["home_tax_submissions"][1]["vat_period_register"]["as_of_date"],
+            live_register["as_of_date"],
+        )
+        self.assertEqual(
+            self._count_table("accounting_integration.home_tax_submission"),
+            2,
+        )
+        server.shutdown()
+
+    def test_http_rejects_home_tax_submission_when_transport_unavailable(self) -> None:
+        """A present purpose-limited credential still does not transmit in this slice."""
+        server = self._start_http_server()
+        with mock.patch.dict(os.environ, {"ACCOUNTING_HOMETAX_CREDENTIAL": "present"}):
+            status, document = self._http_home_tax_submission()
+            listed_status, listed = self._http_home_tax_submissions()
+        vat_status, vat_register = self._http_vat_period_register()
+
+        self.assertEqual(status, 422)
+        self.assertEqual(document["submission_status_code"], "rejected")
+        self.assertEqual(document["rejection_reason_code"], "hometax_transport_unavailable")
+        self.assertNotEqual(document["submission_status_code"], "transmitted")
+        self.assertEqual(document["vat_period_register"], vat_register)
+        self.assertNotIn("ACCOUNTING_HOMETAX_CREDENTIAL", json.dumps(document))
+        self.assertEqual(listed_status, 200)
+        self.assertEqual(len(listed["home_tax_submissions"]), 1)
+        self.assertEqual(
+            listed["home_tax_submissions"][0]["rejection_reason_code"],
+            "hometax_transport_unavailable",
+        )
+        self.assertEqual(vat_status, 200)
+        server.shutdown()
+
+    def test_http_rejects_home_tax_submission_when_register_document_is_incomplete(self) -> None:
+        """A loaded object missing always-present register keys is 422 register_unavailable."""
+        server = self._start_http_server()
+        with mock.patch.object(
+            PostgresPostingLedger,
+            "load_vat_period_register",
+            return_value={"tenant_reference": self.policy.tenant_reference},
+        ):
+            status, document = self._http_home_tax_submission()
+        listed_status, listed = self._http_home_tax_submissions()
+
+        self.assertEqual(status, 422)
+        self.assertEqual(document["submission_status_code"], "rejected")
+        self.assertEqual(document["rejection_reason_code"], "register_unavailable")
+        self.assertNotEqual(document["submission_status_code"], "transmitted")
+        self.assertEqual(listed_status, 200)
+        self.assertEqual(len(listed["home_tax_submissions"]), 1)
+        self.assertEqual(
+            listed["home_tax_submissions"][0]["rejection_reason_code"],
+            "register_unavailable",
         )
         server.shutdown()
 
@@ -12229,6 +12458,76 @@ class PostgresPostingTests(unittest.TestCase):
         return self._http_json(
             "GET",
             f"/vat-period-registers?{query}",
+            None,
+            tenant_header=tenant_header,
+        )
+
+    def _http_home_tax_submission(
+        self,
+        *,
+        legal_entity_reference: str | None = None,
+        book_reference: str | None = None,
+        fiscal_period_reference: str | None = None,
+        tenant_header: str | None = "",
+    ) -> tuple[int, dict[str, object]]:
+        payload = {
+            "tenant_reference": (
+                self.policy.tenant_reference
+                if tenant_header in ("", None)
+                else tenant_header
+            ),
+            "legal_entity_reference": (
+                self.policy.legal_entity_reference
+                if legal_entity_reference is None
+                else legal_entity_reference
+            ),
+            "book_reference": (
+                self.policy.accounting_book_reference
+                if book_reference is None
+                else book_reference
+            ),
+            "fiscal_period_reference": (
+                "urn:cwl:accounting:fiscal_period:2026-08"
+                if fiscal_period_reference is None
+                else fiscal_period_reference
+            ),
+        }
+        return self._http_json(
+            "POST",
+            "/home-tax-submissions",
+            payload,
+            tenant_header=tenant_header,
+        )
+
+    def _http_home_tax_submissions(
+        self,
+        *,
+        legal_entity_reference: str | None = None,
+        book_reference: str | None = None,
+        fiscal_period_reference: str | None = None,
+        tenant_header: str | None = "",
+    ) -> tuple[int, dict[str, object]]:
+        fields = {
+            "legal_entity_reference": (
+                self.policy.legal_entity_reference
+                if legal_entity_reference is None
+                else legal_entity_reference
+            ),
+            "book_reference": (
+                self.policy.accounting_book_reference
+                if book_reference is None
+                else book_reference
+            ),
+            "fiscal_period_reference": (
+                "urn:cwl:accounting:fiscal_period:2026-08"
+                if fiscal_period_reference is None
+                else fiscal_period_reference
+            ),
+        }
+        query = urllib.parse.urlencode(fields)
+        return self._http_json(
+            "GET",
+            f"/home-tax-submissions?{query}",
             None,
             tenant_header=tenant_header,
         )

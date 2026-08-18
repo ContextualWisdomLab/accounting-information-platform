@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
@@ -18,7 +19,7 @@ from .core import (
     _require_currency,
 )
 from .ingest import ingest_journal_proposal
-from .persistence import PostgresPostingLedger, _format_timestamp
+from .persistence import PostgresPostingLedger, _format_timestamp, _vat_register_is_loadable
 
 _FISCAL_PERIOD_PREFIX = "urn:cwl:accounting:fiscal_period:"
 _JOURNAL_LIST_DEFAULT_PAGE_LIMIT = 50
@@ -368,6 +369,104 @@ def lookup_vat_period_register(
         book_reference,
         _period_code_from_reference(fiscal_period_reference),
     )
+
+
+_HOME_TAX_CREDENTIAL_ENV = "ACCOUNTING_HOMETAX_CREDENTIAL"
+
+
+def accept_home_tax_submission(
+    payload: object, database_url: str, tenant_reference: str
+) -> dict[str, object]:
+    """Fail-closed HomeTax command: require the VAT register, then a purpose-limited credential."""
+    if not isinstance(payload, Mapping):
+        raise AccountingValidationError(
+            "home tax submission payload must be a JSON object. "
+            "Supply a home-tax-submission command, then retry the home-tax-submission."
+        )
+    if payload.get("tenant_reference") != tenant_reference:
+        raise AccountingValidationError(
+            "home tax submission tenant_reference does not match the bound tenant. "
+            "Call accept_home_tax_submission with that tenant_reference, then retry."
+        )
+    legal_entity_reference = str(payload.get("legal_entity_reference") or "")
+    book_reference = str(
+        payload.get("book_reference") or payload.get("accounting_book_reference") or ""
+    )
+    fiscal_period_reference = str(payload.get("fiscal_period_reference") or "")
+    period_code = _period_code_from_reference(fiscal_period_reference)
+    if not legal_entity_reference or not book_reference or not period_code:
+        return _rejected_home_tax_document(
+            tenant_reference=tenant_reference,
+            legal_entity_reference=legal_entity_reference,
+            book_reference=book_reference,
+            fiscal_period_reference=fiscal_period_reference,
+            vat_period_register={"as_of_date": "", "closing_amount": "0"},
+            rejection_reason_code="register_unavailable",
+        )
+    ledger = PostgresPostingLedger(database_url, tenant_reference)
+    register_document = ledger.load_vat_period_register(
+        legal_entity_reference,
+        book_reference,
+        period_code,
+    )
+    if not _vat_register_is_loadable(register_document):
+        rejection_reason_code = "register_unavailable"
+    elif not _home_tax_credential_present():
+        rejection_reason_code = "hometax_credential_missing"
+    else:
+        rejection_reason_code = "hometax_transport_unavailable"
+    return ledger.persist_home_tax_submission(
+        legal_entity_reference=legal_entity_reference,
+        accounting_book_reference=book_reference,
+        period_code=period_code,
+        register_document=register_document,
+        rejection_reason_code=rejection_reason_code,
+    )
+
+
+def lookup_home_tax_submissions(
+    database_url: str,
+    tenant_reference: str,
+    legal_entity_reference: str,
+    book_reference: str,
+    fiscal_period_reference: str,
+) -> dict[str, object]:
+    """Return persisted HomeTax receipts for one tenant entity, book, and period."""
+    if not legal_entity_reference or not book_reference or not fiscal_period_reference:
+        raise AccountingValidationError(
+            "legal_entity_reference, book_reference, and fiscal_period_reference are required. "
+            "Supply those home-tax-submission fields, then retry the home-tax-submission read."
+        )
+    ledger = PostgresPostingLedger(database_url, tenant_reference)
+    return ledger.load_home_tax_submissions(
+        legal_entity_reference,
+        book_reference,
+        _period_code_from_reference(fiscal_period_reference),
+    )
+
+
+def _home_tax_credential_present() -> bool:
+    return bool(os.environ.get(_HOME_TAX_CREDENTIAL_ENV, "").strip())
+
+
+def _rejected_home_tax_document(
+    *,
+    tenant_reference: str,
+    legal_entity_reference: str,
+    book_reference: str,
+    fiscal_period_reference: str,
+    vat_period_register: dict[str, object],
+    rejection_reason_code: str,
+) -> dict[str, object]:
+    return {
+        "tenant_reference": tenant_reference,
+        "legal_entity_reference": legal_entity_reference,
+        "book_reference": book_reference,
+        "fiscal_period_reference": fiscal_period_reference,
+        "vat_period_register": vat_period_register,
+        "submission_status_code": "rejected",
+        "rejection_reason_code": rejection_reason_code,
+    }
 
 
 def lookup_account_balances(

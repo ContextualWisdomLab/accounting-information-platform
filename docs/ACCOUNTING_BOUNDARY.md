@@ -31,7 +31,7 @@ billing invoice or settlement fact
 -> source-to-posting reconciliation reference
 ```
 
-A proposal may name `accounts_receivable`, `usage_revenue`, `cash_receipt`, `contract_liability`, `tax_payable`, `cash_clearing`, `provider_fee_expense`, `write_off_expense`, or `unapplied_cash`. Accounting maps those roles to chart accounts under an effective policy version. Source systems cannot bypass this mapping by sending chart-account IDs. Billing owns commercial tax assessment. AIS owns the period VAT register that ties issued and voided tax journals to posted catalog 210100 and does not transmit those facts to NTS/HomeTax.
+A proposal may name `accounts_receivable`, `usage_revenue`, `cash_receipt`, `contract_liability`, `tax_payable`, `cash_clearing`, `provider_fee_expense`, `write_off_expense`, or `unapplied_cash`. Accounting maps those roles to chart accounts under an effective policy version. Source systems cannot bypass this mapping by sending chart-account IDs. Billing owns commercial tax assessment. AIS owns the period VAT register that ties issued and voided tax journals to posted catalog 210100. AIS also owns a fail-closed HomeTax submission command that requires that register and a purpose-limited AIS credential; this slice still does not transmit those facts to NTS/HomeTax and does not give Billing a VAT or HomeTax endpoint.
 
 ## Revenue caution
 
