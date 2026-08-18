@@ -7,6 +7,7 @@ SET account_class_code = CASE chart_account_code
     WHEN '110100' THEN 'asset'
     WHEN '110200' THEN 'asset'
     WHEN '210100' THEN 'liability'
+    WHEN '210200' THEN 'liability'
     WHEN '310100' THEN 'equity'
     WHEN '410100' THEN 'revenue'
     WHEN '510100' THEN 'expense'

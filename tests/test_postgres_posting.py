@@ -236,6 +236,7 @@ class PostgresPostingTests(unittest.TestCase):
                 "cash_receipt": "110200",
                 "tax_payable": "210100",
                 "write_off_expense": "510100",
+                "unapplied_cash": "210200",
             },
             accounting_policy_version="ifrs-v1",
             posting_rule_version="billing-issued-v1",
@@ -1511,6 +1512,221 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before + 2)
         server.shutdown()
 
+    def test_http_posts_and_pulls_billing_unapplied_cash_refund(self) -> None:
+        """Billing #59 refund maps unapplied_cash to 210200 and stays off payable aging."""
+        refund = self._billing_unapplied_cash_refund_payload()
+        park = self._billing_unapplied_cash_park_payload()
+        later_refund = self._billing_unapplied_cash_refund_payload(
+            proposal_id="019d7b92-8cc5-7a7f-b61c-962c0f4bf623",
+            idempotency_key=(
+                f"{self.policy.tenant_reference}:unapplied_cash_refund:"
+                f"019d7b92-8cc5-7a7f-b61c-962c0f4bf623:sha256:{'2' * 64}:v1"
+            ),
+            source_payload_hash="sha256:" + "2" * 64,
+            source_event_references=(
+                f"{self.policy.tenant_reference}:unapplied_cash_refund:"
+                "019d7b92-8cc5-7a7f-b61c-962c0f4bf623",
+            ),
+        )
+        unknown_role = self._billing_unapplied_cash_refund_payload(
+            proposal_id=str(uuid.uuid4()),
+            idempotency_key=(
+                f"{self.policy.tenant_reference}:unapplied_cash_refund:unknown:"
+                f"sha256:{'9' * 64}:v1"
+            ),
+            source_payload_hash="sha256:" + "9" * 64,
+            source_event_references=(
+                f"{self.policy.tenant_reference}:unapplied_cash_refund:unknown",
+            ),
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "not_a_catalog_role",
+                    "debit_amount": "8000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "cash_receipt",
+                    "debit_amount": "0",
+                    "credit_amount": "8000",
+                },
+            ],
+        )
+        retained = self._billing_unapplied_cash_refund_payload(
+            proposal_id=str(uuid.uuid4()),
+            idempotency_key=(
+                f"{self.policy.tenant_reference}:unapplied_cash_refund:retained:"
+                f"sha256:{'0' * 64}:v1"
+            ),
+            source_payload_hash="sha256:" + "0" * 64,
+            source_event_references=(
+                f"{self.policy.tenant_reference}:unapplied_cash_refund:retained",
+            ),
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "retained_earnings",
+                    "debit_amount": "8000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "cash_receipt",
+                    "debit_amount": "0",
+                    "credit_amount": "8000",
+                },
+            ],
+        )
+        billing_url = self._start_fake_billing([refund])
+        server = self._start_http_server()
+        journals_before = self._count_table("accounting_core.general_journal")
+
+        self.assertEqual(
+            refund["idempotency_key"],
+            (
+                f"{self.policy.tenant_reference}:unapplied_cash_refund:"
+                f"{refund['proposal_id']}:{refund['source_payload_hash']}:v1"
+            ),
+        )
+        self.assertEqual(refund["proposal_status"], "validated")
+        self.assertEqual(refund["intended_book_role_code"], "primary_statutory")
+        self.assertEqual(refund["lines"][0]["account_role_code"], "unapplied_cash")
+        self.assertEqual(refund["lines"][1]["account_role_code"], "cash_receipt")
+        self.assertNotIn("210200", json.dumps(refund["lines"]))
+        self.assertNotIn("110200", json.dumps(refund["lines"]))
+
+        mapping_status, mappings = self._http_account_role_mappings()
+        pull_status, pull_body = self._http_json(
+            "POST",
+            "/billing-proposal-pulls",
+            {"tenant_reference": self.policy.tenant_reference, "billing_base_url": billing_url},
+        )
+        post_status, post_receipt = self._http_json("POST", "/journal-proposals", refund)
+        replay_status, replay_receipt = self._http_json("POST", "/journal-proposals", refund)
+        park_status, park_receipt = self._http_json("POST", "/journal-proposals", park)
+        journal_status, journal = self._http_journal(
+            idempotency_key=str(refund["idempotency_key"])
+        )
+        billing_list_status, billing_list = self._http_period_journals(
+            journal_source_code="billing"
+        )
+        unknown_status, unknown_body = self._http_json("POST", "/journal-proposals", unknown_role)
+        retained_status, retained_body = self._http_json("POST", "/journal-proposals", retained)
+        payable_status, payable = self._http_payable_aging()
+        clearing_payable = self._http_payable_aging(chart_account_code="210200")
+        mapping_by_role = {
+            str(item["account_role_code"]): item for item in mappings["mappings"]
+        }
+
+        self.assertEqual(mapping_status, 200)
+        self.assertIn("unapplied_cash", mapping_by_role)
+        self.assertEqual(mapping_by_role["unapplied_cash"]["chart_account_code"], "210200")
+        self.assertEqual(post_status, 200)
+        self.assertEqual(journal_status, 200)
+        by_code = {str(item["chart_account_code"]): item for item in journal["lines"]}
+        self.assertEqual(mapping_by_role["cash_receipt"]["chart_account_code"], "110200")
+        self.assertEqual(mapping_by_role["tax_payable"]["chart_account_code"], "210100")
+        self.assertEqual(pull_status, 200)
+        self.assertEqual(post_status, 200)
+        self.assertEqual(replay_status, 200)
+        self.assertEqual(park_status, 200)
+        self.assertEqual(post_receipt, replay_receipt)
+        self.assertEqual(post_receipt, pull_body["posting_receipts"][0])
+        self.assertEqual(post_receipt["line_count"], 2)
+        self.assertEqual(post_receipt["idempotency_key"], refund["idempotency_key"])
+        self.assertNotEqual(park_receipt["idempotency_key"], refund["idempotency_key"])
+        self.assertEqual(journal_status, 200)
+        self.assertEqual(set(by_code), {"210200", "110200"})
+        self.assertEqual(by_code["210200"]["account_role_code"], "unapplied_cash")
+        self.assertEqual(Decimal(str(by_code["210200"]["debit_amount"])), Decimal("8000"))
+        self.assertEqual(Decimal(str(by_code["110200"]["credit_amount"])), Decimal("8000"))
+        self.assertEqual(billing_list_status, 200)
+        self.assertEqual(
+            {item["idempotency_key"] for item in billing_list["journals"]},
+            {refund["idempotency_key"], park["idempotency_key"]},
+        )
+        self.assertFalse(
+            str(journal["journal_reference"]).startswith(
+                "urn:cwl:accounting:general_journal:period_closing:"
+            )
+        )
+        self.assertEqual(unknown_status, 422)
+        self.assertIn("not_a_catalog_role", str(unknown_body["error_message"]))
+        self.assertEqual(retained_status, 422)
+        self.assertIn("reserved for AIS period-close", str(retained_body["error_message"]))
+        self.assertEqual(payable_status, 200)
+        self.assertEqual(payable["chart_account_code"], "210100")
+        self.assertEqual(payable["total_outstanding_amount"], "0")
+        self.assertNotIn("party_reference", payable)
+        self.assertEqual(clearing_payable[0], 422)
+        self.assertIn("tax_payable", str(clearing_payable[1]["error_message"]))
+
+        soft_status, _soft = self._http_json(
+            "POST",
+            "/period-closes",
+            self._period_close_payload(period_status_code="soft_closed"),
+        )
+        replay_after_soft_status, replay_after_soft = self._http_json(
+            "POST", "/journal-proposals", refund
+        )
+        rejected_status, rejected = self._http_json("POST", "/journal-proposals", later_refund)
+        hard_status, _hard = self._http_json(
+            "POST", "/period-closes", self._period_close_payload()
+        )
+        closed_tb_status, closed_tb = self._http_json(
+            "GET",
+            "/trial-balances?"
+            + urllib.parse.urlencode(
+                {
+                    "legal_entity_reference": self.policy.legal_entity_reference,
+                    "book_reference": self.policy.accounting_book_reference,
+                    "fiscal_period_reference": "urn:cwl:accounting:fiscal_period:2026-08",
+                }
+            ),
+            None,
+        )
+        closed_balances_status, closed_balances = self._http_account_balances(
+            chart_account_code="210200"
+        )
+        closing_list_status, closing_list = self._http_period_journals(
+            journal_source_code="period_closing"
+        )
+
+        self.assertEqual(soft_status, 200)
+        self.assertEqual(replay_after_soft_status, 200)
+        self.assertEqual(replay_after_soft, post_receipt)
+        self.assertEqual(rejected_status, 422)
+        self.assertIn("open period", str(rejected["error_message"]))
+        self.assertEqual(hard_status, 200)
+        self.assertEqual(closed_tb_status, 200)
+        self.assertEqual(closed_balances_status, 200)
+        self.assertEqual(self._count_closing_journals(), 0)
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(closed_tb, "210200")["debit_amount"])),
+            Decimal("8000"),
+        )
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(closed_tb, "210200")["credit_amount"])),
+            Decimal("3000"),
+        )
+        self.assertEqual(self._trial_balance_account_net(closed_tb, "210200"), Decimal("5000"))
+        self.assertIsNone(
+            next(
+                (
+                    line
+                    for line in closed_tb["lines"]
+                    if isinstance(line, dict) and line.get("chart_account_code") == "310100"
+                ),
+                None,
+            )
+        )
+        self.assertEqual(self._account_balance_net(closed_balances, "210200"), Decimal("5000"))
+        self.assertEqual(closing_list_status, 200)
+        self.assertEqual(closing_list["journals"], [])
+        self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before + 2)
+        server.shutdown()
+
     def test_collection_write_off_fifo_clears_and_exposes_unapplied_credit(self) -> None:
         """Write-off credits consume the oldest AR debit; excess stays unsigned."""
         self._seed_additional_period("2026-06", date(2026, 6, 1), date(2026, 6, 30))
@@ -1761,6 +1977,7 @@ class PostgresPostingTests(unittest.TestCase):
                 "tax_payable",
                 "retained_earnings",
                 "write_off_expense",
+                "unapplied_cash",
             },
         )
         self.assertEqual(by_code["accounts_receivable"]["chart_account_code"], "110100")
@@ -1769,6 +1986,7 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(by_code["tax_payable"]["chart_account_code"], "210100")
         self.assertEqual(by_code["retained_earnings"]["chart_account_code"], "310100")
         self.assertEqual(by_code["write_off_expense"]["chart_account_code"], "510100")
+        self.assertEqual(by_code["unapplied_cash"]["chart_account_code"], "210200")
         self.assertEqual(by_code["cash_receipt"]["accounting_policy_version"], "ifrs-v1")
         self.assertEqual(by_code["cash_receipt"]["posting_rule_version"], "billing-issued-v1")
 
@@ -1865,7 +2083,10 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(document["legal_entity_reference"], self.policy.legal_entity_reference)
         self.assertEqual(document["accounting_book_reference"], self.policy.accounting_book_reference)
         self.assertEqual(document["book_reference"], self.policy.accounting_book_reference)
-        self.assertEqual(set(by_code), {"110100", "410100", "110200", "210100", "310100", "510100"})
+        self.assertEqual(
+            set(by_code),
+            {"110100", "410100", "110200", "210100", "210200", "310100", "510100"},
+        )
         self.assertEqual(by_code["110100"]["account_name"], "Accounts receivable")
         self.assertEqual(by_code["110100"]["normal_balance_code"], "debit")
         self.assertEqual(by_code["110100"]["account_class_code"], "asset")
@@ -1884,6 +2105,9 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(by_code["510100"]["account_name"], "Write-off expense")
         self.assertEqual(by_code["510100"]["normal_balance_code"], "debit")
         self.assertEqual(by_code["510100"]["account_class_code"], "expense")
+        self.assertEqual(by_code["210200"]["account_name"], "unapplied_cash")
+        self.assertEqual(by_code["210200"]["normal_balance_code"], "credit")
+        self.assertEqual(by_code["210200"]["account_class_code"], "liability")
         self.assertEqual(empty_status, 200)
         self.assertEqual(empty_page["chart_accounts"], [])
         self.assertEqual(empty_page["book_reference"], empty_book)
@@ -9509,6 +9733,7 @@ class PostgresPostingTests(unittest.TestCase):
                 ("210100", "Tax payable", "credit", "liability", "tax_payable"),
                 ("310100", "Retained earnings", "credit", "equity", "retained_earnings"),
                 ("510100", "Write-off expense", "debit", "expense", "write_off_expense"),
+                ("210200", "unapplied_cash", "credit", "liability", "unapplied_cash"),
             ):
                 chart_account_id = connection.execute(
                     """
@@ -10013,6 +10238,87 @@ class PostgresPostingTests(unittest.TestCase):
                     "account_role_code": "accounts_receivable",
                     "debit_amount": "0",
                     "credit_amount": "7000",
+                },
+            ],
+        }
+        values.update(overrides)
+        return values
+
+    def _billing_unapplied_cash_refund_payload(self, **overrides: object) -> dict[str, object]:
+        source_payload_hash = "sha256:" + "8" * 64
+        unapplied_cash_refund_id = "019d7b92-8cc5-7a7f-b61c-962c0f4bf621"
+        values: dict[str, object] = {
+            "proposal_id": unapplied_cash_refund_id,
+            "proposal_contract_version": 1,
+            "idempotency_key": (
+                f"{self.policy.tenant_reference}:unapplied_cash_refund:"
+                f"{unapplied_cash_refund_id}:{source_payload_hash}:v1"
+            ),
+            "tenant_reference": self.policy.tenant_reference,
+            "legal_entity_reference": self.policy.legal_entity_reference,
+            "intended_book_role_code": "primary_statutory",
+            "transaction_currency": "KRW",
+            "transaction_date": "2026-08-31",
+            "accounting_date": "2026-08-31",
+            "source_payload_hash": source_payload_hash,
+            "proposed_at": "2026-08-31T00:00:00Z",
+            "proposal_status": "validated",
+            "source_event_references": (
+                f"{self.policy.tenant_reference}:unapplied_cash_refund:"
+                f"{unapplied_cash_refund_id}",
+            ),
+            "lines": [
+                {
+                    "line_number": 1,
+                    "account_role_code": "unapplied_cash",
+                    "debit_amount": "8000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "cash_receipt",
+                    "debit_amount": "0",
+                    "credit_amount": "8000",
+                },
+            ],
+        }
+        values.update(overrides)
+        return values
+
+    def _billing_unapplied_cash_park_payload(self, **overrides: object) -> dict[str, object]:
+        source_payload_hash = "sha256:" + "4" * 64
+        park_id = "019d7b92-8cc5-7a7f-b61c-962c0f4bf622"
+        values: dict[str, object] = {
+            "proposal_id": park_id,
+            "proposal_contract_version": 1,
+            "idempotency_key": (
+                f"{self.policy.tenant_reference}:unapplied_cash_refund:"
+                f"{park_id}:{source_payload_hash}:v1"
+            ),
+            "tenant_reference": self.policy.tenant_reference,
+            "legal_entity_reference": self.policy.legal_entity_reference,
+            "intended_book_role_code": "primary_statutory",
+            "transaction_currency": "KRW",
+            "transaction_date": "2026-08-31",
+            "accounting_date": "2026-08-31",
+            "source_payload_hash": source_payload_hash,
+            "proposed_at": "2026-08-31T00:00:00Z",
+            "proposal_status": "validated",
+            "source_event_references": (
+                f"{self.policy.tenant_reference}:unapplied_cash_refund:{park_id}",
+            ),
+            "lines": [
+                {
+                    "line_number": 1,
+                    "account_role_code": "cash_receipt",
+                    "debit_amount": "3000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "unapplied_cash",
+                    "debit_amount": "0",
+                    "credit_amount": "3000",
                 },
             ],
         }

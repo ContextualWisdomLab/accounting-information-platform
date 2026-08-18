@@ -123,6 +123,92 @@ class CollectionWriteOffAgingHttpTests(unittest.TestCase):
         server.server_close()
 
 
+class UnappliedCashRefundHttpTests(unittest.TestCase):
+    """POST /journal-proposals accepts Billing #59 unapplied_cash against 210200."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        postgres_posting.PostgresPostingTests.setUpClass()
+
+    def setUp(self) -> None:
+        self.case = postgres_posting.PostgresPostingTests("setUp")
+        self.case.setUp()
+
+    def test_http_unapplied_cash_refund_posts_and_stays_off_payable_aging(self) -> None:
+        """Refund and park post on the catalog; 210200 is not a payable-aging account."""
+        case = self.case
+        refund = case._billing_unapplied_cash_refund_payload()
+        park = case._billing_unapplied_cash_park_payload()
+        later_refund = case._billing_unapplied_cash_refund_payload(
+            proposal_id="019d7b92-8cc5-7a7f-b61c-962c0f4bf623",
+            idempotency_key=(
+                f"{case.policy.tenant_reference}:unapplied_cash_refund:"
+                f"019d7b92-8cc5-7a7f-b61c-962c0f4bf623:sha256:{'2' * 64}:v1"
+            ),
+            source_payload_hash="sha256:" + "2" * 64,
+            source_event_references=(
+                f"{case.policy.tenant_reference}:unapplied_cash_refund:"
+                "019d7b92-8cc5-7a7f-b61c-962c0f4bf623",
+            ),
+        )
+        server = case._start_http_server()
+
+        mapping_status, mappings = case._http_account_role_mappings()
+        refund_status, receipt = case._http_json("POST", "/journal-proposals", refund)
+        replay_status, replay = case._http_json("POST", "/journal-proposals", refund)
+        park_status, park_receipt = case._http_json("POST", "/journal-proposals", park)
+        journal_status, journal = case._http_journal(
+            idempotency_key=str(refund["idempotency_key"])
+        )
+        payable_status, payable = case._http_payable_aging()
+        clearing_payable = case._http_payable_aging(chart_account_code="210200")
+        mapping_by_role = {
+            str(item["account_role_code"]): item for item in mappings["mappings"]
+        }
+
+        self.assertEqual(mapping_status, 200)
+        self.assertIn("unapplied_cash", mapping_by_role)
+        self.assertEqual(mapping_by_role["unapplied_cash"]["chart_account_code"], "210200")
+        self.assertEqual(refund_status, 200)
+        self.assertEqual(journal_status, 200)
+        by_code = {str(item["chart_account_code"]): item for item in journal["lines"]}
+        self.assertEqual(replay_status, 200)
+        self.assertEqual(receipt, replay)
+        self.assertEqual(park_status, 200)
+        self.assertNotEqual(park_receipt["idempotency_key"], receipt["idempotency_key"])
+        self.assertEqual(journal_status, 200)
+        self.assertEqual(set(by_code), {"210200", "110200"})
+        self.assertEqual(Decimal(str(by_code["210200"]["debit_amount"])), Decimal("8000"))
+        self.assertEqual(payable_status, 200)
+        self.assertEqual(payable["chart_account_code"], "210100")
+        self.assertEqual(clearing_payable[0], 422)
+
+        soft_status, _soft = case._http_json(
+            "POST",
+            "/period-closes",
+            case._period_close_payload(period_status_code="soft_closed"),
+        )
+        rejected_status, rejected = case._http_json(
+            "POST", "/journal-proposals", later_refund
+        )
+        hard_status, _hard = case._http_json(
+            "POST", "/period-closes", case._period_close_payload()
+        )
+        closed_balances_status, closed_balances = case._http_account_balances(
+            chart_account_code="210200"
+        )
+
+        self.assertEqual(soft_status, 200)
+        self.assertEqual(rejected_status, 422)
+        self.assertIn("open period", str(rejected["error_message"]))
+        self.assertEqual(hard_status, 200)
+        self.assertEqual(closed_balances_status, 200)
+        self.assertEqual(case._account_balance_net(closed_balances, "210200"), Decimal("5000"))
+        self.assertEqual(case._count_closing_journals(), 0)
+        server.shutdown()
+        server.server_close()
+
+
 class PeriodClosePackageHttpTests(unittest.TestCase):
     """GET /period-close-packages includes the standalone payable-aging document."""
 
