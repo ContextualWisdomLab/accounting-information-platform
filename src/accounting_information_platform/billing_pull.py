@@ -5,9 +5,10 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import ssl
 from dataclasses import dataclass
 from typing import Mapping
-from urllib.parse import urlencode, urlparse
+from urllib.parse import ParseResult, urlencode, urlparse
 
 from .accept import accept_journal_proposal
 from .core import AccountingValidationError, _require_reference
@@ -207,14 +208,10 @@ def _billing_get(
             "BILLING_BASE_URL must be an http or https origin. "
             "Set BILLING_BASE_URL to the Billing origin, then retry the pull."
         )
-    if parsed.scheme == "https":
-        connection: http.client.HTTPConnection = http.client.HTTPSConnection(
-            parsed.hostname, parsed.port, timeout=5
-        )
-    else:
-        connection = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=5)
+    connection: http.client.HTTPConnection | None = None
     request_path = f"{parsed.path}?{urlencode(query)}"
     try:
+        connection = _open_billing_connection(parsed)
         connection.request(
             "GET",
             request_path,
@@ -229,10 +226,24 @@ def _billing_get(
             "Retry the Billing pull after Billing recovers."
         ) from error
     finally:
-        connection.close()
+        if connection is not None:
+            connection.close()
     if status >= 400:
         raise _billing_http_error(status)
     return _parse_billing_object(raw)
+
+
+def _open_billing_connection(parsed: ParseResult) -> http.client.HTTPConnection:
+    if parsed.scheme == "https":
+        connection = http.client.HTTPConnection(
+            parsed.hostname, parsed.port or 443, timeout=5
+        )
+        connection.connect()
+        connection.sock = ssl.create_default_context().wrap_socket(
+            connection.sock, server_hostname=parsed.hostname
+        )
+        return connection
+    return http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=5)
 
 
 def _billing_http_error(status: int) -> AccountingValidationError:

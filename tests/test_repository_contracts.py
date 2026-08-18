@@ -35,6 +35,15 @@ class RepositoryContractTests(unittest.TestCase):
         """The complete initial repository must satisfy every deterministic gate."""
         self.assertEqual(validate_repository(ROOT), ())
 
+    def test_billing_pull_opens_https_with_default_ssl_context(self) -> None:
+        """Billing HTTPS must verify certificates without HTTPSConnection or urllib."""
+        source = (
+            ROOT / "src" / "accounting_information_platform" / "billing_pull.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("HTTPSConnection", source)
+        self.assertNotIn("urlopen", source)
+        self.assertIn("create_default_context", source)
+
     def test_missing_files_are_reported(self) -> None:
         """A partial checkout produces an actionable missing-file error."""
         with tempfile.TemporaryDirectory() as temporary_directory:
