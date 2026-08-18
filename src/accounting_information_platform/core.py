@@ -239,9 +239,9 @@ class PostingLedger:
 
     def __init__(self) -> None:
         """Create an empty append-only reference ledger."""
-        self._journals: dict[str, PostedJournal] = {}
-        self._receipts_by_idempotency: dict[str, tuple[str, PostingReceipt]] = {}
-        self._reversal_receipts: dict[str, PostingReceipt] = {}
+        self._journals: dict[tuple[str, str], PostedJournal] = {}
+        self._receipts_by_idempotency: dict[tuple[str, str], tuple[str, PostingReceipt]] = {}
+        self._reversal_receipts: dict[tuple[str, str], PostingReceipt] = {}
 
     @property
     def journal_count(self) -> int:
@@ -250,18 +250,23 @@ class PostingLedger:
 
     def post(self, proposal: JournalProposal, policy: AccountingPolicy) -> PostingReceipt:
         """Resolve and append *proposal* or return its prior idempotent receipt."""
-        prior = self._receipts_by_idempotency.get(proposal.idempotency_key)
-        if prior is not None:
-            prior_hash, prior_receipt = prior
-            if prior_hash != proposal.source_payload_hash:
-                raise IdempotencyConflictError(
-                    "idempotency key was already used with a different payload"
-                )
-            return prior_receipt
+        cached_receipt = self._cached_idempotency_receipt(
+            proposal.tenant_reference,
+            proposal.idempotency_key,
+            proposal.source_payload_hash,
+        )
+        if cached_receipt is not None:
+            return cached_receipt
         self._validate_policy_scope(proposal, policy)
         resolved_lines = tuple(self._resolve_line(line, policy) for line in proposal.lines)
         journal_reference = f"urn:cwl:accounting:general_journal:{proposal.proposal_id}"
         receipt_reference = f"urn:cwl:accounting:posting_receipt:{proposal.proposal_id}"
+        journal_key = self._tenant_cache_key(proposal.tenant_reference, journal_reference)
+        existing = self._journals.get(journal_key)
+        if existing is not None:
+            raise AccountingValidationError(
+                "posted journal is immutable. Reverse the existing journal, then post a replacement."
+            )
         journal = PostedJournal(
             journal_reference=journal_reference,
             tenant_reference=proposal.tenant_reference,
@@ -289,8 +294,10 @@ class PostingLedger:
             posting_rule_version=policy.posting_rule_version,
             line_count=len(resolved_lines),
         )
-        self._journals[journal_reference] = journal
-        self._receipts_by_idempotency[proposal.idempotency_key] = (
+        self._journals[journal_key] = journal
+        self._receipts_by_idempotency[
+            self._tenant_cache_key(proposal.tenant_reference, proposal.idempotency_key)
+        ] = (
             proposal.source_payload_hash,
             receipt,
         )
@@ -304,10 +311,11 @@ class PostingLedger:
         policy: AccountingPolicy,
     ) -> PostingReceipt:
         """Append the exact opposite of one original journal and preserve lineage."""
-        prior_receipt = self._reversal_receipts.get(journal_reference)
+        reversal_key = self._tenant_cache_key(policy.tenant_reference, journal_reference)
+        prior_receipt = self._cached_reversal_receipt(policy.tenant_reference, journal_reference)
         if prior_receipt is not None:
             return prior_receipt
-        original = self._journals.get(journal_reference)
+        original = self._journals.get(reversal_key)
         if original is None:
             raise AccountingValidationError("journal does not exist")
         if original.reversal_of_journal_reference is not None:
@@ -315,8 +323,7 @@ class PostingLedger:
         if not policy.permits(reversal_date):
             raise AccountingValidationError("reversal date belongs to a closed fiscal period")
         if (
-            original.tenant_reference != policy.tenant_reference
-            or original.legal_entity_reference != policy.legal_entity_reference
+            original.legal_entity_reference != policy.legal_entity_reference
             or original.accounting_book_reference != policy.accounting_book_reference
         ):
             raise AccountingValidationError("reversal policy scope does not match original journal")
@@ -362,8 +369,10 @@ class PostingLedger:
             line_count=len(reversal_lines),
             reversal_of_journal_reference=journal_reference,
         )
-        self._journals[reversal_reference] = reversal
-        self._reversal_receipts[journal_reference] = receipt
+        self._journals[self._tenant_cache_key(original.tenant_reference, reversal_reference)] = (
+            reversal
+        )
+        self._reversal_receipts[reversal_key] = receipt
         return receipt
 
     def trial_balance(
@@ -395,6 +404,45 @@ class PostingLedger:
             account_code: AccountBalance(account_code, debit_total, credit_total)
             for account_code, (debit_total, credit_total) in sorted(totals.items())
         }
+
+    @staticmethod
+    def _tenant_cache_key(tenant_reference: str, scoped_key: str) -> tuple[str, str]:
+        """Return the tenant-scoped cache identity used by the in-memory oracle."""
+        return (tenant_reference, scoped_key)
+
+    def _cached_idempotency_receipt(
+        self,
+        tenant_reference: str,
+        idempotency_key: str,
+        source_payload_hash: str,
+    ) -> PostingReceipt | None:
+        """Return the prior receipt only when tenant, key, and payload hash all match."""
+        prior = self._receipts_by_idempotency.get(
+            self._tenant_cache_key(tenant_reference, idempotency_key)
+        )
+        if prior is None:
+            return None
+        prior_hash, prior_receipt = prior
+        if prior_receipt.tenant_reference != tenant_reference:
+            return None
+        if prior_hash != source_payload_hash:
+            raise IdempotencyConflictError(
+                "idempotency key was already used with a different payload"
+            )
+        return prior_receipt
+
+    def _cached_reversal_receipt(
+        self, tenant_reference: str, journal_reference: str
+    ) -> PostingReceipt | None:
+        """Return the prior reversal receipt only when the cached tenant matches."""
+        prior_receipt = self._reversal_receipts.get(
+            self._tenant_cache_key(tenant_reference, journal_reference)
+        )
+        if prior_receipt is None:
+            return None
+        if prior_receipt.tenant_reference != tenant_reference:
+            return None
+        return prior_receipt
 
     @staticmethod
     def _resolve_line(

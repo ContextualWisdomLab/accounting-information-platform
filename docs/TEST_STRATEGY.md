@@ -5,7 +5,7 @@
 1. **Value contracts:** decimal, currency, codes, references, hashes, line sidedness.
 2. **Proposal invariants:** minimum lines, unique line numbers, exact balance.
 3. **Policy resolution:** tenant, legal entity, book role, period, currency, and account mapping.
-4. **Posting behavior:** idempotent replay, hash conflict, immutable receipt and journal.
+4. **Posting behavior:** idempotent replay, hash conflict, immutable receipt and journal, tenant-scoped idempotency and reversal caches, fail-closed overwrite of a posted `proposal_id` with a different idempotency key.
 5. **Reversal behavior:** original preservation, equal-and-opposite lines, duplicate reversal idempotency.
 6. **Trial balance:** scope and date filters, exact debit/credit equality, reversal net-zero fixture.
 7. **Persistence:** clean migration, upgrade rehearsal, concurrent idempotency, transaction rollback, RLS.

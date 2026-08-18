@@ -13,6 +13,7 @@ from accounting_information_platform import (
     JournalLineProposal,
     JournalProposal,
     PostingLedger,
+    PostingReceipt,
 )
 
 
@@ -92,6 +93,167 @@ class AccountingCoreTests(unittest.TestCase):
 
         with self.assertRaises(IdempotencyConflictError):
             self.ledger.post(changed, self.policy)
+
+    def test_same_idempotency_key_does_not_leak_across_tenants(self) -> None:
+        """Two tenants may reuse one idempotency_key string; each keeps its receipt."""
+        first = self.ledger.post(self._invoice_proposal(), self.policy)
+        other_policy = self._other_tenant_policy()
+        second = self.ledger.post(
+            self._invoice_proposal(
+                proposal_id="019d7b92-1aa0-7a7f-b61c-962c0f4bf621",
+                idempotency_key=self._invoice_proposal().idempotency_key,
+                tenant_reference=other_policy.tenant_reference,
+                legal_entity_reference=other_policy.legal_entity_reference,
+                source_payload_hash="sha256:" + "f" * 64,
+            ),
+            other_policy,
+        )
+
+        self.assertEqual(first.tenant_reference, self.policy.tenant_reference)
+        self.assertEqual(second.tenant_reference, other_policy.tenant_reference)
+        self.assertNotEqual(first, second)
+        self.assertEqual(self.ledger.journal_count, 2)
+        replay = self.ledger.post(self._invoice_proposal(), self.policy)
+        self.assertEqual(replay, first)
+        self.assertEqual(self.ledger.journal_count, 2)
+
+    def test_duplicate_proposal_id_with_different_key_fails_closed(self) -> None:
+        """A posted proposal_id cannot be overwritten by a later idempotency_key."""
+        original = self._invoice_proposal()
+        first = self.ledger.post(original, self.policy)
+        colliding = self._invoice_proposal(
+            idempotency_key="invoice-1-issued-v2",
+            source_payload_hash="sha256:" + "b" * 64,
+        )
+
+        with self.assertRaisesRegex(
+            AccountingValidationError,
+            "posted journal is immutable",
+        ):
+            self.ledger.post(colliding, self.policy)
+
+        replay = self.ledger.post(original, self.policy)
+        self.assertEqual(replay, first)
+        self.assertEqual(self.ledger.journal_count, 1)
+
+    def test_same_proposal_id_posts_independently_per_tenant(self) -> None:
+        """journal_reference identity is tenant-scoped, matching PostgreSQL uniqueness."""
+        first = self.ledger.post(self._invoice_proposal(), self.policy)
+        other_policy = self._other_tenant_policy()
+        second = self.ledger.post(
+            self._invoice_proposal(
+                tenant_reference=other_policy.tenant_reference,
+                legal_entity_reference=other_policy.legal_entity_reference,
+                idempotency_key="invoice-tenant-2-same-proposal",
+                source_payload_hash="sha256:" + "c" * 64,
+            ),
+            other_policy,
+        )
+
+        self.assertEqual(first.journal_reference, second.journal_reference)
+        self.assertNotEqual(first.tenant_reference, second.tenant_reference)
+        self.assertEqual(self.ledger.journal_count, 2)
+
+    def test_reversal_cache_does_not_leak_across_tenants(self) -> None:
+        """A reversal receipt is stored and returned only for its tenant."""
+        first = self.ledger.post(self._invoice_proposal(), self.policy)
+        first_reversal = self.ledger.reverse(
+            first.journal_reference,
+            date(2026, 8, 31),
+            "billing_correction",
+            self.policy,
+        )
+        other_policy = self._other_tenant_policy()
+        second = self.ledger.post(
+            self._invoice_proposal(
+                tenant_reference=other_policy.tenant_reference,
+                legal_entity_reference=other_policy.legal_entity_reference,
+                idempotency_key="invoice-tenant-2-reversal",
+                source_payload_hash="sha256:" + "d" * 64,
+            ),
+            other_policy,
+        )
+        second_reversal = self.ledger.reverse(
+            second.journal_reference,
+            date(2026, 8, 31),
+            "billing_correction",
+            other_policy,
+        )
+
+        self.assertEqual(first.journal_reference, second.journal_reference)
+        self.assertNotEqual(first_reversal, second_reversal)
+        self.assertEqual(first_reversal.tenant_reference, self.policy.tenant_reference)
+        self.assertEqual(second_reversal.tenant_reference, other_policy.tenant_reference)
+        self.assertEqual(self.ledger.journal_count, 4)
+        replay = self.ledger.reverse(
+            first.journal_reference,
+            date(2026, 8, 31),
+            "billing_correction",
+            self.policy,
+        )
+        self.assertEqual(replay, first_reversal)
+        self.assertEqual(self.ledger.journal_count, 4)
+
+    def test_cache_hits_require_stored_tenant_match(self) -> None:
+        """A cache row stored under one tenant is not returned for another tenant value."""
+        original = self._invoice_proposal()
+        first = self.ledger.post(original, self.policy)
+        foreign_receipt = PostingReceipt(
+            receipt_reference=first.receipt_reference,
+            journal_reference=first.journal_reference,
+            posting_status_code=first.posting_status_code,
+            source_proposal_id=first.source_proposal_id,
+            source_payload_hash=first.source_payload_hash,
+            tenant_reference="urn:cwl:tenant_002",
+            legal_entity_reference=first.legal_entity_reference,
+            accounting_book_reference=first.accounting_book_reference,
+            accounting_policy_version=first.accounting_policy_version,
+            posting_rule_version=first.posting_rule_version,
+            line_count=first.line_count,
+        )
+        idempotency_key = self.ledger._tenant_cache_key(
+            self.policy.tenant_reference,
+            original.idempotency_key,
+        )
+        self.ledger._receipts_by_idempotency[idempotency_key] = (
+            original.source_payload_hash,
+            foreign_receipt,
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "posted journal is immutable"):
+            self.ledger.post(original, self.policy)
+
+        reversal = self.ledger.reverse(
+            first.journal_reference,
+            date(2026, 8, 31),
+            "billing_correction",
+            self.policy,
+        )
+        reversal_key = self.ledger._tenant_cache_key(
+            self.policy.tenant_reference,
+            first.journal_reference,
+        )
+        self.ledger._reversal_receipts[reversal_key] = PostingReceipt(
+            receipt_reference=reversal.receipt_reference,
+            journal_reference=reversal.journal_reference,
+            posting_status_code=reversal.posting_status_code,
+            source_proposal_id=reversal.source_proposal_id,
+            source_payload_hash=reversal.source_payload_hash,
+            tenant_reference="urn:cwl:tenant_002",
+            legal_entity_reference=reversal.legal_entity_reference,
+            accounting_book_reference=reversal.accounting_book_reference,
+            accounting_policy_version=reversal.accounting_policy_version,
+            posting_rule_version=reversal.posting_rule_version,
+            line_count=reversal.line_count,
+            reversal_of_journal_reference=reversal.reversal_of_journal_reference,
+        )
+        replay_reversal = self.ledger.reverse(
+            first.journal_reference,
+            date(2026, 8, 31),
+            "billing_correction",
+            self.policy,
+        )
+        self.assertEqual(replay_reversal.tenant_reference, self.policy.tenant_reference)
+        self.assertNotEqual(replay_reversal.tenant_reference, "urn:cwl:tenant_002")
 
     def test_unbalanced_proposal_is_rejected(self) -> None:
         with self.assertRaisesRegex(AccountingValidationError, "must balance"):
@@ -382,8 +544,8 @@ class AccountingCoreTests(unittest.TestCase):
                 self.policy,
             )
         wrong_scope_policy = AccountingPolicy(
-            tenant_reference="urn:cwl:tenant_002",
-            legal_entity_reference=self.policy.legal_entity_reference,
+            tenant_reference=self.policy.tenant_reference,
+            legal_entity_reference="urn:cwl:legal_entity:entity_999",
             accounting_book_reference=self.policy.accounting_book_reference,
             intended_book_role_code=self.policy.intended_book_role_code,
             transaction_currency="KRW",
@@ -401,6 +563,34 @@ class AccountingCoreTests(unittest.TestCase):
                 "billing_correction",
                 wrong_scope_policy,
             )
+        other_tenant_policy = self._other_tenant_policy()
+        with self.assertRaisesRegex(AccountingValidationError, "does not exist"):
+            self.ledger.reverse(
+                receipt.journal_reference,
+                date(2026, 8, 31),
+                "billing_correction",
+                other_tenant_policy,
+            )
+        wrong_book_policy = AccountingPolicy(
+            tenant_reference=self.policy.tenant_reference,
+            legal_entity_reference=self.policy.legal_entity_reference,
+            accounting_book_reference="urn:cwl:accounting_book:other_statutory",
+            intended_book_role_code=self.policy.intended_book_role_code,
+            transaction_currency="KRW",
+            functional_currency="KRW",
+            open_period_start=date(2026, 8, 1),
+            open_period_end=date(2026, 8, 31),
+            chart_account_mapping=self.policy.chart_account_mapping,
+            accounting_policy_version="ifrs-v1",
+            posting_rule_version="billing-issued-v1",
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "scope"):
+            self.ledger.reverse(
+                receipt.journal_reference,
+                date(2026, 8, 31),
+                "billing_correction",
+                wrong_book_policy,
+            )
 
     def test_each_policy_scope_dimension_is_enforced(self) -> None:
         cases = (
@@ -415,6 +605,21 @@ class AccountingCoreTests(unittest.TestCase):
             with self.subTest(overrides=overrides):
                 with self.assertRaisesRegex(AccountingValidationError, message):
                     self.ledger.post(self._invoice_proposal(**overrides), self.policy)
+
+    def _other_tenant_policy(self) -> AccountingPolicy:
+        return AccountingPolicy(
+            tenant_reference="urn:cwl:tenant_002",
+            legal_entity_reference="urn:cwl:legal_entity:entity_002",
+            accounting_book_reference="urn:cwl:accounting_book:primary_statutory_2",
+            intended_book_role_code="primary_statutory",
+            transaction_currency="KRW",
+            functional_currency="KRW",
+            open_period_start=date(2026, 8, 1),
+            open_period_end=date(2026, 8, 31),
+            chart_account_mapping=self.policy.chart_account_mapping,
+            accounting_policy_version="ifrs-v1",
+            posting_rule_version="billing-issued-v1",
+        )
 
     def _invoice_proposal(self, **overrides: object) -> JournalProposal:
         values: dict[str, object] = {
