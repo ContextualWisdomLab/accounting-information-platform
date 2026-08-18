@@ -5192,6 +5192,16 @@ class PostgresPostingTests(unittest.TestCase):
         )
         self.assertEqual(aliased["posting_status_code"], "posted")
         self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before + 2)
+        empty_book = self._seed_book_without_chart_accounts()
+        with self.assertRaisesRegex(AccountingValidationError, "account_role_mapping"):
+            accept_adjusting_journal(
+                self._adjusting_journal_payload(
+                    accounting_book_reference=empty_book,
+                    idempotency_key=f"{self.policy.tenant_reference}:adjusting_journal:empty-book:v1",
+                ),
+                DATABASE_URL,
+                self.policy.tenant_reference,
+            )
 
         soft_status, _soft = self._http_json(
             "POST", "/period-closes", self._period_close_payload(period_status_code="soft_closed")
@@ -5434,16 +5444,6 @@ class PostgresPostingTests(unittest.TestCase):
                     fiscal_period_reference="",
                     period_code="",
                     idempotency_key=f"{self.policy.tenant_reference}:adjusting_journal:missing-period-code:v1",
-                ),
-                DATABASE_URL,
-                self.policy.tenant_reference,
-            )
-        empty_book = self._seed_book_without_chart_accounts()
-        with self.assertRaisesRegex(AccountingValidationError, "account_role_mapping"):
-            accept_adjusting_journal(
-                self._adjusting_journal_payload(
-                    accounting_book_reference=empty_book,
-                    idempotency_key=f"{self.policy.tenant_reference}:adjusting_journal:empty-book:v1",
                 ),
                 DATABASE_URL,
                 self.policy.tenant_reference,
