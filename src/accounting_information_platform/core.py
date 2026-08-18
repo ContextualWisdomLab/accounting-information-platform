@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from types import MappingProxyType
 from typing import Mapping
@@ -198,6 +198,22 @@ class PostingReceipt:
     posting_rule_version: str
     line_count: int
     reversal_of_journal_reference: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PeriodCloseReceipt:
+    """Authoritative acknowledgement that one fiscal period was closed."""
+
+    tenant_reference: str
+    legal_entity_reference: str
+    accounting_book_reference: str
+    period_code: str
+    period_status_code: str
+    snapshot_record_id: str
+    snapshot_generated_at: datetime
+    source_journal_count: int
+    source_payload_hash: str
+    replayed: bool
 
 
 @dataclass(frozen=True, slots=True)

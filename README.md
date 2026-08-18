@@ -21,16 +21,18 @@ The Metering Billing Platform owns usage, pricing, invoice intent, collections, 
 
 ## What operators can do now
 
-The current release is the proposal-to-trial-balance foundation: a dependency-free reference core, versioned contracts, and a PostgreSQL 18.4 normalized schema with tenant-scoped foreign keys and row-level security.
+The current release includes a dependency-free reference core, a PostgreSQL 18 posting adapter, versioned contracts, and a purpose-limited HTTP surface for proposal intake, close, inquiry, and statement projection.
 
 Controllers, accounting operations, and finance-platform operators can:
 
-- accept a versioned `accounting_journal_proposal` from an approved source;
+- accept a versioned `accounting_journal_proposal` from an approved source, including Billing `validated` and `exported` proposals;
 - distinguish exact replay from conflicting reuse of an idempotency key;
 - resolve tenant, legal entity, accounting book, fiscal period, currencies, account roles, and policy versions;
 - post a balanced immutable journal or receive a structured hold or rejection;
 - reverse a posted journal with an equal-and-opposite journal while preserving both records;
-- produce a trial balance that ties exactly to the included journal population;
+- soft-close and hard-close fiscal periods, including an AIS closing journal into retained earnings on hard-close;
+- produce trial balances, account balances, ledgers, rollforwards, and receivable aging that tie to the included journal population;
+- read income statement, balance sheet, changes in equity, and cash-flow projections for a book and period;
 - return an authoritative `accounting_posting_receipt` (`posted`, `held`, `rejected`, or `reversed`).
 
 Invoice issuance, payment capture, and provider payout do not by themselves determine revenue recognition. Performance obligation, principal-versus-agent, variable consideration, and period-of-recognition policy remain in this boundary.

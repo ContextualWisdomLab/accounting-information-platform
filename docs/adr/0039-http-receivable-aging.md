@@ -1,0 +1,19 @@
+# ADR 0039: HTTP entity-level receivable aging
+
+**Status:** Accepted
+
+## Decision
+
+AIS exposes `lookup_receivable_aging` and `GET /receivable-agings?legal_entity_reference=&book_reference=&fiscal_period_reference=` on the same stdlib HTTP surface as account-balance inquiry (ADR 0034). The only request identity header is purpose-limited `X-CWL-Tenant-Reference`. This slice is an entity-level control worksheet, not a customer subledger and not a second numerical truth. AIS does not add a party or `party_reference`, a table, or a migration. Billing still owns counterparties.
+
+Required query keys are `legal_entity_reference`, `book_reference`, and `fiscal_period_reference`. As-of is exactly that fiscal period's `period_end_date`. Optional `chart_account_code` defaults to the catalog `accounts_receivable` mapping (seeded 110100). An unknown catalog code is 404. A known cash, revenue, or other non-AR code is 422; the only allowed account is that catalog AR account.
+
+Aging is FIFO on posted AR lines through the period end. Debit lines are AR increases and age from stored `accounting_date`. Credit lines (cash apply, credit adjustment, reversal of AR) consume the oldest open debit first using exact decimal arithmetic. Adjusting journals that touch the AR account are included. The AIS period-closing journal is excluded and is not used as an invoice date. After hard-close, AIS still ages from live journals through period end; it does not invent invoice dates from the trial-balance snapshot. `total_outstanding_amount` is the sum of the four unsigned buckets and equals `GET /account-balances` net (`debit_amount` − `credit_amount`) for that AR account and period, including the stored snapshot net after hard-close.
+
+Buckets are integer days outstanding (`period_end_date` − remaining debit `accounting_date`): `current` is 0–30 inclusive, then `days_31_60`, `days_61_90`, and `days_over_90`. Empty AR history returns zero amounts rather than 404. Unknown legal entity, book, or period fails closed. `POST /receivable-agings` is 405. A tenant-header mismatch is rejected before the read and writes zero rows.
+
+IFRS 9 uses the aging of receivables as credit-risk evidence for expected credit losses, and IAS 1 requires presentation that helps users assess the entity's financial position (IFRS Foundation, 2023; IFRS Foundation, 2022). This read is that entity-level aging worksheet. It does not estimate loss allowances and does not split AR by customer.
+
+## Consequences
+
+Controllers can take current versus past-due AR from the existing books and tie the total to the AR account-balance net without SQL and without inventing a party dimension. Customer-level aging remains a Billing concern. Account-balance, rollforward, trial-balance, and journal-source reads stay on their existing routes.

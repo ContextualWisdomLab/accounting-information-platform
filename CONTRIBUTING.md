@@ -15,8 +15,8 @@ python3 scripts/validate_repository.py .
 python3 -m compileall -q src scripts tests
 ```
 
-The validator checks required files, public docstrings, closed JSON Schema contracts, two-word SQL names, hash-locked quality dependencies, and unresolved placeholders. Quality dependencies include `coverage` and the `setuptools` build backend required for offline editable and wheel installs.
+The validator checks required files, public docstrings, closed JSON Schema contracts, two-word SQL names, hash-locked quality dependencies, and unresolved placeholders. Quality dependencies include `coverage`, `setuptools`, `wheel`, `packaging`, and the psycopg wheels required for offline editable installs and persistence tests.
 
 ## Documentation
 
-Product architecture and authority live in `docs/`. Accepted decisions are in `docs/adr/`. The standards bibliography and traceability matrix are in `docs/doctoring/`. The next durable intake increment is described in `docs/doctoring/IMPLEMENTATION_SEQUENCE.md`.
+Product architecture and authority live in `docs/`. Accepted decisions are in `docs/adr/`. The standards bibliography, traceability matrix, and remaining implementation sequence are in `docs/doctoring/`.

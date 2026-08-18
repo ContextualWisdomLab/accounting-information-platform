@@ -14,7 +14,7 @@ The Metering Billing Platform owns `accounting_journal_proposal`; the Accounting
 
 ## Consequences
 
-Both contracts are versioned and hash-addressed. Producer and consumer repositories run conformance fixtures. `posted` is impossible in the proposal status enumeration and authoritative only in the receipt. No consumer receives a `posted` receipt unless the posting transaction commits.
+Both contracts are versioned and hash-addressed. Producer and consumer repositories run conformance fixtures. The published proposal field is `proposal_status` with `draft`, `validated`, `exported`, or `rejected`. `posted` is impossible on that contract and authoritative only in the receipt. AIS ingest accepts `validated` and `exported`; it does not ingest Billing operational reject rows. After AIS emits `posting_receipt`, Billing does not flip the proposal to `posted`. No consumer receives a `posted` receipt unless the posting transaction commits.
 
 ## References
 

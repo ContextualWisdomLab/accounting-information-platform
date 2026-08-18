@@ -5,7 +5,7 @@
 - `tenant_account`: local tenant authority boundary.
 - `legal_entity_record`: effective-dated legal entity and functional currency.
 - `accounting_book`: statutory, management, tax, or consolidation book assignment.
-- `chart_account`: effective-dated chart account within a book.
+- `chart_account`: effective-dated chart account within a book, including durable `account_class_code` (`asset`, `liability`, `equity`, `revenue`, or `expense`).
 - `account_role_mapping`: semantic source role to approved chart account under policy and rule versions.
 - `fiscal_calendar` and `fiscal_period`: period identity and close state.
 

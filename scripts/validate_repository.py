@@ -22,12 +22,18 @@ REQUIRED_FILES = (
     ".coveragerc",
     ".github/workflows/ci.yml",
     "src/accounting_information_platform/__init__.py",
+    "src/accounting_information_platform/accept.py",
+    "src/accounting_information_platform/billing_pull.py",
     "src/accounting_information_platform/core.py",
+    "src/accounting_information_platform/http_api.py",
+    "src/accounting_information_platform/ingest.py",
+    "src/accounting_information_platform/persistence.py",
     "src/accounting_information_platform/py.typed",
     "schemas/accounting-journal-proposal.schema.json",
     "schemas/accounting-posting-receipt.schema.json",
     "schemas/accounting-policy-manifest.schema.json",
     "database/migrations/0001_accounting_foundation.sql",
+    "database/migrations/0002_chart_account_class.sql",
     "docs/PRD.md",
     "docs/TRD.md",
     "docs/ARCHITECTURE.md",
@@ -41,6 +47,40 @@ REQUIRED_FILES = (
     "docs/adr/0003-append-only-journals.md",
     "docs/adr/0004-exact-decimal-arithmetic.md",
     "docs/adr/0005-policy-driven-account-mapping.md",
+    "docs/adr/0006-fiscal-period-close-snapshot.md",
+    "docs/adr/0007-catalog-policy-resolution.md",
+    "docs/adr/0008-http-journal-proposal-accept.md",
+    "docs/adr/0009-http-posting-receipt-lookup.md",
+    "docs/adr/0010-http-period-close-and-trial-balance.md",
+    "docs/adr/0011-ais-pulls-billing-get.md",
+    "docs/adr/0012-http-append-only-reversal.md",
+    "docs/adr/0013-http-account-role-mapping-read.md",
+    "docs/adr/0014-http-posted-journal-inquiry.md",
+    "docs/adr/0015-http-fiscal-period-open.md",
+    "docs/adr/0016-http-period-journal-list.md",
+    "docs/adr/0017-http-outbox-read-and-publish.md",
+    "docs/adr/0018-http-fiscal-period-list.md",
+    "docs/adr/0019-http-account-ledger-inquiry.md",
+    "docs/adr/0020-http-chart-account-catalog-read.md",
+    "docs/adr/0021-http-financial-statement-read.md",
+    "docs/adr/0022-http-accounting-book-list.md",
+    "docs/adr/0023-http-two-step-period-close.md",
+    "docs/adr/0024-hard-close-retained-earnings.md",
+    "docs/adr/0025-http-financial-statement-comparison.md",
+    "docs/adr/0026-http-legal-entity-list.md",
+    "docs/adr/0027-http-audit-event-history.md",
+    "docs/adr/0028-http-financial-statement-year-to-date.md",
+    "docs/adr/0029-http-journal-reversal-list.md",
+    "docs/adr/0030-http-period-close-list.md",
+    "docs/adr/0031-http-adjusting-journal.md",
+    "docs/adr/0032-http-changes-in-equity.md",
+    "docs/adr/0033-http-cash-flow.md",
+    "docs/adr/0034-http-account-balances.md",
+    "docs/adr/0035-http-account-rollforward.md",
+    "docs/adr/0036-http-trial-balance-basis.md",
+    "docs/adr/0037-http-financial-statement-package.md",
+    "docs/adr/0038-http-journal-source-list.md",
+    "docs/adr/0039-http-receivable-aging.md",
     "docs/doctoring/REFERENCES.md",
     "docs/doctoring/STANDARD_TRACEABILITY.md",
     "docs/superpowers/specs/2026-08-16-accounting-information-platform-design.md",
@@ -54,6 +94,14 @@ PLACEHOLDER_PATTERN = re.compile(
     r"\b(" + "|".join(("TO" + "DO", "T" + "BD", "FIX" + "ME")) + r")\b"
 )
 TWO_WORD_SNAKE_PATTERN = re.compile(r"^[a-z][a-z0-9]*_[a-z0-9_]+$")
+HASH_TOKEN_PATTERN = re.compile(r"--hash=sha256:([0-9a-f]{64})")
+PINNED_REQUIREMENT_PATTERN = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==")
+COVERAGE_UNIVERSAL_WHEEL_HASH = (
+    "964730a1e9de9c0cf11be6a1a3c79ce419c34882842abd256086ba4698705e84"
+)
+COVERAGE_CP313_MANYLINUX_X86_64_WHEEL_HASH = (
+    "12b59c90084e3234fb11184886bf4a40f4f16a8c8f867be2e087b81f8e8868d4"
+)
 SCHEMA_NAME_PATTERN = re.compile(
     r"\bCREATE\s+SCHEMA(?:\s+IF\s+NOT\s+EXISTS)?\s+([A-Za-z_][A-Za-z0-9_]*)",
     re.IGNORECASE,
@@ -106,6 +154,83 @@ def validate_sql_object_names(sql_text: str) -> tuple[str, ...]:
     return tuple(errors)
 
 
+def validate_quality_requirements(requirements_text: str) -> tuple[str, ...]:
+    """Require hash-locked coverage wheels and the no-build-isolation packaging backend."""
+    errors: list[str] = []
+    package_hashes: dict[str, set[str]] = {}
+    current_package: str | None = None
+
+    for raw_line in requirements_text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        hashes = set(HASH_TOKEN_PATTERN.findall(line))
+        requirement_line = HASH_TOKEN_PATTERN.sub("", line).replace("\\", "").strip()
+        if requirement_line:
+            name_match = PINNED_REQUIREMENT_PATTERN.match(requirement_line)
+            if name_match is None:
+                errors.append(f"unrecognized quality dependency line: {requirement_line}")
+                current_package = None
+            else:
+                current_package = name_match.group(1).lower()
+                package_hashes.setdefault(current_package, set())
+        if hashes:
+            if current_package is None:
+                errors.append("hash lock is not attached to a quality dependency")
+            else:
+                package_hashes.setdefault(current_package, set()).update(hashes)
+
+    if not any(package_hashes.values()):
+        errors.append("quality dependencies must be hash locked")
+
+    if "coverage" not in package_hashes:
+        errors.append("quality dependencies must pin coverage")
+    else:
+        coverage_hashes = package_hashes["coverage"]
+        if COVERAGE_UNIVERSAL_WHEEL_HASH not in coverage_hashes:
+            errors.append("coverage must pin the universal py3-none-any wheel hash")
+        if COVERAGE_CP313_MANYLINUX_X86_64_WHEEL_HASH not in coverage_hashes:
+            errors.append(
+                "coverage must pin the CPython 3.13 manylinux x86_64 wheel hash"
+            )
+
+    if "setuptools" not in package_hashes:
+        errors.append(
+            "quality dependencies must pin setuptools for no-build-isolation packaging"
+        )
+    elif not package_hashes["setuptools"]:
+        errors.append("setuptools must be hash locked")
+
+    if "wheel" not in package_hashes:
+        errors.append(
+            "quality dependencies must pin wheel for no-build-isolation packaging"
+        )
+    elif not package_hashes["wheel"]:
+        errors.append("wheel must be hash locked")
+
+    if "packaging" not in package_hashes:
+        errors.append(
+            "quality dependencies must pin packaging for setuptools license metadata"
+        )
+    elif not package_hashes["packaging"]:
+        errors.append("packaging must be hash locked")
+
+    if "psycopg" not in package_hashes:
+        errors.append(
+            "quality dependencies must pin psycopg for PostgreSQL persistence tests"
+        )
+    elif not package_hashes["psycopg"]:
+        errors.append("psycopg must be hash locked")
+
+    if "psycopg-binary" not in package_hashes:
+        errors.append(
+            "quality dependencies must pin psycopg-binary for PostgreSQL persistence tests"
+        )
+    elif not package_hashes["psycopg-binary"]:
+        errors.append("psycopg-binary must be hash locked")
+
+    return tuple(errors)
+
 
 def validate_public_docstrings(source_root: Path) -> tuple[str, ...]:
     """Require docstrings on every shipped public Python symbol below *source_root*."""
@@ -141,18 +266,21 @@ def validate_repository(root: Path) -> tuple[str, ...]:
         for schema_path in sorted(schemas_directory.glob("*.schema.json")):
             errors.extend(_validate_schema_file(schema_path, schema_ids))
 
-    migration_path = root / "database/migrations/0001_accounting_foundation.sql"
-    if migration_path.is_file():
-        sql_text = migration_path.read_text(encoding="utf-8")
-        errors.extend(validate_sql_object_names(sql_text))
-        if re.search(r"\bDELETE\s+FROM\b", sql_text, re.IGNORECASE):
-            errors.append("accounting migrations must not define destructive journal deletion")
+    migrations_directory = root / "database/migrations"
+    if migrations_directory.is_dir():
+        for migration_path in sorted(migrations_directory.glob("*.sql")):
+            sql_text = migration_path.read_text(encoding="utf-8")
+            errors.extend(validate_sql_object_names(sql_text))
+            if re.search(r"\bDELETE\s+FROM\b", sql_text, re.IGNORECASE):
+                errors.append(
+                    "accounting migrations must not define destructive journal deletion"
+                )
 
     requirements_path = root / "requirements-quality.txt"
     if requirements_path.is_file():
-        requirements_text = requirements_path.read_text(encoding="utf-8")
-        if "--hash=sha256:" not in requirements_text:
-            errors.append("quality dependencies must be hash locked")
+        errors.extend(
+            validate_quality_requirements(requirements_path.read_text(encoding="utf-8"))
+        )
 
     for file_path in _iter_contract_files(root):
         text = file_path.read_text(encoding="utf-8")
