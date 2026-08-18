@@ -328,6 +328,27 @@ def lookup_account_rollforward(
     )
 
 
+def lookup_unapplied_cash_rollforward(
+    database_url: str,
+    tenant_reference: str,
+    legal_entity_reference: str,
+    book_reference: str,
+    fiscal_period_reference: str,
+) -> dict[str, object]:
+    """Return leftover-cash park / apply / refund rollforward for catalog 210200."""
+    if not legal_entity_reference or not book_reference or not fiscal_period_reference:
+        raise AccountingValidationError(
+            "legal_entity_reference, book_reference, and fiscal_period_reference are required. "
+            "Supply those unapplied-cash-rollforward fields, then retry the unapplied-cash-rollforward read."
+        )
+    ledger = PostgresPostingLedger(database_url, tenant_reference)
+    return ledger.load_unapplied_cash_rollforward(
+        legal_entity_reference,
+        book_reference,
+        _period_code_from_reference(fiscal_period_reference),
+    )
+
+
 def lookup_account_balances(
     database_url: str,
     tenant_reference: str,

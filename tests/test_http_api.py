@@ -323,6 +323,185 @@ class UnappliedCashRefundHttpTests(unittest.TestCase):
         server.server_close()
 
 
+class UnappliedCashRollforwardHttpTests(unittest.TestCase):
+    """GET /unapplied-cash-rollforwards ties park / apply / refund to 210200."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        postgres_posting.PostgresPostingTests.setUpClass()
+
+    def setUp(self) -> None:
+        self.case = postgres_posting.PostgresPostingTests("setUp")
+        self.case.setUp()
+
+    def test_http_unapplied_cash_rollforward_parks_applies_and_refunds(self) -> None:
+        """Park then apply then refund: closing equals 210200 credit minus debit."""
+        case = self.case
+        park = case._billing_unapplied_cash_park_payload(
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "cash_receipt",
+                    "debit_amount": "8000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "unapplied_cash",
+                    "debit_amount": "0",
+                    "credit_amount": "8000",
+                },
+            ],
+        )
+        apply_payload = case._billing_unapplied_cash_application_payload(
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "unapplied_cash",
+                    "debit_amount": "3000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "0",
+                    "credit_amount": "3000",
+                },
+            ],
+        )
+        refund = case._billing_unapplied_cash_refund_payload(
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "unapplied_cash",
+                    "debit_amount": "2000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "cash_receipt",
+                    "debit_amount": "0",
+                    "credit_amount": "2000",
+                },
+            ],
+        )
+        server = case._start_http_server()
+
+        empty_status, empty = case._http_unapplied_cash_rollforward()
+        park_status, _park = case._http_json("POST", "/journal-proposals", park)
+        apply_status, _apply = case._http_json("POST", "/journal-proposals", apply_payload)
+        refund_status, _refund = case._http_json("POST", "/journal-proposals", refund)
+        roll_status, rollforward = case._http_unapplied_cash_rollforward()
+        balances_status, balances = case._http_account_balances(chart_account_code="210200")
+        leftover_net = Decimal(str(balances["account_balances"][0]["credit_amount"])) - Decimal(
+            str(balances["account_balances"][0]["debit_amount"])
+        )
+
+        self.assertEqual(empty_status, 200)
+        self.assertEqual(empty["chart_account_code"], "210200")
+        self.assertEqual(empty["account_role_code"], "unapplied_cash")
+        self.assertEqual(empty["as_of_date"], "2026-08-31")
+        self.assertNotIn("party_reference", empty)
+        self.assertNotIn("other_movement_amount", empty)
+        self.assertNotIn("next_cursor", empty)
+        for key in (
+            "parked_amount",
+            "applied_amount",
+            "refunded_amount",
+            "opening_amount",
+            "closing_amount",
+        ):
+            self.assertEqual(empty[key], "0")
+        self.assertEqual(park_status, 200)
+        self.assertEqual(apply_status, 200)
+        self.assertEqual(refund_status, 200)
+        self.assertEqual(roll_status, 200)
+        self.assertEqual(balances_status, 200)
+        self.assertEqual(rollforward["tenant_reference"], case.policy.tenant_reference)
+        self.assertEqual(rollforward["legal_entity_reference"], case.policy.legal_entity_reference)
+        self.assertEqual(
+            rollforward["accounting_book_reference"],
+            case.policy.accounting_book_reference,
+        )
+        self.assertEqual(rollforward["book_reference"], case.policy.accounting_book_reference)
+        self.assertEqual(
+            rollforward["fiscal_period_reference"],
+            "urn:cwl:accounting:fiscal_period:2026-08",
+        )
+        self.assertEqual(rollforward["as_of_date"], "2026-08-31")
+        self.assertEqual(rollforward["chart_account_code"], "210200")
+        self.assertEqual(rollforward["account_role_code"], "unapplied_cash")
+        self.assertEqual(rollforward["parked_amount"], "8000")
+        self.assertEqual(rollforward["applied_amount"], "3000")
+        self.assertEqual(rollforward["refunded_amount"], "2000")
+        self.assertEqual(rollforward["opening_amount"], "0")
+        self.assertEqual(rollforward["closing_amount"], "3000")
+        self.assertEqual(
+            Decimal(str(rollforward["closing_amount"])),
+            Decimal(str(rollforward["opening_amount"]))
+            + Decimal(str(rollforward["parked_amount"]))
+            - Decimal(str(rollforward["applied_amount"]))
+            - Decimal(str(rollforward["refunded_amount"])),
+        )
+        self.assertEqual(Decimal(str(rollforward["closing_amount"])), leftover_net)
+        self.assertNotIn("party_reference", rollforward)
+        self.assertNotIn("other_movement_amount", rollforward)
+
+        soft_status, _soft = case._http_json(
+            "POST",
+            "/period-closes",
+            case._period_close_payload(period_status_code="soft_closed"),
+        )
+        soft_roll_status, soft_roll = case._http_unapplied_cash_rollforward()
+        hard_status, _hard = case._http_json(
+            "POST", "/period-closes", case._period_close_payload()
+        )
+        hard_roll_status, hard_roll = case._http_unapplied_cash_rollforward()
+        closed_balances_status, closed_balances = case._http_account_balances(
+            chart_account_code="210200"
+        )
+        closed_net = Decimal(str(closed_balances["account_balances"][0]["credit_amount"])) - Decimal(
+            str(closed_balances["account_balances"][0]["debit_amount"])
+        )
+
+        self.assertEqual(soft_status, 200)
+        self.assertEqual(soft_roll_status, 200)
+        self.assertEqual(soft_roll["closing_amount"], "3000")
+        self.assertEqual(hard_status, 200)
+        self.assertEqual(hard_roll_status, 200)
+        self.assertEqual(closed_balances_status, 200)
+        self.assertEqual(hard_roll["parked_amount"], "8000")
+        self.assertEqual(hard_roll["applied_amount"], "3000")
+        self.assertEqual(hard_roll["refunded_amount"], "2000")
+        self.assertEqual(hard_roll["closing_amount"], "3000")
+        self.assertEqual(Decimal(str(hard_roll["closing_amount"])), closed_net)
+        self.assertEqual(case._count_closing_journals(), 0)
+
+        post_status, _post = case._http_json("POST", "/unapplied-cash-rollforwards", {})
+        missing_header = case._http_unapplied_cash_rollforward(tenant_header=None)
+        cross_status, _cross = case._http_unapplied_cash_rollforward(
+            tenant_header="urn:cwl:tenant_other"
+        )
+        unknown_entity = case._http_unapplied_cash_rollforward(
+            legal_entity_reference="urn:cwl:legal_entity:missing"
+        )
+        unknown_book = case._http_unapplied_cash_rollforward(
+            book_reference="urn:cwl:accounting_book:missing"
+        )
+        unknown_period = case._http_unapplied_cash_rollforward(
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:1999-01"
+        )
+
+        self.assertEqual(post_status, 405)
+        self.assertEqual(missing_header[0], 400)
+        self.assertEqual(cross_status, 403)
+        self.assertEqual(unknown_entity[0], 404)
+        self.assertEqual(unknown_book[0], 404)
+        self.assertEqual(unknown_period[0], 404)
+        server.shutdown()
+        server.server_close()
+
+
 class PeriodClosePackageHttpTests(unittest.TestCase):
     """GET /period-close-packages includes the standalone payable-aging document."""
 

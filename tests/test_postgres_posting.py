@@ -58,6 +58,7 @@ from accounting_information_platform import (
     lookup_payable_aging,
     lookup_receivable_aging,
     lookup_trial_balance,
+    lookup_unapplied_cash_rollforward,
     pull_journal_proposal,
     pull_validated_journal_proposals,
     run_journal_proposal_server,
@@ -2175,6 +2176,513 @@ class PostgresPostingTests(unittest.TestCase):
             Decimal(str(excess_aging["total_outstanding_amount"])),
             excess_net + Decimal(str(excess_aging["unapplied_credit_amount"])),
         )
+        server.shutdown()
+
+    def test_http_reads_unapplied_cash_rollforward(self) -> None:
+        """GET /unapplied-cash-rollforwards ties leftover movements to 210200 credit-normal."""
+        server = self._start_http_server()
+        journals_before = self._count_table("accounting_core.general_journal")
+        empty_status, empty = self._http_unapplied_cash_rollforward()
+        empty_library = lookup_unapplied_cash_rollforward(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-08",
+        )
+        persist = PostgresPostingLedger(
+            DATABASE_URL, self.policy.tenant_reference
+        ).load_unapplied_cash_rollforward(
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "2026-08",
+        )
+
+        self.assertEqual(empty_status, 200)
+        self.assertEqual(empty, empty_library)
+        self.assertEqual(empty, persist)
+        self.assertEqual(empty["chart_account_code"], "210200")
+        self.assertEqual(empty["account_role_code"], "unapplied_cash")
+        self.assertEqual(empty["as_of_date"], "2026-08-31")
+        self.assertNotIn("party_reference", empty)
+        self.assertNotIn("other_movement_amount", empty)
+        for key in (
+            "parked_amount",
+            "applied_amount",
+            "refunded_amount",
+            "opening_amount",
+            "closing_amount",
+        ):
+            self.assertEqual(empty[key], "0")
+
+        invoice_status, _invoice = self._http_json(
+            "POST", "/journal-proposals", self._billing_validated_payload()
+        )
+        park_status, _park = self._http_json(
+            "POST",
+            "/journal-proposals",
+            self._billing_unapplied_cash_park_payload(
+                lines=[
+                    {
+                        "line_number": 1,
+                        "account_role_code": "cash_receipt",
+                        "debit_amount": "8000",
+                        "credit_amount": "0",
+                    },
+                    {
+                        "line_number": 2,
+                        "account_role_code": "unapplied_cash",
+                        "debit_amount": "0",
+                        "credit_amount": "8000",
+                    },
+                ],
+            ),
+        )
+        apply_status, _apply = self._http_json(
+            "POST",
+            "/journal-proposals",
+            self._billing_unapplied_cash_application_payload(
+                lines=[
+                    {
+                        "line_number": 1,
+                        "account_role_code": "unapplied_cash",
+                        "debit_amount": "3000",
+                        "credit_amount": "0",
+                    },
+                    {
+                        "line_number": 2,
+                        "account_role_code": "accounts_receivable",
+                        "debit_amount": "0",
+                        "credit_amount": "3000",
+                    },
+                ],
+            ),
+        )
+        refund_status, _refund = self._http_json(
+            "POST",
+            "/journal-proposals",
+            self._billing_unapplied_cash_refund_payload(
+                lines=[
+                    {
+                        "line_number": 1,
+                        "account_role_code": "unapplied_cash",
+                        "debit_amount": "2000",
+                        "credit_amount": "0",
+                    },
+                    {
+                        "line_number": 2,
+                        "account_role_code": "cash_receipt",
+                        "debit_amount": "0",
+                        "credit_amount": "2000",
+                    },
+                ],
+            ),
+        )
+        roll_status, rollforward = self._http_unapplied_cash_rollforward()
+        library = lookup_unapplied_cash_rollforward(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-08",
+        )
+        balances_status, balances = self._http_account_balances(chart_account_code="210200")
+        leftover_net = Decimal(str(balances["account_balances"][0]["credit_amount"])) - Decimal(
+            str(balances["account_balances"][0]["debit_amount"])
+        )
+
+        self.assertEqual(invoice_status, 200)
+        self.assertEqual(park_status, 200)
+        self.assertEqual(apply_status, 200)
+        self.assertEqual(refund_status, 200)
+        self.assertEqual(roll_status, 200)
+        self.assertEqual(balances_status, 200)
+        self.assertEqual(rollforward, library)
+        self.assertEqual(rollforward["parked_amount"], "8000")
+        self.assertEqual(rollforward["applied_amount"], "3000")
+        self.assertEqual(rollforward["refunded_amount"], "2000")
+        self.assertEqual(rollforward["opening_amount"], "0")
+        self.assertEqual(rollforward["closing_amount"], "3000")
+        self.assertEqual(
+            Decimal(str(rollforward["closing_amount"])),
+            Decimal(str(rollforward["opening_amount"]))
+            + Decimal(str(rollforward["parked_amount"]))
+            - Decimal(str(rollforward["applied_amount"]))
+            - Decimal(str(rollforward["refunded_amount"])),
+        )
+        self.assertEqual(Decimal(str(rollforward["closing_amount"])), leftover_net)
+        self.assertNotIn("other_movement_amount", rollforward)
+
+        soft_status, _soft = self._http_json(
+            "POST",
+            "/period-closes",
+            self._period_close_payload(period_status_code="soft_closed"),
+        )
+        soft_roll_status, soft_roll = self._http_unapplied_cash_rollforward()
+        hard_status, _hard = self._http_json("POST", "/period-closes", self._period_close_payload())
+        hard_roll_status, hard_roll = self._http_unapplied_cash_rollforward()
+        closed_balances_status, closed_balances = self._http_account_balances(
+            chart_account_code="210200"
+        )
+        closed_net = Decimal(str(closed_balances["account_balances"][0]["credit_amount"])) - Decimal(
+            str(closed_balances["account_balances"][0]["debit_amount"])
+        )
+
+        self.assertEqual(soft_status, 200)
+        self.assertEqual(soft_roll_status, 200)
+        self.assertEqual(soft_roll["closing_amount"], "3000")
+        self.assertEqual(hard_status, 200)
+        self.assertEqual(hard_roll_status, 200)
+        self.assertEqual(closed_balances_status, 200)
+        self.assertEqual(hard_roll["closing_amount"], "3000")
+        self.assertEqual(Decimal(str(hard_roll["closing_amount"])), closed_net)
+        self.assertEqual(self._count_closing_journals(), 1)
+
+        alias_query = urllib.parse.urlencode(
+            {
+                "legal_entity_reference": self.policy.legal_entity_reference,
+                "accounting_book_reference": self.policy.accounting_book_reference,
+                "fiscal_period_reference": "urn:cwl:accounting:fiscal_period:2026-08",
+            }
+        )
+        alias_status, alias_document = self._http_json(
+            "GET", f"/unapplied-cash-rollforwards?{alias_query}", None
+        )
+        missing_query = self._http_json("GET", "/unapplied-cash-rollforwards", None)
+        missing_book_query = self._http_json(
+            "GET",
+            "/unapplied-cash-rollforwards?"
+            + urllib.parse.urlencode(
+                {
+                    "legal_entity_reference": self.policy.legal_entity_reference,
+                    "fiscal_period_reference": "urn:cwl:accounting:fiscal_period:2026-08",
+                }
+            ),
+            None,
+        )
+        missing_period_query = self._http_json(
+            "GET",
+            "/unapplied-cash-rollforwards?"
+            + urllib.parse.urlencode(
+                {
+                    "legal_entity_reference": self.policy.legal_entity_reference,
+                    "book_reference": self.policy.accounting_book_reference,
+                }
+            ),
+            None,
+        )
+        post_status, _post = self._http_json("POST", "/unapplied-cash-rollforwards", {})
+        unknown_period = self._http_unapplied_cash_rollforward(
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:1999-01"
+        )
+        unknown_entity = self._http_unapplied_cash_rollforward(
+            legal_entity_reference="urn:cwl:legal_entity:missing"
+        )
+        unknown_book = self._http_unapplied_cash_rollforward(
+            book_reference="urn:cwl:accounting_book:missing"
+        )
+        missing_header = self._http_unapplied_cash_rollforward(tenant_header=None)
+        cross_status, _cross = self._http_unapplied_cash_rollforward(
+            tenant_header="urn:cwl:tenant_other"
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "legal_entity_reference"):
+            lookup_unapplied_cash_rollforward(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                "",
+                self.policy.accounting_book_reference,
+                "urn:cwl:accounting:fiscal_period:2026-08",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "book_reference"):
+            lookup_unapplied_cash_rollforward(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                "",
+                "urn:cwl:accounting:fiscal_period:2026-08",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "fiscal_period_reference"):
+            lookup_unapplied_cash_rollforward(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "legal_entity_reference"):
+            PostgresPostingLedger(
+                DATABASE_URL, self.policy.tenant_reference
+            ).load_unapplied_cash_rollforward(
+                "",
+                self.policy.accounting_book_reference,
+                "2026-08",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "book_reference"):
+            PostgresPostingLedger(
+                DATABASE_URL, self.policy.tenant_reference
+            ).load_unapplied_cash_rollforward(
+                self.policy.legal_entity_reference,
+                "",
+                "2026-08",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "fiscal_period_reference"):
+            PostgresPostingLedger(
+                DATABASE_URL, self.policy.tenant_reference
+            ).load_unapplied_cash_rollforward(
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "",
+            )
+        empty_chart_book = self._seed_book_without_chart_accounts()
+        empty_chart = self._http_unapplied_cash_rollforward(book_reference=empty_chart_book)
+
+        self.assertEqual(alias_status, 200)
+        self.assertEqual(alias_document["closing_amount"], "3000")
+        self.assertEqual(missing_query[0], 400)
+        self.assertEqual(missing_book_query[0], 400)
+        self.assertEqual(missing_period_query[0], 400)
+        self.assertEqual(post_status, 405)
+        self.assertEqual(unknown_period[0], 404)
+        self.assertEqual(unknown_entity[0], 404)
+        self.assertEqual(unknown_book[0], 404)
+        self.assertEqual(missing_header[0], 400)
+        self.assertEqual(cross_status, 403)
+        self.assertEqual(empty_chart[0], 404)
+        self.assertEqual(
+            self._count_table("accounting_core.general_journal"),
+            journals_before + 5,
+        )
+        server.shutdown()
+
+    def test_http_unapplied_cash_rollforward_opens_from_prior_hard_close(self) -> None:
+        """August leftover opening is the prior hard-close 210200 credit-normal snapshot."""
+        self._seed_additional_period("2026-07", date(2026, 7, 1), date(2026, 7, 31))
+        server = self._start_http_server()
+        july_park = self._billing_unapplied_cash_park_payload(
+            transaction_date="2026-07-15",
+            accounting_date="2026-07-15",
+            proposed_at="2026-07-15T00:00:00Z",
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "cash_receipt",
+                    "debit_amount": "5000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "unapplied_cash",
+                    "debit_amount": "0",
+                    "credit_amount": "5000",
+                },
+            ],
+        )
+        august_apply = self._billing_unapplied_cash_application_payload(
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "unapplied_cash",
+                    "debit_amount": "2000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "0",
+                    "credit_amount": "2000",
+                },
+            ],
+        )
+        august_refund = self._billing_unapplied_cash_refund_payload(
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "unapplied_cash",
+                    "debit_amount": "1000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "cash_receipt",
+                    "debit_amount": "0",
+                    "credit_amount": "1000",
+                },
+            ],
+        )
+
+        july_park_status, _july_park = self._http_json("POST", "/journal-proposals", july_park)
+        july_close_status, _july_close = self._http_json(
+            "POST",
+            "/period-closes",
+            self._period_close_payload(
+                fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-07"
+            ),
+        )
+        apply_status, _apply = self._http_json("POST", "/journal-proposals", august_apply)
+        refund_status, _refund = self._http_json("POST", "/journal-proposals", august_refund)
+        july_status, july = self._http_unapplied_cash_rollforward(
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-07"
+        )
+        august_status, august = self._http_unapplied_cash_rollforward()
+        august_balances_status, august_balances = self._http_account_balances(
+            chart_account_code="210200"
+        )
+        august_net = Decimal(
+            str(august_balances["account_balances"][0]["credit_amount"])
+        ) - Decimal(str(august_balances["account_balances"][0]["debit_amount"]))
+
+        self.assertEqual(july_park_status, 200)
+        self.assertEqual(july_close_status, 200)
+        self.assertEqual(apply_status, 200)
+        self.assertEqual(refund_status, 200)
+        self.assertEqual(july_status, 200)
+        self.assertEqual(august_status, 200)
+        self.assertEqual(august_balances_status, 200)
+        self.assertEqual(july["as_of_date"], "2026-07-31")
+        self.assertEqual(july["parked_amount"], "5000")
+        self.assertEqual(july["applied_amount"], "0")
+        self.assertEqual(july["refunded_amount"], "0")
+        self.assertEqual(july["opening_amount"], "0")
+        self.assertEqual(july["closing_amount"], "5000")
+        self.assertEqual(august["opening_amount"], "5000")
+        self.assertEqual(august["parked_amount"], "0")
+        self.assertEqual(august["applied_amount"], "2000")
+        self.assertEqual(august["refunded_amount"], "1000")
+        self.assertEqual(august["closing_amount"], "2000")
+        self.assertEqual(Decimal(str(august["closing_amount"])), august_net)
+        server.shutdown()
+
+    def test_http_unapplied_cash_rollforward_classifies_role_pairs_and_other(self) -> None:
+        """Role-pair leftover journals count; unclassified 210200 is other_movement_amount."""
+        server = self._start_http_server()
+        role_park = self._billing_unapplied_cash_park_payload(
+            proposal_id="019d7b92-8cc5-7a7f-b61c-962c0f4bf630",
+            idempotency_key=(
+                f"{self.policy.tenant_reference}:manual_leftover_park:"
+                f"019d7b92-8cc5-7a7f-b61c-962c0f4bf630:sha256:{'a' * 64}:v1"
+            ),
+            source_payload_hash="sha256:" + "a" * 64,
+            source_event_references=(
+                f"{self.policy.tenant_reference}:manual_leftover_park:"
+                "019d7b92-8cc5-7a7f-b61c-962c0f4bf630",
+            ),
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "cash_receipt",
+                    "debit_amount": "1000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "unapplied_cash",
+                    "debit_amount": "0",
+                    "credit_amount": "1000",
+                },
+            ],
+        )
+        role_apply = self._billing_unapplied_cash_application_payload(
+            proposal_id="019d7b92-8cc5-7a7f-b61c-962c0f4bf631",
+            idempotency_key=(
+                f"{self.policy.tenant_reference}:manual_leftover_apply:"
+                f"019d7b92-8cc5-7a7f-b61c-962c0f4bf631:sha256:{'b' * 64}:v1"
+            ),
+            source_payload_hash="sha256:" + "b" * 64,
+            source_event_references=(
+                f"{self.policy.tenant_reference}:manual_leftover_apply:"
+                "019d7b92-8cc5-7a7f-b61c-962c0f4bf631",
+            ),
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "unapplied_cash",
+                    "debit_amount": "200",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "0",
+                    "credit_amount": "200",
+                },
+            ],
+        )
+        role_refund = self._billing_unapplied_cash_refund_payload(
+            proposal_id="019d7b92-8cc5-7a7f-b61c-962c0f4bf632",
+            idempotency_key=(
+                f"{self.policy.tenant_reference}:manual_leftover_refund:"
+                f"019d7b92-8cc5-7a7f-b61c-962c0f4bf632:sha256:{'c' * 64}:v1"
+            ),
+            source_payload_hash="sha256:" + "c" * 64,
+            source_event_references=(
+                f"{self.policy.tenant_reference}:manual_leftover_refund:"
+                "019d7b92-8cc5-7a7f-b61c-962c0f4bf632",
+            ),
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "unapplied_cash",
+                    "debit_amount": "100",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "cash_receipt",
+                    "debit_amount": "0",
+                    "credit_amount": "100",
+                },
+            ],
+        )
+        adjusting = self._adjusting_journal_payload(
+            idempotency_key=f"{self.policy.tenant_reference}:adjusting_journal:leftover:v1",
+            journal_description="Reclass leftover cash to revenue",
+            journal_lines=[
+                {
+                    "chart_account_code": "210200",
+                    "debit_credit_code": "debit",
+                    "amount": "400",
+                    "currency_code": "KRW",
+                },
+                {
+                    "chart_account_code": "410100",
+                    "debit_credit_code": "credit",
+                    "amount": "400",
+                    "currency_code": "KRW",
+                },
+            ],
+        )
+
+        park_status, _park = self._http_json("POST", "/journal-proposals", role_park)
+        apply_status, _apply = self._http_json("POST", "/journal-proposals", role_apply)
+        refund_status, _refund = self._http_json("POST", "/journal-proposals", role_refund)
+        adjust_status, _adjust = self._http_json("POST", "/journals", adjusting)
+        roll_status, rollforward = self._http_unapplied_cash_rollforward()
+        balances_status, balances = self._http_account_balances(chart_account_code="210200")
+        leftover_net = Decimal(str(balances["account_balances"][0]["credit_amount"])) - Decimal(
+            str(balances["account_balances"][0]["debit_amount"])
+        )
+
+        self.assertEqual(park_status, 200)
+        self.assertEqual(apply_status, 200)
+        self.assertEqual(refund_status, 200)
+        self.assertEqual(adjust_status, 200)
+        self.assertEqual(roll_status, 200)
+        self.assertEqual(balances_status, 200)
+        self.assertEqual(rollforward["parked_amount"], "1000")
+        self.assertEqual(rollforward["applied_amount"], "200")
+        self.assertEqual(rollforward["refunded_amount"], "100")
+        self.assertEqual(rollforward["other_movement_amount"], "-400")
+        self.assertEqual(rollforward["opening_amount"], "0")
+        self.assertEqual(rollforward["closing_amount"], "300")
+        self.assertEqual(
+            Decimal(str(rollforward["closing_amount"])),
+            Decimal(str(rollforward["opening_amount"]))
+            + Decimal(str(rollforward["parked_amount"]))
+            - Decimal(str(rollforward["applied_amount"]))
+            - Decimal(str(rollforward["refunded_amount"]))
+            + Decimal(str(rollforward["other_movement_amount"])),
+        )
+        self.assertEqual(Decimal(str(rollforward["closing_amount"])), leftover_net)
         server.shutdown()
 
     def test_http_reads_account_role_mappings_from_catalog(self) -> None:
@@ -10961,6 +11469,39 @@ class PostgresPostingTests(unittest.TestCase):
             ),
             accounting_date="2026-09-15",
             transaction_date="2026-09-15",
+        )
+
+    def _http_unapplied_cash_rollforward(
+        self,
+        *,
+        legal_entity_reference: str | None = None,
+        book_reference: str | None = None,
+        fiscal_period_reference: str | None = None,
+        tenant_header: str | None = "",
+    ) -> tuple[int, dict[str, object]]:
+        fields = {
+            "legal_entity_reference": (
+                self.policy.legal_entity_reference
+                if legal_entity_reference is None
+                else legal_entity_reference
+            ),
+            "book_reference": (
+                self.policy.accounting_book_reference
+                if book_reference is None
+                else book_reference
+            ),
+            "fiscal_period_reference": (
+                "urn:cwl:accounting:fiscal_period:2026-08"
+                if fiscal_period_reference is None
+                else fiscal_period_reference
+            ),
+        }
+        query = urllib.parse.urlencode(fields)
+        return self._http_json(
+            "GET",
+            f"/unapplied-cash-rollforwards?{query}",
+            None,
+            tenant_header=tenant_header,
         )
 
     def _http_account_rollforward(

@@ -41,6 +41,7 @@ from .accept import (
     lookup_published_receipt,
     lookup_receivable_aging,
     lookup_trial_balance,
+    lookup_unapplied_cash_rollforward,
     publish_outbox_event,
 )
 from .billing_pull import (
@@ -100,6 +101,7 @@ __all__ = [
     "lookup_published_receipt",
     "lookup_receivable_aging",
     "lookup_trial_balance",
+    "lookup_unapplied_cash_rollforward",
     "publish_outbox_event",
     "pull_journal_proposal",
     "pull_validated_journal_proposals",
