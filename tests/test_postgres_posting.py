@@ -11,6 +11,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -7676,6 +7677,73 @@ class PostgresPostingTests(unittest.TestCase):
         )
         server.shutdown()
 
+    def test_period_close_package_resists_interleaved_post(self) -> None:
+        """One close-package read cannot tear aging from trial balance after a concurrent post."""
+        opening_receipt = self.ledger.post_proposal(
+            ingest_journal_proposal(self._billing_validated_payload())
+        )
+        completed = {"count": 0}
+        original_session = PostgresPostingLedger._session
+
+        @contextmanager
+        def interleaved_session(ledger: PostgresPostingLedger) -> object:
+            with original_session(ledger) as connection:
+                yield connection
+            completed["count"] += 1
+            if completed["count"] != 2:
+                return
+            accept_journal_proposal(
+                self._billing_taxed_payload(),
+                DATABASE_URL,
+                self.policy.tenant_reference,
+            )
+
+        self._start_http_server()
+        with mock.patch.object(PostgresPostingLedger, "_session", interleaved_session):
+            assembled = lookup_period_close_package(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "urn:cwl:accounting:fiscal_period:2026-08",
+            )
+        later_status, later = self._http_period_close_package()
+
+        opening_accounts_receivable = Decimal("25000")
+        combined_accounts_receivable = Decimal("52500")
+        combined_tax_payable = Decimal("2500")
+        self.assertEqual(opening_receipt.posting_status_code, "posted")
+        self.assertTrue(opening_receipt.journal_reference.startswith("urn:cwl:"))
+        self._assert_period_close_package_worksheets_agree(assembled)
+        self.assertEqual(
+            Decimal(str(assembled["receivable_aging"]["total_outstanding_amount"])),
+            opening_accounts_receivable,
+        )
+        self.assertEqual(
+            Decimal(str(assembled["payable_aging"]["total_outstanding_amount"])),
+            Decimal("0"),
+        )
+        self.assertEqual(
+            Decimal(str(assembled["unapplied_cash_rollforward"]["closing_amount"])),
+            Decimal("0"),
+        )
+        self.assertEqual(later_status, 200)
+        self._assert_period_close_package_worksheets_agree(later)
+        if completed["count"] >= 2:
+            self.assertEqual(
+                Decimal(str(later["receivable_aging"]["total_outstanding_amount"])),
+                combined_accounts_receivable,
+            )
+            self.assertEqual(
+                Decimal(str(later["payable_aging"]["total_outstanding_amount"])),
+                combined_tax_payable,
+            )
+        else:
+            self.assertEqual(
+                Decimal(str(later["receivable_aging"]["total_outstanding_amount"])),
+                opening_accounts_receivable,
+            )
+
     def test_http_reads_and_publishes_outbox_events(self) -> None:
         """GET lists unpublished outbox rows; POST publish marks one row idempotently."""
         invoice = self._billing_validated_payload()
@@ -12435,6 +12503,60 @@ class PostgresPostingTests(unittest.TestCase):
             f"/trial-balances?{query}",
             None,
             tenant_header=tenant_header,
+        )
+
+    def _assert_period_close_package_worksheets_agree(
+        self, package: dict[str, object]
+    ) -> None:
+        trial_balance = package["trial_balance"]
+        income = package["financial_statement_package"]["income_statement"]
+        codes = {
+            str(line["chart_account_code"])
+            for line in trial_balance["lines"]
+            if isinstance(line, dict)
+        }
+        receivable = Decimal(str(package["receivable_aging"]["total_outstanding_amount"]))
+        payable = Decimal(str(package["payable_aging"]["total_outstanding_amount"]))
+        leftover = Decimal(str(package["unapplied_cash_rollforward"]["closing_amount"]))
+        self.assertEqual(
+            set(package),
+            {
+                "tenant_reference",
+                "legal_entity_reference",
+                "accounting_book_reference",
+                "book_reference",
+                "fiscal_period_reference",
+                "fiscal_period",
+                "trial_balance",
+                "financial_statement_package",
+                "receivable_aging",
+                "payable_aging",
+                "unapplied_cash_rollforward",
+                "period_close",
+            },
+        )
+        self.assertEqual(package["payable_aging"]["chart_account_code"], "210100")
+        self.assertEqual(
+            receivable,
+            self._trial_balance_account_net(trial_balance, "110100"),
+        )
+        if "210100" in codes:
+            self.assertEqual(
+                payable,
+                -self._trial_balance_account_net(trial_balance, "210100"),
+            )
+        else:
+            self.assertEqual(payable, Decimal("0"))
+        if "210200" in codes:
+            self.assertEqual(
+                leftover,
+                -self._trial_balance_account_net(trial_balance, "210200"),
+            )
+        else:
+            self.assertEqual(leftover, Decimal("0"))
+        self.assertEqual(
+            Decimal(str(income["net_income_amount"])),
+            -self._trial_balance_account_net(trial_balance, "410100"),
         )
 
     def _trial_balance_line(

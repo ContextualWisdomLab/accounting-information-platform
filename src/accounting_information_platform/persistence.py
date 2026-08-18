@@ -47,6 +47,7 @@ class PostgresPostingLedger:
         _require_reference(tenant_reference, "tenant reference")
         self._database_url = database_url
         self._tenant_reference = tenant_reference
+        self._active_connection: object | None = None
 
     @property
     def journal_count(self) -> int:
@@ -2891,6 +2892,100 @@ class PostgresPostingLedger:
             document["comparison_net_income_amount"] = compared["net_income_amount"]
         return document
 
+    def load_period_close_package(
+        self,
+        legal_entity_reference: str,
+        book_reference: str,
+        period_code: str,
+        comparison_period_code: str = "",
+        statement_scope_code: str = "",
+    ) -> dict[str, object]:
+        """Return the close-binder worksheets from one REPEATABLE READ ledger snapshot."""
+        with self._consistent_read_session():
+            fiscal_period = self.load_fiscal_period(legal_entity_reference, period_code)
+            trial_balance = self.load_period_trial_balance(
+                legal_entity_reference=legal_entity_reference,
+                accounting_book_reference=book_reference,
+                period_code=period_code,
+            )
+            income_statement = self.load_financial_statement(
+                legal_entity_reference,
+                book_reference,
+                period_code,
+                "income_statement",
+                comparison_period_code,
+                statement_scope_code,
+            )
+            balance_sheet = self.load_financial_statement(
+                legal_entity_reference,
+                book_reference,
+                period_code,
+                "balance_sheet",
+                comparison_period_code,
+                statement_scope_code,
+            )
+            changes_in_equity = self.load_financial_statement(
+                legal_entity_reference,
+                book_reference,
+                period_code,
+                "changes_in_equity",
+                comparison_period_code,
+                statement_scope_code,
+            )
+            cash_flow = self.load_financial_statement(
+                legal_entity_reference,
+                book_reference,
+                period_code,
+                "cash_flow",
+                comparison_period_code,
+                statement_scope_code,
+            )
+            financial_statement_package: dict[str, object] = {
+                "tenant_reference": income_statement["tenant_reference"],
+                "legal_entity_reference": income_statement["legal_entity_reference"],
+                "accounting_book_reference": income_statement["accounting_book_reference"],
+                "book_reference": income_statement["book_reference"],
+                "fiscal_period_reference": income_statement["fiscal_period_reference"],
+                "income_statement": income_statement,
+                "balance_sheet": balance_sheet,
+                "changes_in_equity": changes_in_equity,
+                "cash_flow": cash_flow,
+            }
+            if statement_scope_code == "year_to_date":
+                financial_statement_package["statement_scope_code"] = "year_to_date"
+            receivable_aging = self.load_receivable_aging(
+                legal_entity_reference,
+                book_reference,
+                period_code,
+            )
+            payable_aging = self.load_payable_aging(
+                legal_entity_reference,
+                book_reference,
+                period_code,
+            )
+            unapplied_cash_rollforward = self.load_unapplied_cash_rollforward(
+                legal_entity_reference,
+                book_reference,
+                period_code,
+            )
+            close_page = self.load_period_closes(legal_entity_reference, period_code)
+            stored_closes = close_page["period_closes"]
+            period_close = stored_closes[-1] if stored_closes else None
+            return {
+                "tenant_reference": trial_balance["tenant_reference"],
+                "legal_entity_reference": trial_balance["legal_entity_reference"],
+                "accounting_book_reference": trial_balance["accounting_book_reference"],
+                "book_reference": trial_balance["book_reference"],
+                "fiscal_period_reference": trial_balance["fiscal_period_reference"],
+                "fiscal_period": fiscal_period,
+                "trial_balance": trial_balance,
+                "financial_statement_package": financial_statement_package,
+                "receivable_aging": receivable_aging,
+                "payable_aging": payable_aging,
+                "unapplied_cash_rollforward": unapplied_cash_rollforward,
+                "period_close": period_close,
+            }
+
     def _load_statement_account_facts(
         self, legal_entity_reference: str, accounting_book_reference: str
     ) -> dict[str, tuple[str, str]]:
@@ -3467,7 +3562,20 @@ class PostgresPostingLedger:
         ]
 
     @contextmanager
+    def _consistent_read_session(self) -> Iterator[object]:
+        with self._session() as connection:
+            connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            self._active_connection = connection
+            try:
+                yield connection
+            finally:
+                self._active_connection = None
+
+    @contextmanager
     def _session(self) -> Iterator[object]:
+        if self._active_connection is not None:
+            yield self._active_connection
+            return
         psycopg = _import_psycopg()
         try:
             connection = psycopg.connect(self._database_url)

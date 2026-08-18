@@ -829,7 +829,7 @@ def lookup_period_close_package(
     comparison_fiscal_period_reference: str = "",
     statement_scope_code: str = "",
 ) -> dict[str, object]:
-    """Return the fiscal-period, trial-balance, statement-package, aging, leftover-cash, and close-receipt binder for one book and period."""
+    """Return the fiscal-period, trial-balance, statement-package, aging, leftover-cash, and close-receipt binder from one ledger snapshot."""
     if not legal_entity_reference or not book_reference or not fiscal_period_reference:
         raise AccountingValidationError(
             "legal_entity_reference, book_reference, and fiscal_period_reference are required. "
@@ -840,67 +840,16 @@ def lookup_period_close_package(
             "statement_scope_code must be period or year_to_date. "
             "Supply a known statement scope, then retry the period-close-package read."
         )
-    fiscal_period = lookup_fiscal_period(
-        database_url,
-        tenant_reference,
-        legal_entity_reference,
-        fiscal_period_reference,
-    )
-    trial_balance = lookup_trial_balance(
-        database_url,
-        tenant_reference,
-        legal_entity_reference,
-        book_reference,
-        fiscal_period_reference,
-    )
-    financial_statement_package = lookup_financial_statement_package(
-        database_url,
-        tenant_reference,
-        legal_entity_reference,
-        book_reference,
-        fiscal_period_reference,
-        comparison_fiscal_period_reference,
-        statement_scope_code,
-    )
     ledger = PostgresPostingLedger(database_url, tenant_reference)
-    period_code = _period_code_from_reference(fiscal_period_reference)
-    receivable_aging = ledger.load_receivable_aging(
+    return ledger.load_period_close_package(
         legal_entity_reference,
         book_reference,
-        period_code,
+        _period_code_from_reference(fiscal_period_reference),
+        comparison_period_code=_period_code_from_reference(
+            comparison_fiscal_period_reference
+        ),
+        statement_scope_code=statement_scope_code,
     )
-    payable_aging = ledger.load_payable_aging(
-        legal_entity_reference,
-        book_reference,
-        period_code,
-    )
-    unapplied_cash_rollforward = ledger.load_unapplied_cash_rollforward(
-        legal_entity_reference,
-        book_reference,
-        period_code,
-    )
-    close_page = lookup_period_closes(
-        database_url,
-        tenant_reference,
-        legal_entity_reference,
-        fiscal_period_reference,
-    )
-    stored_closes = close_page["period_closes"]
-    period_close = stored_closes[-1] if stored_closes else None
-    return {
-        "tenant_reference": trial_balance["tenant_reference"],
-        "legal_entity_reference": trial_balance["legal_entity_reference"],
-        "accounting_book_reference": trial_balance["accounting_book_reference"],
-        "book_reference": trial_balance["book_reference"],
-        "fiscal_period_reference": trial_balance["fiscal_period_reference"],
-        "fiscal_period": fiscal_period,
-        "trial_balance": trial_balance,
-        "financial_statement_package": financial_statement_package,
-        "receivable_aging": receivable_aging,
-        "payable_aging": payable_aging,
-        "unapplied_cash_rollforward": unapplied_cash_rollforward,
-        "period_close": period_close,
-    }
 
 
 def _parse_period_date(value: str, field_name: str) -> date:
