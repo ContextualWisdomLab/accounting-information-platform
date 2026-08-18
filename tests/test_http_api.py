@@ -108,3 +108,95 @@ class CollectionWriteOffAgingHttpTests(unittest.TestCase):
         )
         server.shutdown()
         server.server_close()
+
+
+class PeriodClosePackageHttpTests(unittest.TestCase):
+    """GET /period-close-packages includes the standalone payable-aging document."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        postgres_posting.PostgresPostingTests.setUpClass()
+
+    def setUp(self) -> None:
+        self.case = postgres_posting.PostgresPostingTests("setUp")
+        self.case.setUp()
+
+    def test_http_period_close_package_includes_payable_aging(self) -> None:
+        """Package payable_aging matches GET /payable-agings on the same entity period."""
+        case = self.case
+        server = case._start_http_server()
+        empty_status, empty_package = case._http_period_close_package()
+        empty_payable_status, empty_payable = case._http_payable_aging()
+
+        self.assertEqual(empty_status, 200)
+        self.assertEqual(empty_payable_status, 200)
+        self.assertEqual(empty_package["payable_aging"], empty_payable)
+        self.assertEqual(empty_package["payable_aging"]["total_outstanding_amount"], "0")
+        self.assertEqual(
+            empty_package["payable_aging"]["as_of_date"],
+            empty_package["receivable_aging"]["as_of_date"],
+        )
+
+        taxed_status, _taxed = case._http_json(
+            "POST", "/journal-proposals", case._billing_taxed_payload()
+        )
+        open_status, opened = case._http_period_close_package()
+        payable_status, payable_aging = case._http_payable_aging()
+        receivable_status, receivable_aging = case._http_receivable_aging()
+
+        self.assertEqual(taxed_status, 200)
+        self.assertEqual(open_status, 200)
+        self.assertEqual(payable_status, 200)
+        self.assertEqual(receivable_status, 200)
+        self.assertEqual(opened["payable_aging"], payable_aging)
+        self.assertEqual(opened["receivable_aging"], receivable_aging)
+        self.assertEqual(opened["payable_aging"]["chart_account_code"], "210100")
+        self.assertEqual(opened["payable_aging"]["total_outstanding_amount"], "2500")
+        self.assertEqual(opened["payable_aging"]["current_amount"], "2500")
+        self.assertEqual(opened["payable_aging"]["as_of_date"], opened["receivable_aging"]["as_of_date"])
+        self.assertEqual(
+            set(opened),
+            {
+                "tenant_reference",
+                "legal_entity_reference",
+                "accounting_book_reference",
+                "book_reference",
+                "fiscal_period_reference",
+                "fiscal_period",
+                "trial_balance",
+                "financial_statement_package",
+                "receivable_aging",
+                "payable_aging",
+                "period_close",
+            },
+        )
+
+        soft_status, _soft = case._http_json(
+            "POST",
+            "/period-closes",
+            case._period_close_payload(period_status_code="soft_closed"),
+        )
+        soft_status_code, soft_package = case._http_period_close_package()
+        self.assertEqual(soft_status, 200)
+        self.assertEqual(soft_status_code, 200)
+        self.assertEqual(soft_package["payable_aging"], case._http_payable_aging()[1])
+        self.assertIsNone(soft_package["period_close"])
+
+        hard_status, _hard = case._http_json("POST", "/period-closes", case._period_close_payload())
+        hard_status_code, hard_package = case._http_period_close_package()
+        self.assertEqual(hard_status, 200)
+        self.assertEqual(hard_status_code, 200)
+        self.assertEqual(hard_package["payable_aging"], case._http_payable_aging()[1])
+        self.assertEqual(
+            hard_package["payable_aging"]["as_of_date"],
+            hard_package["receivable_aging"]["as_of_date"],
+        )
+        self.assertEqual(hard_package["payable_aging"]["total_outstanding_amount"], "2500")
+        self.assertIsNotNone(hard_package["period_close"])
+
+        cross_status, _cross = case._http_period_close_package(
+            tenant_header="urn:cwl:tenant_other"
+        )
+        self.assertEqual(cross_status, 403)
+        server.shutdown()
+        server.server_close()

@@ -6103,7 +6103,13 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(closed["total_outstanding_amount"], "3000")
         self.assertEqual(Decimal(str(closed["total_outstanding_amount"])), closed_net)
         self.assertEqual(closed["as_of_date"], "2026-08-31")
-        self.assertNotIn("payable_aging", self._http_period_close_package()[1])
+        package_status, package = self._http_period_close_package()
+        standalone_status, standalone = self._http_payable_aging()
+        self.assertEqual(package_status, 200)
+        self.assertEqual(standalone_status, 200)
+        self.assertEqual(package["payable_aging"], standalone)
+        self.assertEqual(package["payable_aging"]["as_of_date"], package["receivable_aging"]["as_of_date"])
+        self.assertEqual(package["payable_aging"]["total_outstanding_amount"], "3000")
 
         missing_query = self._http_json("GET", "/payable-agings", None)
         post_status, _post = self._http_json("POST", "/payable-agings", {})
@@ -6239,6 +6245,9 @@ class PostgresPostingTests(unittest.TestCase):
         cash_status, _cash = self._http_json(
             "POST", "/journal-proposals", self._billing_cash_payload()
         )
+        taxed_status, _taxed = self._http_json(
+            "POST", "/journal-proposals", self._billing_taxed_payload()
+        )
         open_status, opened = self._http_period_close_package()
         open_library = lookup_period_close_package(
             DATABASE_URL,
@@ -6251,13 +6260,18 @@ class PostgresPostingTests(unittest.TestCase):
         trial_status, trial_balance = self._http_trial_balance()
         package_status, statement_package = self._http_financial_statement_package()
         aging_status, receivable_aging = self._http_receivable_aging()
+        payable_status, payable_aging = self._http_payable_aging()
         balance_status, account_balances = self._http_account_balances(
             chart_account_code="110100"
+        )
+        payable_balance_status, payable_balances = self._http_account_balances(
+            chart_account_code="210100"
         )
         self.assertEqual(july_status, 200)
         self.assertEqual(july_close_status, 200)
         self.assertEqual(invoice_status, 200)
         self.assertEqual(cash_status, 200)
+        self.assertEqual(taxed_status, 200)
         self.assertEqual(open_status, 200)
         self.assertEqual(opened, open_library)
         self.assertEqual(opened["tenant_reference"], self.policy.tenant_reference)
@@ -6280,12 +6294,37 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(opened["financial_statement_package"], statement_package)
         self.assertEqual(aging_status, 200)
         self.assertEqual(opened["receivable_aging"], receivable_aging)
+        self.assertEqual(payable_status, 200)
+        self.assertEqual(opened["payable_aging"], payable_aging)
+        self.assertEqual(opened["payable_aging"]["as_of_date"], opened["receivable_aging"]["as_of_date"])
+        self.assertEqual(opened["payable_aging"]["chart_account_code"], "210100")
+        self.assertEqual(set(opened), {
+            "tenant_reference",
+            "legal_entity_reference",
+            "accounting_book_reference",
+            "book_reference",
+            "fiscal_period_reference",
+            "fiscal_period",
+            "trial_balance",
+            "financial_statement_package",
+            "receivable_aging",
+            "payable_aging",
+            "period_close",
+        })
         self.assertIsNone(opened["period_close"])
         self.assertEqual(balance_status, 200)
+        self.assertEqual(payable_balance_status, 200)
         aging_total = Decimal(str(opened["receivable_aging"]["total_outstanding_amount"]))
         self.assertEqual(aging_total, Decimal(str(receivable_aging["total_outstanding_amount"])))
         self.assertEqual(aging_total, self._trial_balance_account_net(trial_balance, "110100"))
         self.assertEqual(aging_total, self._account_balance_net(account_balances, "110100"))
+        payable_total = Decimal(str(opened["payable_aging"]["total_outstanding_amount"]))
+        self.assertEqual(payable_total, Decimal(str(payable_aging["total_outstanding_amount"])))
+        self.assertEqual(
+            payable_total,
+            Decimal(str(payable_balances["account_balances"][0]["credit_amount"]))
+            - Decimal(str(payable_balances["account_balances"][0]["debit_amount"])),
+        )
 
         soft_status, _soft = self._http_json(
             "POST",
@@ -6306,6 +6345,11 @@ class PostgresPostingTests(unittest.TestCase):
             self._http_financial_statement_package()[1],
         )
         self.assertEqual(soft_package["receivable_aging"], self._http_receivable_aging()[1])
+        self.assertEqual(soft_package["payable_aging"], self._http_payable_aging()[1])
+        self.assertEqual(
+            soft_package["payable_aging"]["as_of_date"],
+            soft_package["receivable_aging"]["as_of_date"],
+        )
 
         hard_status, _hard = self._http_json("POST", "/period-closes", self._period_close_payload())
         hard_package_status, hard_package = self._http_period_close_package()
@@ -6320,6 +6364,7 @@ class PostgresPostingTests(unittest.TestCase):
         hard_trial_status, hard_trial = self._http_trial_balance()
         hard_package_statements = self._http_financial_statement_package()[1]
         hard_aging_status, hard_aging = self._http_receivable_aging()
+        hard_payable_status, hard_payable = self._http_payable_aging()
         hard_balance_status, hard_balances = self._http_account_balances(
             chart_account_code="110100"
         )
@@ -6339,6 +6384,12 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(hard_package["financial_statement_package"], hard_package_statements)
         self.assertEqual(hard_aging_status, 200)
         self.assertEqual(hard_package["receivable_aging"], hard_aging)
+        self.assertEqual(hard_payable_status, 200)
+        self.assertEqual(hard_package["payable_aging"], hard_payable)
+        self.assertEqual(
+            hard_package["payable_aging"]["as_of_date"],
+            hard_package["receivable_aging"]["as_of_date"],
+        )
         self.assertEqual(hard_balance_status, 200)
         hard_aging_total = Decimal(
             str(hard_package["receivable_aging"]["total_outstanding_amount"])
@@ -6346,6 +6397,10 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(hard_aging_total, Decimal(str(hard_aging["total_outstanding_amount"])))
         self.assertEqual(hard_aging_total, self._trial_balance_account_net(hard_trial, "110100"))
         self.assertEqual(hard_aging_total, self._account_balance_net(hard_balances, "110100"))
+        self.assertEqual(
+            Decimal(str(hard_package["payable_aging"]["total_outstanding_amount"])),
+            Decimal(str(hard_payable["total_outstanding_amount"])),
+        )
         self.assertEqual(closes_status, 200)
         self.assertIsNotNone(hard_package["period_close"])
         self.assertEqual(hard_package["period_close"], closes["period_closes"][-1])
@@ -6384,6 +6439,7 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(ytd["financial_statement_package"]["statement_scope_code"], "year_to_date")
         self.assertEqual(ytd["trial_balance"], hard_package["trial_balance"])
         self.assertEqual(ytd["receivable_aging"], hard_package["receivable_aging"])
+        self.assertEqual(ytd["payable_aging"], hard_package["payable_aging"])
         self.assertEqual(ytd["period_close"], hard_package["period_close"])
         self.assertEqual(compare_status, 200)
         self.assertNotIn("comparison_fiscal_period_reference", compared)
@@ -6394,6 +6450,7 @@ class PostgresPostingTests(unittest.TestCase):
         )
         self.assertEqual(compared["trial_balance"], hard_package["trial_balance"])
         self.assertEqual(compared["receivable_aging"], hard_package["receivable_aging"])
+        self.assertEqual(compared["payable_aging"], hard_package["payable_aging"])
 
         missing_query = self._http_json("GET", "/period-close-packages", None)
         missing_book = self._http_json(
@@ -6467,7 +6524,7 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(cross_status, 403)
         self.assertEqual(
             self._count_table("accounting_core.general_journal"),
-            journals_before + 5,
+            journals_before + 6,
         )
         server.shutdown()
 

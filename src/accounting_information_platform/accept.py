@@ -808,7 +808,7 @@ def lookup_period_close_package(
     comparison_fiscal_period_reference: str = "",
     statement_scope_code: str = "",
 ) -> dict[str, object]:
-    """Return the fiscal-period, trial-balance, statement-package, aging, and close-receipt binder for one book and period."""
+    """Return the fiscal-period, trial-balance, statement-package, receivable-aging, payable-aging, and close-receipt binder for one book and period."""
     if not legal_entity_reference or not book_reference or not fiscal_period_reference:
         raise AccountingValidationError(
             "legal_entity_reference, book_reference, and fiscal_period_reference are required. "
@@ -841,12 +841,17 @@ def lookup_period_close_package(
         comparison_fiscal_period_reference,
         statement_scope_code,
     )
-    receivable_aging = lookup_receivable_aging(
-        database_url,
-        tenant_reference,
+    ledger = PostgresPostingLedger(database_url, tenant_reference)
+    period_code = _period_code_from_reference(fiscal_period_reference)
+    receivable_aging = ledger.load_receivable_aging(
         legal_entity_reference,
         book_reference,
-        fiscal_period_reference,
+        period_code,
+    )
+    payable_aging = ledger.load_payable_aging(
+        legal_entity_reference,
+        book_reference,
+        period_code,
     )
     close_page = lookup_period_closes(
         database_url,
@@ -866,6 +871,7 @@ def lookup_period_close_package(
         "trial_balance": trial_balance,
         "financial_statement_package": financial_statement_package,
         "receivable_aging": receivable_aging,
+        "payable_aging": payable_aging,
         "period_close": period_close,
     }
 

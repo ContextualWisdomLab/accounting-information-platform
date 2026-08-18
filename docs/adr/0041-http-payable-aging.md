@@ -4,7 +4,7 @@
 
 ## Decision
 
-AIS exposes `lookup_payable_aging` and `GET /payable-agings?legal_entity_reference=&book_reference=&fiscal_period_reference=` on the same stdlib HTTP surface as entity-level receivable aging (ADR 0039). The only request identity header is purpose-limited `X-CWL-Tenant-Reference`. This slice is an entity-level liability control worksheet, not a vendor subledger and not a second numerical truth. AIS does not add a party or `party_reference`, a table, or a migration. Billing still owns counterparties. `GET /period-close-packages` is unchanged and does not include `payable_aging`.
+AIS exposes `lookup_payable_aging` and `GET /payable-agings?legal_entity_reference=&book_reference=&fiscal_period_reference=` on the same stdlib HTTP surface as entity-level receivable aging (ADR 0039). The only request identity header is purpose-limited `X-CWL-Tenant-Reference`. This slice is an entity-level liability control worksheet, not a vendor subledger and not a second numerical truth. AIS does not add a party or `party_reference`, a table, or a migration. Billing still owns counterparties. `GET /period-close-packages` includes this same payable-aging document as `payable_aging` next to `receivable_aging`.
 
 Required query keys are `legal_entity_reference`, `book_reference`, and `fiscal_period_reference`. As-of is exactly that fiscal period's `period_end_date`. Optional `chart_account_code` defaults to the catalog `tax_payable` mapping (seeded 210100). An unknown catalog code is 404. A known AR, cash, revenue, or other non-catalog-payable code is 422; the only allowed account is that catalog payable account.
 
@@ -16,4 +16,4 @@ IAS 1 requires presentation that helps users assess the entity's financial posit
 
 ## Consequences
 
-Controllers can take current versus past-due tax payable from the existing books and tie the total to the 210100 account-balance net without SQL and without inventing a party dimension. Vendor-level aging remains a Billing concern. Receivable-aging, period-close-package, trial-balance, and statement reads stay on their existing routes.
+Controllers can take current versus past-due tax payable from the existing books and tie the total to the 210100 account-balance net without SQL and without inventing a party dimension. Vendor-level aging remains a Billing concern. The period-close binder now carries that same worksheet. Receivable-aging, payable-aging, trial-balance, and statement reads stay on their existing routes.
