@@ -16,4 +16,4 @@ IAS 1 requires a statement of financial position that presents liabilities separ
 
 ## Consequences
 
-Controllers can reconcile leftover cash on 210200 without SQL and without a fourth leftover role. Account-balance, account-rollforward, receivable-aging, and payable-aging reads stay on their existing routes. Billing leftover ingest stays on ADR 0043.
+Controllers can reconcile leftover cash on 210200 without SQL and without a fourth leftover role. `GET /period-close-packages` includes this same leftover-cash document as `unapplied_cash_rollforward` next to receivable and payable aging. Account-balance, account-rollforward, receivable-aging, and payable-aging reads stay on their existing routes. Billing leftover ingest stays on ADR 0043.

@@ -447,6 +447,17 @@ class UnappliedCashRollforwardHttpTests(unittest.TestCase):
         self.assertNotIn("party_reference", rollforward)
         self.assertNotIn("other_movement_amount", rollforward)
 
+        package_status, package = case._http_period_close_package()
+        self.assertEqual(package_status, 200)
+        self.assertEqual(package["unapplied_cash_rollforward"], rollforward)
+        self.assertEqual(package["unapplied_cash_rollforward"]["closing_amount"], "3000")
+        self.assertEqual(
+            Decimal(str(package["unapplied_cash_rollforward"]["closing_amount"])),
+            leftover_net,
+        )
+        self.assertNotIn("party_reference", package)
+        self.assertNotIn("next_cursor", package)
+
         soft_status, _soft = case._http_json(
             "POST",
             "/period-closes",
@@ -519,15 +530,22 @@ class PeriodClosePackageHttpTests(unittest.TestCase):
         server = case._start_http_server()
         empty_status, empty_package = case._http_period_close_package()
         empty_payable_status, empty_payable = case._http_payable_aging()
+        empty_leftover_status, empty_leftover = case._http_unapplied_cash_rollforward()
 
         self.assertEqual(empty_status, 200)
         self.assertEqual(empty_payable_status, 200)
+        self.assertEqual(empty_leftover_status, 200)
         self.assertEqual(empty_package["payable_aging"], empty_payable)
         self.assertEqual(empty_package["payable_aging"]["total_outstanding_amount"], "0")
         self.assertEqual(
             empty_package["payable_aging"]["as_of_date"],
             empty_package["receivable_aging"]["as_of_date"],
         )
+        self.assertEqual(empty_package["unapplied_cash_rollforward"], empty_leftover)
+        self.assertEqual(empty_package["unapplied_cash_rollforward"]["chart_account_code"], "210200")
+        self.assertEqual(empty_package["unapplied_cash_rollforward"]["closing_amount"], "0")
+        self.assertNotIn("party_reference", empty_package)
+        self.assertNotIn("party_reference", empty_package["unapplied_cash_rollforward"])
 
         taxed_status, _taxed = case._http_json(
             "POST", "/journal-proposals", case._billing_taxed_payload()
@@ -559,6 +577,7 @@ class PeriodClosePackageHttpTests(unittest.TestCase):
                 "financial_statement_package",
                 "receivable_aging",
                 "payable_aging",
+                "unapplied_cash_rollforward",
                 "period_close",
             },
         )

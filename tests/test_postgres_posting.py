@@ -2313,6 +2313,15 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(Decimal(str(rollforward["closing_amount"])), leftover_net)
         self.assertNotIn("other_movement_amount", rollforward)
 
+        package_status, package = self._http_period_close_package()
+        self.assertEqual(package_status, 200)
+        self.assertEqual(package["unapplied_cash_rollforward"], rollforward)
+        self.assertEqual(package["unapplied_cash_rollforward"], library)
+        self.assertEqual(
+            Decimal(str(package["unapplied_cash_rollforward"]["closing_amount"])),
+            leftover_net,
+        )
+
         soft_status, _soft = self._http_json(
             "POST",
             "/period-closes",
@@ -7270,9 +7279,26 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(aging_status, 200)
         self.assertEqual(opened["receivable_aging"], receivable_aging)
         self.assertEqual(payable_status, 200)
+        leftover_status, leftover = self._http_unapplied_cash_rollforward()
+        leftover_balance_status, leftover_balances = self._http_account_balances(
+            chart_account_code="210200"
+        )
+        leftover_net = Decimal(
+            str(leftover_balances["account_balances"][0]["credit_amount"])
+        ) - Decimal(str(leftover_balances["account_balances"][0]["debit_amount"]))
         self.assertEqual(opened["payable_aging"], payable_aging)
         self.assertEqual(opened["payable_aging"]["as_of_date"], opened["receivable_aging"]["as_of_date"])
         self.assertEqual(opened["payable_aging"]["chart_account_code"], "210100")
+        self.assertEqual(leftover_status, 200)
+        self.assertEqual(leftover_balance_status, 200)
+        self.assertEqual(opened["unapplied_cash_rollforward"], leftover)
+        self.assertEqual(opened["unapplied_cash_rollforward"]["chart_account_code"], "210200")
+        self.assertEqual(opened["unapplied_cash_rollforward"]["account_role_code"], "unapplied_cash")
+        self.assertEqual(opened["unapplied_cash_rollforward"]["closing_amount"], "0")
+        self.assertEqual(
+            Decimal(str(opened["unapplied_cash_rollforward"]["closing_amount"])),
+            leftover_net,
+        )
         self.assertEqual(set(opened), {
             "tenant_reference",
             "legal_entity_reference",
@@ -7284,6 +7310,7 @@ class PostgresPostingTests(unittest.TestCase):
             "financial_statement_package",
             "receivable_aging",
             "payable_aging",
+            "unapplied_cash_rollforward",
             "period_close",
         })
         self.assertIsNone(opened["period_close"])

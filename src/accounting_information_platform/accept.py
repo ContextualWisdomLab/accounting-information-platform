@@ -829,7 +829,7 @@ def lookup_period_close_package(
     comparison_fiscal_period_reference: str = "",
     statement_scope_code: str = "",
 ) -> dict[str, object]:
-    """Return the fiscal-period, trial-balance, statement-package, receivable-aging, payable-aging, and close-receipt binder for one book and period."""
+    """Return the fiscal-period, trial-balance, statement-package, aging, leftover-cash, and close-receipt binder for one book and period."""
     if not legal_entity_reference or not book_reference or not fiscal_period_reference:
         raise AccountingValidationError(
             "legal_entity_reference, book_reference, and fiscal_period_reference are required. "
@@ -874,6 +874,11 @@ def lookup_period_close_package(
         book_reference,
         period_code,
     )
+    unapplied_cash_rollforward = ledger.load_unapplied_cash_rollforward(
+        legal_entity_reference,
+        book_reference,
+        period_code,
+    )
     close_page = lookup_period_closes(
         database_url,
         tenant_reference,
@@ -893,6 +898,7 @@ def lookup_period_close_package(
         "financial_statement_package": financial_statement_package,
         "receivable_aging": receivable_aging,
         "payable_aging": payable_aging,
+        "unapplied_cash_rollforward": unapplied_cash_rollforward,
         "period_close": period_close,
     }
 
