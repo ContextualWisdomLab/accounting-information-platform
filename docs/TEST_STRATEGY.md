@@ -27,6 +27,7 @@
 - Billing invoice with receivable, revenue, and tax.
 - Billing cash receipt settling receivable (`cash_receipt` debit / `accounts_receivable` credit).
 - Billing collection write-off (`write_off_expense` debit / `accounts_receivable` credit) that reduces entity receivable aging by that amount.
+- Billing issued-invoice-void on `{tenant}:issued_invoice_void:{issued_invoice_void_id}:{source_payload_hash}:v{version}` after a taxed invoice (AR inclusive 27500 / revenue 25000 / tax 2500): opposite roles debit usage_revenue / debit tax_payable / credit AR; `GET /receivable-agings` drops 110100 from 27500 to 0; replay returns the original receipt; conflicting reuse is 409; no new catalog role.
 - Billing leftover-cash journals on one catalog: park `{tenant}:unapplied_cash:{unapplied_cash_id}:{source_payload_hash}:v{version}`, apply `{tenant}:unapplied_cash_application:{unapplied_cash_application_id}:{source_payload_hash}:v{version}`, and refund `{tenant}:unapplied_cash_refund:{unapplied_cash_refund_id}:{source_payload_hash}:v{version}`. Park then apply drops receivable aging by the applied amount; 210200 stays off payable aging and remains after hard-close. `GET /unapplied-cash-rollforwards` then proves parked − applied − refunded plus opening equals closing and equals `GET /account-balances` 210200 (`credit_amount` − `debit_amount`).
 - Prepaid credit producing contract liability rather than immediate revenue.
 - Provider payout with cash clearing and provider fee.
