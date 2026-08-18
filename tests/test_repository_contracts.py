@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import shutil
 import sys
 import tempfile
@@ -169,6 +170,31 @@ class RepositoryContractTests(unittest.TestCase):
             proposal_id["pattern"],
             "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
         )
+
+    def test_proposal_schema_rejects_more_than_six_fractional_digits(self) -> None:
+        """positive_decimal cannot outrun journal_entry_line numeric(38, 6)."""
+        proposal = self._schema("accounting-journal-proposal.schema.json")
+        positive = proposal["$defs"]["positive_decimal"]
+        non_negative = proposal["$defs"]["non_negative_decimal"]
+        scale = "^(0|[1-9][0-9]*)(\\.[0-9]{1,6})?$"
+        zero = re.compile("^0+(\\.0+)?$")
+        amount = re.compile(scale)
+
+        self.assertEqual(positive["type"], "string")
+        self.assertEqual(positive["pattern"], scale)
+        self.assertEqual(positive["not"], {"pattern": "^0+(\\.0+)?$"})
+        self.assertEqual(non_negative["pattern"], scale)
+        accepted = ("1", "25000", "25000.50", "0.5", "0.50", "0.000001")
+        rejected = ("0.0000010", "0.1234567", "1.1234567", "0", "0.0", "0.000000")
+        for value in accepted:
+            with self.subTest(accepted=value):
+                self.assertIsNotNone(amount.fullmatch(value))
+                self.assertIsNone(zero.fullmatch(value))
+        for value in rejected:
+            with self.subTest(rejected=value):
+                self.assertTrue(
+                    amount.fullmatch(value) is None or zero.fullmatch(value) is not None
+                )
 
     def test_repository_reports_integrated_violations(self) -> None:
         """The aggregate validator reports mutable CI, placeholders, and SQL drift."""

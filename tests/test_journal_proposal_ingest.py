@@ -159,6 +159,56 @@ class JournalProposalIngestTests(unittest.TestCase):
         with self.assertRaisesRegex(AccountingValidationError, "line_number must be an integer"):
             ingest_journal_proposal(string_line_number)
 
+    def test_more_than_six_fractional_digits_fail_closed_without_rounding(self) -> None:
+        """A 7-place amount cannot be coerced to numeric(38, 6)."""
+        too_long = self._billing_proposal()
+        too_long["lines"][0]["debit_amount"] = "0.0000010"
+        too_long["lines"][1]["credit_amount"] = "0.0000010"
+        with self.assertRaisesRegex(
+            AccountingValidationError, "at most six fractional digits"
+        ):
+            ingest_journal_proposal(too_long)
+        six_places = self._billing_proposal(
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "0.000001",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "usage_revenue",
+                    "debit_amount": "0",
+                    "credit_amount": "0.000001",
+                },
+            ]
+        )
+        two_places = self._billing_proposal(
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "25000.50",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "usage_revenue",
+                    "debit_amount": "0",
+                    "credit_amount": "25000.50",
+                },
+            ]
+        )
+
+        six = ingest_journal_proposal(six_places)
+        two = ingest_journal_proposal(two_places)
+
+        self.assertEqual(six.lines[0].debit_amount, Decimal("0.000001"))
+        self.assertEqual(six.lines[1].credit_amount, Decimal("0.000001"))
+        self.assertEqual(two.lines[0].debit_amount, Decimal("25000.50"))
+        self.assertEqual(two.lines[1].credit_amount, Decimal("25000.50"))
+
     def test_proposal_contract_version_must_be_a_non_bool_int(self) -> None:
         """Bool and non-int contract versions fail closed before posting."""
         bool_version = self._billing_proposal(proposal_contract_version=True)

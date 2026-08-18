@@ -1294,6 +1294,9 @@ class BillingIngestFailClosedHttpTests(unittest.TestCase):
         string_version = case._billing_validated_payload(proposal_contract_version="one")
         retained = case._billing_validated_payload()
         retained["lines"][1]["account_role_code"] = "retained_earnings"
+        seven_places = case._billing_validated_payload()
+        seven_places["lines"][0]["debit_amount"] = "0.0000010"
+        seven_places["lines"][1]["credit_amount"] = "0.0000010"
 
         missing_status, missing_body = case._http_json("POST", "/journal-proposals", missing)
         float_status, float_body = case._http_json("POST", "/journal-proposals", float_amount)
@@ -1311,6 +1314,9 @@ class BillingIngestFailClosedHttpTests(unittest.TestCase):
         )
         retained_status, retained_body = case._http_json(
             "POST", "/journal-proposals", retained
+        )
+        seven_status, seven_body = case._http_json(
+            "POST", "/journal-proposals", seven_places
         )
         posted_status, posted = case._http_json(
             "POST",
@@ -1339,6 +1345,8 @@ class BillingIngestFailClosedHttpTests(unittest.TestCase):
         )
         self.assertEqual(retained_status, 422)
         self.assertIn("reserved for AIS period-close", str(retained_body["error_message"]))
+        self.assertEqual(seven_status, 422)
+        self.assertIn("at most six fractional digits", str(seven_body["error_message"]))
         self.assertEqual(posted_status, 200)
         self.assertEqual(posted["posting_status_code"], "posted")
         self.assertEqual(case._count_table("accounting_core.general_journal"), journals_before + 1)

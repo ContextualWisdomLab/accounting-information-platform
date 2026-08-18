@@ -583,7 +583,10 @@ def _parse_amount(value: Decimal | str) -> Decimal:
     """Parse a canonical non-negative decimal with at most six fractional digits."""
     text = str(value)
     if _DECIMAL_PATTERN.fullmatch(text) is None:
-        raise AccountingValidationError("amount must be a canonical non-negative decimal")
+        raise AccountingValidationError(
+            "amount must be a canonical non-negative decimal with at most six "
+            "fractional digits"
+        )
     try:
         amount = Decimal(text)
     except InvalidOperation as error:  # pragma: no cover - guarded by the regex.

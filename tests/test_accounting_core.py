@@ -564,6 +564,7 @@ class AccountingCoreTests(unittest.TestCase):
             (1, "accounts_receivable", "-1", "0"),
             (1, "accounts_receivable", "01", "0"),
             (1, "accounts_receivable", "1.1234567", "0"),
+            (1, "accounts_receivable", "0.0000010", "0"),
         )
         for values in invalid_line_inputs:
             with self.subTest(values=values):
