@@ -12920,7 +12920,40 @@ class PostgresPostingTests(unittest.TestCase):
         self.addCleanup(server.shutdown)
         self._last_fake_billing = server
         host, port = server.server_address
-        return f"http://{host}:{port}"
+        billing_url = f"http://{host}:{port}"
+        self._remember_billing_origin(billing_url)
+        return billing_url
+
+    def _remember_billing_origin(self, billing_url: str) -> None:
+        """Allowlist a test Billing origin the way production sets BILLING_BASE_URL."""
+        if not getattr(self, "_billing_origin_cleanup_registered", False):
+            self._previous_billing_base_url = os.environ.get("BILLING_BASE_URL")
+            self._previous_billing_allowed_origins = os.environ.get(
+                "BILLING_ALLOWED_ORIGINS"
+            )
+            self._billing_origins: list[str] = []
+            self._billing_origin_cleanup_registered = True
+            self.addCleanup(self._restore_billing_origins)
+        if billing_url not in self._billing_origins:
+            self._billing_origins.append(billing_url)
+        os.environ["BILLING_BASE_URL"] = self._billing_origins[0]
+        extras = self._billing_origins[1:]
+        if extras:
+            os.environ["BILLING_ALLOWED_ORIGINS"] = ",".join(extras)
+        elif self._previous_billing_allowed_origins is None:
+            os.environ.pop("BILLING_ALLOWED_ORIGINS", None)
+        else:
+            os.environ["BILLING_ALLOWED_ORIGINS"] = self._previous_billing_allowed_origins
+
+    def _restore_billing_origins(self) -> None:
+        if self._previous_billing_base_url is None:
+            os.environ.pop("BILLING_BASE_URL", None)
+        else:
+            os.environ["BILLING_BASE_URL"] = self._previous_billing_base_url
+        if self._previous_billing_allowed_origins is None:
+            os.environ.pop("BILLING_ALLOWED_ORIGINS", None)
+        else:
+            os.environ["BILLING_ALLOWED_ORIGINS"] = self._previous_billing_allowed_origins
 
     def _adjusting_journal_payload(self, **overrides: object) -> dict[str, object]:
         values: dict[str, object] = {

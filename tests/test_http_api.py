@@ -1622,3 +1622,37 @@ class BillingPullRejectedProposalHttpTests(unittest.TestCase):
         self.assertEqual(case._count_table("accounting_core.general_journal"), journals_before)
         server.shutdown()
         server.server_close()
+
+    def test_http_pull_rejects_body_origin_off_allowlist(self) -> None:
+        """POST /billing-proposal-pulls does not fetch an unallowlisted body origin."""
+        case = self.case
+        billing_url = case._start_fake_billing([])
+        server = case._start_http_server()
+        journals_before = case._count_table("accounting_core.general_journal")
+
+        status, body = case._http_json(
+            "POST",
+            "/billing-proposal-pulls",
+            {
+                "tenant_reference": case.policy.tenant_reference,
+                "billing_base_url": "http://169.254.169.254",
+            },
+        )
+        allowed_status, allowed_body = case._http_json(
+            "POST",
+            "/billing-proposal-pulls",
+            {
+                "tenant_reference": case.policy.tenant_reference,
+                "billing_base_url": billing_url,
+            },
+        )
+
+        self.assertEqual(status, 422)
+        self.assertIn("allowed Billing origin", str(body["error_message"]))
+        self.assertIn("then retry", str(body["error_message"]))
+        self.assertEqual(allowed_status, 200)
+        self.assertEqual(allowed_body["posting_receipts"], [])
+        self.assertEqual(allowed_body["rejected_proposals"], [])
+        self.assertEqual(case._count_table("accounting_core.general_journal"), journals_before)
+        server.shutdown()
+        server.server_close()

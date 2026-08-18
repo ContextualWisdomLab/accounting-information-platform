@@ -175,9 +175,7 @@ def accept_billing_proposal_pull(
             "pull tenant_reference does not match the bound tenant. "
             "Call accept_billing_proposal_pull with that tenant_reference, then retry."
         )
-    billing_base_url = str(
-        payload.get("billing_base_url") or os.environ.get("BILLING_BASE_URL", "")
-    )
+    billing_base_url = _resolve_command_billing_origin(payload.get("billing_base_url"))
     raw_page_limit = payload.get("page_limit")
     if raw_page_limit in (None, ""):
         page_limit = None
@@ -239,6 +237,72 @@ def _require_billing_base_url(billing_base_url: str) -> str:
             "Set BILLING_BASE_URL to the Billing origin, then retry the pull."
         )
     return stripped
+
+
+def _canonical_billing_origin(billing_base_url: str) -> str:
+    """Return scheme://host[:port] so a body path or userinfo cannot redirect the pull."""
+    parsed = urlparse(_require_billing_base_url(billing_base_url))
+    hostname = parsed.hostname
+    if parsed.scheme not in {"http", "https"} or not hostname:
+        raise AccountingValidationError(
+            "BILLING_BASE_URL must be an http or https origin. "
+            "Set BILLING_BASE_URL to the Billing origin, then retry the pull."
+        )
+    host = hostname.lower()
+    if ":" in host:
+        host = f"[{host}]"
+    port = parsed.port
+    if port is None or (parsed.scheme == "http" and port == 80) or (
+        parsed.scheme == "https" and port == 443
+    ):
+        return f"{parsed.scheme}://{host}"
+    return f"{parsed.scheme}://{host}:{port}"
+
+
+def _configured_billing_bases() -> tuple[tuple[str, str], ...]:
+    """Map operator-configured origins to the fetch base they authorize."""
+    raw_values = [os.environ.get("BILLING_BASE_URL", "")]
+    raw_values.extend(
+        part.strip() for part in os.environ.get("BILLING_ALLOWED_ORIGINS", "").split(",")
+    )
+    entries: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for raw in raw_values:
+        if not raw.strip():
+            continue
+        fetch_base = _require_billing_base_url(raw)
+        origin = _canonical_billing_origin(fetch_base)
+        if origin in seen:
+            continue
+        seen.add(origin)
+        entries.append((origin, fetch_base))
+    return tuple(entries)
+
+
+def _resolve_command_billing_origin(requested: object) -> str:
+    """Prefer BILLING_BASE_URL; accept a body URL only when it matches the allowlist."""
+    configured = _configured_billing_bases()
+    env_base = os.environ.get("BILLING_BASE_URL", "").strip()
+    if requested in (None, ""):
+        if not env_base:
+            raise AccountingValidationError(
+                "BILLING_BASE_URL is empty. "
+                "Set BILLING_BASE_URL to the Billing origin, then retry the pull."
+            )
+        return configured[0][1]
+    requested_origin = _canonical_billing_origin(str(requested))
+    for origin, fetch_base in configured:
+        if origin == requested_origin:
+            return fetch_base
+    if not configured:
+        raise AccountingValidationError(
+            "BILLING_BASE_URL is empty. "
+            "Set BILLING_BASE_URL to the Billing origin, then retry the pull."
+        )
+    raise AccountingValidationError(
+        "billing_base_url is not an allowed Billing origin. "
+        "Set BILLING_BASE_URL or BILLING_ALLOWED_ORIGINS to that origin, then retry the pull."
+    )
 
 
 def _billing_get(
