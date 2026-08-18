@@ -1,4 +1,4 @@
-"""Thin stdlib HTTP boundary for Billing proposals, pulls, receipts, close, open, TB, statements, catalog, journals, reversals, outbox, and audit history."""
+"""Thin stdlib HTTP boundary for Billing proposals, AIS adjusting journals, pulls, receipts, close, open, TB, statements, catalog, journals, reversals, outbox, and audit history."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from typing import Callable
 from urllib.parse import parse_qs, urlparse
 
 from .accept import (
+    accept_adjusting_journal,
     accept_journal_proposal,
     accept_journal_reversal,
     accept_period_close,
@@ -160,15 +161,11 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         )
 
     def do_POST(self) -> None:
-        """Route journal-proposal accept, reverse, Billing pull, close, outbox publish, audit-history 405, and GET-only POST 405s."""
+        """Route journal-proposal accept, adjusting journal, reverse, Billing pull, close, outbox publish, audit-history 405, and GET-only POST 405s."""
         raw_body = self._read_body()
         parsed_path = urlparse(self.path).path
         if parsed_path == JOURNAL_PATH:
-            self._write_error(
-                405,
-                "POST is not supported on the journal inquiry endpoint. "
-                "GET the posted journal or the period journal list, then retry.",
-            )
+            self._post_adjusting_journal(raw_body)
             return
         if parsed_path == ACCOUNT_ROLE_MAPPING_PATH:
             self._write_error(
@@ -248,7 +245,7 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             return
         self._write_error(
             404,
-            "unknown path. POST /journal-proposals, POST /journal-reversals, "
+            "unknown path. POST /journal-proposals, POST /journals, POST /journal-reversals, "
             "POST /billing-proposal-pulls, POST /period-closes, POST /fiscal-periods, "
             "or POST /outbox-events/{outbox_event_id}/publish, then retry.",
         )
@@ -815,6 +812,32 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             return
         self._write_json(200, document)
 
+    def _post_adjusting_journal(self, raw_body: bytes) -> None:
+        tenant_header = self._bound_tenant_header("journal")
+        if tenant_header is None:
+            return
+        payload = self._read_json_object(raw_body, "an AIS adjusting journal")
+        if payload is None:
+            return
+        if payload.get("tenant_reference") != tenant_header:
+            self._write_error(
+                403,
+                "adjusting journal tenant_reference does not match X-CWL-Tenant-Reference. "
+                "Send the journal to that tenant's AIS endpoint, then retry.",
+            )
+            return
+        try:
+            document = accept_adjusting_journal(
+                payload, self.server.database_url, tenant_header
+            )
+        except IdempotencyConflictError as error:
+            self._write_error(409, f"{error}. Supply a new idempotency key, then retry.")
+            return
+        except AccountingValidationError as error:
+            self._write_error(_adjusting_journal_status(error), str(error))
+            return
+        self._write_json(200, document)
+
     def _post_journal_proposal(self, raw_body: bytes) -> None:
         tenant_header = self._bound_tenant_header("proposal")
         if tenant_header is None:
@@ -966,6 +989,17 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
 
+def _adjusting_journal_status(error: AccountingValidationError) -> int:
+    message = str(error)
+    if "hard_closed" in message:
+        return 409
+    if "Chart account " in message:
+        return 422
+    if "is not recorded" in message:
+        return 404
+    return 422
+
+
 def _first_query(fields: dict[str, list[str]], name: str) -> str:
     values = fields.get(name, [])
     return values[0] if values else ""
@@ -977,7 +1011,7 @@ def create_journal_proposal_server(
     host: str = "127.0.0.1",
     port: int = 0,
 ) -> JournalProposalServer:
-    """Create a stdlib HTTP server that posts, pulls, closes, opens periods, and reads TB, statements, journals, reversals, outbox, and audit history."""
+    """Create a stdlib HTTP server that posts Billing proposals, AIS adjusting journals, pulls, closes, opens periods, and reads TB, statements, journals, reversals, outbox, and audit history."""
     if not database_url:
         raise AccountingValidationError(
             "ACCOUNTING_DATABASE_URL is empty. Set a PostgreSQL 18 URL and retry posting."

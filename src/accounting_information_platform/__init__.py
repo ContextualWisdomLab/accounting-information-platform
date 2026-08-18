@@ -14,6 +14,7 @@ from .core import (
     PostingReceipt,
 )
 from .accept import (
+    accept_adjusting_journal,
     accept_journal_proposal,
     accept_journal_reversal,
     accept_period_close,
@@ -61,6 +62,7 @@ __all__ = [
     "PostgresPostingLedger",
     "PostingLedger",
     "PostingReceipt",
+    "accept_adjusting_journal",
     "accept_billing_proposal_pull",
     "accept_journal_proposal",
     "accept_journal_reversal",

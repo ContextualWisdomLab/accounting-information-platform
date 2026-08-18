@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import uuid
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Mapping
 from uuid import UUID
 
-from .core import AccountingValidationError, PeriodCloseReceipt
+from .core import (
+    AccountingValidationError,
+    PeriodCloseReceipt,
+    PostedJournalLine,
+    _parse_amount,
+    _require_currency,
+)
 from .ingest import ingest_journal_proposal
 from .persistence import PostgresPostingLedger, _format_timestamp
 
@@ -36,6 +46,73 @@ def accept_journal_proposal(
     ledger = PostgresPostingLedger(database_url, tenant_reference)
     ledger.post_proposal(proposal)
     return ledger.load_published_receipt(proposal)
+
+
+def accept_adjusting_journal(
+    payload: object, database_url: str, tenant_reference: str
+) -> dict[str, object]:
+    """Post one AIS-owned adjusting journal for *tenant_reference* and return the receipt."""
+    if not isinstance(payload, Mapping):
+        raise AccountingValidationError(
+            "adjusting journal payload must be a JSON object. "
+            "Supply an AIS adjusting journal, then retry the journal post."
+        )
+    if payload.get("tenant_reference") != tenant_reference:
+        raise AccountingValidationError(
+            "adjusting journal tenant_reference does not match the bound tenant. "
+            "Call accept_adjusting_journal with that tenant_reference, then retry."
+        )
+    legal_entity_reference = str(payload.get("legal_entity_reference") or "")
+    accounting_book_reference = str(payload.get("accounting_book_reference") or "")
+    period_code = _period_code_from_reference(
+        str(payload.get("fiscal_period_reference") or payload.get("period_code") or "")
+    )
+    idempotency_key = str(payload.get("idempotency_key") or "")
+    journal_description = str(payload.get("journal_description") or "")
+    if not legal_entity_reference or not accounting_book_reference or not period_code:
+        raise AccountingValidationError(
+            "legal_entity_reference, accounting_book_reference, and fiscal_period_reference are required. "
+            "Supply those adjusting-journal fields, then retry the journal post."
+        )
+    if not idempotency_key:
+        raise AccountingValidationError(
+            "idempotency_key is required. "
+            "Supply the adjusting-journal idempotency key, then retry the journal post."
+        )
+    if not journal_description:
+        raise AccountingValidationError(
+            "journal_description is required. "
+            "Supply the adjusting-journal description, then retry the journal post."
+        )
+    journal_date = _parse_journal_date(str(payload.get("journal_date") or ""))
+    lines, transaction_currency = _parse_adjusting_journal_lines(payload.get("journal_lines"))
+    source_payload_hash = _adjusting_journal_hash(
+        tenant_reference=tenant_reference,
+        legal_entity_reference=legal_entity_reference,
+        accounting_book_reference=accounting_book_reference,
+        period_code=period_code,
+        journal_date=journal_date,
+        idempotency_key=idempotency_key,
+        journal_description=journal_description,
+        lines=lines,
+        transaction_currency=transaction_currency,
+    )
+    proposal_id = str(
+        uuid.uuid5(uuid.NAMESPACE_URL, f"{tenant_reference}:{idempotency_key}")
+    )
+    ledger = PostgresPostingLedger(database_url, tenant_reference)
+    ledger.post_adjusting_journal(
+        legal_entity_reference=legal_entity_reference,
+        accounting_book_reference=accounting_book_reference,
+        period_code=period_code,
+        journal_date=journal_date,
+        idempotency_key=idempotency_key,
+        source_payload_hash=source_payload_hash,
+        proposal_id=proposal_id,
+        transaction_currency=transaction_currency,
+        lines=lines,
+    )
+    return ledger.load_published_receipt_by_key(idempotency_key)
 
 
 def lookup_published_receipt(
@@ -518,6 +595,118 @@ def _parse_period_date(value: str, field_name: str) -> date:
             f"{field_name} must be an ISO-8601 date. "
             f"Supply {field_name}, then retry the period open."
         ) from error
+
+
+def _parse_journal_date(value: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as error:
+        raise AccountingValidationError(
+            "journal_date must be an ISO-8601 date. "
+            "Supply journal_date, then retry the journal post."
+        ) from error
+
+
+def _parse_adjusting_journal_lines(
+    raw_lines: object,
+) -> tuple[tuple[PostedJournalLine, ...], str]:
+    if not isinstance(raw_lines, list) or len(raw_lines) < 2:
+        if not isinstance(raw_lines, list):
+            raise AccountingValidationError(
+                "journal_lines must be an array. "
+                "Supply balanced adjusting journal_lines, then retry the journal post."
+            )
+        raise AccountingValidationError(
+            "adjusting journal requires at least two lines. "
+            "Supply balanced adjusting journal_lines, then retry the journal post."
+        )
+    parsed: list[PostedJournalLine] = []
+    transaction_currency = ""
+    debit_total = Decimal("0")
+    credit_total = Decimal("0")
+    for index, raw_line in enumerate(raw_lines, start=1):
+        if not isinstance(raw_line, Mapping):
+            raise AccountingValidationError(
+                "each journal line must be a JSON object. "
+                "Supply chart_account_code, debit_credit_code, amount, and currency_code, "
+                "then retry the journal post."
+            )
+        chart_account_code = str(raw_line.get("chart_account_code") or "")
+        debit_credit_code = str(raw_line.get("debit_credit_code") or "")
+        currency_code = str(raw_line.get("currency_code") or "")
+        if not chart_account_code:
+            raise AccountingValidationError(
+                "chart_account_code is required. "
+                "Supply a statutory chart_account_code, then retry the journal post."
+            )
+        if debit_credit_code not in {"debit", "credit"}:
+            raise AccountingValidationError(
+                "debit_credit_code must be debit or credit. "
+                "Supply debit_credit_code, then retry the journal post."
+            )
+        _require_currency(currency_code)
+        if transaction_currency and currency_code != transaction_currency:
+            raise AccountingValidationError(
+                "journal_lines currency_code must match on every line. "
+                "Supply one book currency, then retry the journal post."
+            )
+        transaction_currency = currency_code
+        amount = _parse_amount(str(raw_line.get("amount") or ""))
+        debit_amount = amount if debit_credit_code == "debit" else Decimal("0")
+        credit_amount = amount if debit_credit_code == "credit" else Decimal("0")
+        debit_total += debit_amount
+        credit_total += credit_amount
+        parsed.append(
+            PostedJournalLine(
+                line_number=index,
+                chart_account_code=chart_account_code,
+                account_role_code="adjusting",
+                debit_amount=debit_amount,
+                credit_amount=credit_amount,
+            )
+        )
+    if debit_total != credit_total:
+        raise AccountingValidationError(
+            "adjusting journal must balance. "
+            "Correct the journal_lines amounts, then retry the journal post."
+        )
+    return tuple(parsed), transaction_currency
+
+
+def _adjusting_journal_hash(
+    *,
+    tenant_reference: str,
+    legal_entity_reference: str,
+    accounting_book_reference: str,
+    period_code: str,
+    journal_date: date,
+    idempotency_key: str,
+    journal_description: str,
+    lines: tuple[PostedJournalLine, ...],
+    transaction_currency: str,
+) -> str:
+    payload = {
+        "accounting_book_reference": accounting_book_reference,
+        "idempotency_key": idempotency_key,
+        "journal_date": journal_date.isoformat(),
+        "journal_description": journal_description,
+        "journal_lines": [
+            {
+                "chart_account_code": line.chart_account_code,
+                "credit_amount": format(line.credit_amount, "f"),
+                "currency_code": transaction_currency,
+                "debit_amount": format(line.debit_amount, "f"),
+            }
+            for line in lines
+        ],
+        "legal_entity_reference": legal_entity_reference,
+        "period_code": period_code,
+        "tenant_reference": tenant_reference,
+    }
+    digest = hashlib.sha256(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    return f"sha256:{digest}"
 
 
 def _parse_reversal_date(value: str) -> date:

@@ -66,6 +66,178 @@ class PostgresPostingLedger:
         """Resolve AIS catalog policy and persist *proposal*, or return its prior receipt."""
         return self._persist_proposal(proposal, None)
 
+    def post_adjusting_journal(
+        self,
+        *,
+        legal_entity_reference: str,
+        accounting_book_reference: str,
+        period_code: str,
+        journal_date: date,
+        idempotency_key: str,
+        source_payload_hash: str,
+        proposal_id: str,
+        transaction_currency: str,
+        lines: tuple[PostedJournalLine, ...],
+    ) -> None:
+        """Persist one AIS-owned adjusting journal through the ordinary post tables."""
+        proposal_uuid = _require_proposal_uuid(proposal_id)
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            prior = connection.execute(
+                """
+                SELECT source_payload_hash
+                FROM accounting_integration.journal_proposal_record
+                WHERE tenant_account_id = %s AND idempotency_key = %s
+                """,
+                (tenant_id, idempotency_key),
+            ).fetchone()
+            if prior is not None:
+                if prior[0] != source_payload_hash:
+                    raise IdempotencyConflictError(
+                        "idempotency key was already used with a different payload"
+                    )
+                return
+            legal_entity_id, functional_currency = self._load_legal_entity(
+                connection,
+                tenant_id,
+                legal_entity_reference,
+                next_action="the journal post",
+            )
+            book_row = connection.execute(
+                """
+                SELECT accounting_book_id, reporting_currency_code, book_role_code
+                FROM accounting_core.accounting_book
+                WHERE tenant_account_id = %s
+                  AND legal_entity_id = %s
+                  AND book_name = %s
+                  AND valid_to IS NULL
+                """,
+                (tenant_id, legal_entity_id, accounting_book_reference),
+            ).fetchone()
+            if book_row is None:
+                raise AccountingValidationError(
+                    f"Accounting book {accounting_book_reference} is not recorded for this legal entity. "
+                    "Create the accounting_book row, then retry the journal post."
+                )
+            book_id, reporting_currency_code, book_role_code = book_row
+            if transaction_currency != reporting_currency_code:
+                raise AccountingValidationError(
+                    f"currency {transaction_currency} does not match book reporting "
+                    f"currency {reporting_currency_code}. Supply the book reporting currency, "
+                    "then retry the journal post."
+                )
+            period_state = self._load_period_state(connection, tenant_id, period_code)
+            if period_state is None:
+                raise AccountingValidationError(
+                    f"Fiscal period {period_code} is not recorded for this tenant. "
+                    "Create the fiscal_period row, then retry the journal post."
+                )
+            period_id, period_status_code, period_start, period_end = period_state
+            if journal_date < period_start or journal_date > period_end:
+                raise AccountingValidationError(
+                    "journal_date must fall inside the supplied fiscal period. "
+                    "Supply a journal_date in that period, then retry the journal post."
+                )
+            if period_status_code == "hard_closed":
+                raise AccountingValidationError(
+                    f"Fiscal period {period_code} is hard_closed. "
+                    "Post the adjusting journal into an open or soft-closed period, "
+                    "then retry; no journal was written."
+                )
+            policy_row = connection.execute(
+                """
+                SELECT accounting_policy_version, posting_rule_version
+                FROM accounting_core.account_role_mapping
+                WHERE tenant_account_id = %s
+                  AND accounting_book_id = %s
+                  AND valid_to IS NULL
+                ORDER BY account_role_code
+                LIMIT 1
+                """,
+                (tenant_id, book_id),
+            ).fetchone()
+            if policy_row is None:
+                raise AccountingValidationError(
+                    "No account_role_mapping is effective for this book. "
+                    "Create the account_role_mapping rows, then retry the journal post."
+                )
+            policy = AccountingPolicy(
+                tenant_reference=self._tenant_reference,
+                legal_entity_reference=legal_entity_reference,
+                accounting_book_reference=accounting_book_reference,
+                intended_book_role_code=book_role_code,
+                transaction_currency=transaction_currency,
+                functional_currency=functional_currency,
+                open_period_start=period_start,
+                open_period_end=period_end,
+                chart_account_mapping={},
+                accounting_policy_version=policy_row[0],
+                posting_rule_version=policy_row[1],
+            )
+            proposal = _AdjustingProposal(
+                source_payload_hash=source_payload_hash,
+                transaction_currency=transaction_currency,
+                transaction_date=journal_date,
+                accounting_date=journal_date,
+                source_event_references=(
+                    f"urn:cwl:accounting:adjusting_journal:{proposal_id}",
+                ),
+            )
+            journal_reference = f"urn:cwl:accounting:general_journal:{proposal_id}"
+            receipt = PostingReceipt(
+                receipt_reference=f"urn:cwl:accounting:posting_receipt:{proposal_id}",
+                journal_reference=journal_reference,
+                posting_status_code="posted",
+                source_proposal_id=proposal_id,
+                source_payload_hash=source_payload_hash,
+                tenant_reference=self._tenant_reference,
+                legal_entity_reference=legal_entity_reference,
+                accounting_book_reference=accounting_book_reference,
+                accounting_policy_version=policy.accounting_policy_version,
+                posting_rule_version=policy.posting_rule_version,
+                line_count=len(lines),
+            )
+            proposal_record_id = connection.execute(
+                """
+                INSERT INTO accounting_integration.journal_proposal_record (
+                    tenant_account_id, external_proposal_id, proposal_contract_version,
+                    idempotency_key, source_payload_hash, proposal_status_code, processed_at
+                )
+                VALUES (%s, %s, %s, %s, %s, 'posted', clock_timestamp())
+                RETURNING proposal_record_id
+                """,
+                (
+                    tenant_id,
+                    proposal_uuid,
+                    1,
+                    idempotency_key,
+                    source_payload_hash,
+                ),
+            ).fetchone()[0]
+            journal_id = self._insert_journal(
+                connection,
+                tenant_id=tenant_id,
+                legal_entity_id=legal_entity_id,
+                book_id=book_id,
+                period_id=period_id,
+                journal_reference=journal_reference,
+                proposal=proposal,
+                policy=policy,
+                proposal_record_id=proposal_record_id,
+                lines=lines,
+            )
+            self._insert_receipt(
+                connection, tenant_id, proposal_record_id, journal_id, receipt
+            )
+            self._insert_outbox(
+                connection,
+                tenant_id,
+                "posting_receipt",
+                journal_reference,
+                receipt.receipt_reference,
+                receipt,
+            )
+
     def resolve_accounting_policy(self, proposal: JournalProposal) -> AccountingPolicy:
         """Load the effective catalog policy for *proposal* without posting."""
         with self._session() as connection:
@@ -2990,7 +3162,7 @@ class PostgresPostingLedger:
         book_id: UUID,
         period_id: UUID,
         journal_reference: str,
-        proposal: JournalProposal | _ReversalProposal | _ClosingProposal,
+        proposal: JournalProposal | _ReversalProposal | _ClosingProposal | _AdjustingProposal,
         policy: AccountingPolicy,
         proposal_record_id: UUID,
         lines: tuple[PostedJournalLine, ...],
@@ -3454,6 +3626,25 @@ class PostgresPostingLedger:
 
 class _ClosingProposal:
     """Minimal proposal shape used when persisting an AIS period-closing journal."""
+
+    def __init__(
+        self,
+        *,
+        source_payload_hash: str,
+        transaction_currency: str,
+        transaction_date: date,
+        accounting_date: date,
+        source_event_references: tuple[str, ...],
+    ) -> None:
+        self.source_payload_hash = source_payload_hash
+        self.transaction_currency = transaction_currency
+        self.transaction_date = transaction_date
+        self.accounting_date = accounting_date
+        self.source_event_references = source_event_references
+
+
+class _AdjustingProposal:
+    """Minimal proposal shape used when persisting an AIS-owned adjusting journal."""
 
     def __init__(
         self,

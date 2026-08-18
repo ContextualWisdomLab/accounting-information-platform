@@ -26,6 +26,7 @@ from accounting_information_platform import (
     JournalProposal,
     PeriodCloseReceipt,
     PostgresPostingLedger,
+    accept_adjusting_journal,
     accept_billing_proposal_pull,
     accept_journal_proposal,
     accept_journal_reversal,
@@ -2643,7 +2644,7 @@ class PostgresPostingTests(unittest.TestCase):
                 DATABASE_URL, self.policy.tenant_reference
             ).load_posted_journal()
 
-        self.assertEqual(post_status, 405)
+        self.assertEqual(post_status, 403)
         self.assertEqual(missing_header[0], 400)
         self.assertEqual(cross_status, 403)
         self.assertEqual(missing_query[0], 400)
@@ -5133,6 +5134,400 @@ class PostgresPostingTests(unittest.TestCase):
         )
         server.shutdown()
 
+    def test_http_posts_ais_adjusting_journal_without_billing_role(self) -> None:
+        """POST /journals posts an AIS-owned adjusting journal; Billing ingest stays on /journal-proposals."""
+        body = self._adjusting_journal_payload()
+        server = self._start_http_server()
+        journals_before = self._count_table("accounting_core.general_journal")
+        receipts_before = self._count_table("accounting_integration.posting_receipt")
+
+        open_status, posted = self._http_json("POST", "/journals", body)
+        replay_status, replayed = self._http_json("POST", "/journals", body)
+        library = accept_adjusting_journal(
+            body, DATABASE_URL, self.policy.tenant_reference
+        )
+        inquiry_status, inquiry = self._http_journal(
+            idempotency_key=str(body["idempotency_key"])
+        )
+        listed_status, listed = self._http_period_journals()
+        by_code = {str(item["chart_account_code"]): item for item in inquiry["lines"]}
+
+        self.assertEqual(open_status, 200)
+        self.assertEqual(replay_status, 200)
+        self.assertEqual(posted, replayed)
+        self.assertEqual(posted, library)
+        self.assertEqual(posted["posting_status_code"], "posted")
+        self.assertEqual(posted["idempotency_key"], body["idempotency_key"])
+        self.assertEqual(posted["line_count"], 2)
+        self.assertEqual(inquiry_status, 200)
+        self.assertEqual(inquiry["journal_reference"], posted["journal_reference"])
+        self.assertEqual(inquiry["idempotency_key"], body["idempotency_key"])
+        self.assertEqual(inquiry["accounting_date"], "2026-08-31")
+        self.assertEqual(by_code["110100"]["debit_amount"], "1000")
+        self.assertEqual(by_code["110100"]["credit_amount"], "0")
+        self.assertEqual(by_code["410100"]["debit_amount"], "0")
+        self.assertEqual(by_code["410100"]["credit_amount"], "1000")
+        self.assertEqual(listed_status, 200)
+        self.assertIn(
+            body["idempotency_key"],
+            {str(item["idempotency_key"]) for item in listed["journals"]},
+        )
+        self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before + 1)
+        self.assertEqual(
+            self._count_table("accounting_integration.posting_receipt"), receipts_before + 1
+        )
+        aliased = accept_adjusting_journal(
+            {
+                "tenant_reference": self.policy.tenant_reference,
+                "legal_entity_reference": self.policy.legal_entity_reference,
+                "accounting_book_reference": self.policy.accounting_book_reference,
+                "period_code": "2026-08",
+                "journal_date": "2026-08-31",
+                "idempotency_key": f"{self.policy.tenant_reference}:adjusting_journal:alias:v1",
+                "journal_description": "Period code alias",
+                "journal_lines": body["journal_lines"],
+            },
+            DATABASE_URL,
+            self.policy.tenant_reference,
+        )
+        self.assertEqual(aliased["posting_status_code"], "posted")
+        self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before + 2)
+
+        soft_status, _soft = self._http_json(
+            "POST", "/period-closes", self._period_close_payload(period_status_code="soft_closed")
+        )
+        soft_body = self._adjusting_journal_payload(
+            idempotency_key=f"{self.policy.tenant_reference}:adjusting_journal:soft:v1",
+            journal_description="Soft-close adjusting accrual",
+        )
+        soft_adjust_status, soft_adjust = self._http_json("POST", "/journals", soft_body)
+        self.assertEqual(soft_status, 200)
+        self.assertEqual(soft_adjust_status, 200)
+        self.assertEqual(soft_adjust["posting_status_code"], "posted")
+        self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before + 3)
+
+        hard_status, _hard = self._http_json("POST", "/period-closes", self._period_close_payload())
+        closed_body = self._adjusting_journal_payload(
+            idempotency_key=f"{self.policy.tenant_reference}:adjusting_journal:closed:v1",
+            journal_description="Rejected after hard-close",
+        )
+        closed_status, closed_body_doc = self._http_json("POST", "/journals", closed_body)
+        replay_after_close_status, replay_after_close = self._http_json("POST", "/journals", body)
+        self.assertEqual(hard_status, 200)
+        self.assertEqual(closed_status, 409)
+        self.assertIn("hard_closed", str(closed_body_doc["error_message"]))
+        self.assertEqual(replay_after_close_status, 200)
+        self.assertEqual(replay_after_close, posted)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before + 3)
+
+        unbalanced = self._http_json(
+            "POST",
+            "/journals",
+            self._adjusting_journal_payload(
+                idempotency_key=f"{self.policy.tenant_reference}:adjusting_journal:unbalanced:v1",
+                journal_lines=[
+                    {
+                        "chart_account_code": "110100",
+                        "debit_credit_code": "debit",
+                        "amount": "1000",
+                        "currency_code": "KRW",
+                    },
+                    {
+                        "chart_account_code": "410100",
+                        "debit_credit_code": "credit",
+                        "amount": "900",
+                        "currency_code": "KRW",
+                    },
+                ],
+            ),
+        )
+        unknown_chart = self._http_json(
+            "POST",
+            "/journals",
+            self._adjusting_journal_payload(
+                idempotency_key=f"{self.policy.tenant_reference}:adjusting_journal:missing-account:v1",
+                journal_lines=[
+                    {
+                        "chart_account_code": "999999",
+                        "debit_credit_code": "debit",
+                        "amount": "1000",
+                        "currency_code": "KRW",
+                    },
+                    {
+                        "chart_account_code": "410100",
+                        "debit_credit_code": "credit",
+                        "amount": "1000",
+                        "currency_code": "KRW",
+                    },
+                ],
+            ),
+        )
+        outside_period = self._http_json(
+            "POST",
+            "/journals",
+            self._adjusting_journal_payload(
+                journal_date="2026-09-15",
+                idempotency_key=f"{self.policy.tenant_reference}:adjusting_journal:outside:v1",
+            ),
+        )
+        before_period = self._http_json(
+            "POST",
+            "/journals",
+            self._adjusting_journal_payload(
+                journal_date="2026-07-15",
+                idempotency_key=f"{self.policy.tenant_reference}:adjusting_journal:before:v1",
+            ),
+        )
+        missing_header = self._http_json("POST", "/journals", body, tenant_header=None)
+        cross_status, _cross = self._http_json(
+            "POST", "/journals", body, tenant_header="urn:cwl:tenant_other"
+        )
+        body_mismatch = self._http_json(
+            "POST",
+            "/journals",
+            self._adjusting_journal_payload(tenant_reference="urn:cwl:tenant_other"),
+        )
+        unknown_entity = self._http_json(
+            "POST",
+            "/journals",
+            self._adjusting_journal_payload(
+                legal_entity_reference="urn:cwl:legal_entity:missing",
+                idempotency_key=f"{self.policy.tenant_reference}:adjusting_journal:missing-entity:v1",
+            ),
+        )
+        unknown_book = self._http_json(
+            "POST",
+            "/journals",
+            self._adjusting_journal_payload(
+                accounting_book_reference="urn:cwl:accounting_book:missing",
+                idempotency_key=f"{self.policy.tenant_reference}:adjusting_journal:missing-book:v1",
+            ),
+        )
+        unknown_period = self._http_json(
+            "POST",
+            "/journals",
+            self._adjusting_journal_payload(
+                fiscal_period_reference="urn:cwl:accounting:fiscal_period:1999-01",
+                idempotency_key=f"{self.policy.tenant_reference}:adjusting_journal:missing-period:v1",
+            ),
+        )
+        bad_side = self._http_json(
+            "POST",
+            "/journals",
+            self._adjusting_journal_payload(
+                idempotency_key=f"{self.policy.tenant_reference}:adjusting_journal:side:v1",
+                journal_lines=[
+                    {
+                        "chart_account_code": "110100",
+                        "debit_credit_code": "both",
+                        "amount": "1000",
+                        "currency_code": "KRW",
+                    },
+                    {
+                        "chart_account_code": "410100",
+                        "debit_credit_code": "credit",
+                        "amount": "1000",
+                        "currency_code": "KRW",
+                    },
+                ],
+            ),
+        )
+        bad_amount = self._http_json(
+            "POST",
+            "/journals",
+            self._adjusting_journal_payload(
+                idempotency_key=f"{self.policy.tenant_reference}:adjusting_journal:amount:v1",
+                journal_lines=[
+                    {
+                        "chart_account_code": "110100",
+                        "debit_credit_code": "debit",
+                        "amount": "1,000",
+                        "currency_code": "KRW",
+                    },
+                    {
+                        "chart_account_code": "410100",
+                        "debit_credit_code": "credit",
+                        "amount": "1000",
+                        "currency_code": "KRW",
+                    },
+                ],
+            ),
+        )
+        mixed_currency = self._http_json(
+            "POST",
+            "/journals",
+            self._adjusting_journal_payload(
+                idempotency_key=f"{self.policy.tenant_reference}:adjusting_journal:fx:v1",
+                journal_lines=[
+                    {
+                        "chart_account_code": "110100",
+                        "debit_credit_code": "debit",
+                        "amount": "1000",
+                        "currency_code": "USD",
+                    },
+                    {
+                        "chart_account_code": "410100",
+                        "debit_credit_code": "credit",
+                        "amount": "1000",
+                        "currency_code": "KRW",
+                    },
+                ],
+            ),
+        )
+        wrong_book_currency = self._http_json(
+            "POST",
+            "/journals",
+            self._adjusting_journal_payload(
+                idempotency_key=f"{self.policy.tenant_reference}:adjusting_journal:usd:v1",
+                journal_lines=[
+                    {
+                        "chart_account_code": "110100",
+                        "debit_credit_code": "debit",
+                        "amount": "1000",
+                        "currency_code": "USD",
+                    },
+                    {
+                        "chart_account_code": "410100",
+                        "debit_credit_code": "credit",
+                        "amount": "1000",
+                        "currency_code": "USD",
+                    },
+                ],
+            ),
+        )
+        conflict = self._http_json(
+            "POST",
+            "/journals",
+            self._adjusting_journal_payload(
+                journal_description="Different payload on the same key",
+            ),
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "JSON object"):
+            accept_adjusting_journal(["not-an-object"], DATABASE_URL, self.policy.tenant_reference)
+        with self.assertRaisesRegex(AccountingValidationError, "bound tenant"):
+            accept_adjusting_journal(
+                self._adjusting_journal_payload(tenant_reference="urn:cwl:tenant_other"),
+                DATABASE_URL,
+                self.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "legal_entity_reference"):
+            accept_adjusting_journal(
+                {
+                    "tenant_reference": self.policy.tenant_reference,
+                    "journal_date": "2026-08-31",
+                    "idempotency_key": "missing-scope",
+                    "journal_description": "Missing scope",
+                    "journal_lines": body["journal_lines"],
+                },
+                DATABASE_URL,
+                self.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "legal_entity_reference"):
+            accept_adjusting_journal(
+                self._adjusting_journal_payload(accounting_book_reference=""),
+                DATABASE_URL,
+                self.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "legal_entity_reference"):
+            accept_adjusting_journal(
+                self._adjusting_journal_payload(
+                    fiscal_period_reference="",
+                    period_code="",
+                    idempotency_key=f"{self.policy.tenant_reference}:adjusting_journal:missing-period-code:v1",
+                ),
+                DATABASE_URL,
+                self.policy.tenant_reference,
+            )
+        empty_book = self._seed_book_without_chart_accounts()
+        with self.assertRaisesRegex(AccountingValidationError, "account_role_mapping"):
+            accept_adjusting_journal(
+                self._adjusting_journal_payload(
+                    accounting_book_reference=empty_book,
+                    idempotency_key=f"{self.policy.tenant_reference}:adjusting_journal:empty-book:v1",
+                ),
+                DATABASE_URL,
+                self.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "idempotency_key"):
+            accept_adjusting_journal(
+                self._adjusting_journal_payload(idempotency_key=""),
+                DATABASE_URL,
+                self.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "journal_description"):
+            accept_adjusting_journal(
+                self._adjusting_journal_payload(journal_description=""),
+                DATABASE_URL,
+                self.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "journal_date"):
+            accept_adjusting_journal(
+                self._adjusting_journal_payload(journal_date="31-08-2026"),
+                DATABASE_URL,
+                self.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "two lines"):
+            accept_adjusting_journal(
+                self._adjusting_journal_payload(journal_lines=[body["journal_lines"][0]]),
+                DATABASE_URL,
+                self.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "journal_lines"):
+            accept_adjusting_journal(
+                self._adjusting_journal_payload(journal_lines="not-a-list"),
+                DATABASE_URL,
+                self.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "journal line"):
+            accept_adjusting_journal(
+                self._adjusting_journal_payload(
+                    journal_lines=["not-an-object", body["journal_lines"][1]]
+                ),
+                DATABASE_URL,
+                self.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "chart_account_code"):
+            accept_adjusting_journal(
+                self._adjusting_journal_payload(
+                    journal_lines=[
+                        {
+                            "debit_credit_code": "debit",
+                            "amount": "1000",
+                            "currency_code": "KRW",
+                        },
+                        body["journal_lines"][1],
+                    ]
+                ),
+                DATABASE_URL,
+                self.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(IdempotencyConflictError, "idempotency key"):
+            accept_adjusting_journal(
+                self._adjusting_journal_payload(
+                    journal_description="Different payload on the same key",
+                ),
+                DATABASE_URL,
+                self.policy.tenant_reference,
+            )
+
+        self.assertEqual(unbalanced[0], 422)
+        self.assertEqual(unknown_chart[0], 422)
+        self.assertEqual(outside_period[0], 422)
+        self.assertEqual(before_period[0], 422)
+        self.assertEqual(missing_header[0], 400)
+        self.assertEqual(cross_status, 403)
+        self.assertEqual(body_mismatch[0], 403)
+        self.assertEqual(unknown_entity[0], 404)
+        self.assertEqual(unknown_book[0], 404)
+        self.assertEqual(unknown_period[0], 404)
+        self.assertEqual(bad_side[0], 422)
+        self.assertEqual(bad_amount[0], 422)
+        self.assertEqual(mixed_currency[0], 422)
+        self.assertEqual(wrong_book_currency[0], 422)
+        self.assertEqual(conflict[0], 409)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before + 3)
+        server.shutdown()
+
     def test_accept_and_http_guard_cross_tenant_and_operator_failures(self) -> None:
         """The tenant header is purpose-limited and cross-tenant posts write zero rows."""
         payload = self._billing_validated_payload()
@@ -6094,6 +6489,33 @@ class PostgresPostingTests(unittest.TestCase):
         self._last_fake_billing = server
         host, port = server.server_address
         return f"http://{host}:{port}"
+
+    def _adjusting_journal_payload(self, **overrides: object) -> dict[str, object]:
+        values: dict[str, object] = {
+            "tenant_reference": self.policy.tenant_reference,
+            "legal_entity_reference": self.policy.legal_entity_reference,
+            "accounting_book_reference": self.policy.accounting_book_reference,
+            "fiscal_period_reference": "urn:cwl:accounting:fiscal_period:2026-08",
+            "journal_date": "2026-08-31",
+            "idempotency_key": f"{self.policy.tenant_reference}:adjusting_journal:accrual:v1",
+            "journal_description": "Accrue unbilled receivable",
+            "journal_lines": [
+                {
+                    "chart_account_code": "110100",
+                    "debit_credit_code": "debit",
+                    "amount": "1000",
+                    "currency_code": "KRW",
+                },
+                {
+                    "chart_account_code": "410100",
+                    "debit_credit_code": "credit",
+                    "amount": "1000",
+                    "currency_code": "KRW",
+                },
+            ],
+        }
+        values.update(overrides)
+        return values
 
     def _period_close_payload(self, **overrides: object) -> dict[str, object]:
         values: dict[str, object] = {
