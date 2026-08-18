@@ -387,6 +387,231 @@ class IssuedInvoiceVoidAgingHttpTests(unittest.TestCase):
         server.server_close()
 
 
+class IssuedCreditNoteVoidAgingHttpTests(unittest.TestCase):
+    """GET /receivable-agings rises by a posted Billing credit-note void."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        postgres_posting.PostgresPostingTests.setUpClass()
+
+    def setUp(self) -> None:
+        self.case = postgres_posting.PostgresPostingTests("setUp")
+        self.case.setUp()
+
+    def test_http_issued_credit_note_void_restores_receivable_aging(self) -> None:
+        """Taxed invoice then credit then published void restores 110100 aging."""
+        case = self.case
+        invoice = case._billing_taxed_payload()
+        credit = case._billing_taxed_credit_payload()
+        void = case._billing_issued_credit_note_void_payload()
+        later_void = case._billing_issued_credit_note_void_payload(
+            proposal_id="019d7b92-bee1-7a7f-b61c-962c0f4bf661",
+            issued_credit_note_void_id="019d7b92-add0-7a7f-b61c-962c0f4bf651",
+            void_source_payload_hash="sha256:" + "2" * 64,
+            issued_credit_note_void_contract_version=1,
+            source_payload_hash="sha256:" + "3" * 64,
+        )
+        conflict = case._billing_issued_credit_note_void_payload(
+            source_payload_hash="sha256:" + "9" * 64,
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "4000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "usage_revenue",
+                    "debit_amount": "0",
+                    "credit_amount": "4000",
+                },
+            ],
+        )
+        server = case._start_http_server()
+
+        invoice_status, _invoice = case._http_json("POST", "/journal-proposals", invoice)
+        after_invoice_status, after_invoice = case._http_receivable_aging()
+        credit_status, _credit = case._http_json("POST", "/journal-proposals", credit)
+        before_status, before = case._http_receivable_aging()
+        void_status, receipt = case._http_json("POST", "/journal-proposals", void)
+        replay_status, replay = case._http_json("POST", "/journal-proposals", void)
+        conflict_status, _conflict = case._http_json("POST", "/journal-proposals", conflict)
+        after_status, after = case._http_receivable_aging()
+        balances_status, balances = case._http_account_balances(chart_account_code="110100")
+        mapping_status, mappings = case._http_account_role_mappings()
+        billing_status, billing_list = case._http_period_journals(journal_source_code="billing")
+        mapping_by_role = {
+            str(item["account_role_code"]): item for item in mappings["mappings"]
+        }
+        production = Path(__file__).resolve().parents[1] / "src" / "accounting_information_platform"
+        production_text = "\n".join(
+            path.read_text(encoding="utf-8") for path in production.rglob("*.py")
+        )
+
+        issued_credit_note_void_id = "019d7b92-add0-7a7f-b61c-962c0f4bf650"
+        void_source_payload_hash = "sha256:" + "d" * 64
+        issued_credit_note_void_contract_version = 1
+        self.assertEqual(
+            void["idempotency_key"],
+            (
+                f"{case.policy.tenant_reference}:issued_credit_note_void:"
+                f"{issued_credit_note_void_id}:{void_source_payload_hash}"
+                f":v{issued_credit_note_void_contract_version}"
+            ),
+        )
+        self.assertNotEqual(void["proposal_id"], issued_credit_note_void_id)
+        self.assertNotEqual(void["source_payload_hash"], void_source_payload_hash)
+        self.assertIn(":issued_credit_note_void:", str(void["idempotency_key"]))
+        self.assertEqual(void["proposal_status"], "validated")
+        self.assertEqual(void["lines"][0]["account_role_code"], "accounts_receivable")
+        self.assertEqual(void["lines"][1]["account_role_code"], "usage_revenue")
+        self.assertEqual(void["lines"][2]["account_role_code"], "tax_payable")
+        self.assertEqual(
+            list(void["source_event_references"]),
+            [
+                f"{case.policy.tenant_reference}:issued_credit_note_void:"
+                f"{issued_credit_note_void_id}"
+            ],
+        )
+        self.assertNotIn("journal_entry_id", json.dumps(void))
+        self.assertNotIn("collection_status", json.dumps(void))
+        self.assertNotIn("issued_credit_note_status", json.dumps(void))
+        self.assertNotIn("void_status", json.dumps(void))
+        self.assertNotIn("110100", json.dumps(void["lines"]))
+        self.assertNotIn("journal_entry_id", production_text)
+        self.assertNotIn("collection_status", production_text)
+        self.assertNotIn("issued_credit_note_status", production_text)
+        self.assertEqual(invoice_status, 200)
+        self.assertEqual(after_invoice_status, 200)
+        self.assertEqual(after_invoice["total_outstanding_amount"], "27500")
+        self.assertEqual(credit_status, 200)
+        self.assertEqual(before_status, 200)
+        self.assertEqual(before["current_amount"], "0")
+        self.assertEqual(before["total_outstanding_amount"], "0")
+        self.assertEqual(void_status, 200)
+        self.assertEqual(replay_status, 200)
+        self.assertEqual(receipt, replay)
+        self.assertEqual(conflict_status, 409)
+        self.assertEqual(after_status, 200)
+        self.assertEqual(balances_status, 200)
+        self.assertEqual(after["current_amount"], "27500")
+        self.assertEqual(after["days_31_60_amount"], "0")
+        self.assertEqual(after["days_61_90_amount"], "0")
+        self.assertEqual(after["days_over_90_amount"], "0")
+        self.assertEqual(after["total_outstanding_amount"], "27500")
+        self.assertEqual(
+            Decimal(str(after["total_outstanding_amount"])),
+            Decimal(str(before["total_outstanding_amount"])) + Decimal("27500"),
+        )
+        self.assertEqual(
+            Decimal(str(after["total_outstanding_amount"])),
+            case._account_balance_net(balances, "110100"),
+        )
+        self.assertNotIn("unapplied_credit_amount", after)
+        self.assertNotIn("party_reference", after)
+        self.assertEqual(mapping_status, 200)
+        self.assertEqual(mapping_by_role["accounts_receivable"]["chart_account_code"], "110100")
+        self.assertEqual(mapping_by_role["usage_revenue"]["chart_account_code"], "410100")
+        self.assertEqual(mapping_by_role["tax_payable"]["chart_account_code"], "210100")
+        self.assertNotIn("issued_credit_note_void", mapping_by_role)
+        self.assertEqual(billing_status, 200)
+        self.assertIn(
+            void["idempotency_key"],
+            [item["idempotency_key"] for item in billing_list["journals"]],
+        )
+
+        soft_status, _soft = case._http_json(
+            "POST",
+            "/period-closes",
+            case._period_close_payload(period_status_code="soft_closed"),
+        )
+        rejected_status, rejected = case._http_json("POST", "/journal-proposals", later_void)
+        hard_status, _hard = case._http_json(
+            "POST", "/period-closes", case._period_close_payload()
+        )
+        closed_status, closed = case._http_receivable_aging()
+
+        self.assertEqual(soft_status, 200)
+        self.assertEqual(rejected_status, 422)
+        self.assertIn("open period", str(rejected["error_message"]))
+        self.assertEqual(hard_status, 200)
+        self.assertEqual(closed_status, 200)
+        self.assertEqual(closed["total_outstanding_amount"], "27500")
+        server.shutdown()
+        server.server_close()
+
+    def test_http_untaxed_issued_credit_note_void_is_two_line(self) -> None:
+        """Untaxed credit then published void restores AR without moving 210100."""
+        case = self.case
+        invoice = case._billing_validated_payload()
+        credit = case._billing_credit_payload()
+        void = case._billing_issued_credit_note_void_payload(
+            proposal_id="019d7b92-bee1-7a7f-b61c-962c0f4bf662",
+            issued_credit_note_void_id="019d7b92-add0-7a7f-b61c-962c0f4bf652",
+            void_source_payload_hash="sha256:" + "5" * 64,
+            issued_credit_note_void_contract_version=1,
+            source_payload_hash="sha256:" + "6" * 64,
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "4000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "usage_revenue",
+                    "debit_amount": "0",
+                    "credit_amount": "4000",
+                },
+            ],
+        )
+        server = case._start_http_server()
+
+        invoice_status, _invoice = case._http_json("POST", "/journal-proposals", invoice)
+        after_invoice_status, after_invoice = case._http_receivable_aging()
+        credit_status, _credit = case._http_json("POST", "/journal-proposals", credit)
+        before_status, before = case._http_receivable_aging()
+        before_payable_status, before_payable = case._http_payable_aging()
+        void_status, _receipt = case._http_json("POST", "/journal-proposals", void)
+        after_status, after = case._http_receivable_aging()
+        after_payable_status, after_payable = case._http_payable_aging()
+
+        self.assertEqual(
+            void["idempotency_key"],
+            (
+                f"{case.policy.tenant_reference}:issued_credit_note_void:"
+                "019d7b92-add0-7a7f-b61c-962c0f4bf652:"
+                f"sha256:{'5' * 64}:v1"
+            ),
+        )
+        self.assertEqual(
+            [line["account_role_code"] for line in void["lines"]],
+            ["accounts_receivable", "usage_revenue"],
+        )
+        self.assertNotIn("tax_payable", json.dumps(void["lines"]))
+        self.assertEqual(invoice_status, 200)
+        self.assertEqual(after_invoice_status, 200)
+        self.assertEqual(after_invoice["total_outstanding_amount"], "25000")
+        self.assertEqual(credit_status, 200)
+        self.assertEqual(before_status, 200)
+        self.assertEqual(before["total_outstanding_amount"], "21000")
+        self.assertEqual(void_status, 200)
+        self.assertEqual(after_status, 200)
+        self.assertEqual(after["total_outstanding_amount"], "25000")
+        self.assertEqual(
+            Decimal(str(after["total_outstanding_amount"])),
+            Decimal(str(before["total_outstanding_amount"])) + Decimal("4000"),
+        )
+        self.assertEqual(before_payable_status, 200)
+        self.assertEqual(after_payable_status, 200)
+        self.assertEqual(before_payable["total_outstanding_amount"], "0")
+        self.assertEqual(after_payable["total_outstanding_amount"], "0")
+        server.shutdown()
+        server.server_close()
+
+
 class UnappliedCashRefundHttpTests(unittest.TestCase):
     """POST /journal-proposals accepts Billing #59 unapplied_cash against 210200."""
 

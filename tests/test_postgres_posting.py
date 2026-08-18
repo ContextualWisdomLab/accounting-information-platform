@@ -1678,6 +1678,148 @@ class PostgresPostingTests(unittest.TestCase):
         )
         server.shutdown()
 
+    def test_http_posts_and_pulls_billing_issued_credit_note_void(self) -> None:
+        """Billing #74 credit-note void restores AR aging by the credited inclusive amount."""
+        invoice = self._billing_taxed_payload()
+        credit = self._billing_taxed_credit_payload()
+        void = self._billing_issued_credit_note_void_payload()
+        conflict = self._billing_issued_credit_note_void_payload(
+            source_payload_hash="sha256:" + "9" * 64,
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "4000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "usage_revenue",
+                    "debit_amount": "0",
+                    "credit_amount": "4000",
+                },
+            ],
+        )
+        billing_url = self._start_fake_billing([void])
+        server = self._start_http_server()
+
+        issued_credit_note_void_id = "019d7b92-add0-7a7f-b61c-962c0f4bf650"
+        void_source_payload_hash = "sha256:" + "d" * 64
+        issued_credit_note_void_contract_version = 1
+        self.assertEqual(
+            void["idempotency_key"],
+            (
+                f"{self.policy.tenant_reference}:issued_credit_note_void:"
+                f"{issued_credit_note_void_id}:{void_source_payload_hash}"
+                f":v{issued_credit_note_void_contract_version}"
+            ),
+        )
+        self.assertNotEqual(void["proposal_id"], issued_credit_note_void_id)
+        self.assertNotEqual(void["proposal_id"], credit["proposal_id"])
+        self.assertNotEqual(void["source_payload_hash"], void_source_payload_hash)
+        self.assertNotEqual(
+            void["idempotency_key"],
+            (
+                f"{self.policy.tenant_reference}:issued_credit_note_void:"
+                f"{void['proposal_id']}:{void['source_payload_hash']}:v1"
+            ),
+        )
+        self.assertEqual(void["proposal_status"], "validated")
+        self.assertEqual(void["intended_book_role_code"], "primary_statutory")
+        self.assertEqual(
+            [line["account_role_code"] for line in void["lines"]],
+            ["accounts_receivable", "usage_revenue", "tax_payable"],
+        )
+        self.assertEqual(
+            list(void["source_event_references"]),
+            [
+                f"{self.policy.tenant_reference}:issued_credit_note_void:"
+                f"{issued_credit_note_void_id}"
+            ],
+        )
+        self.assertNotIn("journal_entry_id", json.dumps(void))
+        self.assertNotIn("110100", json.dumps(void["lines"]))
+        self.assertEqual(credit["lines"][0]["account_role_code"], "usage_revenue")
+        self.assertEqual(credit["lines"][1]["account_role_code"], "tax_payable")
+        self.assertEqual(credit["lines"][2]["account_role_code"], "accounts_receivable")
+
+        invoice_status, _invoice = self._http_json("POST", "/journal-proposals", invoice)
+        after_invoice_status, after_invoice = self._http_receivable_aging()
+        credit_status, _credit = self._http_json("POST", "/journal-proposals", credit)
+        before_status, before = self._http_receivable_aging()
+        mapping_status, mappings = self._http_account_role_mappings()
+        pull_status, pull_body = self._http_json(
+            "POST",
+            "/billing-proposal-pulls",
+            {"tenant_reference": self.policy.tenant_reference, "billing_base_url": billing_url},
+        )
+        post_status, post_receipt = self._http_json("POST", "/journal-proposals", void)
+        replay_status, replay_receipt = self._http_json("POST", "/journal-proposals", void)
+        conflict_status, _conflict = self._http_json("POST", "/journal-proposals", conflict)
+        after_status, after = self._http_receivable_aging()
+        journal_status, journal = self._http_journal(
+            idempotency_key=str(void["idempotency_key"])
+        )
+        billing_list_status, billing_list = self._http_period_journals(
+            journal_source_code="billing"
+        )
+        balances_status, balances = self._http_account_balances(chart_account_code="110100")
+        by_code = {str(item["chart_account_code"]): item for item in journal["lines"]}
+        mapping_by_role = {
+            str(item["account_role_code"]): item for item in mappings["mappings"]
+        }
+
+        self.assertEqual(invoice_status, 200)
+        self.assertEqual(after_invoice_status, 200)
+        self.assertEqual(after_invoice["total_outstanding_amount"], "27500")
+        self.assertEqual(credit_status, 200)
+        self.assertEqual(before_status, 200)
+        self.assertEqual(before["total_outstanding_amount"], "0")
+        self.assertEqual(mapping_status, 200)
+        self.assertEqual(mapping_by_role["accounts_receivable"]["chart_account_code"], "110100")
+        self.assertEqual(mapping_by_role["usage_revenue"]["chart_account_code"], "410100")
+        self.assertEqual(mapping_by_role["tax_payable"]["chart_account_code"], "210100")
+        self.assertNotIn("issued_credit_note_void", mapping_by_role)
+        self.assertNotIn("wage_withholding", mapping_by_role)
+        self.assertEqual(pull_status, 200)
+        self.assertEqual(post_status, 200)
+        self.assertEqual(replay_status, 200)
+        self.assertEqual(conflict_status, 409)
+        self.assertEqual(post_receipt, replay_receipt)
+        self.assertEqual(post_receipt, pull_body["posting_receipts"][0])
+        self.assertEqual(post_receipt["line_count"], 3)
+        self.assertEqual(post_receipt["idempotency_key"], void["idempotency_key"])
+        self.assertEqual(after_status, 200)
+        self.assertEqual(after["total_outstanding_amount"], "27500")
+        self.assertEqual(
+            Decimal(str(after["total_outstanding_amount"])),
+            Decimal(str(before["total_outstanding_amount"])) + Decimal("27500"),
+        )
+        self.assertEqual(balances_status, 200)
+        self.assertEqual(
+            Decimal(str(after["total_outstanding_amount"])),
+            self._account_balance_net(balances, "110100"),
+        )
+        self.assertEqual(journal_status, 200)
+        self.assertEqual(set(by_code), {"110100", "410100", "210100"})
+        self.assertEqual(by_code["110100"]["account_role_code"], "accounts_receivable")
+        self.assertEqual(Decimal(str(by_code["110100"]["debit_amount"])), Decimal("27500"))
+        self.assertEqual(by_code["410100"]["account_role_code"], "usage_revenue")
+        self.assertEqual(Decimal(str(by_code["410100"]["credit_amount"])), Decimal("25000"))
+        self.assertEqual(by_code["210100"]["account_role_code"], "tax_payable")
+        self.assertEqual(Decimal(str(by_code["210100"]["credit_amount"])), Decimal("2500"))
+        self.assertEqual(billing_list_status, 200)
+        self.assertIn(
+            void["idempotency_key"],
+            [item["idempotency_key"] for item in billing_list["journals"]],
+        )
+        self.assertFalse(
+            str(journal["journal_reference"]).startswith(
+                "urn:cwl:accounting:general_journal:period_closing:"
+            )
+        )
+        server.shutdown()
+
     def test_http_posts_and_pulls_billing_unapplied_cash_refund(self) -> None:
         """Billing #59 refund maps unapplied_cash to 210200 and stays off payable aging."""
         refund = self._billing_unapplied_cash_refund_payload()
@@ -11942,6 +12084,65 @@ class PostgresPostingTests(unittest.TestCase):
                     "account_role_code": "accounts_receivable",
                     "debit_amount": "0",
                     "credit_amount": "27500",
+                },
+            ],
+        }
+        values.update(overrides)
+        return values
+
+    def _billing_issued_credit_note_void_payload(self, **overrides: object) -> dict[str, object]:
+        issued_credit_note_void_id = str(
+            overrides.pop(
+                "issued_credit_note_void_id", "019d7b92-add0-7a7f-b61c-962c0f4bf650"
+            )
+        )
+        void_source_payload_hash = str(
+            overrides.pop("void_source_payload_hash", "sha256:" + "d" * 64)
+        )
+        issued_credit_note_void_contract_version = int(
+            overrides.pop("issued_credit_note_void_contract_version", 1)
+        )
+        source_payload_hash = "sha256:" + "e" * 64
+        proposal_id = "019d7b92-bee1-7a7f-b61c-962c0f4bf660"
+        values: dict[str, object] = {
+            "proposal_id": proposal_id,
+            "proposal_contract_version": 1,
+            "idempotency_key": (
+                f"{self.policy.tenant_reference}:issued_credit_note_void:"
+                f"{issued_credit_note_void_id}:{void_source_payload_hash}"
+                f":v{issued_credit_note_void_contract_version}"
+            ),
+            "tenant_reference": self.policy.tenant_reference,
+            "legal_entity_reference": self.policy.legal_entity_reference,
+            "intended_book_role_code": "primary_statutory",
+            "transaction_currency": "KRW",
+            "transaction_date": "2026-08-31",
+            "accounting_date": "2026-08-31",
+            "source_payload_hash": source_payload_hash,
+            "proposed_at": "2026-08-31T00:00:00Z",
+            "proposal_status": "validated",
+            "source_event_references": (
+                f"{self.policy.tenant_reference}:issued_credit_note_void:"
+                f"{issued_credit_note_void_id}",
+            ),
+            "lines": [
+                {
+                    "line_number": 1,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "27500",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "usage_revenue",
+                    "debit_amount": "0",
+                    "credit_amount": "25000",
+                },
+                {
+                    "line_number": 3,
+                    "account_role_code": "tax_payable",
+                    "debit_amount": "0",
+                    "credit_amount": "2500",
                 },
             ],
         }
