@@ -3278,6 +3278,13 @@ class PostgresPostingTests(unittest.TestCase):
             book_reference="urn:cwl:accounting_book:missing"
         )
         missing_header = self._http_home_tax_submission(tenant_header=None)
+        missing_list_header = self._http_home_tax_submissions(tenant_header=None)
+        bad_json = self._http_raw(
+            "POST",
+            "/home-tax-submissions",
+            b"{",
+            self.policy.tenant_reference,
+        )
         cross_status, _cross = self._http_home_tax_submission(
             tenant_header="urn:cwl:tenant_other"
         )
@@ -3322,6 +3329,8 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(unknown_book[0], 404)
         self.assertIn("error_message", unknown_period[1])
         self.assertEqual(missing_header[0], 400)
+        self.assertEqual(missing_list_header[0], 400)
+        self.assertEqual(bad_json[0], 400)
         self.assertEqual(cross_status, 403)
         self.assertEqual(body_mismatch_status, 403)
         self.assertEqual(vat_post_status, 405)
