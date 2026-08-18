@@ -24,6 +24,7 @@ from .accept import (
     lookup_audit_events,
     lookup_legal_entities,
     lookup_financial_statement,
+    lookup_financial_statement_package,
     lookup_fiscal_period,
     lookup_fiscal_periods,
     lookup_journal_reversals,
@@ -48,6 +49,7 @@ PERIOD_CLOSE_PATH = "/period-closes"
 POSTING_RECEIPT_PATH = "/posting-receipts"
 TRIAL_BALANCE_PATH = "/trial-balances"
 FINANCIAL_STATEMENT_PATH = "/financial-statements"
+FINANCIAL_STATEMENT_PACKAGE_PATH = "/financial-statement-packages"
 ACCOUNT_ROLE_MAPPING_PATH = "/account-role-mappings"
 ACCOUNTING_BOOK_PATH = "/accounting-books"
 LEGAL_ENTITY_PATH = "/legal-entities"
@@ -118,6 +120,9 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         if parsed.path == FINANCIAL_STATEMENT_PATH:
             self._get_financial_statement(parsed.query)
             return
+        if parsed.path == FINANCIAL_STATEMENT_PACKAGE_PATH:
+            self._get_financial_statement_package(parsed.query)
+            return
         if parsed.path == ACCOUNT_ROLE_MAPPING_PATH:
             self._get_account_role_mappings(parsed.query)
             return
@@ -164,7 +169,8 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         self._write_error(
             404,
             "unknown path. GET /posting-receipts?idempotency_key=, GET /trial-balances, "
-            "GET /financial-statements, GET /account-role-mappings, GET /accounting-books, "
+            "GET /financial-statements, GET /financial-statement-packages, "
+            "GET /account-role-mappings, GET /accounting-books, "
             "GET /legal-entities, GET /chart-accounts, GET /account-ledgers, "
             "GET /account-balances, GET /account-rollforwards, GET /journals, "
             "GET /journal-reversals, GET /period-closes, GET /fiscal-periods, "
@@ -204,6 +210,13 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
                 405,
                 "POST is not supported on the financial statement endpoint. "
                 "GET the income statement or balance sheet, then retry.",
+            )
+            return
+        if parsed_path == FINANCIAL_STATEMENT_PACKAGE_PATH:
+            self._write_error(
+                405,
+                "POST is not supported on the financial statement package endpoint. "
+                "GET the financial-statement package, then retry.",
             )
             return
         if parsed_path == CHART_ACCOUNT_PATH:
@@ -378,6 +391,44 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         except AccountingValidationError as error:
             message = str(error)
             if "statement_type_code" in message or "statement_scope_code" in message:
+                self._write_error(400, message)
+                return
+            self._write_error(404, message)
+            return
+        self._write_json(200, document)
+
+    def _get_financial_statement_package(self, query: str) -> None:
+        tenant_header = self._bound_tenant_header("financial-statement-package read")
+        if tenant_header is None:
+            return
+        fields = parse_qs(query)
+        legal_entity_reference = _first_query(fields, "legal_entity_reference")
+        book_reference = _first_query(fields, "book_reference")
+        fiscal_period_reference = _first_query(fields, "fiscal_period_reference")
+        comparison_fiscal_period_reference = _first_query(
+            fields, "comparison_fiscal_period_reference"
+        )
+        statement_scope_code = _first_query(fields, "statement_scope_code")
+        if not legal_entity_reference or not book_reference or not fiscal_period_reference:
+            self._write_error(
+                400,
+                "legal_entity_reference, book_reference, and fiscal_period_reference are required. "
+                "Supply those financial-statement-package fields, then retry the financial-statement-package read.",
+            )
+            return
+        try:
+            document = lookup_financial_statement_package(
+                self.server.database_url,
+                tenant_header,
+                legal_entity_reference,
+                book_reference,
+                fiscal_period_reference,
+                comparison_fiscal_period_reference,
+                statement_scope_code,
+            )
+        except AccountingValidationError as error:
+            message = str(error)
+            if "statement_scope_code" in message:
                 self._write_error(400, message)
                 return
             self._write_error(404, message)

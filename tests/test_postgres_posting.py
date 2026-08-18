@@ -43,6 +43,7 @@ from accounting_information_platform import (
     lookup_chart_accounts,
     lookup_legal_entities,
     lookup_financial_statement,
+    lookup_financial_statement_package,
     lookup_fiscal_period,
     lookup_fiscal_periods,
     lookup_audit_events,
@@ -4180,6 +4181,277 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(
             self._count_table("accounting_core.general_journal"),
             journals_before + 4,
+        )
+        server.shutdown()
+
+    def test_http_reads_financial_statement_package(self) -> None:
+        """GET /financial-statement-packages returns the four IAS 1 statements for one close pack."""
+        self._seed_additional_period("2026-07", date(2026, 7, 1), date(2026, 7, 31))
+        server = self._start_http_server()
+        journals_before = self._count_table("accounting_core.general_journal")
+
+        empty_status, empty = self._http_financial_statement_package()
+        empty_library = lookup_financial_statement_package(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-08",
+        )
+        empty_singles = {
+            statement_type_code: self._http_financial_statement(statement_type_code)[1]
+            for statement_type_code in (
+                "income_statement",
+                "balance_sheet",
+                "changes_in_equity",
+                "cash_flow",
+            )
+        }
+        self.assertEqual(empty_status, 200)
+        self.assertEqual(empty, empty_library)
+        self.assertNotIn("statement_scope_code", empty)
+        self.assertEqual(empty["income_statement"], empty_singles["income_statement"])
+        self.assertEqual(empty["balance_sheet"], empty_singles["balance_sheet"])
+        self.assertEqual(empty["changes_in_equity"], empty_singles["changes_in_equity"])
+        self.assertEqual(empty["cash_flow"], empty_singles["cash_flow"])
+        self._assert_financial_statement_package_tie_outs(empty)
+
+        july = self._billing_validated_payload(
+            proposal_id=str(uuid.uuid4()),
+            idempotency_key=(
+                f"{self.policy.tenant_reference}:invoice_draft:july:"
+                f"sha256:{'4' * 64}:v1"
+            ),
+            source_payload_hash="sha256:" + "4" * 64,
+            transaction_date="2026-07-15",
+            accounting_date="2026-07-15",
+            proposed_at="2026-07-15T00:00:00Z",
+            source_event_references=(
+                f"{self.policy.tenant_reference}:invoice_draft:july",
+            ),
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "10000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "usage_revenue",
+                    "debit_amount": "0",
+                    "credit_amount": "10000",
+                },
+            ],
+        )
+        july_status, _july = self._http_json("POST", "/journal-proposals", july)
+        july_close_status, _july_close = self._http_json(
+            "POST",
+            "/period-closes",
+            self._period_close_payload(
+                fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-07"
+            ),
+        )
+        invoice_status, _invoice = self._http_json(
+            "POST", "/journal-proposals", self._billing_validated_payload()
+        )
+        cash_status, _cash = self._http_json(
+            "POST", "/journal-proposals", self._billing_cash_payload()
+        )
+        open_status, opened = self._http_financial_statement_package()
+        open_library = lookup_financial_statement_package(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-08",
+        )
+        open_singles = {
+            statement_type_code: self._http_financial_statement(statement_type_code)[1]
+            for statement_type_code in (
+                "income_statement",
+                "balance_sheet",
+                "changes_in_equity",
+                "cash_flow",
+            )
+        }
+        self.assertEqual(july_status, 200)
+        self.assertEqual(july_close_status, 200)
+        self.assertEqual(invoice_status, 200)
+        self.assertEqual(cash_status, 200)
+        self.assertEqual(open_status, 200)
+        self.assertEqual(opened, open_library)
+        self.assertEqual(opened["tenant_reference"], self.policy.tenant_reference)
+        self.assertEqual(opened["legal_entity_reference"], self.policy.legal_entity_reference)
+        self.assertEqual(opened["accounting_book_reference"], self.policy.accounting_book_reference)
+        self.assertEqual(opened["book_reference"], self.policy.accounting_book_reference)
+        self.assertEqual(
+            opened["fiscal_period_reference"],
+            "urn:cwl:accounting:fiscal_period:2026-08",
+        )
+        self.assertNotIn("statement_scope_code", opened)
+        self.assertEqual(opened["income_statement"], open_singles["income_statement"])
+        self.assertEqual(opened["balance_sheet"], open_singles["balance_sheet"])
+        self.assertEqual(opened["changes_in_equity"], open_singles["changes_in_equity"])
+        self.assertEqual(opened["cash_flow"], open_singles["cash_flow"])
+        self._assert_financial_statement_package_tie_outs(opened)
+
+        hard_status, _hard = self._http_json(
+            "POST", "/period-closes", self._period_close_payload()
+        )
+        closed_status, closed = self._http_financial_statement_package()
+        closed_singles = {
+            statement_type_code: self._http_financial_statement(statement_type_code)[1]
+            for statement_type_code in (
+                "income_statement",
+                "balance_sheet",
+                "changes_in_equity",
+                "cash_flow",
+            )
+        }
+        self.assertEqual(hard_status, 200)
+        self.assertEqual(closed_status, 200)
+        self.assertEqual(closed["income_statement"], closed_singles["income_statement"])
+        self.assertEqual(closed["balance_sheet"], closed_singles["balance_sheet"])
+        self.assertEqual(closed["changes_in_equity"], closed_singles["changes_in_equity"])
+        self.assertEqual(closed["cash_flow"], closed_singles["cash_flow"])
+        self.assertEqual(
+            Decimal(str(closed["income_statement"]["net_income_amount"])),
+            Decimal("25000"),
+        )
+        self.assertEqual(
+            Decimal(str(closed["balance_sheet"]["net_income_amount"])),
+            Decimal("0"),
+        )
+        self.assertEqual(
+            Decimal(
+                str(
+                    next(
+                        item
+                        for item in closed["balance_sheet"]["statement_lines"]
+                        if item["chart_account_code"] == "310100"
+                    )["credit_amount"]
+                )
+            ),
+            Decimal("35000"),
+        )
+        self._assert_financial_statement_package_tie_outs(closed)
+
+        explicit_period_status, explicit_period = self._http_financial_statement_package(
+            statement_scope_code="period"
+        )
+        ytd_status, ytd = self._http_financial_statement_package(
+            statement_scope_code="year_to_date"
+        )
+        ytd_library = lookup_financial_statement_package(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-08",
+            statement_scope_code="year_to_date",
+        )
+        ytd_singles = {
+            statement_type_code: self._http_financial_statement(
+                statement_type_code, statement_scope_code="year_to_date"
+            )[1]
+            for statement_type_code in (
+                "income_statement",
+                "balance_sheet",
+                "changes_in_equity",
+                "cash_flow",
+            )
+        }
+        compare_status, compared = self._http_financial_statement_package(
+            comparison_fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-07",
+        )
+        compare_singles = {
+            statement_type_code: self._http_financial_statement(
+                statement_type_code,
+                comparison_fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-07",
+            )[1]
+            for statement_type_code in (
+                "income_statement",
+                "balance_sheet",
+                "changes_in_equity",
+                "cash_flow",
+            )
+        }
+        self.assertEqual(explicit_period_status, 200)
+        self.assertNotIn("statement_scope_code", explicit_period)
+        self.assertEqual(explicit_period["income_statement"], closed["income_statement"])
+        self.assertEqual(ytd_status, 200)
+        self.assertEqual(ytd, ytd_library)
+        self.assertEqual(ytd["statement_scope_code"], "year_to_date")
+        self.assertEqual(ytd["income_statement"], ytd_singles["income_statement"])
+        self.assertEqual(ytd["balance_sheet"], ytd_singles["balance_sheet"])
+        self.assertEqual(ytd["changes_in_equity"], ytd_singles["changes_in_equity"])
+        self.assertEqual(ytd["cash_flow"], ytd_singles["cash_flow"])
+        self._assert_financial_statement_package_tie_outs(ytd)
+        self.assertEqual(compare_status, 200)
+        self.assertNotIn("statement_scope_code", compared)
+        self.assertEqual(compared["income_statement"], compare_singles["income_statement"])
+        self.assertEqual(compared["balance_sheet"], compare_singles["balance_sheet"])
+        self.assertEqual(compared["changes_in_equity"], compare_singles["changes_in_equity"])
+        self.assertEqual(compared["cash_flow"], compare_singles["cash_flow"])
+        self.assertIn("comparison_statement_lines", compared["income_statement"])
+        self.assertIn("comparison_net_income_amount", compared["cash_flow"])
+
+        missing_query = self._http_json("GET", "/financial-statement-packages", None)
+        missing_book = self._http_json(
+            "GET",
+            "/financial-statement-packages?"
+            + urllib.parse.urlencode(
+                {
+                    "legal_entity_reference": self.policy.legal_entity_reference,
+                    "fiscal_period_reference": "urn:cwl:accounting:fiscal_period:2026-08",
+                }
+            ),
+            None,
+        )
+        post_status, _post = self._http_json("POST", "/financial-statement-packages", {})
+        bad_scope = self._http_financial_statement_package(
+            statement_scope_code="life_to_date"
+        )
+        unknown_period = self._http_financial_statement_package(
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:1999-01"
+        )
+        unknown_entity = self._http_financial_statement_package(
+            legal_entity_reference="urn:cwl:legal_entity:missing"
+        )
+        missing_header = self._http_financial_statement_package(tenant_header=None)
+        cross_status, _cross = self._http_financial_statement_package(
+            tenant_header="urn:cwl:tenant_other"
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "legal_entity_reference"):
+            lookup_financial_statement_package(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                "",
+                self.policy.accounting_book_reference,
+                "urn:cwl:accounting:fiscal_period:2026-08",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "statement_scope_code"):
+            lookup_financial_statement_package(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "urn:cwl:accounting:fiscal_period:2026-08",
+                statement_scope_code="life_to_date",
+            )
+
+        self.assertEqual(missing_query[0], 400)
+        self.assertEqual(missing_book[0], 400)
+        self.assertEqual(post_status, 405)
+        self.assertEqual(bad_scope[0], 400)
+        self.assertEqual(unknown_period[0], 404)
+        self.assertEqual(unknown_entity[0], 404)
+        self.assertEqual(missing_header[0], 400)
+        self.assertEqual(cross_status, 403)
+        self.assertEqual(
+            self._count_table("accounting_core.general_journal"),
+            journals_before + 5,
         )
         server.shutdown()
 
@@ -8806,6 +9078,90 @@ class PostgresPostingTests(unittest.TestCase):
             None,
             tenant_header=tenant_header,
         )
+
+    def _http_financial_statement_package(
+        self,
+        *,
+        legal_entity_reference: str | None = None,
+        book_reference: str | None = None,
+        fiscal_period_reference: str | None = None,
+        comparison_fiscal_period_reference: str | None = None,
+        statement_scope_code: str | None = None,
+        tenant_header: str | None = "",
+    ) -> tuple[int, dict[str, object]]:
+        fields = {
+            "legal_entity_reference": (
+                self.policy.legal_entity_reference
+                if legal_entity_reference is None
+                else legal_entity_reference
+            ),
+            "book_reference": (
+                self.policy.accounting_book_reference
+                if book_reference is None
+                else book_reference
+            ),
+            "fiscal_period_reference": (
+                "urn:cwl:accounting:fiscal_period:2026-08"
+                if fiscal_period_reference is None
+                else fiscal_period_reference
+            ),
+        }
+        if comparison_fiscal_period_reference is not None:
+            fields["comparison_fiscal_period_reference"] = (
+                comparison_fiscal_period_reference
+            )
+        if statement_scope_code is not None:
+            fields["statement_scope_code"] = statement_scope_code
+        query = urllib.parse.urlencode(fields)
+        return self._http_json(
+            "GET",
+            f"/financial-statement-packages?{query}",
+            None,
+            tenant_header=tenant_header,
+        )
+
+    def _assert_financial_statement_package_tie_outs(
+        self, package: dict[str, object]
+    ) -> None:
+        income = package["income_statement"]
+        sheet = package["balance_sheet"]
+        equity = package["changes_in_equity"]
+        cash_flow = package["cash_flow"]
+        assert isinstance(income, dict)
+        assert isinstance(sheet, dict)
+        assert isinstance(equity, dict)
+        assert isinstance(cash_flow, dict)
+        equity_roles = {
+            str(item["account_role_code"]): item for item in equity["statement_lines"]
+        }
+        period_net_income = Decimal(
+            str(equity_roles["period_net_income"]["credit_amount"])
+        ) - Decimal(str(equity_roles["period_net_income"]["debit_amount"]))
+        self.assertEqual(period_net_income, Decimal(str(income["net_income_amount"])))
+        closing_equity = Decimal(
+            str(equity_roles["closing_equity"]["credit_amount"])
+        ) - Decimal(str(equity_roles["closing_equity"]["debit_amount"]))
+        sheet_equity = sum(
+            Decimal(str(item["credit_amount"])) - Decimal(str(item["debit_amount"]))
+            for item in sheet["statement_lines"]
+            if item["account_class_code"] == "equity"
+        )
+        self.assertEqual(
+            closing_equity,
+            sheet_equity + Decimal(str(sheet["net_income_amount"])),
+        )
+        cash_roles = {
+            str(item["account_role_code"]): item for item in cash_flow["statement_lines"]
+        }
+        closing_cash = Decimal(str(cash_roles["closing_cash"]["credit_amount"])) - Decimal(
+            str(cash_roles["closing_cash"]["debit_amount"])
+        )
+        sheet_cash = sum(
+            Decimal(str(item["debit_amount"])) - Decimal(str(item["credit_amount"]))
+            for item in sheet["statement_lines"]
+            if item["account_role_code"] == "cash_receipt"
+        )
+        self.assertEqual(closing_cash, sheet_cash)
 
     def _http_trial_balance(
         self,

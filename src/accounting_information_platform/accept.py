@@ -665,6 +665,82 @@ def lookup_financial_statement(
     )
 
 
+def lookup_financial_statement_package(
+    database_url: str,
+    tenant_reference: str,
+    legal_entity_reference: str,
+    book_reference: str,
+    fiscal_period_reference: str,
+    comparison_fiscal_period_reference: str = "",
+    statement_scope_code: str = "",
+) -> dict[str, object]:
+    """Return the income statement, balance sheet, changes in equity, and cash flow for one book and period."""
+    if not legal_entity_reference or not book_reference or not fiscal_period_reference:
+        raise AccountingValidationError(
+            "legal_entity_reference, book_reference, and fiscal_period_reference are required. "
+            "Supply those financial-statement-package fields, then retry the financial-statement-package read."
+        )
+    if statement_scope_code and statement_scope_code not in {"period", "year_to_date"}:
+        raise AccountingValidationError(
+            "statement_scope_code must be period or year_to_date. "
+            "Supply a known statement scope, then retry the financial-statement-package read."
+        )
+    income_statement = lookup_financial_statement(
+        database_url,
+        tenant_reference,
+        legal_entity_reference,
+        book_reference,
+        fiscal_period_reference,
+        "income_statement",
+        comparison_fiscal_period_reference,
+        statement_scope_code,
+    )
+    balance_sheet = lookup_financial_statement(
+        database_url,
+        tenant_reference,
+        legal_entity_reference,
+        book_reference,
+        fiscal_period_reference,
+        "balance_sheet",
+        comparison_fiscal_period_reference,
+        statement_scope_code,
+    )
+    changes_in_equity = lookup_financial_statement(
+        database_url,
+        tenant_reference,
+        legal_entity_reference,
+        book_reference,
+        fiscal_period_reference,
+        "changes_in_equity",
+        comparison_fiscal_period_reference,
+        statement_scope_code,
+    )
+    cash_flow = lookup_financial_statement(
+        database_url,
+        tenant_reference,
+        legal_entity_reference,
+        book_reference,
+        fiscal_period_reference,
+        "cash_flow",
+        comparison_fiscal_period_reference,
+        statement_scope_code,
+    )
+    document: dict[str, object] = {
+        "tenant_reference": income_statement["tenant_reference"],
+        "legal_entity_reference": income_statement["legal_entity_reference"],
+        "accounting_book_reference": income_statement["accounting_book_reference"],
+        "book_reference": income_statement["book_reference"],
+        "fiscal_period_reference": income_statement["fiscal_period_reference"],
+        "income_statement": income_statement,
+        "balance_sheet": balance_sheet,
+        "changes_in_equity": changes_in_equity,
+        "cash_flow": cash_flow,
+    }
+    if statement_scope_code == "year_to_date":
+        document["statement_scope_code"] = "year_to_date"
+    return document
+
+
 def _parse_period_date(value: str, field_name: str) -> date:
     try:
         return date.fromisoformat(value)
