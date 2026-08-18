@@ -29,6 +29,11 @@ from .core import (
     _require_reference,
 )
 
+_SQL_SKIP_DATE = date.min
+_SQL_SKIP_DATETIME = datetime(1, 1, 1, tzinfo=timezone.utc)
+_SQL_SKIP_UUID = UUID(int=0)
+_CLOSING_JOURNAL_PATTERN = "urn:cwl:accounting:general_journal:period_closing:%"
+
 
 class PostgresPostingLedger:
     """Authoritative posting, catalog policy resolution, close, trial balance, and statements on PostgreSQL 18."""
@@ -365,47 +370,12 @@ class PostgresPostingLedger:
             period_id, _status, _period_end = self._require_fiscal_period(
                 connection, tenant_id, period_code, "the journal list"
             )
-            parameters: list[object] = [tenant_id, legal_entity_id, book_id, period_id]
-            cursor_clause = ""
-            if cursor_after is not None:
-                cursor_clause = (
-                    "AND (general_journal.accounting_date, general_journal.journal_reference) "
-                    "> (%s, %s)"
-                )
-                parameters.extend(cursor_after)
-            source_clause = ""
-            closing_reference_pattern = (
-                "urn:cwl:accounting:general_journal:period_closing:%"
-            )
-            adjusting_exists_sql = """
-                EXISTS (
-                    SELECT 1
-                    FROM accounting_core.journal_entry_line
-                    WHERE journal_entry_line.tenant_account_id = general_journal.tenant_account_id
-                      AND journal_entry_line.general_journal_id = general_journal.general_journal_id
-                      AND journal_entry_line.account_role_code = 'adjusting'
-                )
-            """
-            if journal_source_code == "reversal":
-                source_clause = "AND journal_reversal.reversal_journal_id IS NOT NULL"
-            elif journal_source_code == "period_closing":
-                source_clause = "AND general_journal.journal_reference LIKE %s"
-                parameters.append(closing_reference_pattern)
-            elif journal_source_code == "adjusting":
-                source_clause = (
-                    "AND journal_reversal.reversal_journal_id IS NULL "
-                    f"AND {adjusting_exists_sql}"
-                )
-            elif journal_source_code == "billing":
-                source_clause = (
-                    "AND journal_reversal.reversal_journal_id IS NULL "
-                    "AND general_journal.journal_reference NOT LIKE %s "
-                    f"AND NOT {adjusting_exists_sql}"
-                )
-                parameters.append(closing_reference_pattern)
-            parameters.append(page_limit + 1)
+            if cursor_after is None:
+                skip_cursor, cursor_date, cursor_reference = True, _SQL_SKIP_DATE, ""
+            else:
+                skip_cursor, cursor_date, cursor_reference = False, cursor_after[0], cursor_after[1]
             rows = connection.execute(
-                f"""
+                """
                 SELECT general_journal.journal_reference,
                        journal_proposal_record.idempotency_key,
                        general_journal.journal_status_code,
@@ -432,12 +402,63 @@ class PostgresPostingLedger:
                   AND general_journal.legal_entity_id = %s
                   AND general_journal.accounting_book_id = %s
                   AND general_journal.fiscal_period_id = %s
-                  {cursor_clause}
-                  {source_clause}
+                  AND (
+                        %s
+                        OR (general_journal.accounting_date, general_journal.journal_reference)
+                           > (%s, %s)
+                      )
+                  AND (
+                        %s
+                        OR (%s AND journal_reversal.reversal_journal_id IS NOT NULL)
+                        OR (%s AND general_journal.journal_reference LIKE %s)
+                        OR (
+                              %s
+                              AND journal_reversal.reversal_journal_id IS NULL
+                              AND EXISTS (
+                                    SELECT 1
+                                    FROM accounting_core.journal_entry_line
+                                    WHERE journal_entry_line.tenant_account_id
+                                          = general_journal.tenant_account_id
+                                      AND journal_entry_line.general_journal_id
+                                          = general_journal.general_journal_id
+                                      AND journal_entry_line.account_role_code = 'adjusting'
+                              )
+                        )
+                        OR (
+                              %s
+                              AND journal_reversal.reversal_journal_id IS NULL
+                              AND general_journal.journal_reference NOT LIKE %s
+                              AND NOT EXISTS (
+                                    SELECT 1
+                                    FROM accounting_core.journal_entry_line
+                                    WHERE journal_entry_line.tenant_account_id
+                                          = general_journal.tenant_account_id
+                                      AND journal_entry_line.general_journal_id
+                                          = general_journal.general_journal_id
+                                      AND journal_entry_line.account_role_code = 'adjusting'
+                              )
+                        )
+                      )
                 ORDER BY general_journal.accounting_date, general_journal.journal_reference
                 LIMIT %s
                 """,
-                tuple(parameters),
+                (
+                    tenant_id,
+                    legal_entity_id,
+                    book_id,
+                    period_id,
+                    skip_cursor,
+                    cursor_date,
+                    cursor_reference,
+                    journal_source_code == "",
+                    journal_source_code == "reversal",
+                    journal_source_code == "period_closing",
+                    _CLOSING_JOURNAL_PATTERN,
+                    journal_source_code == "adjusting",
+                    journal_source_code == "billing",
+                    _CLOSING_JOURNAL_PATTERN,
+                    page_limit + 1,
+                ),
             ).fetchall()
             has_more = len(rows) > page_limit
             page_rows = rows[:page_limit]
@@ -485,28 +506,27 @@ class PostgresPostingLedger:
             legal_entity_id = self._require_legal_entity(
                 connection, tenant_id, legal_entity_reference, "the journal-reversal list"
             )
-            parameters: list[object] = [tenant_id, legal_entity_id]
-            original_clause = ""
-            if original_journal_reference:
-                original_clause = "AND original_journal.journal_reference = %s"
-                parameters.append(original_journal_reference)
-            period_clause = ""
+            period_id_value: object = _SQL_SKIP_UUID
+            skip_period = True
             if period_code:
-                period_id, _status, _period_end = self._require_fiscal_period(
+                period_id_value = self._require_fiscal_period(
                     connection, tenant_id, period_code, "the journal-reversal list"
+                )[0]
+                skip_period = False
+            if cursor_after is None:
+                skip_cursor, cursor_posted_at, cursor_reference = (
+                    True,
+                    _SQL_SKIP_DATETIME,
+                    "",
                 )
-                period_clause = "AND reversal_journal.fiscal_period_id = %s"
-                parameters.append(period_id)
-            cursor_clause = ""
-            if cursor_after is not None:
-                cursor_clause = (
-                    "AND (reversal_journal.posted_at, reversal_journal.journal_reference) "
-                    "> (%s, %s)"
+            else:
+                skip_cursor, cursor_posted_at, cursor_reference = (
+                    False,
+                    cursor_after[0],
+                    cursor_after[1],
                 )
-                parameters.extend(cursor_after)
-            parameters.append(page_limit + 1)
             rows = connection.execute(
-                f"""
+                """
                 SELECT reversal_journal.journal_reference,
                        original_journal.journal_reference,
                        reversal_journal.accounting_date,
@@ -521,13 +541,28 @@ class PostgresPostingLedger:
                  AND original_journal.general_journal_id = journal_reversal.original_journal_id
                 WHERE journal_reversal.tenant_account_id = %s
                   AND reversal_journal.legal_entity_id = %s
-                  {original_clause}
-                  {period_clause}
-                  {cursor_clause}
+                  AND (%s OR original_journal.journal_reference = %s)
+                  AND (%s OR reversal_journal.fiscal_period_id = %s)
+                  AND (
+                        %s
+                        OR (reversal_journal.posted_at, reversal_journal.journal_reference)
+                           > (%s, %s)
+                      )
                 ORDER BY reversal_journal.posted_at, reversal_journal.journal_reference
                 LIMIT %s
                 """,
-                tuple(parameters),
+                (
+                    tenant_id,
+                    legal_entity_id,
+                    not original_journal_reference,
+                    original_journal_reference,
+                    skip_period,
+                    period_id_value,
+                    skip_cursor,
+                    cursor_posted_at,
+                    cursor_reference,
+                    page_limit + 1,
+                ),
             ).fetchall()
             has_more = len(rows) > page_limit
             page_rows = rows[:page_limit]
@@ -574,29 +609,27 @@ class PostgresPostingLedger:
             legal_entity_id = self._require_legal_entity(
                 connection, tenant_id, legal_entity_reference, "the period-close list"
             )
-            parameters: list[object] = [tenant_id, legal_entity_id]
-            period_clause = ""
+            period_id_value: object = _SQL_SKIP_UUID
+            skip_period = True
             if period_code:
-                period_id, _status, _period_end = self._require_fiscal_period(
+                period_id_value = self._require_fiscal_period(
                     connection, tenant_id, period_code, "the period-close list"
+                )[0]
+                skip_period = False
+            if cursor_after is None:
+                skip_cursor, cursor_generated_at, cursor_snapshot_id = (
+                    True,
+                    _SQL_SKIP_DATETIME,
+                    _SQL_SKIP_UUID,
                 )
-                period_clause = "AND trial_balance_snapshot.fiscal_period_id = %s"
-                parameters.append(period_id)
-            status_clause = ""
-            if period_status_code:
-                status_clause = "AND fiscal_period.period_status_code = %s"
-                parameters.append(period_status_code)
-            cursor_clause = ""
-            if cursor_after is not None:
-                cursor_clause = (
-                    "AND (trial_balance_snapshot.snapshot_generated_at, "
-                    "trial_balance_snapshot.trial_balance_snapshot_id) "
-                    "> (%s, %s)"
+            else:
+                skip_cursor, cursor_generated_at, cursor_snapshot_id = (
+                    False,
+                    cursor_after[0],
+                    cursor_after[1],
                 )
-                parameters.extend(cursor_after)
-            parameters.append(page_limit + 1)
             rows = connection.execute(
-                f"""
+                """
                 SELECT trial_balance_snapshot.trial_balance_snapshot_id,
                        trial_balance_snapshot.snapshot_generated_at,
                        trial_balance_snapshot.source_journal_count,
@@ -617,14 +650,31 @@ class PostgresPostingLedger:
                  AND legal_entity_record.legal_entity_id = trial_balance_snapshot.legal_entity_id
                 WHERE trial_balance_snapshot.tenant_account_id = %s
                   AND trial_balance_snapshot.legal_entity_id = %s
-                  {period_clause}
-                  {status_clause}
-                  {cursor_clause}
+                  AND (%s OR trial_balance_snapshot.fiscal_period_id = %s)
+                  AND (%s OR fiscal_period.period_status_code = %s)
+                  AND (
+                        %s
+                        OR (
+                              trial_balance_snapshot.snapshot_generated_at,
+                              trial_balance_snapshot.trial_balance_snapshot_id
+                           ) > (%s, %s)
+                      )
                 ORDER BY trial_balance_snapshot.snapshot_generated_at,
                          trial_balance_snapshot.trial_balance_snapshot_id
                 LIMIT %s
                 """,
-                tuple(parameters),
+                (
+                    tenant_id,
+                    legal_entity_id,
+                    skip_period,
+                    period_id_value,
+                    not period_status_code,
+                    period_status_code,
+                    skip_cursor,
+                    cursor_generated_at,
+                    cursor_snapshot_id,
+                    page_limit + 1,
+                ),
             ).fetchall()
             has_more = len(rows) > page_limit
             page_rows = rows[:page_limit]
@@ -671,17 +721,20 @@ class PostgresPostingLedger:
         """Return one page of unpublished outbox rows for one tenant event type."""
         with self._session() as connection:
             tenant_id = self._require_tenant(connection)
-            parameters: list[object] = [tenant_id, event_type_code]
-            cursor_clause = ""
-            if cursor_after is not None:
-                cursor_clause = (
-                    "AND (outbox_event.created_at, outbox_event.outbox_event_id) "
-                    "> (%s, %s)"
+            if cursor_after is None:
+                skip_cursor, cursor_created_at, cursor_event_id = (
+                    True,
+                    _SQL_SKIP_DATETIME,
+                    _SQL_SKIP_UUID,
                 )
-                parameters.extend(cursor_after)
-            parameters.append(page_limit + 1)
+            else:
+                skip_cursor, cursor_created_at, cursor_event_id = (
+                    False,
+                    cursor_after[0],
+                    cursor_after[1],
+                )
             rows = connection.execute(
-                f"""
+                """
                 SELECT outbox_event.outbox_event_id,
                        outbox_event.event_type_code,
                        outbox_event.aggregate_reference,
@@ -692,11 +745,22 @@ class PostgresPostingLedger:
                 WHERE outbox_event.tenant_account_id = %s
                   AND outbox_event.event_type_code = %s
                   AND outbox_event.published_at IS NULL
-                  {cursor_clause}
+                  AND (
+                        %s
+                        OR (outbox_event.created_at, outbox_event.outbox_event_id)
+                           > (%s, %s)
+                      )
                 ORDER BY outbox_event.created_at, outbox_event.outbox_event_id
                 LIMIT %s
                 """,
-                tuple(parameters),
+                (
+                    tenant_id,
+                    event_type_code,
+                    skip_cursor,
+                    cursor_created_at,
+                    cursor_event_id,
+                    page_limit + 1,
+                ),
             ).fetchall()
             has_more = len(rows) > page_limit
             page_rows = rows[:page_limit]
@@ -732,21 +796,20 @@ class PostgresPostingLedger:
         """Return one page of published and unpublished outbox rows for one tenant."""
         with self._session() as connection:
             tenant_id = self._require_tenant(connection)
-            parameters: list[object] = [tenant_id]
-            type_clause = ""
-            if event_type_code:
-                type_clause = "AND outbox_event.event_type_code = %s"
-                parameters.append(event_type_code)
-            cursor_clause = ""
-            if cursor_after is not None:
-                cursor_clause = (
-                    "AND (outbox_event.created_at, outbox_event.outbox_event_id) "
-                    "> (%s, %s)"
+            if cursor_after is None:
+                skip_cursor, cursor_created_at, cursor_event_id = (
+                    True,
+                    _SQL_SKIP_DATETIME,
+                    _SQL_SKIP_UUID,
                 )
-                parameters.extend(cursor_after)
-            parameters.append(page_limit + 1)
+            else:
+                skip_cursor, cursor_created_at, cursor_event_id = (
+                    False,
+                    cursor_after[0],
+                    cursor_after[1],
+                )
             rows = connection.execute(
-                f"""
+                """
                 SELECT outbox_event.outbox_event_id,
                        outbox_event.event_type_code,
                        outbox_event.aggregate_reference,
@@ -756,12 +819,24 @@ class PostgresPostingLedger:
                        outbox_event.published_at
                 FROM accounting_integration.outbox_event
                 WHERE outbox_event.tenant_account_id = %s
-                  {type_clause}
-                  {cursor_clause}
+                  AND (%s OR outbox_event.event_type_code = %s)
+                  AND (
+                        %s
+                        OR (outbox_event.created_at, outbox_event.outbox_event_id)
+                           > (%s, %s)
+                      )
                 ORDER BY outbox_event.created_at, outbox_event.outbox_event_id
                 LIMIT %s
                 """,
-                tuple(parameters),
+                (
+                    tenant_id,
+                    not event_type_code,
+                    event_type_code,
+                    skip_cursor,
+                    cursor_created_at,
+                    cursor_event_id,
+                    page_limit + 1,
+                ),
             ).fetchall()
             has_more = len(rows) > page_limit
             page_rows = rows[:page_limit]
@@ -1185,17 +1260,20 @@ class PostgresPostingLedger:
             periods: list[dict[str, object]] = []
             next_cursor = None
             if calendar_row is not None:
-                parameters: list[object] = [tenant_id, calendar_row[0]]
-                cursor_clause = ""
-                if cursor_after is not None:
-                    cursor_clause = (
-                        "AND (fiscal_period.period_start_date, fiscal_period.period_code) "
-                        "> (%s, %s)"
+                if cursor_after is None:
+                    skip_cursor, cursor_start_date, cursor_period_code = (
+                        True,
+                        _SQL_SKIP_DATE,
+                        "",
                     )
-                    parameters.extend(cursor_after)
-                parameters.append(page_limit + 1)
+                else:
+                    skip_cursor, cursor_start_date, cursor_period_code = (
+                        False,
+                        cursor_after[0],
+                        cursor_after[1],
+                    )
                 rows = connection.execute(
-                    f"""
+                    """
                     SELECT fiscal_period.period_code,
                            fiscal_period.period_start_date,
                            fiscal_period.period_end_date,
@@ -1203,11 +1281,22 @@ class PostgresPostingLedger:
                     FROM accounting_core.fiscal_period
                     WHERE fiscal_period.tenant_account_id = %s
                       AND fiscal_period.fiscal_calendar_id = %s
-                      {cursor_clause}
+                      AND (
+                            %s
+                            OR (fiscal_period.period_start_date, fiscal_period.period_code)
+                               > (%s, %s)
+                          )
                     ORDER BY fiscal_period.period_start_date, fiscal_period.period_code
                     LIMIT %s
                     """,
-                    tuple(parameters),
+                    (
+                        tenant_id,
+                        calendar_row[0],
+                        skip_cursor,
+                        cursor_start_date,
+                        cursor_period_code,
+                        page_limit + 1,
+                    ),
                 ).fetchall()
                 has_more = len(rows) > page_limit
                 page_rows = rows[:page_limit]
@@ -1288,13 +1377,13 @@ class PostgresPostingLedger:
                 statement_scope_code,
             )
             scope_start = connection.execute(
-                f"""
+                """
                 SELECT MIN(period_start_date)
                 FROM accounting_core.fiscal_period
                 WHERE tenant_account_id = %s
-                  AND fiscal_period_id IN ({", ".join(["%s"] * len(period_ids))})
+                  AND fiscal_period_id = ANY(%s)
                 """,
-                (tenant_id, *period_ids),
+                (tenant_id, period_ids),
             ).fetchone()[0]
             opening_debit_amount, opening_credit_amount = self._opening_account_sides(
                 connection,
@@ -1413,9 +1502,8 @@ class PostgresPostingLedger:
         chart_account_code: str,
         period_ids: list[UUID],
     ) -> tuple[Decimal, Decimal]:
-        placeholders = ", ".join(["%s"] * len(period_ids))
         row = connection.execute(
-            f"""
+            """
             SELECT COALESCE(SUM(journal_entry_line.debit_amount), 0),
                    COALESCE(SUM(journal_entry_line.credit_amount), 0)
             FROM accounting_core.journal_entry_line
@@ -1429,14 +1517,14 @@ class PostgresPostingLedger:
               AND general_journal.legal_entity_id = %s
               AND general_journal.accounting_book_id = %s
               AND chart_account.chart_account_code = %s
-              AND general_journal.fiscal_period_id IN ({placeholders})
+              AND general_journal.fiscal_period_id = ANY(%s)
             """,
             (
                 tenant_id,
                 legal_entity_id,
                 book_id,
                 chart_account_code,
-                *period_ids,
+                period_ids,
             ),
         ).fetchone()
         return Decimal(row[0]), Decimal(row[1])
@@ -2659,13 +2747,13 @@ class PostgresPostingLedger:
                 statement_scope_code,
             )
             scope_start = connection.execute(
-                f"""
+                """
                 SELECT MIN(period_start_date)
                 FROM accounting_core.fiscal_period
                 WHERE tenant_account_id = %s
-                  AND fiscal_period_id IN ({", ".join(["%s"] * len(period_ids))})
+                  AND fiscal_period_id = ANY(%s)
                 """,
-                (tenant_id, *period_ids),
+                (tenant_id, period_ids),
             ).fetchone()[0]
             opening_equity = self._opening_equity_amount(
                 connection,
@@ -2771,9 +2859,8 @@ class PostgresPostingLedger:
         book_id: UUID,
         period_ids: list[UUID],
     ) -> Decimal:
-        placeholders = ", ".join(["%s"] * len(period_ids))
         amount = connection.execute(
-            f"""
+            """
             SELECT COALESCE(
                 SUM(journal_entry_line.credit_amount - journal_entry_line.debit_amount),
                 0
@@ -2788,7 +2875,7 @@ class PostgresPostingLedger:
             WHERE general_journal.tenant_account_id = %s
               AND general_journal.legal_entity_id = %s
               AND general_journal.accounting_book_id = %s
-              AND general_journal.fiscal_period_id IN ({placeholders})
+              AND general_journal.fiscal_period_id = ANY(%s)
               AND chart_account.account_class_code = 'equity'
               AND general_journal.journal_reference NOT LIKE %s
             """,
@@ -2796,8 +2883,8 @@ class PostgresPostingLedger:
                 tenant_id,
                 legal_entity_id,
                 book_id,
-                *period_ids,
-                "urn:cwl:accounting:general_journal:period_closing:%",
+                period_ids,
+                _CLOSING_JOURNAL_PATTERN,
             ),
         ).fetchone()[0]
         return Decimal(amount)
@@ -2861,13 +2948,13 @@ class PostgresPostingLedger:
                 statement_scope_code,
             )
             scope_start = connection.execute(
-                f"""
+                """
                 SELECT MIN(period_start_date)
                 FROM accounting_core.fiscal_period
                 WHERE tenant_account_id = %s
-                  AND fiscal_period_id IN ({", ".join(["%s"] * len(period_ids))})
+                  AND fiscal_period_id = ANY(%s)
                 """,
-                (tenant_id, *period_ids),
+                (tenant_id, period_ids),
             ).fetchone()[0]
             opening_cash = self._opening_cash_amount(
                 connection,
@@ -2994,9 +3081,8 @@ class PostgresPostingLedger:
         book_id: UUID,
         period_ids: list[UUID],
     ) -> Decimal:
-        placeholders = ", ".join(["%s"] * len(period_ids))
         amount = connection.execute(
-            f"""
+            """
             SELECT COALESCE(
                 SUM(journal_entry_line.credit_amount - journal_entry_line.debit_amount),
                 0
@@ -3011,7 +3097,7 @@ class PostgresPostingLedger:
             WHERE general_journal.tenant_account_id = %s
               AND general_journal.legal_entity_id = %s
               AND general_journal.accounting_book_id = %s
-              AND general_journal.fiscal_period_id IN ({placeholders})
+              AND general_journal.fiscal_period_id = ANY(%s)
               AND chart_account.account_class_code IN ('asset', 'liability')
               AND chart_account.chart_account_id NOT IN (
                     SELECT account_role_mapping.chart_account_id
@@ -3027,10 +3113,10 @@ class PostgresPostingLedger:
                 tenant_id,
                 legal_entity_id,
                 book_id,
-                *period_ids,
+                period_ids,
                 tenant_id,
                 book_id,
-                "urn:cwl:accounting:general_journal:period_closing:%",
+                _CLOSING_JOURNAL_PATTERN,
             ),
         ).fetchone()[0]
         return Decimal(amount)
@@ -3064,9 +3150,8 @@ class PostgresPostingLedger:
                 period_code,
                 statement_scope_code,
             )
-            period_placeholders = ", ".join(["%s"] * len(period_ids))
             rows = connection.execute(
-                f"""
+                """
                 SELECT chart_account.chart_account_code,
                        account_role_mapping.account_role_code,
                        chart_account.account_class_code,
@@ -3086,7 +3171,7 @@ class PostgresPostingLedger:
                 WHERE general_journal.tenant_account_id = %s
                   AND general_journal.legal_entity_id = %s
                   AND general_journal.accounting_book_id = %s
-                  AND general_journal.fiscal_period_id IN ({period_placeholders})
+                  AND general_journal.fiscal_period_id = ANY(%s)
                   AND chart_account.account_class_code IN ('revenue', 'expense')
                   AND general_journal.journal_reference NOT LIKE %s
                 GROUP BY chart_account.chart_account_code,
@@ -3098,8 +3183,8 @@ class PostgresPostingLedger:
                     tenant_id,
                     legal_entity_id,
                     book_id,
-                    *period_ids,
-                    "urn:cwl:accounting:general_journal:period_closing:%",
+                    period_ids,
+                    _CLOSING_JOURNAL_PATTERN,
                 ),
             ).fetchall()
         lines: list[dict[str, object]] = []
@@ -3388,9 +3473,8 @@ class PostgresPostingLedger:
         as_of = datetime.combine(
             proposal.accounting_date, datetime.min.time(), tzinfo=timezone.utc
         )
-        placeholders = ", ".join(["%s"] * len(role_codes))
         rows = connection.execute(
-            f"""
+            """
             SELECT account_role_mapping.account_role_code,
                    chart_account.chart_account_code,
                    account_role_mapping.accounting_policy_version,
@@ -3401,14 +3485,14 @@ class PostgresPostingLedger:
              AND chart_account.chart_account_id = account_role_mapping.chart_account_id
             WHERE account_role_mapping.tenant_account_id = %s
               AND account_role_mapping.accounting_book_id = %s
-              AND account_role_mapping.account_role_code IN ({placeholders})
+              AND account_role_mapping.account_role_code = ANY(%s)
               AND account_role_mapping.valid_from <= %s
               AND (
                     account_role_mapping.valid_to IS NULL
                     OR account_role_mapping.valid_to > %s
                   )
             """,
-            (tenant_id, book_id, *role_codes, as_of, as_of),
+            (tenant_id, book_id, list(role_codes), as_of, as_of),
         ).fetchall()
         if not rows:
             raise AccountingValidationError(
@@ -3587,15 +3671,8 @@ class PostgresPostingLedger:
         *,
         exclude_adjusting: bool,
     ) -> tuple[tuple[UUID, str, Decimal, Decimal], ...]:
-        extra_sql = " AND general_journal.journal_reference NOT LIKE %s"
-        extra_params: list[object] = [
-            "urn:cwl:accounting:general_journal:period_closing:%"
-        ]
-        if exclude_adjusting:
-            extra_sql += " AND journal_entry_line.account_role_code IS DISTINCT FROM %s"
-            extra_params.append("adjusting")
         rows = connection.execute(
-            f"""
+            """
             SELECT chart_account.chart_account_id,
                    chart_account.chart_account_code,
                    SUM(journal_entry_line.debit_amount),
@@ -3611,11 +3688,23 @@ class PostgresPostingLedger:
               AND general_journal.legal_entity_id = %s
               AND general_journal.accounting_book_id = %s
               AND general_journal.accounting_date <= %s
-              {extra_sql}
+              AND general_journal.journal_reference NOT LIKE %s
+              AND (
+                    %s
+                    OR journal_entry_line.account_role_code IS DISTINCT FROM %s
+                  )
             GROUP BY chart_account.chart_account_id, chart_account.chart_account_code
             ORDER BY chart_account.chart_account_code
             """,
-            (tenant_id, legal_entity_id, book_id, through_date, *extra_params),
+            (
+                tenant_id,
+                legal_entity_id,
+                book_id,
+                through_date,
+                _CLOSING_JOURNAL_PATTERN,
+                not exclude_adjusting,
+                "adjusting",
+            ),
         ).fetchall()
         return tuple(
             (row[0], row[1], Decimal(row[2]), Decimal(row[3])) for row in rows
@@ -4493,14 +4582,8 @@ class PostgresPostingLedger:
         idempotency_key: str = "",
         journal_reference: str = "",
     ) -> tuple[object, ...] | None:
-        if idempotency_key:
-            identity_clause = "journal_proposal_record.idempotency_key = %s"
-            identity_value = idempotency_key
-        else:
-            identity_clause = "general_journal.journal_reference = %s"
-            identity_value = journal_reference
         return connection.execute(
-            f"""
+            """
             SELECT general_journal.general_journal_id,
                    general_journal.journal_reference,
                    general_journal.journal_status_code,
@@ -4533,9 +4616,16 @@ class PostgresPostingLedger:
               ON original_journal.tenant_account_id = journal_reversal.tenant_account_id
              AND original_journal.general_journal_id = journal_reversal.original_journal_id
             WHERE general_journal.tenant_account_id = %s
-              AND {identity_clause}
+              AND (%s OR journal_proposal_record.idempotency_key = %s)
+              AND (%s OR general_journal.journal_reference = %s)
             """,
-            (tenant_id, identity_value),
+            (
+                tenant_id,
+                not idempotency_key,
+                idempotency_key,
+                not journal_reference,
+                journal_reference,
+            ),
         ).fetchone()
 
     def _load_published_receipt(

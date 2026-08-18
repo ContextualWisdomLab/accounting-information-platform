@@ -7417,6 +7417,18 @@ class PostgresPostingTests(unittest.TestCase):
             pull_validated_journal_proposals(
                 "http://127.0.0.1:1", self.policy.tenant_reference
             )
+        with self.assertRaisesRegex(AccountingValidationError, "Retry the Billing pull"):
+            pull_validated_journal_proposals(
+                "https://127.0.0.1:1", self.policy.tenant_reference
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "http or https origin"):
+            pull_validated_journal_proposals(
+                "file:///tmp/billing", self.policy.tenant_reference
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "http or https origin"):
+            pull_validated_journal_proposals(
+                "http:///v1/journal-proposals", self.policy.tenant_reference
+            )
         with self.assertRaisesRegex(AccountingValidationError, "non-JSON"):
             pull_validated_journal_proposals(
                 self._start_fake_billing([], list_raw=b"not-json"),

@@ -13,6 +13,7 @@
 
 ### Fixed
 
+- Bind optional list filters and `IN` membership as prepared-statement parameters (`AND (%s OR …)` / `= ANY(%s)`) instead of interpolating SQL fragments in `PostgresPostingLedger`, and pull Billing over `http.client` so Semgrep no longer flags raw-query concatenation or dynamic `urllib`.
 - Pinned the Billing #15 list envelope to `journal_proposals` + `next_cursor` only (no body `items` or `cursor`); AIS sends `next_cursor` back as query `cursor`, defaults `page_limit` to 50, and rejects a limit above 100.
 - Pinned the Billing-owned journal proposal contract to published `proposal_status` (`draft` | `validated` | `exported` | `rejected`) and ingest only `validated` or `exported` proposals; operational reject rows are not ingested.
 - Hash-locked setuptools, wheel, and packaging so exact-head CI can install and wheel the package without build isolation or network resolution.

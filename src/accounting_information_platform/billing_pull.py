@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 from dataclasses import dataclass
 from typing import Mapping
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.parse import urlencode, urlparse
 
 from .accept import accept_journal_proposal
 from .core import AccountingValidationError, _require_reference
@@ -202,26 +201,41 @@ def _billing_get(
     query: Mapping[str, str],
 ) -> dict[str, object]:
     _require_reference(tenant_reference, "tenant reference")
-    request = Request(
-        f"{url}?{urlencode(query)}",
-        headers={TENANT_HEADER: tenant_reference, "Accept": "application/json"},
-        method="GET",
-    )
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise AccountingValidationError(
+            "BILLING_BASE_URL must be an http or https origin. "
+            "Set BILLING_BASE_URL to the Billing origin, then retry the pull."
+        )
+    if parsed.scheme == "https":
+        connection: http.client.HTTPConnection = http.client.HTTPSConnection(
+            parsed.hostname, parsed.port, timeout=5
+        )
+    else:
+        connection = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=5)
+    request_path = f"{parsed.path}?{urlencode(query)}"
     try:
-        with urlopen(request, timeout=5) as response:
-            raw = response.read()
-    except HTTPError as error:
-        raise _billing_http_error(error) from error
-    except URLError as error:
+        connection.request(
+            "GET",
+            request_path,
+            headers={TENANT_HEADER: tenant_reference, "Accept": "application/json"},
+        )
+        response = connection.getresponse()
+        raw = response.read()
+        status = response.status
+    except OSError as error:
         raise AccountingValidationError(
             "Billing journal-proposal pull could not be reached. "
             "Retry the Billing pull after Billing recovers."
         ) from error
+    finally:
+        connection.close()
+    if status >= 400:
+        raise _billing_http_error(status)
     return _parse_billing_object(raw)
 
 
-def _billing_http_error(error: HTTPError) -> AccountingValidationError:
-    status = error.code
+def _billing_http_error(status: int) -> AccountingValidationError:
     if status == 404:
         return AccountingValidationError(
             "Billing journal proposal was not found for this tenant. "
