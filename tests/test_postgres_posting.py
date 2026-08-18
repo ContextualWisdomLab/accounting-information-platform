@@ -5163,10 +5163,10 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(inquiry["journal_reference"], posted["journal_reference"])
         self.assertEqual(inquiry["idempotency_key"], body["idempotency_key"])
         self.assertEqual(inquiry["accounting_date"], "2026-08-31")
-        self.assertEqual(by_code["110100"]["debit_amount"], "1000")
-        self.assertEqual(by_code["110100"]["credit_amount"], "0")
-        self.assertEqual(by_code["410100"]["debit_amount"], "0")
-        self.assertEqual(by_code["410100"]["credit_amount"], "1000")
+        self.assertEqual(Decimal(str(by_code["110100"]["debit_amount"])), Decimal("1000"))
+        self.assertEqual(Decimal(str(by_code["110100"]["credit_amount"])), Decimal("0"))
+        self.assertEqual(Decimal(str(by_code["410100"]["debit_amount"])), Decimal("0"))
+        self.assertEqual(Decimal(str(by_code["410100"]["credit_amount"])), Decimal("1000"))
         self.assertEqual(listed_status, 200)
         self.assertIn(
             body["idempotency_key"],
