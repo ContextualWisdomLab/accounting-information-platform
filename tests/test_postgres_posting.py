@@ -249,6 +249,11 @@ class PostgresPostingTests(unittest.TestCase):
         self.ledger = PostgresPostingLedger(
             DATABASE_URL, tenant_reference=self.policy.tenant_reference
         )
+        self._local_billing_origin_patch = mock.patch(
+            "accounting_information_platform.billing_pull._require_safe_configured_billing_origin"
+        )
+        self._local_billing_origin_patch.start()
+        self.addCleanup(self._local_billing_origin_patch.stop)
 
     def test_posts_balanced_two_line_journal_and_ties_trial_balance(self) -> None:
         """A posted two-line journal is durable and ties to the journal population."""

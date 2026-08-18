@@ -137,12 +137,20 @@ FUNCTION_NAME_PATTERN = re.compile(
     re.IGNORECASE,
 )
 APPEND_ONLY_JOURNAL_MUTATION_ERROR = (
-    "accounting migrations must not UPDATE or DELETE "
+    "accounting migrations must not UPDATE, DELETE, TRUNCATE, or DROP TABLE "
     "general_journal or journal_entry_line"
 )
+_SQL_IDENTIFIER = r'(?:"(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_]*)'
 APPEND_ONLY_JOURNAL_MUTATION_PATTERN = re.compile(
-    r"\b(?:UPDATE(?:\s+ONLY)?|DELETE\s+FROM(?:\s+ONLY)?)\s+"
-    r"(?:(?:[A-Za-z_][A-Za-z0-9_]*)\.)?(?:general_journal|journal_entry_line)\b",
+    rf"\b(?:"
+    rf"UPDATE(?:\s+ONLY)?|"
+    rf"DELETE\s+FROM(?:\s+ONLY)?|"
+    rf"TRUNCATE(?:\s+TABLE)?(?:\s+ONLY)?|"
+    rf"DROP\s+TABLE(?:\s+IF\s+EXISTS)?"
+    rf")\s+"
+    rf"(?:{_SQL_IDENTIFIER}\s*\.\s*)?"
+    rf'(?:general_journal|journal_entry_line|"general_journal"|"journal_entry_line")'
+    rf"(?=\s|;|$)",
     re.IGNORECASE,
 )
 
@@ -163,7 +171,7 @@ def find_placeholder_tokens(text: str) -> tuple[str, ...]:
 
 
 def validate_append_only_journal_sql(sql_text: str) -> tuple[str, ...]:
-    """Reject UPDATE or DELETE of posted journal tables in migrations."""
+    """Reject destructive mutation of posted journal tables in migrations."""
     if APPEND_ONLY_JOURNAL_MUTATION_PATTERN.search(sql_text) is None:
         return ()
     return (APPEND_ONLY_JOURNAL_MUTATION_ERROR,)

@@ -1440,10 +1440,9 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
 
     def _read_body(self) -> bytes | None:
         length_text = self.headers.get("Content-Length", "0")
-        try:
-            length = int(length_text)
-        except ValueError:
+        if re.fullmatch(r"[0-9]+", length_text) is None:
             return b""
+        length = int(length_text)
         if length > _MAX_REQUEST_BODY_BYTES:
             self._write_error(
                 413,
