@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Mapping
 from uuid import UUID
 
 from .core import (
@@ -1031,6 +1031,7 @@ class PostgresPostingLedger:
         period_code: str,
         snapshot_currency_code: str,
         period_status_code: str = "hard_closed",
+        idempotency_key: str = "",
     ) -> PeriodCloseReceipt:
         """Soft-close or hard-close one fiscal period; only hard-close snapshots the book."""
         _require_reference(legal_entity_reference, "legal entity reference")
@@ -1039,6 +1040,9 @@ class PostgresPostingLedger:
             raise AccountingValidationError(
                 "period_code is required. Supply the fiscal period code, then retry the close."
             )
+        close_idempotency_key = idempotency_key.strip() or (
+            f"{self._tenant_reference}:period_close:{period_code}"
+        )
         try:
             _require_currency(snapshot_currency_code)
         except AccountingValidationError as error:
@@ -1052,46 +1056,81 @@ class PostgresPostingLedger:
                 "Supply one of those codes, then retry the close."
             )
         with self._session() as connection:
-            tenant_id = self._require_tenant(connection)
-            legal_entity_id = self._require_legal_entity(
-                connection,
-                tenant_id,
-                legal_entity_reference,
-                next_action="the close",
-            )
-            book_id, reporting_currency_code = self._require_book_for_close(
-                connection, tenant_id, legal_entity_id, accounting_book_reference
-            )
-            if snapshot_currency_code != reporting_currency_code:
-                raise AccountingValidationError(
-                    f"snapshot currency {snapshot_currency_code} does not match book reporting "
-                    f"currency {reporting_currency_code}. Supply the book reporting currency, "
-                    "then retry the close."
+            connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            self._active_connection = connection
+            try:
+                tenant_id = self._require_tenant(connection)
+                legal_entity_id = self._require_legal_entity(
+                    connection,
+                    tenant_id,
+                    legal_entity_reference,
+                    next_action="the close",
                 )
-            period_id, current_status, period_end_date = self._require_fiscal_period(
-                connection, tenant_id, period_code
-            )
-            if current_status == "hard_closed":
-                if period_status_code == "soft_closed":
+                book_id, reporting_currency_code = self._require_book_for_close(
+                    connection, tenant_id, legal_entity_id, accounting_book_reference
+                )
+                if snapshot_currency_code != reporting_currency_code:
                     raise AccountingValidationError(
-                        f"Fiscal period {period_code} is hard_closed. "
-                        "Hard-closed periods cannot be soft-closed. "
-                        "Open a later period or leave this period hard_closed; "
-                        "no close row was written."
+                        f"snapshot currency {snapshot_currency_code} does not match book reporting "
+                        f"currency {reporting_currency_code}. Supply the book reporting currency, "
+                        "then retry the close."
                     )
-                return self._replay_close_receipt(
-                    connection,
-                    tenant_id=tenant_id,
-                    legal_entity_id=legal_entity_id,
-                    book_id=book_id,
-                    period_id=period_id,
-                    period_code=period_code,
-                    current_status=current_status,
-                    legal_entity_reference=legal_entity_reference,
-                    accounting_book_reference=accounting_book_reference,
+                period_id, current_status, period_end_date = self._require_fiscal_period(
+                    connection, tenant_id, period_code
                 )
-            if current_status == period_status_code:
-                return self._replay_soft_close_receipt(
+                if current_status == "hard_closed":
+                    if period_status_code == "soft_closed":
+                        raise AccountingValidationError(
+                            f"Fiscal period {period_code} is hard_closed. "
+                            "Hard-closed periods cannot be soft-closed. "
+                            "Open a later period or leave this period hard_closed; "
+                            "no close row was written."
+                        )
+                    return self._replay_close_receipt(
+                        connection,
+                        tenant_id=tenant_id,
+                        legal_entity_id=legal_entity_id,
+                        book_id=book_id,
+                        period_id=period_id,
+                        period_code=period_code,
+                        current_status=current_status,
+                        legal_entity_reference=legal_entity_reference,
+                        accounting_book_reference=accounting_book_reference,
+                        idempotency_key=close_idempotency_key,
+                    )
+                if current_status == period_status_code:
+                    return self._replay_soft_close_receipt(
+                        connection,
+                        tenant_id=tenant_id,
+                        legal_entity_id=legal_entity_id,
+                        book_id=book_id,
+                        period_id=period_id,
+                        period_code=period_code,
+                        period_end_date=period_end_date,
+                        snapshot_currency_code=snapshot_currency_code,
+                        legal_entity_reference=legal_entity_reference,
+                        accounting_book_reference=accounting_book_reference,
+                    )
+                if period_status_code == "soft_closed":
+                    return self._persist_soft_close(
+                        connection,
+                        tenant_id=tenant_id,
+                        legal_entity_id=legal_entity_id,
+                        book_id=book_id,
+                        period_id=period_id,
+                        period_code=period_code,
+                        period_end_date=period_end_date,
+                        snapshot_currency_code=snapshot_currency_code,
+                        legal_entity_reference=legal_entity_reference,
+                        accounting_book_reference=accounting_book_reference,
+                    )
+                package = self._assemble_period_close_package(
+                    legal_entity_reference,
+                    accounting_book_reference,
+                    period_code,
+                )
+                self._require_closeable_package(package)
+                return self._persist_period_close(
                     connection,
                     tenant_id=tenant_id,
                     legal_entity_id=legal_entity_id,
@@ -1099,36 +1138,14 @@ class PostgresPostingLedger:
                     period_id=period_id,
                     period_code=period_code,
                     period_end_date=period_end_date,
+                    period_status_code=period_status_code,
                     snapshot_currency_code=snapshot_currency_code,
                     legal_entity_reference=legal_entity_reference,
                     accounting_book_reference=accounting_book_reference,
+                    idempotency_key=close_idempotency_key,
                 )
-            if period_status_code == "soft_closed":
-                return self._persist_soft_close(
-                    connection,
-                    tenant_id=tenant_id,
-                    legal_entity_id=legal_entity_id,
-                    book_id=book_id,
-                    period_id=period_id,
-                    period_code=period_code,
-                    period_end_date=period_end_date,
-                    snapshot_currency_code=snapshot_currency_code,
-                    legal_entity_reference=legal_entity_reference,
-                    accounting_book_reference=accounting_book_reference,
-                )
-            return self._persist_period_close(
-                connection,
-                tenant_id=tenant_id,
-                legal_entity_id=legal_entity_id,
-                book_id=book_id,
-                period_id=period_id,
-                period_code=period_code,
-                period_end_date=period_end_date,
-                period_status_code=period_status_code,
-                snapshot_currency_code=snapshot_currency_code,
-                legal_entity_reference=legal_entity_reference,
-                accounting_book_reference=accounting_book_reference,
-            )
+            finally:
+                self._active_connection = None
 
     def open_fiscal_period(
         self,
@@ -3203,95 +3220,129 @@ class PostgresPostingLedger:
     ) -> dict[str, object]:
         """Return the close-binder worksheets from one REPEATABLE READ ledger snapshot."""
         with self._consistent_read_session():
-            fiscal_period = self.load_fiscal_period(legal_entity_reference, period_code)
-            trial_balance = self.load_period_trial_balance(
-                legal_entity_reference=legal_entity_reference,
-                accounting_book_reference=book_reference,
-                period_code=period_code,
-            )
-            income_statement = self.load_financial_statement(
+            return self._assemble_period_close_package(
                 legal_entity_reference,
                 book_reference,
                 period_code,
-                "income_statement",
-                comparison_period_code,
-                statement_scope_code,
+                comparison_period_code=comparison_period_code,
+                statement_scope_code=statement_scope_code,
             )
-            balance_sheet = self.load_financial_statement(
-                legal_entity_reference,
-                book_reference,
-                period_code,
-                "balance_sheet",
-                comparison_period_code,
-                statement_scope_code,
+
+    def _assemble_period_close_package(
+        self,
+        legal_entity_reference: str,
+        book_reference: str,
+        period_code: str,
+        comparison_period_code: str = "",
+        statement_scope_code: str = "",
+    ) -> dict[str, object]:
+        fiscal_period = self.load_fiscal_period(legal_entity_reference, period_code)
+        trial_balance = self.load_period_trial_balance(
+            legal_entity_reference=legal_entity_reference,
+            accounting_book_reference=book_reference,
+            period_code=period_code,
+        )
+        income_statement = self.load_financial_statement(
+            legal_entity_reference,
+            book_reference,
+            period_code,
+            "income_statement",
+            comparison_period_code,
+            statement_scope_code,
+        )
+        balance_sheet = self.load_financial_statement(
+            legal_entity_reference,
+            book_reference,
+            period_code,
+            "balance_sheet",
+            comparison_period_code,
+            statement_scope_code,
+        )
+        changes_in_equity = self.load_financial_statement(
+            legal_entity_reference,
+            book_reference,
+            period_code,
+            "changes_in_equity",
+            comparison_period_code,
+            statement_scope_code,
+        )
+        cash_flow = self.load_financial_statement(
+            legal_entity_reference,
+            book_reference,
+            period_code,
+            "cash_flow",
+            comparison_period_code,
+            statement_scope_code,
+        )
+        financial_statement_package: dict[str, object] = {
+            "tenant_reference": income_statement["tenant_reference"],
+            "legal_entity_reference": income_statement["legal_entity_reference"],
+            "accounting_book_reference": income_statement["accounting_book_reference"],
+            "book_reference": income_statement["book_reference"],
+            "fiscal_period_reference": income_statement["fiscal_period_reference"],
+            "income_statement": income_statement,
+            "balance_sheet": balance_sheet,
+            "changes_in_equity": changes_in_equity,
+            "cash_flow": cash_flow,
+        }
+        if statement_scope_code == "year_to_date":
+            financial_statement_package["statement_scope_code"] = "year_to_date"
+        receivable_aging = self.load_receivable_aging(
+            legal_entity_reference,
+            book_reference,
+            period_code,
+        )
+        payable_aging = self.load_payable_aging(
+            legal_entity_reference,
+            book_reference,
+            period_code,
+        )
+        unapplied_cash_rollforward = self.load_unapplied_cash_rollforward(
+            legal_entity_reference,
+            book_reference,
+            period_code,
+        )
+        vat_period_register = self.load_vat_period_register(
+            legal_entity_reference,
+            book_reference,
+            period_code,
+        )
+        close_page = self.load_period_closes(legal_entity_reference, period_code)
+        stored_closes = close_page["period_closes"]
+        period_close = stored_closes[-1] if stored_closes else None
+        return {
+            "tenant_reference": trial_balance["tenant_reference"],
+            "legal_entity_reference": trial_balance["legal_entity_reference"],
+            "accounting_book_reference": trial_balance["accounting_book_reference"],
+            "book_reference": trial_balance["book_reference"],
+            "fiscal_period_reference": trial_balance["fiscal_period_reference"],
+            "fiscal_period": fiscal_period,
+            "trial_balance": trial_balance,
+            "financial_statement_package": financial_statement_package,
+            "receivable_aging": receivable_aging,
+            "payable_aging": payable_aging,
+            "unapplied_cash_rollforward": unapplied_cash_rollforward,
+            "vat_period_register": vat_period_register,
+            "period_close": period_close,
+        }
+
+    def _require_closeable_package(self, package: Mapping[str, object]) -> None:
+        trial_balance = package["trial_balance"]
+        lines = trial_balance["lines"]
+        debit_total = sum(
+            (Decimal(str(line["debit_amount"])) for line in lines),
+            Decimal("0"),
+        )
+        credit_total = sum(
+            (Decimal(str(line["credit_amount"])) for line in lines),
+            Decimal("0"),
+        )
+        if debit_total != credit_total:
+            raise AccountingValidationError(
+                "trial balance does not balance. "
+                "Correct the posted journals so debit totals equal credit totals, "
+                "then retry the close."
             )
-            changes_in_equity = self.load_financial_statement(
-                legal_entity_reference,
-                book_reference,
-                period_code,
-                "changes_in_equity",
-                comparison_period_code,
-                statement_scope_code,
-            )
-            cash_flow = self.load_financial_statement(
-                legal_entity_reference,
-                book_reference,
-                period_code,
-                "cash_flow",
-                comparison_period_code,
-                statement_scope_code,
-            )
-            financial_statement_package: dict[str, object] = {
-                "tenant_reference": income_statement["tenant_reference"],
-                "legal_entity_reference": income_statement["legal_entity_reference"],
-                "accounting_book_reference": income_statement["accounting_book_reference"],
-                "book_reference": income_statement["book_reference"],
-                "fiscal_period_reference": income_statement["fiscal_period_reference"],
-                "income_statement": income_statement,
-                "balance_sheet": balance_sheet,
-                "changes_in_equity": changes_in_equity,
-                "cash_flow": cash_flow,
-            }
-            if statement_scope_code == "year_to_date":
-                financial_statement_package["statement_scope_code"] = "year_to_date"
-            receivable_aging = self.load_receivable_aging(
-                legal_entity_reference,
-                book_reference,
-                period_code,
-            )
-            payable_aging = self.load_payable_aging(
-                legal_entity_reference,
-                book_reference,
-                period_code,
-            )
-            unapplied_cash_rollforward = self.load_unapplied_cash_rollforward(
-                legal_entity_reference,
-                book_reference,
-                period_code,
-            )
-            vat_period_register = self.load_vat_period_register(
-                legal_entity_reference,
-                book_reference,
-                period_code,
-            )
-            close_page = self.load_period_closes(legal_entity_reference, period_code)
-            stored_closes = close_page["period_closes"]
-            period_close = stored_closes[-1] if stored_closes else None
-            return {
-                "tenant_reference": trial_balance["tenant_reference"],
-                "legal_entity_reference": trial_balance["legal_entity_reference"],
-                "accounting_book_reference": trial_balance["accounting_book_reference"],
-                "book_reference": trial_balance["book_reference"],
-                "fiscal_period_reference": trial_balance["fiscal_period_reference"],
-                "fiscal_period": fiscal_period,
-                "trial_balance": trial_balance,
-                "financial_statement_package": financial_statement_package,
-                "receivable_aging": receivable_aging,
-                "payable_aging": payable_aging,
-                "unapplied_cash_rollforward": unapplied_cash_rollforward,
-                "vat_period_register": vat_period_register,
-                "period_close": period_close,
-            }
 
     def _load_statement_account_facts(
         self, legal_entity_reference: str, accounting_book_reference: str
@@ -4035,8 +4086,9 @@ class PostgresPostingLedger:
                 "Create an open fiscal period on the tenant calendar, then retry posting."
             )
         if row[2] not in allowed_status_codes:
+            locked_marker = " (period_closed)" if row[2] == "hard_closed" else ""
             raise AccountingValidationError(
-                f"Fiscal period {row[1]} is {row[2]}. {next_action}; "
+                f"Fiscal period {row[1]} is {row[2]}{locked_marker}. {next_action}; "
                 "no journal was written."
             )
         return row[0], row[3], row[4]
@@ -4380,11 +4432,11 @@ class PostgresPostingLedger:
         legal_entity_id: UUID,
         book_id: UUID,
         period_id: UUID,
-    ) -> tuple[UUID, datetime, int, str] | None:
+    ) -> tuple[UUID, datetime, int, str, str] | None:
         row = connection.execute(
             """
             SELECT trial_balance_snapshot_id, snapshot_generated_at,
-                   source_journal_count, source_payload_hash
+                   source_journal_count, source_payload_hash, close_idempotency_key
             FROM accounting_reporting.trial_balance_snapshot
             WHERE tenant_account_id = %s
               AND legal_entity_id = %s
@@ -4397,7 +4449,7 @@ class PostgresPostingLedger:
         ).fetchone()
         if row is None:
             return None
-        return row[0], row[1], int(row[2]), row[3]
+        return row[0], row[1], int(row[2]), row[3], str(row[4])
 
     def _load_snapshot_balance_lines(
         self, connection: object, tenant_id: UUID, snapshot_id: UUID
@@ -4431,6 +4483,7 @@ class PostgresPostingLedger:
         current_status: str,
         legal_entity_reference: str,
         accounting_book_reference: str,
+        idempotency_key: str,
     ) -> PeriodCloseReceipt:
         snapshot = self._latest_close_snapshot(
             connection, tenant_id, legal_entity_id, book_id, period_id
@@ -4440,6 +4493,13 @@ class PostgresPostingLedger:
                 f"Fiscal period {period_code} is {current_status} without a trial-balance snapshot. "
                 "Restore the trial_balance_snapshot for this book from the journal population, "
                 "then retry the close."
+            )
+        stored_close_key = snapshot[4]
+        if stored_close_key != idempotency_key:
+            raise AccountingValidationError(
+                f"Fiscal period {period_code} is hard_closed (period_closed). "
+                "Replay the original period-close idempotency key; "
+                "a second close of a locked period is rejected."
             )
         return self._close_receipt_from_snapshot(
             snapshot,
@@ -4589,6 +4649,7 @@ class PostgresPostingLedger:
         snapshot_currency_code: str,
         legal_entity_reference: str,
         accounting_book_reference: str,
+        idempotency_key: str,
     ) -> PeriodCloseReceipt:
         self._post_closing_journal(
             connection,
@@ -4617,9 +4678,10 @@ class PostgresPostingLedger:
             """
             INSERT INTO accounting_reporting.trial_balance_snapshot (
                 tenant_account_id, legal_entity_id, accounting_book_id, fiscal_period_id,
-                snapshot_currency_code, source_journal_count, source_payload_hash
+                snapshot_currency_code, source_journal_count, source_payload_hash,
+                close_idempotency_key
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING trial_balance_snapshot_id, snapshot_generated_at
             """,
             (
@@ -4630,6 +4692,7 @@ class PostgresPostingLedger:
                 snapshot_currency_code,
                 source_journal_count,
                 source_payload_hash,
+                idempotency_key,
             ),
         ).fetchone()
         for account_id, _account_code, debit_total, credit_total in lines:
@@ -4710,7 +4773,9 @@ class PostgresPostingLedger:
               AND general_journal.legal_entity_id = %s
               AND general_journal.accounting_book_id = %s
               AND general_journal.accounting_date <= %s
-              AND chart_account.account_class_code IN ('revenue', 'expense')
+              AND account_role_mapping.account_role_code IN (
+                    'usage_revenue', 'write_off_expense'
+                  )
             GROUP BY chart_account.chart_account_code, account_role_mapping.account_role_code
             ORDER BY chart_account.chart_account_code
             """,
@@ -4915,7 +4980,7 @@ class PostgresPostingLedger:
 
     def _close_receipt_from_snapshot(
         self,
-        snapshot: tuple[UUID, datetime, int, str],
+        snapshot: tuple[UUID, datetime, int, str, str],
         *,
         period_code: str,
         period_status_code: str,
@@ -4923,7 +4988,9 @@ class PostgresPostingLedger:
         accounting_book_reference: str,
         replayed: bool,
     ) -> PeriodCloseReceipt:
-        snapshot_id, snapshot_generated_at, source_journal_count, source_payload_hash = snapshot
+        snapshot_id, snapshot_generated_at, source_journal_count, source_payload_hash, _close_key = (
+            snapshot
+        )
         return PeriodCloseReceipt(
             tenant_reference=self._tenant_reference,
             legal_entity_reference=legal_entity_reference,
@@ -5467,7 +5534,7 @@ class _ReversalProposal:
 
 
 def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
-    """Apply the checked-in PostgreSQL 18 foundation, class, and HomeTax migrations."""
+    """Apply the checked-in PostgreSQL 18 foundation through close-key migrations."""
     if not migration_path.is_file():
         raise AccountingValidationError(
             f"Foundation migration is missing at {migration_path}. "
@@ -5485,6 +5552,12 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             f"Home-tax submission migration is missing at {submission_migration_path}. "
             "Restore database/migrations/0003_home_tax_submission.sql, then retry."
         )
+    close_key_migration_path = migration_path.parent / "0004_close_idempotency_key.sql"
+    if not close_key_migration_path.is_file():
+        raise AccountingValidationError(
+            f"Close-idempotency-key migration is missing at {close_key_migration_path}. "
+            "Restore database/migrations/0004_close_idempotency_key.sql, then retry."
+        )
     psycopg = _import_psycopg()
     try:
         with psycopg.connect(
@@ -5493,6 +5566,7 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             connection.execute(migration_path.read_text(encoding="utf-8"))
             connection.execute(class_migration_path.read_text(encoding="utf-8"))
             connection.execute(submission_migration_path.read_text(encoding="utf-8"))
+            connection.execute(close_key_migration_path.read_text(encoding="utf-8"))
     except Exception as error:
         raise AccountingValidationError(
             "Foundation migration failed. Inspect the PostgreSQL error, restore a clean "

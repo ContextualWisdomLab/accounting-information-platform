@@ -35,6 +35,7 @@ REQUIRED_FILES = (
     "database/migrations/0001_accounting_foundation.sql",
     "database/migrations/0002_chart_account_class.sql",
     "database/migrations/0003_home_tax_submission.sql",
+    "database/migrations/0004_close_idempotency_key.sql",
     "docs/PRD.md",
     "docs/TRD.md",
     "docs/ARCHITECTURE.md",

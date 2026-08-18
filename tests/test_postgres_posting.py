@@ -526,6 +526,28 @@ class PostgresPostingTests(unittest.TestCase):
                 AccountingValidationError, "0003_home_tax_submission"
             ):
                 apply_foundation_migration(DATABASE_URL, foundation)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            foundation = temporary_root / "0001_accounting_foundation.sql"
+            foundation.write_text(
+                MIGRATION_PATH.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            (temporary_root / "0002_chart_account_class.sql").write_text(
+                (ROOT / "database/migrations/0002_chart_account_class.sql").read_text(
+                    encoding="utf-8"
+                ),
+                encoding="utf-8",
+            )
+            (temporary_root / "0003_home_tax_submission.sql").write_text(
+                (ROOT / "database/migrations/0003_home_tax_submission.sql").read_text(
+                    encoding="utf-8"
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                AccountingValidationError, "0004_close_idempotency_key"
+            ):
+                apply_foundation_migration(DATABASE_URL, foundation)
         with self.assertRaisesRegex(AccountingValidationError, "restore a clean database"):
             apply_foundation_migration(DATABASE_URL, MIGRATION_PATH)
 
@@ -932,6 +954,127 @@ class PostgresPostingTests(unittest.TestCase):
             "310100",
             {str(item["chart_account_code"]) for item in snapshot["lines"]},
         )
+
+    def test_hard_close_replays_same_key_and_rejects_later_in_period_journals(
+        self,
+    ) -> None:
+        """Hard-close parks named P&L roles, locks the period, and keys the close."""
+        posted = self.ledger.post(self._two_line_proposal(), self.policy)
+        self.ledger.post(
+            self._two_line_proposal(
+                proposal_id=str(uuid.uuid4()),
+                idempotency_key="write-off-before-close-v1",
+                source_payload_hash="sha256:" + "a" * 64,
+                lines=(
+                    JournalLineProposal(1, "write_off_expense", "7000", "0"),
+                    JournalLineProposal(2, "accounts_receivable", "0", "7000"),
+                ),
+            ),
+            self.policy,
+        )
+        self.ledger.post_proposal(
+            ingest_journal_proposal(self._billing_unapplied_cash_park_payload())
+        )
+        first = self._close_period(idempotency_key="period-close-2026-08")
+        replayed = self._close_period(idempotency_key="period-close-2026-08")
+        snapshot = self.ledger.load_period_trial_balance(
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "2026-08",
+        )
+        leftover = lookup_unapplied_cash_rollforward(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-08",
+        )
+        closing = self.ledger.load_posted_journal(
+            f"{self.policy.tenant_reference}:period_closing:2026-08"
+        )
+        package = lookup_period_close_package(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-08",
+        )
+        closing_by_role = {
+            str(line["account_role_code"]): line for line in closing["lines"]
+        }
+        retained_net = sum(
+            (
+                Decimal(str(line["credit_amount"])) - Decimal(str(line["debit_amount"]))
+                for line in closing["lines"]
+                if str(line["account_role_code"]) == "retained_earnings"
+            ),
+            Decimal("0"),
+        )
+
+        self.assertFalse(first.replayed)
+        self.assertTrue(replayed.replayed)
+        self.assertEqual(replayed.snapshot_record_id, first.snapshot_record_id)
+        self.assertEqual(self._count_closing_journals(), 1)
+        self.assertEqual(closing_by_role["usage_revenue"]["chart_account_code"], "410100")
+        self.assertEqual(
+            Decimal(str(closing_by_role["usage_revenue"]["debit_amount"])),
+            Decimal("25000"),
+        )
+        self.assertEqual(closing_by_role["write_off_expense"]["chart_account_code"], "510100")
+        self.assertEqual(
+            Decimal(str(closing_by_role["write_off_expense"]["credit_amount"])),
+            Decimal("7000"),
+        )
+        self.assertEqual(retained_net, Decimal("18000"))
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(snapshot, "410100")["net_balance_amount"])),
+            Decimal("0"),
+        )
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(snapshot, "510100")["net_balance_amount"])),
+            Decimal("0"),
+        )
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(snapshot, "310100")["credit_amount"])),
+            Decimal("18000"),
+        )
+        self.assertEqual(leftover["closing_amount"], "3000")
+        self.assertIsNotNone(package["period_close"])
+        self.assertEqual(package["period_close"]["period_status_code"], "hard_closed")
+        self.assertEqual(package["fiscal_period"]["period_status_code"], "hard_closed")
+
+        journals_after_close = self.ledger.journal_count
+        with self.assertRaisesRegex(AccountingValidationError, "period_closed"):
+            self.ledger.post(
+                self._two_line_proposal(
+                    proposal_id=str(uuid.uuid4()),
+                    idempotency_key="after-lock-rejected",
+                    source_payload_hash="sha256:" + "b" * 64,
+                ),
+                self.policy,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "period_closed"):
+            self.ledger.reverse(
+                posted.journal_reference,
+                date(2026, 8, 31),
+                "billing_correction",
+                self.policy,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "period_closed"):
+            self._close_period(idempotency_key="period-close-2026-08-other")
+        self.assertEqual(self.ledger.journal_count, journals_after_close)
+        self.assertEqual(self._period_status("2026-08"), "hard_closed")
+        self.assertEqual(self._count_closing_journals(), 1)
+
+    def test_hard_close_rejects_unbalanced_trial_balance(self) -> None:
+        """Close fails closed when the binder trial balance does not balance."""
+        self.ledger.post(self._two_line_proposal(), self.policy)
+        self._insert_unbalanced_receivable_debit()
+        with self.assertRaisesRegex(AccountingValidationError, "does not balance"):
+            self._close_period(idempotency_key="period-close-unbalanced")
+        self.assertEqual(self._period_status("2026-08"), "open")
+        self.assertEqual(self._count_closing_journals(), 0)
+        self.assertEqual(self._count_table("accounting_reporting.trial_balance_snapshot"), 0)
 
     def test_post_proposal_resolves_catalog_policy_from_billing_ingest(self) -> None:
         """A Billing validated proposal posts with AIS catalog mapping and versions."""
@@ -4378,6 +4521,116 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(cross_status, 403)
         self.assertEqual(
             self._count_table("accounting_reporting.trial_balance_snapshot"), snapshots
+        )
+        self.assertEqual(self._count_closing_journals(), 1)
+        server.shutdown()
+
+    def test_http_hard_close_locks_period_and_replays_close_key(self) -> None:
+        """POST /period-closes locks from the binder; leftover cash may stay open."""
+        invoice = self._billing_validated_payload()
+        write_off = self._billing_write_off_payload()
+        park = self._billing_unapplied_cash_park_payload()
+        close_key = f"{self.policy.tenant_reference}:period_close:2026-08"
+        server = self._start_http_server()
+        self._http_json("POST", "/journal-proposals", invoice)
+        self._http_json("POST", "/journal-proposals", write_off)
+        self._http_json("POST", "/journal-proposals", park)
+        journals_before_close = self._count_table("accounting_core.general_journal")
+        close_status, close_receipt = self._http_json(
+            "POST",
+            "/period-closes",
+            self._period_close_payload(idempotency_key=close_key),
+        )
+        replay_status, replay_receipt = self._http_json(
+            "POST",
+            "/period-closes",
+            self._period_close_payload(idempotency_key=close_key),
+        )
+        missing_key = self._period_close_payload()
+        missing_key.pop("idempotency_key", None)
+        missing_status, missing_body = self._http_json(
+            "POST", "/period-closes", missing_key
+        )
+        other_status, other_body = self._http_json(
+            "POST",
+            "/period-closes",
+            self._period_close_payload(idempotency_key=f"{close_key}:other"),
+        )
+        later_status, later_body = self._http_json(
+            "POST",
+            "/journal-proposals",
+            self._billing_validated_payload(
+                proposal_id=str(uuid.uuid4()),
+                idempotency_key=f"{self.policy.tenant_reference}:invoice_draft:after-lock:v1",
+                source_payload_hash="sha256:" + "c" * 64,
+            ),
+        )
+        invoice_journal_status, invoice_journal = self._http_journal(
+            idempotency_key=str(invoice["idempotency_key"])
+        )
+        reverse_status, reverse_body = self._http_json(
+            "POST",
+            "/journal-reversals",
+            {
+                "tenant_reference": self.policy.tenant_reference,
+                "journal_reference": invoice_journal["journal_reference"],
+                "reversal_reason_code": "billing_correction",
+                "reversal_date": "2026-08-31",
+            },
+        )
+        closing_status, closing = self._http_journal(
+            idempotency_key=f"{self.policy.tenant_reference}:period_closing:2026-08"
+        )
+        leftover_status, leftover = self._http_unapplied_cash_rollforward()
+        package_status, package = self._http_period_close_package()
+        closing_by_role = {str(line["account_role_code"]): line for line in closing["lines"]}
+        retained_net = sum(
+            (
+                Decimal(str(line["credit_amount"])) - Decimal(str(line["debit_amount"]))
+                for line in closing["lines"]
+                if str(line["account_role_code"]) == "retained_earnings"
+            ),
+            Decimal("0"),
+        )
+
+        with self.assertRaisesRegex(AccountingValidationError, "idempotency_key"):
+            accept_period_close(missing_key, DATABASE_URL, self.policy.tenant_reference)
+
+        self.assertEqual(close_status, 200)
+        self.assertFalse(close_receipt["replayed"])
+        self.assertEqual(replay_status, 200)
+        self.assertTrue(replay_receipt["replayed"])
+        self.assertEqual(replay_receipt["snapshot_record_id"], close_receipt["snapshot_record_id"])
+        self.assertEqual(missing_status, 422)
+        self.assertIn("idempotency_key", str(missing_body["error_message"]))
+        self.assertEqual(other_status, 422)
+        self.assertIn("period_closed", str(other_body["error_message"]))
+        self.assertEqual(later_status, 422)
+        self.assertIn("period_closed", str(later_body["error_message"]))
+        self.assertEqual(invoice_journal_status, 200)
+        self.assertEqual(reverse_status, 422)
+        self.assertIn("period_closed", str(reverse_body["error_message"]))
+        self.assertEqual(closing_status, 200)
+        self.assertEqual(closing_by_role["usage_revenue"]["chart_account_code"], "410100")
+        self.assertEqual(
+            Decimal(str(closing_by_role["usage_revenue"]["debit_amount"])),
+            Decimal("25000"),
+        )
+        self.assertEqual(closing_by_role["write_off_expense"]["chart_account_code"], "510100")
+        self.assertEqual(
+            Decimal(str(closing_by_role["write_off_expense"]["credit_amount"])),
+            Decimal("7000"),
+        )
+        self.assertEqual(retained_net, Decimal("18000"))
+        self.assertEqual(leftover_status, 200)
+        self.assertEqual(leftover["closing_amount"], "3000")
+        self.assertEqual(package_status, 200)
+        self.assertIsNotNone(package["period_close"])
+        self.assertEqual(package["period_close"]["period_status_code"], "hard_closed")
+        self.assertEqual(package["fiscal_period"]["period_status_code"], "hard_closed")
+        self.assertEqual(
+            self._count_table("accounting_core.general_journal"),
+            journals_before_close + 1,
         )
         self.assertEqual(self._count_closing_journals(), 1)
         server.shutdown()
@@ -9667,6 +9920,7 @@ class PostgresPostingTests(unittest.TestCase):
                 "accounting_book_reference": self.policy.accounting_book_reference,
                 "period_code": "2026-08",
                 "snapshot_currency_code": "KRW",
+                "idempotency_key": close_body["idempotency_key"],
             },
             DATABASE_URL,
             self.policy.tenant_reference,
@@ -11351,6 +11605,7 @@ class PostgresPostingTests(unittest.TestCase):
                     self._billing_validated_payload(intended_book_role_code="management_book")
                 )
             )
+        self._seed_role_mapping("tax_payable", "210100")
         self.ledger.close_fiscal_period(
             legal_entity_reference=self.policy.legal_entity_reference,
             accounting_book_reference=self.policy.accounting_book_reference,
@@ -11423,6 +11678,48 @@ class PostgresPostingTests(unittest.TestCase):
         }
         values.update(overrides)
         return self.ledger.close_fiscal_period(**values)
+
+    def _insert_unbalanced_receivable_debit(self) -> None:
+        with psycopg.connect(DATABASE_URL) as connection:
+            connection.execute(
+                "SELECT set_config('app.tenant_account_id', %s, false)",
+                (self.tenant_id,),
+            )
+            journal_id, line_number = connection.execute(
+                """
+                SELECT general_journal.general_journal_id,
+                       COALESCE(MAX(journal_entry_line.line_number), 0) + 1
+                FROM accounting_core.general_journal
+                LEFT JOIN accounting_core.journal_entry_line
+                  ON journal_entry_line.tenant_account_id = general_journal.tenant_account_id
+                 AND journal_entry_line.general_journal_id = general_journal.general_journal_id
+                WHERE general_journal.tenant_account_id = %s
+                GROUP BY general_journal.general_journal_id
+                LIMIT 1
+                """,
+                (self.tenant_id,),
+            ).fetchone()
+            chart_account_id = connection.execute(
+                """
+                SELECT chart_account_id
+                FROM accounting_core.chart_account
+                WHERE tenant_account_id = %s
+                  AND chart_account_code = '110100'
+                  AND valid_to IS NULL
+                """,
+                (self.tenant_id,),
+            ).fetchone()[0]
+            connection.execute(
+                """
+                INSERT INTO accounting_core.journal_entry_line (
+                    tenant_account_id, general_journal_id, line_number,
+                    chart_account_id, account_role_code, debit_amount, credit_amount
+                )
+                VALUES (%s, %s, %s, %s, 'accounts_receivable', 1, 0)
+                """,
+                (self.tenant_id, journal_id, line_number, chart_account_id),
+            )
+            connection.commit()
 
     def _policy_with(self, **overrides: object) -> AccountingPolicy:
         values: dict[str, object] = {
@@ -12509,6 +12806,19 @@ class PostgresPostingTests(unittest.TestCase):
             "snapshot_currency_code": "KRW",
         }
         values.update(overrides)
+        if "idempotency_key" not in values:
+            period_reference = str(
+                values.get("fiscal_period_reference") or values.get("period_code") or ""
+            )
+            period_code = period_reference
+            prefix = "urn:cwl:accounting:fiscal_period:"
+            if period_code.startswith(prefix):
+                period_code = period_code[len(prefix) :]
+            if not period_code:
+                period_code = "2026-08"
+            values["idempotency_key"] = (
+                f"{values['tenant_reference']}:period_close:{period_code}"
+            )
         return values
 
     def _seed_entity_without_books(self) -> str:

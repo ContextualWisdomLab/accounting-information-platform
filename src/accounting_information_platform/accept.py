@@ -194,6 +194,7 @@ def accept_period_close(
         str(payload.get("fiscal_period_reference") or payload.get("period_code") or "")
     )
     snapshot_currency_code = str(payload.get("snapshot_currency_code") or "")
+    idempotency_key = str(payload.get("idempotency_key") or "")
     if not legal_entity_reference or not book_reference or not period_code:
         raise AccountingValidationError(
             "legal_entity_reference, book_reference, and fiscal_period_reference are required. "
@@ -204,6 +205,11 @@ def accept_period_close(
             "snapshot_currency_code is required. "
             "Supply the book reporting currency, then retry the close."
         )
+    if not idempotency_key:
+        raise AccountingValidationError(
+            "idempotency_key is required. "
+            "Supply the period-close idempotency key, then retry the close."
+        )
     period_status_code = _period_status_from_close_payload(payload)
     ledger = PostgresPostingLedger(database_url, tenant_reference)
     receipt = ledger.close_fiscal_period(
@@ -212,6 +218,7 @@ def accept_period_close(
         period_code=period_code,
         snapshot_currency_code=snapshot_currency_code,
         period_status_code=period_status_code,
+        idempotency_key=idempotency_key,
     )
     return _period_close_document(receipt)
 
