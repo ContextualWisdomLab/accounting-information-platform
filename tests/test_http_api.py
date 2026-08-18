@@ -2,8 +2,20 @@
 
 from __future__ import annotations
 
+import http.client
+import json
 import unittest
 from decimal import Decimal
+
+from accounting_information_platform import AccountingValidationError
+from accounting_information_platform.accept import (
+    accept_period_close,
+    lookup_account_ledger,
+    lookup_audit_events,
+    lookup_journal_reversals,
+    lookup_outbox_events,
+    lookup_period_closes,
+)
 
 import tests.test_postgres_posting as postgres_posting
 
@@ -200,3 +212,187 @@ class PeriodClosePackageHttpTests(unittest.TestCase):
         self.assertEqual(cross_status, 403)
         server.shutdown()
         server.server_close()
+
+
+class BillingIngestFailClosedHttpTests(unittest.TestCase):
+    """Bad Billing proposals and HTTP accept stay 4xx and write zero journals."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        postgres_posting.PostgresPostingTests.setUpClass()
+
+    def setUp(self) -> None:
+        self.case = postgres_posting.PostgresPostingTests("setUp")
+        self.case.setUp()
+
+    def test_http_rejects_malformed_billing_lines_and_posts_query_string(self) -> None:
+        """Missing keys, JSON-number amounts, and reserved RE are 422; ?trace=1 posts."""
+        case = self.case
+        server = case._start_http_server()
+        journals_before = case._count_table("accounting_core.general_journal")
+        missing = case._billing_validated_payload()
+        del missing["lines"][0]["line_number"]
+        float_amount = case._billing_validated_payload()
+        float_amount["lines"][0]["debit_amount"] = 25000.5
+        float_amount["lines"][1]["credit_amount"] = 25000.5
+        integer_amount = case._billing_validated_payload()
+        integer_amount["lines"][0]["debit_amount"] = 25000
+        integer_amount["lines"][1]["credit_amount"] = 25000
+        bool_line = case._billing_validated_payload()
+        bool_line["lines"][0]["line_number"] = True
+        bool_version = case._billing_validated_payload(proposal_contract_version=True)
+        string_version = case._billing_validated_payload(proposal_contract_version="one")
+        retained = case._billing_validated_payload()
+        retained["lines"][1]["account_role_code"] = "retained_earnings"
+
+        missing_status, missing_body = case._http_json("POST", "/journal-proposals", missing)
+        float_status, float_body = case._http_json("POST", "/journal-proposals", float_amount)
+        integer_status, integer_body = case._http_json(
+            "POST", "/journal-proposals", integer_amount
+        )
+        bool_line_status, bool_line_body = case._http_json(
+            "POST", "/journal-proposals", bool_line
+        )
+        bool_version_status, bool_version_body = case._http_json(
+            "POST", "/journal-proposals", bool_version
+        )
+        string_version_status, string_version_body = case._http_json(
+            "POST", "/journal-proposals", string_version
+        )
+        retained_status, retained_body = case._http_json(
+            "POST", "/journal-proposals", retained
+        )
+        posted_status, posted = case._http_json(
+            "POST",
+            "/journal-proposals?trace=1",
+            case._billing_validated_payload(),
+        )
+
+        self.assertEqual(missing_status, 422)
+        self.assertIn("line_number is required", str(missing_body["error_message"]))
+        self.assertIn("then retry", str(missing_body["error_message"]))
+        self.assertEqual(float_status, 422)
+        self.assertIn("canonical decimal string", str(float_body["error_message"]))
+        self.assertEqual(integer_status, 422)
+        self.assertIn("canonical decimal string", str(integer_body["error_message"]))
+        self.assertEqual(bool_line_status, 422)
+        self.assertIn("line_number must be an integer", str(bool_line_body["error_message"]))
+        self.assertEqual(bool_version_status, 422)
+        self.assertIn(
+            "proposal_contract_version must be an integer",
+            str(bool_version_body["error_message"]),
+        )
+        self.assertEqual(string_version_status, 422)
+        self.assertIn(
+            "proposal_contract_version must be an integer",
+            str(string_version_body["error_message"]),
+        )
+        self.assertEqual(retained_status, 422)
+        self.assertIn("reserved for AIS period-close", str(retained_body["error_message"]))
+        self.assertEqual(posted_status, 200)
+        self.assertEqual(posted["posting_status_code"], "posted")
+        self.assertEqual(case._count_table("accounting_core.general_journal"), journals_before + 1)
+        server.shutdown()
+        server.server_close()
+
+    def test_http_rejects_empty_period_status_and_naive_cursors_and_oversize(self) -> None:
+        """Empty close status is 422, naive list cursors are 422, oversize is 413."""
+        case = self.case
+        server = case._start_http_server()
+        journals_before = case._count_table("accounting_core.general_journal")
+        empty_close = case._period_close_payload(period_status_code="")
+        null_close = case._period_close_payload(period_status_code=None)
+        naive_cursor = "2026-08-31T00:00:00|urn:cwl:accounting:general_journal:x"
+        naive_ledger = "2026-08-31T00:00:00|urn:cwl:accounting:general_journal:x|1"
+        naive_outbox = "2026-08-31T00:00:00|01900000-0000-7000-8000-000000000001"
+
+        empty_status, empty_body = case._http_json("POST", "/period-closes", empty_close)
+        null_status, null_body = case._http_json("POST", "/period-closes", null_close)
+        open_status, opened = case._http_fiscal_period()
+        ledger_status, ledger_body = case._http_account_ledger("110100", cursor=naive_ledger)
+        reversal_status, reversal_body = case._http_journal_reversals(cursor=naive_cursor)
+        close_list_status, close_list_body = case._http_period_closes(
+            cursor=f"{naive_outbox}"
+        )
+        outbox_status, outbox_body = case._http_outbox_events(
+            "posting_receipt", cursor=naive_outbox
+        )
+        audit_status, audit_body = case._http_audit_events(cursor=naive_outbox)
+        oversize_status, oversize_body = self._http_oversize(case)
+
+        with self.assertRaisesRegex(AccountingValidationError, "period_status_code"):
+            accept_period_close(empty_close, postgres_posting.DATABASE_URL, case.policy.tenant_reference)
+        with self.assertRaisesRegex(AccountingValidationError, "UTC offset"):
+            lookup_account_ledger(
+                postgres_posting.DATABASE_URL,
+                case.policy.tenant_reference,
+                case.policy.legal_entity_reference,
+                "110100",
+                cursor=naive_ledger,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "UTC offset"):
+            lookup_journal_reversals(
+                postgres_posting.DATABASE_URL,
+                case.policy.tenant_reference,
+                case.policy.legal_entity_reference,
+                cursor=naive_cursor,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "UTC offset"):
+            lookup_period_closes(
+                postgres_posting.DATABASE_URL,
+                case.policy.tenant_reference,
+                case.policy.legal_entity_reference,
+                cursor=naive_outbox,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "UTC offset"):
+            lookup_outbox_events(
+                postgres_posting.DATABASE_URL,
+                case.policy.tenant_reference,
+                "posting_receipt",
+                cursor=naive_outbox,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "UTC offset"):
+            lookup_audit_events(
+                postgres_posting.DATABASE_URL,
+                case.policy.tenant_reference,
+                cursor=naive_outbox,
+            )
+
+        self.assertEqual(empty_status, 422)
+        self.assertIn("period_status_code", str(empty_body["error_message"]))
+        self.assertIn("then retry", str(empty_body["error_message"]))
+        self.assertEqual(null_status, 422)
+        self.assertIn("period_status_code", str(null_body["error_message"]))
+        self.assertEqual(open_status, 200)
+        self.assertEqual(opened["period_status_code"], "open")
+        self.assertEqual(ledger_status, 422)
+        self.assertIn("UTC offset", str(ledger_body["error_message"]))
+        self.assertEqual(reversal_status, 422)
+        self.assertIn("UTC offset", str(reversal_body["error_message"]))
+        self.assertEqual(close_list_status, 422)
+        self.assertIn("UTC offset", str(close_list_body["error_message"]))
+        self.assertEqual(outbox_status, 422)
+        self.assertIn("UTC offset", str(outbox_body["error_message"]))
+        self.assertEqual(audit_status, 422)
+        self.assertIn("UTC offset", str(audit_body["error_message"]))
+        self.assertEqual(oversize_status, 413)
+        self.assertIn("1 MiB", str(oversize_body["error_message"]))
+        self.assertIn("then retry", str(oversize_body["error_message"]))
+        self.assertEqual(case._count_table("accounting_core.general_journal"), journals_before)
+        server.shutdown()
+        server.server_close()
+
+    def _http_oversize(
+        self, case: postgres_posting.PostgresPostingTests
+    ) -> tuple[int, dict[str, object]]:
+        connection = http.client.HTTPConnection("127.0.0.1", case._http_port())
+        try:
+            connection.putrequest("POST", "/journal-proposals")
+            connection.putheader("Content-Type", "application/json")
+            connection.putheader("X-CWL-Tenant-Reference", case.policy.tenant_reference)
+            connection.putheader("Content-Length", str(1024 * 1024 + 1))
+            connection.endheaders()
+            response = connection.getresponse()
+            return response.status, json.loads(response.read().decode("utf-8"))
+        finally:
+            connection.close()

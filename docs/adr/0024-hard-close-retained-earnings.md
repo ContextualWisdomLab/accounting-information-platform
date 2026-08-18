@@ -6,7 +6,7 @@
 
 `PostgresPostingLedger.close_fiscal_period` / `accept_period_close` / `POST /period-closes` keep the ADR 0023 two-step command. On `hard_closed` only, AIS posts one AIS-owned closing journal in the same transaction, before the trial-balance snapshot. Soft-close writes zero closing journals.
 
-The catalog seed adds chart account `310100` (`account_class_code=equity`, `normal_balance_code=credit`) and `account_role_code=retained_earnings` → `310100`, the same mapping pattern as `tax_payable` → `210100`. Ordinary Billing proposals may not use `retained_earnings`; that role is reserved for this close journal.
+The catalog seed adds chart account `310100` (`account_class_code=equity`, `normal_balance_code=credit`) and `account_role_code=retained_earnings` → `310100`, the same mapping pattern as `tax_payable` → `210100`. Ordinary Billing proposals may not use `retained_earnings`; that role is reserved for this close journal. `ingest_journal_proposal` and `POST /journal-proposals` reject Billing `account_role_code=retained_earnings` as HTTP 422 before a journal is written. Period-close retained-earnings journals stay AIS-authored.
 
 The closing journal zeros each revenue and expense account that still has a non-zero credit-net or debit-net, and plugs the exact remainder to `310100` so the journal balances. If income-statement accounts are already net zero, AIS writes zero closing journals. If revenue and expense nets offset to zero income, AIS still posts the clearing lines and omits the `310100` plug. Re-hard-close replays the existing close receipt and does not post a second closing journal.
 

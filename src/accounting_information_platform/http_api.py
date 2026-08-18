@@ -72,6 +72,7 @@ _OUTBOX_PUBLISH_PATH = re.compile(
     r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
     r"/publish$"
 )
+_MAX_REQUEST_BODY_BYTES = 1_048_576
 
 
 class JournalProposalServer(ThreadingHTTPServer):
@@ -196,6 +197,8 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         """Route journal-proposal accept, adjusting journal, reverse, Billing pull, close, outbox publish, audit-history 405, and GET-only POST 405s."""
         raw_body = self._read_body()
+        if raw_body is None:
+            return
         parsed_path = urlparse(self.path).path
         if parsed_path == JOURNAL_PATH:
             self._post_adjusting_journal(raw_body)
@@ -284,7 +287,7 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
                 "GET the period-close package, then retry.",
             )
             return
-        if self.path == JOURNAL_PROPOSAL_PATH:
+        if parsed_path == JOURNAL_PROPOSAL_PATH:
             self._post_journal_proposal(raw_body)
             return
         if parsed_path == JOURNAL_REVERSAL_PATH:
@@ -797,7 +800,7 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         except AccountingValidationError as error:
             message = str(error)
             if "page_limit" in message or "cursor" in message:
-                self._write_error(400, message)
+                self._write_error(_query_validation_status(error), message)
                 return
             self._write_error(404, message)
             return
@@ -841,7 +844,7 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         except AccountingValidationError as error:
             message = str(error)
             if "page_limit" in message or "cursor" in message:
-                self._write_error(400, message)
+                self._write_error(_query_validation_status(error), message)
                 return
             self._write_error(404, message)
             return
@@ -889,7 +892,7 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
                 or "cursor" in message
                 or "period_status_code" in message
             ):
-                self._write_error(400, message)
+                self._write_error(_query_validation_status(error), message)
                 return
             self._write_error(404, message)
             return
@@ -958,7 +961,7 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
                     or "cursor" in message
                     or "journal_source_code" in message
                 ):
-                    self._write_error(400, message)
+                    self._write_error(_query_validation_status(error), message)
                     return
                 self._write_error(404, message)
                 return
@@ -1006,7 +1009,7 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
                 cursor=_first_query(fields, "cursor"),
             )
         except AccountingValidationError as error:
-            self._write_error(400, str(error))
+            self._write_error(_query_validation_status(error), str(error))
             return
         self._write_json(200, document)
 
@@ -1036,7 +1039,7 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
                 cursor=_first_query(fields, "cursor"),
             )
         except AccountingValidationError as error:
-            self._write_error(400, str(error))
+            self._write_error(_query_validation_status(error), str(error))
             return
         self._write_json(200, document)
 
@@ -1103,7 +1106,7 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         except AccountingValidationError as error:
             message = str(error)
             if "page_limit" in message or "cursor" in message:
-                self._write_error(400, message)
+                self._write_error(_query_validation_status(error), message)
                 return
             self._write_error(404, message)
             return
@@ -1287,12 +1290,19 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             return None
         return payload
 
-    def _read_body(self) -> bytes:
+    def _read_body(self) -> bytes | None:
         length_text = self.headers.get("Content-Length", "0")
         try:
             length = int(length_text)
         except ValueError:
             return b""
+        if length > _MAX_REQUEST_BODY_BYTES:
+            self._write_error(
+                413,
+                "request body exceeds 1 MiB. "
+                "Send a smaller JSON command, then retry.",
+            )
+            return None
         if length < 1:
             return b""
         return self.rfile.read(length)
@@ -1318,6 +1328,12 @@ def _adjusting_journal_status(error: AccountingValidationError) -> int:
     if "is not recorded" in message:
         return 404
     return 422
+
+
+def _query_validation_status(error: AccountingValidationError) -> int:
+    if "UTC offset" in str(error):
+        return 422
+    return 400
 
 
 def _first_query(fields: dict[str, list[str]], name: str) -> str:

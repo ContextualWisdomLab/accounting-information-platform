@@ -30,6 +30,12 @@ _REQUIRED_CONTRACT_FIELDS = (
     "source_event_references",
     "lines",
 )
+_REQUIRED_LINE_FIELDS = (
+    "line_number",
+    "account_role_code",
+    "debit_amount",
+    "credit_amount",
+)
 
 
 def ingest_journal_proposal(payload: object) -> JournalProposal:
@@ -107,7 +113,9 @@ def _journal_proposal_from_contract(payload: Mapping[str, object]) -> JournalPro
         )
     return JournalProposal(
         proposal_id=str(payload["proposal_id"]),
-        proposal_contract_version=int(payload["proposal_contract_version"]),
+        proposal_contract_version=_require_contract_int(
+            payload["proposal_contract_version"], "proposal_contract_version"
+        ),
         idempotency_key=str(payload["idempotency_key"]),
         tenant_reference=str(payload["tenant_reference"]),
         legal_entity_reference=str(payload["legal_entity_reference"]),
@@ -127,12 +135,43 @@ def _journal_line_from_contract(line: object) -> JournalLineProposal:
             "each journal line must be a line object. "
             "Supply Billing line objects, then retry ingest."
         )
+    for field_name in _REQUIRED_LINE_FIELDS:
+        if field_name not in line or line[field_name] in (None, ""):
+            raise AccountingValidationError(
+                f"{field_name} is required. Supply the Billing published "
+                f"{field_name}, then retry ingest."
+            )
+    account_role_code = str(line["account_role_code"])
+    if account_role_code == "retained_earnings":
+        raise AccountingValidationError(
+            "retained_earnings is reserved for AIS period-close. "
+            "Post revenue and expense through Billing, then hard-close; "
+            "do not send retained_earnings on a Billing proposal."
+        )
     return JournalLineProposal(
-        line_number=int(line["line_number"]),
-        account_role_code=str(line["account_role_code"]),
-        debit_amount=str(line["debit_amount"]),
-        credit_amount=str(line["credit_amount"]),
+        line_number=_require_contract_int(line["line_number"], "line_number"),
+        account_role_code=account_role_code,
+        debit_amount=_require_amount_string(line["debit_amount"], "debit_amount"),
+        credit_amount=_require_amount_string(line["credit_amount"], "credit_amount"),
     )
+
+
+def _require_contract_int(value: object, field_name: str) -> int:
+    if type(value) is not int:
+        raise AccountingValidationError(
+            f"{field_name} must be an integer. "
+            f"Supply the Billing published {field_name}, then retry ingest."
+        )
+    return value
+
+
+def _require_amount_string(value: object, field_name: str) -> str:
+    if type(value) is not str:
+        raise AccountingValidationError(
+            f"{field_name} must be a canonical decimal string. "
+            "Supply exact decimal strings, not JSON numbers, then retry ingest."
+        )
+    return value
 
 
 def _require_iso_date(value: object, field_name: str) -> date:

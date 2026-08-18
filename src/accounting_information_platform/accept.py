@@ -203,7 +203,7 @@ def accept_period_close(
             "snapshot_currency_code is required. "
             "Supply the book reporting currency, then retry the close."
         )
-    period_status_code = str(payload.get("period_status_code") or "hard_closed")
+    period_status_code = _period_status_from_close_payload(payload)
     ledger = PostgresPostingLedger(database_url, tenant_reference)
     receipt = ledger.close_fiscal_period(
         legal_entity_reference=legal_entity_reference,
@@ -1119,7 +1119,14 @@ def _parse_journal_reversal_cursor(cursor: str) -> tuple[datetime, str] | None:
             "cursor must be posted_at|journal_reference. "
             "Supply a journal-reversal cursor, then retry the journal-reversal list."
         ) from error
-    return posted_at, journal_reference
+    return (
+        _require_aware_timestamp(
+            posted_at,
+            "cursor posted_at",
+            "Supply a journal-reversal cursor, then retry the journal-reversal list.",
+        ),
+        journal_reference,
+    )
 
 
 def _parse_period_close_cursor(cursor: str) -> tuple[datetime, UUID] | None:
@@ -1143,8 +1150,13 @@ def _parse_period_close_cursor(cursor: str) -> tuple[datetime, UUID] | None:
             "cursor must be snapshot_generated_at|snapshot_record_id. "
             "Supply a period-close cursor, then retry the period-close list."
         ) from error
+    aware_generated_at = _require_aware_timestamp(
+        generated_at,
+        "cursor snapshot_generated_at",
+        "Supply a period-close cursor, then retry the period-close list.",
+    )
     try:
-        return generated_at, UUID(snapshot_record_id_text)
+        return aware_generated_at, UUID(snapshot_record_id_text)
     except ValueError as error:
         raise AccountingValidationError(
             "cursor snapshot_record_id must be a UUID. "
@@ -1198,8 +1210,13 @@ def _parse_account_ledger_cursor(cursor: str) -> tuple[datetime, str, int] | Non
             "cursor posted_at must be an ISO-8601 timestamp. "
             "Supply an account-ledger cursor, then retry the account-ledger read."
         ) from error
+    aware_posted_at = _require_aware_timestamp(
+        posted_at,
+        "cursor posted_at",
+        "Supply an account-ledger cursor, then retry the account-ledger read.",
+    )
     try:
-        return posted_at, journal_reference, int(line_number_text)
+        return aware_posted_at, journal_reference, int(line_number_text)
     except ValueError as error:
         raise AccountingValidationError(
             "cursor line_number must be an integer. "
@@ -1228,13 +1245,39 @@ def _parse_outbox_cursor(cursor: str) -> tuple[datetime, UUID] | None:
             "cursor created_at must be an ISO-8601 timestamp. "
             "Supply an outbox-event cursor, then retry the outbox read."
         ) from error
+    aware_created_at = _require_aware_timestamp(
+        created_at,
+        "cursor created_at",
+        "Supply an outbox-event cursor, then retry the outbox read.",
+    )
     try:
-        return created_at, UUID(outbox_event_id_text)
+        return aware_created_at, UUID(outbox_event_id_text)
     except ValueError as error:
         raise AccountingValidationError(
             "cursor outbox_event_id must be a UUID. "
             "Supply an outbox-event cursor, then retry the outbox read."
         ) from error
+
+
+def _period_status_from_close_payload(payload: Mapping[str, object]) -> str:
+    if "period_status_code" not in payload:
+        return "hard_closed"
+    period_status_code = payload["period_status_code"]
+    if type(period_status_code) is not str or not period_status_code:
+        raise AccountingValidationError(
+            "period_status_code must be soft_closed or hard_closed. "
+            "Omit the field to hard-close, or supply soft_closed or hard_closed, "
+            "then retry the close."
+        )
+    return period_status_code
+
+
+def _require_aware_timestamp(value: datetime, field_name: str, next_action: str) -> datetime:
+    if value.tzinfo is None:
+        raise AccountingValidationError(
+            f"{field_name} must include a UTC offset. {next_action}"
+        )
+    return value
 
 
 def _period_code_from_reference(value: str) -> str:

@@ -126,6 +126,61 @@ class JournalProposalIngestTests(unittest.TestCase):
         with self.assertRaisesRegex(AccountingValidationError, "ISO date"):
             ingest_journal_proposal(non_iso_type)
 
+    def test_missing_line_keys_and_non_string_amounts_fail_closed(self) -> None:
+        """Billing KRW lines must carry integer line numbers and decimal strings."""
+        missing_line_number = self._billing_proposal()
+        del missing_line_number["lines"][0]["line_number"]
+        with self.assertRaisesRegex(AccountingValidationError, "line_number is required"):
+            ingest_journal_proposal(missing_line_number)
+        missing_debit = self._billing_proposal()
+        del missing_debit["lines"][0]["debit_amount"]
+        with self.assertRaisesRegex(AccountingValidationError, "debit_amount is required"):
+            ingest_journal_proposal(missing_debit)
+        empty_credit = self._billing_proposal()
+        empty_credit["lines"][1]["credit_amount"] = ""
+        with self.assertRaisesRegex(AccountingValidationError, "credit_amount is required"):
+            ingest_journal_proposal(empty_credit)
+        float_amount = self._billing_proposal()
+        float_amount["lines"][0]["debit_amount"] = 25000.5
+        float_amount["lines"][1]["credit_amount"] = 25000.5
+        with self.assertRaisesRegex(AccountingValidationError, "canonical decimal string"):
+            ingest_journal_proposal(float_amount)
+        integer_amount = self._billing_proposal()
+        integer_amount["lines"][0]["debit_amount"] = 25000
+        integer_amount["lines"][1]["credit_amount"] = 25000
+        with self.assertRaisesRegex(AccountingValidationError, "canonical decimal string"):
+            ingest_journal_proposal(integer_amount)
+        bool_line_number = self._billing_proposal()
+        bool_line_number["lines"][0]["line_number"] = True
+        with self.assertRaisesRegex(AccountingValidationError, "line_number must be an integer"):
+            ingest_journal_proposal(bool_line_number)
+        string_line_number = self._billing_proposal()
+        string_line_number["lines"][0]["line_number"] = "1"
+        with self.assertRaisesRegex(AccountingValidationError, "line_number must be an integer"):
+            ingest_journal_proposal(string_line_number)
+
+    def test_proposal_contract_version_must_be_a_non_bool_int(self) -> None:
+        """Bool and non-int contract versions fail closed before posting."""
+        bool_version = self._billing_proposal(proposal_contract_version=True)
+        with self.assertRaisesRegex(
+            AccountingValidationError, "proposal_contract_version must be an integer"
+        ):
+            ingest_journal_proposal(bool_version)
+        string_version = self._billing_proposal(proposal_contract_version="one")
+        with self.assertRaisesRegex(
+            AccountingValidationError, "proposal_contract_version must be an integer"
+        ):
+            ingest_journal_proposal(string_version)
+
+    def test_billing_retained_earnings_role_is_rejected_at_ingest(self) -> None:
+        """ADR 0024 close-only retained_earnings never enters from Billing ingest."""
+        payload = self._billing_proposal()
+        payload["lines"][1]["account_role_code"] = "retained_earnings"
+        with self.assertRaisesRegex(
+            AccountingValidationError, "reserved for AIS period-close"
+        ):
+            ingest_journal_proposal(payload)
+
     def _policy(self) -> AccountingPolicy:
         return AccountingPolicy(
             tenant_reference="urn:cwl:tenant_001",

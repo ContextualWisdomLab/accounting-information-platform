@@ -4,7 +4,7 @@
 
 ## Decision
 
-Controllers close a fiscal period in two steps on the existing `accept_period_close` / `POST /period-closes` command. The request body field is `period_status_code` (`soft_closed` or `hard_closed`). Omitting the field keeps today's default: `hard_closed`. AIS does not add a second close route or a `close_type_code`.
+Controllers close a fiscal period in two steps on the existing `accept_period_close` / `POST /period-closes` command. The request body field is `period_status_code` (`soft_closed` or `hard_closed`). Omitting the field keeps today's default: `hard_closed`. Empty string or JSON null is 422 and does not silently hard-close. AIS does not add a second close route or a `close_type_code`.
 
 `soft_closed` sets `fiscal_period.period_status_code` and writes a `period_close` outbox event. It does not persist `trial_balance_snapshot`. Ordinary new posts are rejected with the existing closed-period next action. Append-only reversal into that period remains allowed as a period-end adjusting entry. `GET /trial-balances` stays a live aggregation so a later reversing journal appears. Re-soft-close replays the same receipt keys (`snapshot_record_id` is empty; `snapshot_generated_at` is `period_closed_at`) and writes zero extra rows.
 
