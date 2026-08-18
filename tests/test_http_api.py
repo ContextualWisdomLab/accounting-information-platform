@@ -8,6 +8,7 @@ import unittest
 from decimal import Decimal
 
 from accounting_information_platform import AccountingValidationError
+from accounting_information_platform.billing_pull import accept_billing_proposal_pull
 from accounting_information_platform.accept import (
     accept_period_close,
     lookup_account_ledger,
@@ -396,3 +397,179 @@ class BillingIngestFailClosedHttpTests(unittest.TestCase):
             return response.status, json.loads(response.read().decode("utf-8"))
         finally:
             connection.close()
+
+
+class BillingPullRejectedProposalHttpTests(unittest.TestCase):
+    """POST /billing-proposal-pulls keeps rejected Billing rows and fails stuck pages."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        postgres_posting.PostgresPostingTests.setUpClass()
+
+    def setUp(self) -> None:
+        self.case = postgres_posting.PostgresPostingTests("setUp")
+        self.case.setUp()
+
+    def test_http_pull_returns_receipt_and_rejected_unknown_role(self) -> None:
+        """One valid plus one unknown-role page posts one journal and lists the reject."""
+        case = self.case
+        invoice = case._billing_validated_payload()
+        unknown = case._billing_validated_payload(
+            proposal_id="019d7b92-6ff5-7a7f-b61c-962c0f4bf619",
+            source_payload_hash="sha256:" + "7" * 64,
+            idempotency_key=(
+                f"{case.policy.tenant_reference}:invoice_draft:"
+                f"019d7b92-6ff5-7a7f-b61c-962c0f4bf619:sha256:{'7' * 64}:v1"
+            ),
+            proposed_at="2026-08-31T12:00:00Z",
+            source_event_references=(
+                f"{case.policy.tenant_reference}:invoice_draft:"
+                "019d7b92-6ff5-7a7f-b61c-962c0f4bf619",
+            ),
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "25000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "contract_liability",
+                    "debit_amount": "0",
+                    "credit_amount": "25000",
+                },
+            ],
+        )
+        billing_url = case._start_fake_billing([invoice, unknown])
+        server = case._start_http_server()
+        journals_before = case._count_table("accounting_core.general_journal")
+
+        status, body = case._http_json(
+            "POST",
+            "/billing-proposal-pulls",
+            {"tenant_reference": case.policy.tenant_reference, "billing_base_url": billing_url},
+        )
+        replay = accept_billing_proposal_pull(
+            {"tenant_reference": case.policy.tenant_reference, "billing_base_url": billing_url},
+            postgres_posting.DATABASE_URL,
+            case.policy.tenant_reference,
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(set(body), {"posting_receipts", "rejected_proposals"})
+        self.assertEqual(len(body["posting_receipts"]), 1)
+        self.assertEqual(
+            body["posting_receipts"][0]["idempotency_key"], invoice["idempotency_key"]
+        )
+        self.assertEqual(len(body["rejected_proposals"]), 1)
+        rejected = body["rejected_proposals"][0]
+        self.assertEqual(
+            set(rejected),
+            {
+                "proposal_id",
+                "idempotency_key",
+                "rejection_reason_code",
+                "rejection_message",
+            },
+        )
+        self.assertEqual(rejected["proposal_id"], unknown["proposal_id"])
+        self.assertEqual(rejected["idempotency_key"], unknown["idempotency_key"])
+        self.assertEqual(rejected["rejection_reason_code"], "unknown_account_role")
+        self.assertIn("then retry", str(rejected["rejection_message"]))
+        self.assertEqual(replay["posting_receipts"], body["posting_receipts"])
+        self.assertEqual(replay["rejected_proposals"], body["rejected_proposals"])
+        self.assertEqual(case._count_table("accounting_core.general_journal"), journals_before + 1)
+        server.shutdown()
+        server.server_close()
+
+    def test_http_pull_empty_page_includes_rejected_proposals(self) -> None:
+        """An empty Billing page still returns rejected_proposals []."""
+        case = self.case
+        billing_url = case._start_fake_billing([])
+        server = case._start_http_server()
+
+        status, body = case._http_json(
+            "POST",
+            "/billing-proposal-pulls",
+            {"tenant_reference": case.policy.tenant_reference, "billing_base_url": billing_url},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["posting_receipts"], [])
+        self.assertEqual(body["rejected_proposals"], [])
+        self.assertEqual(set(body), {"posting_receipts", "rejected_proposals"})
+        server.shutdown()
+        server.server_close()
+
+    def test_http_pull_stuck_cursor_and_page_cap_are_422(self) -> None:
+        """A repeating next_cursor or a 21-page list stops the HTTP pull thread."""
+        case = self.case
+        server = case._start_http_server()
+        stuck_url = case._start_fake_billing(
+            [],
+            list_raw=json.dumps(
+                {
+                    "journal_proposals": [],
+                    "next_cursor": "2026-08-31T00:00:00Z|stuck",
+                }
+            ).encode("utf-8"),
+        )
+        long_items = [
+            case._billing_validated_payload(
+                proposal_id=f"019d7b92-7aa0-7a7f-b61c-962c0f4bf6{index:02d}",
+                source_payload_hash="sha256:" + f"{index:064d}",
+                idempotency_key=(
+                    f"{case.policy.tenant_reference}:invoice_draft:"
+                    f"019d7b92-7aa0-7a7f-b61c-962c0f4bf6{index:02d}:"
+                    f"sha256:{index:064d}:v1"
+                ),
+                proposed_at=f"2026-08-31T00:{index:02d}:00Z",
+                source_event_references=(
+                    f"{case.policy.tenant_reference}:invoice_draft:"
+                    f"019d7b92-7aa0-7a7f-b61c-962c0f4bf6{index:02d}",
+                ),
+                lines=[
+                    {
+                        "line_number": 1,
+                        "account_role_code": "accounts_receivable",
+                        "debit_amount": "25000",
+                        "credit_amount": "0",
+                    },
+                    {
+                        "line_number": 2,
+                        "account_role_code": "contract_liability",
+                        "debit_amount": "0",
+                        "credit_amount": "25000",
+                    },
+                ],
+            )
+            for index in range(21)
+        ]
+        long_url = case._start_fake_billing(long_items)
+        journals_before = case._count_table("accounting_core.general_journal")
+
+        stuck_status, stuck_body = case._http_json(
+            "POST",
+            "/billing-proposal-pulls",
+            {"tenant_reference": case.policy.tenant_reference, "billing_base_url": stuck_url},
+        )
+        cap_status, cap_body = case._http_json(
+            "POST",
+            "/billing-proposal-pulls",
+            {
+                "tenant_reference": case.policy.tenant_reference,
+                "billing_base_url": long_url,
+                "page_limit": 1,
+            },
+        )
+
+        self.assertEqual(stuck_status, 422)
+        self.assertIn("list cursor", str(stuck_body["error_message"]))
+        self.assertIn("then retry", str(stuck_body["error_message"]))
+        self.assertEqual(cap_status, 422)
+        self.assertIn("20 pages", str(cap_body["error_message"]))
+        self.assertIn("then retry", str(cap_body["error_message"]))
+        self.assertEqual(case._count_table("accounting_core.general_journal"), journals_before)
+        server.shutdown()
+        server.server_close()

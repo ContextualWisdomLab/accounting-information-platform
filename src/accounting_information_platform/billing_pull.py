@@ -20,6 +20,17 @@ LIST_COLLECTION_KEY = "journal_proposals"
 LIST_CURSOR_KEY = "next_cursor"
 DEFAULT_PAGE_LIMIT = 50
 MAX_PAGE_LIMIT = 100
+MAX_PULL_PAGES = 20
+_REJECTION_REASON_RULES = (
+    (("is not mapped", "account_role_mapping"), "unknown_account_role"),
+    (("must balance",), "unbalanced_journal"),
+    (
+        ("closed fiscal period", "open period", "is soft_closed", "is hard_closed"),
+        "closed_period",
+    ),
+    (("bound tenant",), "cross_tenant"),
+    (("canonical decimal", "amount must be"), "invalid_amount"),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,11 +120,20 @@ def accept_pulled_proposals(
     proposed_after: str | None = None,
     cursor: str | None = None,
     page_limit: int | None = None,
-) -> tuple[dict[str, object], ...]:
-    """Pull Billing pages until `next_cursor` is empty and post each validated item."""
+) -> dict[str, object]:
+    """Pull Billing pages until `next_cursor` is empty; keep receipts and rejects."""
     receipts: list[dict[str, object]] = []
+    rejected: list[dict[str, object]] = []
     page_cursor = cursor
+    seen_cursors: set[str] = set()
+    pages_fetched = 0
     while True:
+        pages_fetched += 1
+        if pages_fetched > MAX_PULL_PAGES:
+            raise AccountingValidationError(
+                "Billing pull exceeded 20 pages. "
+                "Narrow proposed_after or cursor, then retry the pull."
+            )
         page = pull_validated_journal_proposals(
             billing_base_url,
             tenant_reference,
@@ -126,18 +146,25 @@ def accept_pulled_proposals(
                 receipts.append(
                     accept_journal_proposal(item, database_url, tenant_reference)
                 )
-            except AccountingValidationError:
-                continue
+            except AccountingValidationError as error:
+                rejected.append(_rejected_proposal(item, error))
+        if page_cursor:
+            seen_cursors.add(page_cursor)
         if not page.next_cursor:
             break
+        if page.next_cursor in seen_cursors:
+            raise AccountingValidationError(
+                "Billing list cursor did not advance. "
+                "Ask Billing to fix the list cursor, then retry the pull."
+            )
         page_cursor = page.next_cursor
-    return tuple(receipts)
+    return {"posting_receipts": receipts, "rejected_proposals": rejected}
 
 
 def accept_billing_proposal_pull(
     payload: object, database_url: str, tenant_reference: str
 ) -> dict[str, object]:
-    """Run a Billing pull command for *tenant_reference* and return posted receipts."""
+    """Run a Billing pull command for *tenant_reference* and return receipts plus rejects."""
     if not isinstance(payload, Mapping):
         raise AccountingValidationError(
             "billing proposal pull payload must be a JSON object. "
@@ -164,7 +191,7 @@ def accept_billing_proposal_pull(
             ) from error
     proposed_after = payload.get("proposed_after")
     cursor = payload.get("cursor")
-    receipts = accept_pulled_proposals(
+    return accept_pulled_proposals(
         billing_base_url,
         database_url,
         tenant_reference,
@@ -172,7 +199,25 @@ def accept_billing_proposal_pull(
         cursor=str(cursor) if cursor else None,
         page_limit=page_limit,
     )
-    return {"posting_receipts": list(receipts)}
+
+
+def _rejection_reason_code(error: BaseException) -> str:
+    message = str(error)
+    for needles, reason_code in _REJECTION_REASON_RULES:
+        if any(needle in message for needle in needles):
+            return reason_code
+    return "proposal_validation_failed"
+
+
+def _rejected_proposal(
+    item: Mapping[str, object], error: AccountingValidationError
+) -> dict[str, object]:
+    return {
+        "proposal_id": str(item.get("proposal_id") or ""),
+        "idempotency_key": str(item.get("idempotency_key") or ""),
+        "rejection_reason_code": _rejection_reason_code(error),
+        "rejection_message": str(error),
+    }
 
 
 def _resolve_page_limit(page_limit: int | None) -> int:

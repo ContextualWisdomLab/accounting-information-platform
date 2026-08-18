@@ -1154,7 +1154,8 @@ class PostgresPostingTests(unittest.TestCase):
         self._assert_published_receipt(post_receipt, credit)
         self.assertEqual(post_receipt, pull_body["posting_receipts"][0])
         self.assertEqual(post_receipt, lookup)
-        self.assertEqual(replayed, (post_receipt,))
+        self.assertEqual(replayed["posting_receipts"], [post_receipt])
+        self.assertEqual(replayed["rejected_proposals"], [])
         self.assertEqual(self._count_table("accounting_core.general_journal"), 1)
         self.assertEqual(self._posted_chart_accounts(), {"110100", "410100"})
 
@@ -8032,15 +8033,24 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertNotIn("next_cursor", pulled_invoice)
         self.assertNotIn("items", pulled_invoice)
         self.assertNotIn("cursor", pulled_invoice)
-        self.assertEqual(len(receipts), 2)
-        self.assertEqual(receipts[0], invoice_lookup)
-        self.assertEqual(receipts[1], cash_lookup)
+        self.assertEqual(len(receipts["posting_receipts"]), 2)
+        self.assertEqual(receipts["posting_receipts"][0], invoice_lookup)
+        self.assertEqual(receipts["posting_receipts"][1], cash_lookup)
+        self.assertEqual(len(receipts["rejected_proposals"]), 1)
+        self.assertEqual(
+            receipts["rejected_proposals"][0]["proposal_id"], unmapped["proposal_id"]
+        )
+        self.assertEqual(
+            receipts["rejected_proposals"][0]["rejection_reason_code"],
+            "unknown_account_role",
+        )
         self.assertEqual(replayed, receipts)
         self.assertEqual(lookup_status, 200)
         self.assertEqual(http_lookup, invoice_lookup)
         self.assertEqual(pulled_invoice["proposal_id"], invoice["proposal_id"])
         self.assertEqual(http_status, 200)
-        self.assertEqual(http_body["posting_receipts"], list(replayed))
+        self.assertEqual(http_body["posting_receipts"], replayed["posting_receipts"])
+        self.assertEqual(http_body["rejected_proposals"], replayed["rejected_proposals"])
         self.assertEqual(self._count_table("accounting_core.general_journal"), 2)
         self.assertEqual(self._posted_chart_accounts(), {"110100", "410100", "110200"})
 
@@ -8244,8 +8254,10 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(get_pull_status, 405)
         self.assertEqual(bad_pull_json[0], 400)
         self.assertEqual(missing_url_status, 422)
-        self.assertEqual(from_env["posting_receipts"], list(replayed))
+        self.assertEqual(from_env["posting_receipts"], replayed["posting_receipts"])
+        self.assertEqual(from_env["rejected_proposals"], replayed["rejected_proposals"])
         self.assertEqual(empty_page["posting_receipts"], [])
+        self.assertEqual(empty_page["rejected_proposals"], [])
         self.assertEqual(billing.last_list_body["journal_proposals"], [])
         self.assertIsNone(billing.last_list_body["next_cursor"])
         self.assertEqual(set(billing.last_list_body), {"journal_proposals", "next_cursor"})
