@@ -8,6 +8,8 @@ Financial Accounting Standards Board. (2024). *Accounting Standards Codification
 
 IFRS Foundation. (2022). *IAS 1 presentation of financial statements*. https://www.ifrs.org/issued-standards/list-of-standards/ias-1-presentation-of-financial-statements/
 
+IFRS Foundation. (2022). *IAS 7 statement of cash flows*. https://www.ifrs.org/issued-standards/list-of-standards/ias-7-statement-of-cash-flows/
+
 IFRS Foundation. (2022). *IAS 10 events after the reporting period*. https://www.ifrs.org/issued-standards/list-of-standards/ias-10-events-after-the-reporting-period/
 
 IFRS Foundation. (2023). *IAS 34 interim financial reporting*. https://www.ifrs.org/issued-standards/list-of-standards/ias-34-interim-financial-reporting/

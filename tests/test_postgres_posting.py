@@ -1919,7 +1919,7 @@ class PostgresPostingTests(unittest.TestCase):
             ),
             None,
         )
-        bad_type = self._http_financial_statement("cash_flow")
+        bad_type = self._http_financial_statement("funds_flow")
         unknown_period = self._http_financial_statement(
             "income_statement",
             fiscal_period_reference="urn:cwl:accounting:fiscal_period:1999-01",
@@ -1939,7 +1939,7 @@ class PostgresPostingTests(unittest.TestCase):
                 self.policy.legal_entity_reference,
                 self.policy.accounting_book_reference,
                 "urn:cwl:accounting:fiscal_period:2026-08",
-                "cash_flow",
+                "funds_flow",
             )
         with self.assertRaisesRegex(AccountingValidationError, "fiscal_period_reference"):
             lookup_financial_statement(
@@ -1957,7 +1957,7 @@ class PostgresPostingTests(unittest.TestCase):
                 self.policy.legal_entity_reference,
                 self.policy.accounting_book_reference,
                 "2026-08",
-                "cash_flow",
+                "funds_flow",
             )
         self._delete_role_mapping("usage_revenue")
         with self.assertRaisesRegex(AccountingValidationError, "account_role_mapping"):
@@ -2869,7 +2869,7 @@ class PostgresPostingTests(unittest.TestCase):
                 self.policy.legal_entity_reference,
                 self.policy.accounting_book_reference,
                 "urn:cwl:accounting:fiscal_period:2026-08",
-                "cash_flow",
+                "funds_flow",
             )
 
         self.assertEqual(unknown_period[0], 404)
@@ -2879,6 +2879,370 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(
             self._count_table("accounting_core.general_journal"),
             journals_before + 6,
+        )
+        server.shutdown()
+
+    def test_http_reads_cash_flow_statement(self) -> None:
+        """GET /financial-statements?statement_type_code=cash_flow ties IAS 7 indirect cash to BS cash."""
+        self._seed_additional_period("2026-06", date(2026, 6, 1), date(2026, 6, 30))
+        self._seed_additional_period("2026-09", date(2026, 9, 1), date(2026, 9, 30))
+        cash_flow_roles = [
+            "period_net_income",
+            "operating_working_capital",
+            "cash_from_operations",
+            "cash_from_investing",
+            "cash_from_financing",
+            "net_cash_change",
+            "opening_cash",
+            "closing_cash",
+        ]
+        server = self._start_http_server()
+        journals_before = self._count_table("accounting_core.general_journal")
+
+        empty_status, empty = self._http_financial_statement("cash_flow")
+        empty_library = lookup_financial_statement(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-08",
+            "cash_flow",
+        )
+        empty_by_role = {
+            str(item["account_role_code"]): item for item in empty["statement_lines"]
+        }
+
+        self.assertEqual(empty_status, 200)
+        self.assertEqual(empty, empty_library)
+        self.assertEqual(empty["statement_type_code"], "cash_flow")
+        self.assertNotIn("statement_scope_code", empty)
+        self.assertNotIn("comparison_fiscal_period_reference", empty)
+        self.assertEqual(list(empty_by_role), cash_flow_roles)
+        for role_code in cash_flow_roles:
+            self.assertEqual(empty_by_role[role_code]["chart_account_code"], "")
+            self.assertEqual(empty_by_role[role_code]["account_class_code"], "")
+            self.assertEqual(Decimal(str(empty_by_role[role_code]["debit_amount"])), Decimal("0"))
+            self.assertEqual(Decimal(str(empty_by_role[role_code]["credit_amount"])), Decimal("0"))
+        self.assertEqual(empty["net_income_amount"], "0")
+
+        invoice_status, _invoice = self._http_json(
+            "POST", "/journal-proposals", self._billing_validated_payload()
+        )
+        invoice_only_status, invoice_only = self._http_financial_statement("cash_flow")
+        invoice_income_status, invoice_income = self._http_financial_statement(
+            "income_statement"
+        )
+        invoice_roles = {
+            str(item["account_role_code"]): item
+            for item in invoice_only["statement_lines"]
+        }
+        invoice_ni = Decimal(str(invoice_roles["period_net_income"]["credit_amount"])) - Decimal(
+            str(invoice_roles["period_net_income"]["debit_amount"])
+        )
+        invoice_wc = Decimal(
+            str(invoice_roles["operating_working_capital"]["credit_amount"])
+        ) - Decimal(str(invoice_roles["operating_working_capital"]["debit_amount"]))
+        invoice_ops = Decimal(
+            str(invoice_roles["cash_from_operations"]["credit_amount"])
+        ) - Decimal(str(invoice_roles["cash_from_operations"]["debit_amount"]))
+        invoice_closing = Decimal(str(invoice_roles["closing_cash"]["credit_amount"])) - Decimal(
+            str(invoice_roles["closing_cash"]["debit_amount"])
+        )
+
+        self.assertEqual(invoice_status, 200)
+        self.assertEqual(invoice_only_status, 200)
+        self.assertEqual(invoice_income_status, 200)
+        self.assertEqual(invoice_ni, Decimal(str(invoice_income["net_income_amount"])))
+        self.assertEqual(invoice_ni, Decimal("25000"))
+        self.assertEqual(invoice_wc, Decimal("-25000"))
+        self.assertEqual(invoice_ops, Decimal("0"))
+        self.assertEqual(invoice_closing, Decimal("0"))
+        self.assertEqual(
+            Decimal(str(invoice_roles["cash_from_investing"]["credit_amount"]))
+            - Decimal(str(invoice_roles["cash_from_investing"]["debit_amount"])),
+            Decimal("0"),
+        )
+        self.assertEqual(
+            Decimal(str(invoice_roles["cash_from_financing"]["credit_amount"]))
+            - Decimal(str(invoice_roles["cash_from_financing"]["debit_amount"])),
+            Decimal("0"),
+        )
+
+        cash_status, _cash = self._http_json(
+            "POST", "/journal-proposals", self._billing_cash_payload()
+        )
+        income_status, income = self._http_financial_statement("income_statement")
+        sheet_status, sheet = self._http_financial_statement("balance_sheet")
+        cash_flow_status, cash_flow = self._http_financial_statement("cash_flow")
+        library = lookup_financial_statement(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-08",
+            "cash_flow",
+        )
+        persist = PostgresPostingLedger(
+            DATABASE_URL, self.policy.tenant_reference
+        ).load_financial_statement(
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "2026-08",
+            "cash_flow",
+        )
+        by_role = {
+            str(item["account_role_code"]): item for item in cash_flow["statement_lines"]
+        }
+        sheet_cash = sum(
+            Decimal(str(item["debit_amount"])) - Decimal(str(item["credit_amount"]))
+            for item in sheet["statement_lines"]
+            if item["account_role_code"] == "cash_receipt"
+        )
+        period_ni = Decimal(str(by_role["period_net_income"]["credit_amount"])) - Decimal(
+            str(by_role["period_net_income"]["debit_amount"])
+        )
+        working_capital = Decimal(
+            str(by_role["operating_working_capital"]["credit_amount"])
+        ) - Decimal(str(by_role["operating_working_capital"]["debit_amount"]))
+        operations = Decimal(str(by_role["cash_from_operations"]["credit_amount"])) - Decimal(
+            str(by_role["cash_from_operations"]["debit_amount"])
+        )
+        investing = Decimal(str(by_role["cash_from_investing"]["credit_amount"])) - Decimal(
+            str(by_role["cash_from_investing"]["debit_amount"])
+        )
+        financing = Decimal(str(by_role["cash_from_financing"]["credit_amount"])) - Decimal(
+            str(by_role["cash_from_financing"]["debit_amount"])
+        )
+        net_cash = Decimal(str(by_role["net_cash_change"]["credit_amount"])) - Decimal(
+            str(by_role["net_cash_change"]["debit_amount"])
+        )
+        opening_cash = Decimal(str(by_role["opening_cash"]["credit_amount"])) - Decimal(
+            str(by_role["opening_cash"]["debit_amount"])
+        )
+        closing_cash = Decimal(str(by_role["closing_cash"]["credit_amount"])) - Decimal(
+            str(by_role["closing_cash"]["debit_amount"])
+        )
+
+        self.assertEqual(cash_status, 200)
+        self.assertEqual(income_status, 200)
+        self.assertEqual(sheet_status, 200)
+        self.assertEqual(cash_flow_status, 200)
+        self.assertEqual(cash_flow, library)
+        self.assertEqual(cash_flow, persist)
+        self.assertEqual(list(by_role), cash_flow_roles)
+        self.assertEqual(period_ni, Decimal(str(income["net_income_amount"])))
+        self.assertEqual(period_ni, Decimal("25000"))
+        self.assertEqual(working_capital, Decimal("-7000"))
+        self.assertEqual(operations, Decimal("18000"))
+        self.assertEqual(investing, Decimal("0"))
+        self.assertEqual(financing, Decimal("0"))
+        self.assertEqual(net_cash, operations + investing + financing)
+        self.assertEqual(opening_cash, Decimal("0"))
+        self.assertEqual(closing_cash, opening_cash + net_cash)
+        self.assertEqual(closing_cash, Decimal("18000"))
+        self.assertEqual(closing_cash, sheet_cash)
+
+        soft_status, _soft = self._http_json(
+            "POST", "/period-closes", self._period_close_payload(period_status_code="soft_closed")
+        )
+        soft_cash_status, soft_cash = self._http_financial_statement("cash_flow")
+        self.assertEqual(soft_status, 200)
+        self.assertEqual(soft_cash_status, 200)
+        self.assertEqual(soft_cash["statement_lines"], cash_flow["statement_lines"])
+        self.assertEqual(soft_cash["net_income_amount"], cash_flow["net_income_amount"])
+
+        hard_status, _hard = self._http_json("POST", "/period-closes", self._period_close_payload())
+        closed_income_status, closed_income = self._http_financial_statement("income_statement")
+        closed_sheet_status, closed_sheet = self._http_financial_statement("balance_sheet")
+        closed_cash_status, closed_cash = self._http_financial_statement("cash_flow")
+        closed_roles = {
+            str(item["account_role_code"]): item
+            for item in closed_cash["statement_lines"]
+        }
+        closed_sheet_cash = sum(
+            Decimal(str(item["debit_amount"])) - Decimal(str(item["credit_amount"]))
+            for item in closed_sheet["statement_lines"]
+            if item["account_role_code"] == "cash_receipt"
+        )
+        closed_ni = Decimal(str(closed_roles["period_net_income"]["credit_amount"])) - Decimal(
+            str(closed_roles["period_net_income"]["debit_amount"])
+        )
+        closed_wc = Decimal(
+            str(closed_roles["operating_working_capital"]["credit_amount"])
+        ) - Decimal(str(closed_roles["operating_working_capital"]["debit_amount"]))
+        closed_financing = Decimal(
+            str(closed_roles["cash_from_financing"]["credit_amount"])
+        ) - Decimal(str(closed_roles["cash_from_financing"]["debit_amount"]))
+        closed_closing = Decimal(str(closed_roles["closing_cash"]["credit_amount"])) - Decimal(
+            str(closed_roles["closing_cash"]["debit_amount"])
+        )
+        self.assertEqual(hard_status, 200)
+        self.assertEqual(closed_income_status, 200)
+        self.assertEqual(closed_sheet_status, 200)
+        self.assertEqual(closed_cash_status, 200)
+        self.assertEqual(closed_ni, Decimal(str(income["net_income_amount"])))
+        self.assertEqual(closed_ni, Decimal(str(closed_income["net_income_amount"])))
+        self.assertEqual(closed_wc, Decimal("-7000"))
+        self.assertEqual(closed_financing, Decimal("0"))
+        self.assertEqual(closed_sheet["net_income_amount"], "0")
+        self.assertEqual(closed_closing, closed_sheet_cash)
+        self.assertEqual(
+            closed_closing,
+            Decimal(str(closed_roles["opening_cash"]["credit_amount"]))
+            - Decimal(str(closed_roles["opening_cash"]["debit_amount"]))
+            + Decimal(str(closed_roles["net_cash_change"]["credit_amount"]))
+            - Decimal(str(closed_roles["net_cash_change"]["debit_amount"])),
+        )
+
+        ytd_status, ytd = self._http_financial_statement(
+            "cash_flow",
+            statement_scope_code="year_to_date",
+        )
+        ytd_income_status, ytd_income = self._http_financial_statement(
+            "income_statement",
+            statement_scope_code="year_to_date",
+        )
+        ytd_sheet_status, ytd_sheet = self._http_financial_statement(
+            "balance_sheet",
+            statement_scope_code="year_to_date",
+        )
+        ytd_roles = {str(item["account_role_code"]): item for item in ytd["statement_lines"]}
+        ytd_sheet_cash = sum(
+            Decimal(str(item["debit_amount"])) - Decimal(str(item["credit_amount"]))
+            for item in ytd_sheet["statement_lines"]
+            if item["account_role_code"] == "cash_receipt"
+        )
+        explicit_period_status, explicit_period = self._http_financial_statement(
+            "cash_flow",
+            statement_scope_code="period",
+        )
+        compare_status, compare = self._http_financial_statement(
+            "cash_flow",
+            comparison_fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-06",
+        )
+        june_only = lookup_financial_statement(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-06",
+            "cash_flow",
+        )
+        compare_roles = {
+            str(item["account_role_code"]): item
+            for item in compare["comparison_statement_lines"]
+        }
+
+        self.assertEqual(ytd_status, 200)
+        self.assertEqual(ytd_income_status, 200)
+        self.assertEqual(ytd_sheet_status, 200)
+        self.assertEqual(explicit_period_status, 200)
+        self.assertEqual(compare_status, 200)
+        self.assertEqual(ytd["statement_scope_code"], "year_to_date")
+        self.assertNotIn("statement_scope_code", explicit_period)
+        self.assertEqual(explicit_period["statement_lines"], closed_cash["statement_lines"])
+        self.assertEqual(
+            Decimal(str(ytd_roles["period_net_income"]["credit_amount"]))
+            - Decimal(str(ytd_roles["period_net_income"]["debit_amount"])),
+            Decimal(str(ytd_income["net_income_amount"])),
+        )
+        self.assertEqual(
+            Decimal(str(ytd_roles["opening_cash"]["credit_amount"]))
+            - Decimal(str(ytd_roles["opening_cash"]["debit_amount"])),
+            Decimal("0"),
+        )
+        self.assertEqual(
+            Decimal(str(ytd_roles["closing_cash"]["credit_amount"]))
+            - Decimal(str(ytd_roles["closing_cash"]["debit_amount"])),
+            ytd_sheet_cash,
+        )
+        self.assertEqual(
+            compare["comparison_fiscal_period_reference"],
+            "urn:cwl:accounting:fiscal_period:2026-06",
+        )
+        self.assertEqual(compare["comparison_statement_lines"], june_only["statement_lines"])
+        self.assertEqual(
+            Decimal(str(compare_roles["closing_cash"]["credit_amount"]))
+            - Decimal(str(compare_roles["closing_cash"]["debit_amount"])),
+            Decimal("0"),
+        )
+        self.assertNotIn("comparison_fiscal_period_reference", closed_cash)
+
+        september_status, september = self._http_financial_statement(
+            "cash_flow",
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-09",
+        )
+        september_sheet_status, september_sheet = self._http_financial_statement(
+            "balance_sheet",
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-09",
+        )
+        september_roles = {
+            str(item["account_role_code"]): item
+            for item in september["statement_lines"]
+        }
+        september_sheet_cash = sum(
+            Decimal(str(item["debit_amount"])) - Decimal(str(item["credit_amount"]))
+            for item in september_sheet["statement_lines"]
+            if item["account_role_code"] == "cash_receipt"
+        )
+        self.assertEqual(september_status, 200)
+        self.assertEqual(september_sheet_status, 200)
+        self.assertEqual(
+            Decimal(str(september_roles["opening_cash"]["credit_amount"]))
+            - Decimal(str(september_roles["opening_cash"]["debit_amount"])),
+            Decimal("18000"),
+        )
+        self.assertEqual(
+            Decimal(str(september_roles["period_net_income"]["credit_amount"]))
+            - Decimal(str(september_roles["period_net_income"]["debit_amount"])),
+            Decimal("0"),
+        )
+        self.assertEqual(
+            Decimal(str(september_roles["operating_working_capital"]["credit_amount"]))
+            - Decimal(str(september_roles["operating_working_capital"]["debit_amount"])),
+            Decimal("0"),
+        )
+        self.assertEqual(
+            Decimal(str(september_roles["cash_from_operations"]["credit_amount"]))
+            - Decimal(str(september_roles["cash_from_operations"]["debit_amount"])),
+            Decimal("0"),
+        )
+        self.assertEqual(
+            Decimal(str(september_roles["closing_cash"]["credit_amount"]))
+            - Decimal(str(september_roles["closing_cash"]["debit_amount"])),
+            Decimal("18000"),
+        )
+        self.assertEqual(september_sheet_cash, Decimal("18000"))
+
+        unknown_period = self._http_financial_statement(
+            "cash_flow",
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:1999-01",
+        )
+        unknown_entity = self._http_financial_statement(
+            "cash_flow",
+            legal_entity_reference="urn:cwl:legal_entity:missing",
+        )
+        missing_header = self._http_financial_statement("cash_flow", tenant_header=None)
+        cross_status, _cross = self._http_financial_statement(
+            "cash_flow", tenant_header="urn:cwl:tenant_other"
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "statement_type_code"):
+            lookup_financial_statement(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "urn:cwl:accounting:fiscal_period:2026-08",
+                "funds_flow",
+            )
+
+        self.assertEqual(unknown_period[0], 404)
+        self.assertEqual(unknown_entity[0], 404)
+        self.assertEqual(missing_header[0], 400)
+        self.assertEqual(cross_status, 403)
+        self.assertEqual(
+            self._count_table("accounting_core.general_journal"),
+            journals_before + 3,
         )
         server.shutdown()
 
