@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Replaced the engineer-oriented root README with a buyer/operator document:
+  current foundation readiness, independent run without Naruon or sibling
+  checkouts, and the sibling call path through the published file contracts.
+- Recorded pull-request stacking, exact-head CI, writer-boundary, and
+  review-bot procedure in `docs/CONTRIBUTING.md` so they stay out of the
+  buyer/operator README.
+
 ### Fixed
 
 - Pinned the Billing #15 list envelope to `journal_proposals` + `next_cursor` only (no body `items` or `cursor`); AIS sends `next_cursor` back as query `cursor`, defaults `page_limit` to 50, and rejects a limit above 100.
