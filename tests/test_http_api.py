@@ -774,6 +774,76 @@ class UnappliedCashRollforwardHttpTests(unittest.TestCase):
         server.server_close()
 
 
+class VatPeriodRegisterHttpTests(unittest.TestCase):
+    """GET /vat-period-registers ties issued and voided tax to posted 210100."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        postgres_posting.PostgresPostingTests.setUpClass()
+
+    def setUp(self) -> None:
+        self.case = postgres_posting.PostgresPostingTests("setUp")
+        self.case.setUp()
+
+    def test_http_vat_period_register_issues_then_voids_tax(self) -> None:
+        """Taxed issue 2500 then void 2500 closes at zero; an untaxed issue stays zeros."""
+        case = self.case
+        server = case._start_http_server()
+        empty_status, empty = case._http_vat_period_register()
+        untaxed_status, _untaxed = case._http_json(
+            "POST", "/journal-proposals", case._billing_validated_payload()
+        )
+        untaxed_register_status, untaxed = case._http_vat_period_register()
+        taxed_status, _taxed = case._http_json(
+            "POST", "/journal-proposals", case._billing_taxed_payload()
+        )
+        issued_status, issued = case._http_vat_period_register()
+        issued_aging_status, issued_aging = case._http_payable_aging()
+        void_status, _void = case._http_json(
+            "POST", "/journal-proposals", case._billing_issued_invoice_void_payload()
+        )
+        voided_status, voided = case._http_vat_period_register()
+        voided_aging_status, voided_aging = case._http_payable_aging()
+        voided_balances_status, voided_balances = case._http_account_balances(
+            chart_account_code="210100"
+        )
+        voided_net = Decimal(
+            str(voided_balances["account_balances"][0]["credit_amount"])
+        ) - Decimal(str(voided_balances["account_balances"][0]["debit_amount"]))
+
+        self.assertEqual(empty_status, 200)
+        self.assertEqual(empty["issued_amount"], "0")
+        self.assertEqual(empty["voided_amount"], "0")
+        self.assertEqual(empty["closing_amount"], "0")
+        self.assertEqual(untaxed_status, 200)
+        self.assertEqual(untaxed_register_status, 200)
+        self.assertEqual(untaxed["issued_amount"], "0")
+        self.assertEqual(untaxed["voided_amount"], "0")
+        self.assertEqual(untaxed["closing_amount"], "0")
+        self.assertEqual(taxed_status, 200)
+        self.assertEqual(issued_status, 200)
+        self.assertEqual(issued_aging_status, 200)
+        self.assertEqual(issued["issued_amount"], "2500")
+        self.assertEqual(issued["voided_amount"], "0")
+        self.assertEqual(issued["closing_amount"], "2500")
+        self.assertEqual(issued_aging["total_outstanding_amount"], "2500")
+        self.assertEqual(void_status, 200)
+        self.assertEqual(voided_status, 200)
+        self.assertEqual(voided_aging_status, 200)
+        self.assertEqual(voided_balances_status, 200)
+        self.assertEqual(voided["issued_amount"], "2500")
+        self.assertEqual(voided["voided_amount"], "2500")
+        self.assertEqual(voided["closing_amount"], "0")
+        self.assertEqual(voided_aging["total_outstanding_amount"], "0")
+        self.assertEqual(Decimal(str(voided["closing_amount"])), voided_net)
+        self.assertEqual(voided["chart_account_code"], "210100")
+        self.assertEqual(voided["account_role_code"], "tax_payable")
+        self.assertNotIn("party_reference", voided)
+        self.assertNotIn("next_cursor", voided)
+        server.shutdown()
+        server.server_close()
+
+
 class PeriodClosePackageHttpTests(unittest.TestCase):
     """GET /period-close-packages includes the standalone payable-aging document."""
 

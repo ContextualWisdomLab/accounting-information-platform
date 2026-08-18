@@ -1,4 +1,4 @@
-"""Thin stdlib HTTP boundary for Billing proposals, AIS adjusting journals, pulls, receipts, close, open, TB, statements, catalog, ledgers, balances, rollforwards, leftover-cash rollforward, receivable aging, payable aging, period-close packages, journals, reversals, outbox, and audit history."""
+"""Thin stdlib HTTP boundary for Billing proposals, AIS adjusting journals, pulls, receipts, close, open, TB, statements, catalog, ledgers, balances, rollforwards, leftover-cash rollforward, VAT period register, receivable aging, payable aging, period-close packages, journals, reversals, outbox, and audit history."""
 
 from __future__ import annotations
 
@@ -38,6 +38,7 @@ from .accept import (
     lookup_receivable_aging,
     lookup_trial_balance,
     lookup_unapplied_cash_rollforward,
+    lookup_vat_period_register,
     publish_outbox_event,
 )
 from .billing_pull import accept_billing_proposal_pull
@@ -62,6 +63,7 @@ ACCOUNT_LEDGER_PATH = "/account-ledgers"
 ACCOUNT_BALANCE_PATH = "/account-balances"
 ACCOUNT_ROLLFORWARD_PATH = "/account-rollforwards"
 UNAPPLIED_CASH_ROLLFORWARD_PATH = "/unapplied-cash-rollforwards"
+VAT_PERIOD_REGISTER_PATH = "/vat-period-registers"
 RECEIVABLE_AGING_PATH = "/receivable-agings"
 PAYABLE_AGING_PATH = "/payable-agings"
 PERIOD_CLOSE_PACKAGE_PATH = "/period-close-packages"
@@ -93,7 +95,7 @@ class JournalProposalServer(ThreadingHTTPServer):
 
 
 class JournalProposalHandler(BaseHTTPRequestHandler):
-    """Serve proposal POST, reverse, reversal list, pull, receipt GET, close, TB, catalog, journal, leftover-cash rollforward, receivable aging, payable aging, period-close package, outbox, audit history, and healthz."""
+    """Serve proposal POST, reverse, reversal list, pull, receipt GET, close, TB, catalog, journal, leftover-cash rollforward, VAT period register, receivable aging, payable aging, period-close package, outbox, audit history, and healthz."""
 
     server: JournalProposalServer
 
@@ -156,6 +158,9 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         if parsed.path == UNAPPLIED_CASH_ROLLFORWARD_PATH:
             self._get_unapplied_cash_rollforward(parsed.query)
             return
+        if parsed.path == VAT_PERIOD_REGISTER_PATH:
+            self._get_vat_period_register(parsed.query)
+            return
         if parsed.path == RECEIVABLE_AGING_PATH:
             self._get_receivable_aging(parsed.query)
             return
@@ -194,7 +199,7 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             "GET /account-role-mappings, GET /accounting-books, "
             "GET /legal-entities, GET /chart-accounts, GET /account-ledgers, "
             "GET /account-balances, GET /account-rollforwards, GET /unapplied-cash-rollforwards, "
-            "GET /receivable-agings, "
+            "GET /vat-period-registers, GET /receivable-agings, "
             "GET /payable-agings, GET /period-close-packages, GET /journals, "
             "GET /journal-reversals, GET /period-closes, GET /fiscal-periods, "
             "GET /outbox-events?event_type_code=, or GET /audit-events, then retry.",
@@ -277,6 +282,13 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
                 405,
                 "POST is not supported on the unapplied-cash rollforward endpoint. "
                 "GET the unapplied-cash rollforward, then retry.",
+            )
+            return
+        if parsed_path == VAT_PERIOD_REGISTER_PATH:
+            self._write_error(
+                405,
+                "POST is not supported on the vat-period-register endpoint. "
+                "GET the vat-period-register, then retry.",
             )
             return
         if parsed_path == RECEIVABLE_AGING_PATH:
@@ -642,6 +654,36 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             return
         try:
             document = lookup_unapplied_cash_rollforward(
+                self.server.database_url,
+                tenant_header,
+                legal_entity_reference,
+                book_reference,
+                fiscal_period_reference,
+            )
+        except AccountingValidationError as error:
+            self._write_error(404, str(error))
+            return
+        self._write_json(200, document)
+
+    def _get_vat_period_register(self, query: str) -> None:
+        tenant_header = self._bound_tenant_header("vat-period-register read")
+        if tenant_header is None:
+            return
+        fields = parse_qs(query)
+        legal_entity_reference = _first_query(fields, "legal_entity_reference")
+        book_reference = _first_query(fields, "book_reference")
+        if not book_reference:
+            book_reference = _first_query(fields, "accounting_book_reference")
+        fiscal_period_reference = _first_query(fields, "fiscal_period_reference")
+        if not legal_entity_reference or not book_reference or not fiscal_period_reference:
+            self._write_error(
+                400,
+                "legal_entity_reference, book_reference, and fiscal_period_reference are required. "
+                "Supply those vat-period-register fields, then retry the vat-period-register read.",
+            )
+            return
+        try:
+            document = lookup_vat_period_register(
                 self.server.database_url,
                 tenant_header,
                 legal_entity_reference,

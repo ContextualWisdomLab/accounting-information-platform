@@ -86,6 +86,7 @@ REQUIRED_FILES = (
     "docs/adr/0042-http-collection-write-off.md",
     "docs/adr/0043-http-unapplied-cash.md",
     "docs/adr/0044-http-unapplied-cash-rollforward.md",
+    "docs/adr/0045-http-vat-period-register.md",
     "docs/doctoring/REFERENCES.md",
     "docs/doctoring/STANDARD_TRACEABILITY.md",
     "docs/superpowers/specs/2026-08-16-accounting-information-platform-design.md",

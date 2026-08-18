@@ -1604,6 +1604,160 @@ class PostgresPostingLedger:
             )
         return document
 
+    def load_vat_period_register(
+        self,
+        legal_entity_reference: str,
+        accounting_book_reference: str,
+        period_code: str,
+    ) -> dict[str, object]:
+        """Return issued, voided, and closing tax-payable amounts for catalog 210100."""
+        if not legal_entity_reference or not accounting_book_reference or not period_code:
+            raise AccountingValidationError(
+                "legal_entity_reference, book_reference, and fiscal_period_reference are required. "
+                "Supply those vat-period-register fields, then retry the vat-period-register read."
+            )
+        account_classes = self._load_chart_account_classes(
+            legal_entity_reference, accounting_book_reference
+        )
+        if "210100" not in account_classes:
+            raise AccountingValidationError(
+                "Chart account 210100 is not recorded for this book. "
+                "Create the chart_account row, then retry the vat-period-register read."
+            )
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            legal_entity_id = self._require_legal_entity(
+                connection,
+                tenant_id,
+                legal_entity_reference,
+                next_action="the vat-period-register read",
+            )
+            book_id = self._require_book_for_close(
+                connection,
+                tenant_id,
+                legal_entity_id,
+                accounting_book_reference,
+                next_action="the vat-period-register read",
+            )[0]
+            _period_id, _period_status, period_end_date = self._require_fiscal_period(
+                connection,
+                tenant_id,
+                period_code,
+                next_action="the vat-period-register read",
+            )
+            line_rows = connection.execute(
+                """
+                SELECT COALESCE(journal_proposal_record.idempotency_key, ''),
+                       general_journal.journal_reference,
+                       journal_entry_line.account_role_code,
+                       chart_account.chart_account_code,
+                       journal_entry_line.debit_amount,
+                       journal_entry_line.credit_amount
+                FROM accounting_core.journal_entry_line
+                JOIN accounting_core.general_journal
+                  ON general_journal.tenant_account_id = journal_entry_line.tenant_account_id
+                 AND general_journal.general_journal_id = journal_entry_line.general_journal_id
+                JOIN accounting_core.chart_account
+                  ON chart_account.tenant_account_id = journal_entry_line.tenant_account_id
+                 AND chart_account.chart_account_id = journal_entry_line.chart_account_id
+                LEFT JOIN accounting_integration.journal_proposal_record
+                  ON journal_proposal_record.tenant_account_id = general_journal.tenant_account_id
+                 AND journal_proposal_record.proposal_record_id
+                   = general_journal.source_proposal_record_id
+                WHERE general_journal.tenant_account_id = %s
+                  AND general_journal.legal_entity_id = %s
+                  AND general_journal.accounting_book_id = %s
+                  AND general_journal.accounting_date <= %s
+                  AND general_journal.journal_reference NOT LIKE %s
+                ORDER BY general_journal.journal_reference, journal_entry_line.line_number
+                """,
+                (
+                    tenant_id,
+                    legal_entity_id,
+                    book_id,
+                    period_end_date,
+                    _CLOSING_JOURNAL_PATTERN,
+                ),
+            ).fetchall()
+        journals: dict[str, dict[str, object]] = {}
+        for (
+            idempotency_key,
+            journal_reference,
+            account_role_code,
+            chart_account_code,
+            debit_amount,
+            credit_amount,
+        ) in line_rows:
+            bucket = journals.setdefault(
+                str(journal_reference),
+                {
+                    "idempotency_key": str(idempotency_key),
+                    "debit_roles": set(),
+                    "credit_roles": set(),
+                    "tax_debit_amount": Decimal("0"),
+                    "tax_credit_amount": Decimal("0"),
+                },
+            )
+            line_debit_amount = Decimal(str(debit_amount))
+            line_credit_amount = Decimal(str(credit_amount))
+            debit_roles = bucket["debit_roles"]
+            credit_roles = bucket["credit_roles"]
+            assert isinstance(debit_roles, set)
+            assert isinstance(credit_roles, set)
+            if line_debit_amount > 0:
+                debit_roles.add(str(account_role_code))
+            if line_credit_amount > 0:
+                credit_roles.add(str(account_role_code))
+            if str(chart_account_code) == "210100":
+                bucket["tax_debit_amount"] = (
+                    Decimal(str(bucket["tax_debit_amount"])) + line_debit_amount
+                )
+                bucket["tax_credit_amount"] = (
+                    Decimal(str(bucket["tax_credit_amount"])) + line_credit_amount
+                )
+        issued_amount = Decimal("0")
+        voided_amount = Decimal("0")
+        other_movement_amount = Decimal("0")
+        for bucket in journals.values():
+            tax_debit_amount = Decimal(str(bucket["tax_debit_amount"]))
+            tax_credit_amount = Decimal(str(bucket["tax_credit_amount"]))
+            if tax_debit_amount == 0 and tax_credit_amount == 0:
+                continue
+            debit_roles = bucket["debit_roles"]
+            credit_roles = bucket["credit_roles"]
+            assert isinstance(debit_roles, set)
+            assert isinstance(credit_roles, set)
+            movement_kind = _vat_period_movement_kind(
+                str(bucket["idempotency_key"]),
+                debit_roles,
+                credit_roles,
+            )
+            if movement_kind == "issued":
+                issued_amount += tax_credit_amount
+            elif movement_kind == "voided":
+                voided_amount += tax_debit_amount
+            else:
+                other_movement_amount += tax_credit_amount - tax_debit_amount
+        closing_amount = issued_amount - voided_amount + other_movement_amount
+        document: dict[str, object] = {
+            "tenant_reference": self._tenant_reference,
+            "legal_entity_reference": legal_entity_reference,
+            "accounting_book_reference": accounting_book_reference,
+            "book_reference": accounting_book_reference,
+            "fiscal_period_reference": f"urn:cwl:accounting:fiscal_period:{period_code}",
+            "as_of_date": period_end_date.isoformat(),
+            "chart_account_code": "210100",
+            "account_role_code": "tax_payable",
+            "issued_amount": _unsigned_aging_amount_text(issued_amount),
+            "voided_amount": _unsigned_aging_amount_text(voided_amount),
+            "closing_amount": _unsigned_aging_amount_text(closing_amount),
+        }
+        if other_movement_amount != 0:
+            document["other_movement_amount"] = _unsigned_aging_amount_text(
+                other_movement_amount
+            )
+        return document
+
     def _opening_account_sides(
         self,
         connection: object,
@@ -5301,6 +5455,26 @@ def _fiscal_year_identity(period_code: str, period_start_date: date | None) -> s
 
 def _format_timestamp(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _vat_period_movement_kind(
+    idempotency_key: str,
+    debit_roles: set[str],
+    credit_roles: set[str],
+) -> str | None:
+    if ":issued_invoice_void:" in idempotency_key or (
+        "tax_payable" in debit_roles
+        and "usage_revenue" in debit_roles
+        and "accounts_receivable" in credit_roles
+    ):
+        return "voided"
+    if ":invoice_draft:" in idempotency_key or (
+        "tax_payable" in credit_roles
+        and "usage_revenue" in credit_roles
+        and "accounts_receivable" in debit_roles
+    ):
+        return "issued"
+    return None
 
 
 def _unapplied_cash_movement_kind(

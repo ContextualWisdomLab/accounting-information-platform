@@ -18,6 +18,7 @@
 - accounting policy and posting rules;
 - authoritative general journals and reversals;
 - trial balance, close, consolidation, and reporting projections;
+- the statutory tax-invoice register / period VAT bundle that ties to posted `tax_payable`;
 - the authoritative schema for `accounting_posting_receipt`.
 
 ## Required interaction
@@ -30,7 +31,7 @@ billing invoice or settlement fact
 -> source-to-posting reconciliation reference
 ```
 
-A proposal may name `accounts_receivable`, `usage_revenue`, `cash_receipt`, `contract_liability`, `tax_payable`, `cash_clearing`, `provider_fee_expense`, `write_off_expense`, or `unapplied_cash`. Accounting maps those roles to chart accounts under an effective policy version. Source systems cannot bypass this mapping by sending chart-account IDs.
+A proposal may name `accounts_receivable`, `usage_revenue`, `cash_receipt`, `contract_liability`, `tax_payable`, `cash_clearing`, `provider_fee_expense`, `write_off_expense`, or `unapplied_cash`. Accounting maps those roles to chart accounts under an effective policy version. Source systems cannot bypass this mapping by sending chart-account IDs. Billing owns commercial tax assessment. AIS owns the period VAT register that ties issued and voided tax journals to posted catalog 210100 and does not transmit those facts to NTS/HomeTax.
 
 ## Revenue caution
 

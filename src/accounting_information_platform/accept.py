@@ -349,6 +349,27 @@ def lookup_unapplied_cash_rollforward(
     )
 
 
+def lookup_vat_period_register(
+    database_url: str,
+    tenant_reference: str,
+    legal_entity_reference: str,
+    book_reference: str,
+    fiscal_period_reference: str,
+) -> dict[str, object]:
+    """Return the period VAT register that ties issued and voided tax to posted 210100."""
+    if not legal_entity_reference or not book_reference or not fiscal_period_reference:
+        raise AccountingValidationError(
+            "legal_entity_reference, book_reference, and fiscal_period_reference are required. "
+            "Supply those vat-period-register fields, then retry the vat-period-register read."
+        )
+    ledger = PostgresPostingLedger(database_url, tenant_reference)
+    return ledger.load_vat_period_register(
+        legal_entity_reference,
+        book_reference,
+        _period_code_from_reference(fiscal_period_reference),
+    )
+
+
 def lookup_account_balances(
     database_url: str,
     tenant_reference: str,

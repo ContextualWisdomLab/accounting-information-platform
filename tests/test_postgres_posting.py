@@ -60,6 +60,7 @@ from accounting_information_platform import (
     lookup_receivable_aging,
     lookup_trial_balance,
     lookup_unapplied_cash_rollforward,
+    lookup_vat_period_register,
     pull_journal_proposal,
     pull_validated_journal_proposals,
     run_journal_proposal_server,
@@ -2839,6 +2840,403 @@ class PostgresPostingTests(unittest.TestCase):
             + Decimal(str(rollforward["other_movement_amount"])),
         )
         self.assertEqual(Decimal(str(rollforward["closing_amount"])), leftover_net)
+        server.shutdown()
+
+    def test_http_reads_vat_period_register(self) -> None:
+        """GET /vat-period-registers ties issued and voided tax to posted 210100."""
+        server = self._start_http_server()
+        journals_before = self._count_table("accounting_core.general_journal")
+        empty_status, empty = self._http_vat_period_register()
+        empty_library = lookup_vat_period_register(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-08",
+        )
+        persist = PostgresPostingLedger(
+            DATABASE_URL, self.policy.tenant_reference
+        ).load_vat_period_register(
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "2026-08",
+        )
+
+        self.assertEqual(empty_status, 200)
+        self.assertEqual(empty, empty_library)
+        self.assertEqual(empty, persist)
+        self.assertEqual(
+            set(empty),
+            {
+                "tenant_reference",
+                "legal_entity_reference",
+                "accounting_book_reference",
+                "book_reference",
+                "fiscal_period_reference",
+                "as_of_date",
+                "chart_account_code",
+                "account_role_code",
+                "issued_amount",
+                "voided_amount",
+                "closing_amount",
+            },
+        )
+        self.assertEqual(empty["tenant_reference"], self.policy.tenant_reference)
+        self.assertEqual(empty["legal_entity_reference"], self.policy.legal_entity_reference)
+        self.assertEqual(empty["accounting_book_reference"], self.policy.accounting_book_reference)
+        self.assertEqual(empty["book_reference"], self.policy.accounting_book_reference)
+        self.assertEqual(
+            empty["fiscal_period_reference"],
+            "urn:cwl:accounting:fiscal_period:2026-08",
+        )
+        self.assertEqual(empty["as_of_date"], "2026-08-31")
+        self.assertEqual(empty["chart_account_code"], "210100")
+        self.assertEqual(empty["account_role_code"], "tax_payable")
+        self.assertEqual(empty["issued_amount"], "0")
+        self.assertEqual(empty["voided_amount"], "0")
+        self.assertEqual(empty["closing_amount"], "0")
+        self.assertNotIn("party_reference", empty)
+        self.assertNotIn("next_cursor", empty)
+        self.assertNotIn("other_movement_amount", empty)
+        self.assertNotIn("210200", json.dumps(empty))
+
+        untaxed_status, _untaxed = self._http_json(
+            "POST", "/journal-proposals", self._billing_validated_payload()
+        )
+        untaxed_register_status, untaxed_register = self._http_vat_period_register()
+        self.assertEqual(untaxed_status, 200)
+        self.assertEqual(untaxed_register_status, 200)
+        self.assertEqual(untaxed_register["issued_amount"], "0")
+        self.assertEqual(untaxed_register["voided_amount"], "0")
+        self.assertEqual(untaxed_register["closing_amount"], "0")
+
+        taxed_status, _taxed = self._http_json(
+            "POST", "/journal-proposals", self._billing_taxed_payload()
+        )
+        issued_status, issued = self._http_vat_period_register()
+        issued_library = lookup_vat_period_register(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-08",
+        )
+        issued_balances_status, issued_balances = self._http_account_balances(
+            chart_account_code="210100"
+        )
+        issued_aging_status, issued_aging = self._http_payable_aging()
+        issued_net = Decimal(
+            str(issued_balances["account_balances"][0]["credit_amount"])
+        ) - Decimal(str(issued_balances["account_balances"][0]["debit_amount"]))
+
+        self.assertEqual(taxed_status, 200)
+        self.assertEqual(issued_status, 200)
+        self.assertEqual(issued_balances_status, 200)
+        self.assertEqual(issued_aging_status, 200)
+        self.assertEqual(issued, issued_library)
+        self.assertEqual(issued["issued_amount"], "2500")
+        self.assertEqual(issued["voided_amount"], "0")
+        self.assertEqual(issued["closing_amount"], "2500")
+        self.assertEqual(
+            Decimal(str(issued["closing_amount"])),
+            Decimal(str(issued["issued_amount"])) - Decimal(str(issued["voided_amount"])),
+        )
+        self.assertEqual(Decimal(str(issued["closing_amount"])), issued_net)
+        self.assertEqual(issued_aging["chart_account_code"], "210100")
+        self.assertEqual(issued_aging["total_outstanding_amount"], "2500")
+        self.assertEqual(
+            Decimal(str(issued["closing_amount"])),
+            Decimal(str(issued_aging["total_outstanding_amount"])),
+        )
+
+        void_status, _void = self._http_json(
+            "POST", "/journal-proposals", self._billing_issued_invoice_void_payload()
+        )
+        voided_status, voided = self._http_vat_period_register()
+        voided_library = lookup_vat_period_register(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-08",
+        )
+        voided_balances_status, voided_balances = self._http_account_balances(
+            chart_account_code="210100"
+        )
+        voided_aging_status, voided_aging = self._http_payable_aging()
+        leftover_status, leftover = self._http_unapplied_cash_rollforward()
+        voided_net = Decimal(
+            str(voided_balances["account_balances"][0]["credit_amount"])
+        ) - Decimal(str(voided_balances["account_balances"][0]["debit_amount"]))
+
+        self.assertEqual(void_status, 200)
+        self.assertEqual(voided_status, 200)
+        self.assertEqual(voided_balances_status, 200)
+        self.assertEqual(voided_aging_status, 200)
+        self.assertEqual(leftover_status, 200)
+        self.assertEqual(voided, voided_library)
+        self.assertEqual(voided["issued_amount"], "2500")
+        self.assertEqual(voided["voided_amount"], "2500")
+        self.assertEqual(voided["closing_amount"], "0")
+        self.assertEqual(
+            Decimal(str(voided["closing_amount"])),
+            Decimal(str(voided["issued_amount"])) - Decimal(str(voided["voided_amount"])),
+        )
+        self.assertEqual(Decimal(str(voided["closing_amount"])), voided_net)
+        self.assertEqual(voided_aging["total_outstanding_amount"], "0")
+        self.assertEqual(leftover["chart_account_code"], "210200")
+        self.assertEqual(leftover["closing_amount"], "0")
+        self.assertNotIn("210200", json.dumps(voided))
+
+        soft_status, _soft = self._http_json(
+            "POST",
+            "/period-closes",
+            self._period_close_payload(period_status_code="soft_closed"),
+        )
+        soft_register_status, soft_register = self._http_vat_period_register()
+        hard_status, _hard = self._http_json("POST", "/period-closes", self._period_close_payload())
+        hard_register_status, hard_register = self._http_vat_period_register()
+        closed_balances_status, closed_balances = self._http_account_balances(
+            chart_account_code="210100"
+        )
+        closed_aging_status, closed_aging = self._http_payable_aging()
+        closed_net = Decimal(
+            str(closed_balances["account_balances"][0]["credit_amount"])
+        ) - Decimal(str(closed_balances["account_balances"][0]["debit_amount"]))
+
+        self.assertEqual(soft_status, 200)
+        self.assertEqual(soft_register_status, 200)
+        self.assertEqual(soft_register["issued_amount"], "2500")
+        self.assertEqual(soft_register["voided_amount"], "2500")
+        self.assertEqual(soft_register["closing_amount"], "0")
+        self.assertEqual(hard_status, 200)
+        self.assertEqual(hard_register_status, 200)
+        self.assertEqual(closed_balances_status, 200)
+        self.assertEqual(closed_aging_status, 200)
+        self.assertEqual(hard_register["closing_amount"], "0")
+        self.assertEqual(Decimal(str(hard_register["closing_amount"])), closed_net)
+        self.assertEqual(closed_aging["total_outstanding_amount"], "0")
+
+        alias_query = urllib.parse.urlencode(
+            {
+                "legal_entity_reference": self.policy.legal_entity_reference,
+                "accounting_book_reference": self.policy.accounting_book_reference,
+                "fiscal_period_reference": "urn:cwl:accounting:fiscal_period:2026-08",
+            }
+        )
+        alias_status, alias_document = self._http_json(
+            "GET", f"/vat-period-registers?{alias_query}", None
+        )
+        missing_query = self._http_json("GET", "/vat-period-registers", None)
+        missing_book_query = self._http_json(
+            "GET",
+            "/vat-period-registers?"
+            + urllib.parse.urlencode(
+                {
+                    "legal_entity_reference": self.policy.legal_entity_reference,
+                    "fiscal_period_reference": "urn:cwl:accounting:fiscal_period:2026-08",
+                }
+            ),
+            None,
+        )
+        missing_period_query = self._http_json(
+            "GET",
+            "/vat-period-registers?"
+            + urllib.parse.urlencode(
+                {
+                    "legal_entity_reference": self.policy.legal_entity_reference,
+                    "book_reference": self.policy.accounting_book_reference,
+                }
+            ),
+            None,
+        )
+        post_status, _post = self._http_json("POST", "/vat-period-registers", {})
+        unknown_period = self._http_vat_period_register(
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:1999-01"
+        )
+        unknown_entity = self._http_vat_period_register(
+            legal_entity_reference="urn:cwl:legal_entity:missing"
+        )
+        unknown_book = self._http_vat_period_register(
+            book_reference="urn:cwl:accounting_book:missing"
+        )
+        missing_header = self._http_vat_period_register(tenant_header=None)
+        cross_status, _cross = self._http_vat_period_register(
+            tenant_header="urn:cwl:tenant_other"
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "legal_entity_reference"):
+            lookup_vat_period_register(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                "",
+                self.policy.accounting_book_reference,
+                "urn:cwl:accounting:fiscal_period:2026-08",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "book_reference"):
+            lookup_vat_period_register(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                "",
+                "urn:cwl:accounting:fiscal_period:2026-08",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "fiscal_period_reference"):
+            lookup_vat_period_register(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "legal_entity_reference"):
+            PostgresPostingLedger(
+                DATABASE_URL, self.policy.tenant_reference
+            ).load_vat_period_register(
+                "",
+                self.policy.accounting_book_reference,
+                "2026-08",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "book_reference"):
+            PostgresPostingLedger(
+                DATABASE_URL, self.policy.tenant_reference
+            ).load_vat_period_register(
+                self.policy.legal_entity_reference,
+                "",
+                "2026-08",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "fiscal_period_reference"):
+            PostgresPostingLedger(
+                DATABASE_URL, self.policy.tenant_reference
+            ).load_vat_period_register(
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "",
+            )
+        empty_chart_book = self._seed_book_without_chart_accounts()
+        empty_chart = self._http_vat_period_register(book_reference=empty_chart_book)
+
+        self.assertEqual(alias_status, 200)
+        self.assertEqual(alias_document["closing_amount"], "0")
+        self.assertEqual(missing_query[0], 400)
+        self.assertEqual(missing_book_query[0], 400)
+        self.assertEqual(missing_period_query[0], 400)
+        self.assertEqual(post_status, 405)
+        self.assertEqual(unknown_period[0], 404)
+        self.assertEqual(unknown_entity[0], 404)
+        self.assertEqual(unknown_book[0], 404)
+        self.assertEqual(missing_header[0], 400)
+        self.assertEqual(cross_status, 403)
+        self.assertEqual(empty_chart[0], 404)
+        self.assertEqual(
+            self._count_table("accounting_core.general_journal"),
+            journals_before + 4,
+        )
+        server.shutdown()
+
+    def test_http_vat_period_register_classifies_role_pairs_and_other(self) -> None:
+        """Role-pair tax journals count; unclassified 210100 is other_movement_amount."""
+        self._seed_additional_period("2026-07", date(2026, 7, 1), date(2026, 7, 31))
+        server = self._start_http_server()
+        july_taxed = self._billing_taxed_payload(
+            proposal_id="019d7b92-3cc2-7a7f-b61c-962c0f4bf701",
+            idempotency_key=(
+                f"{self.policy.tenant_reference}:manual_taxed_invoice:"
+                f"019d7b92-3cc2-7a7f-b61c-962c0f4bf701:sha256:{'d' * 64}:v1"
+            ),
+            source_payload_hash="sha256:" + "d" * 64,
+            transaction_date="2026-07-15",
+            accounting_date="2026-07-15",
+            proposed_at="2026-07-15T00:00:00Z",
+            source_event_references=(
+                f"{self.policy.tenant_reference}:manual_taxed_invoice:"
+                "019d7b92-3cc2-7a7f-b61c-962c0f4bf701",
+            ),
+        )
+        july_status, _july = self._http_json("POST", "/journal-proposals", july_taxed)
+        july_close_status, _july_close = self._http_json(
+            "POST",
+            "/period-closes",
+            self._period_close_payload(
+                fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-07"
+            ),
+        )
+        july_register_status, july_register = self._http_vat_period_register(
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-07"
+        )
+        carried_status, carried = self._http_vat_period_register()
+
+        self.assertEqual(july_status, 200)
+        self.assertEqual(july_close_status, 200)
+        self.assertEqual(july_register_status, 200)
+        self.assertEqual(carried_status, 200)
+        self.assertEqual(july_register["as_of_date"], "2026-07-31")
+        self.assertEqual(july_register["issued_amount"], "2500")
+        self.assertEqual(july_register["voided_amount"], "0")
+        self.assertEqual(july_register["closing_amount"], "2500")
+        self.assertEqual(carried["as_of_date"], "2026-08-31")
+        self.assertEqual(carried["issued_amount"], "2500")
+        self.assertEqual(carried["voided_amount"], "0")
+        self.assertEqual(carried["closing_amount"], "2500")
+
+        role_void = self._billing_issued_invoice_void_payload(
+            proposal_id="019d7b92-9ee8-7a7f-b61c-962c0f4bf702",
+            idempotency_key=(
+                f"{self.policy.tenant_reference}:manual_tax_void:"
+                f"019d7b92-9ee8-7a7f-b61c-962c0f4bf702:sha256:{'e' * 64}:v1"
+            ),
+            source_payload_hash="sha256:" + "e" * 64,
+            source_event_references=(
+                f"{self.policy.tenant_reference}:manual_tax_void:"
+                "019d7b92-9ee8-7a7f-b61c-962c0f4bf702",
+            ),
+        )
+        adjusting = self._adjusting_journal_payload(
+            idempotency_key=f"{self.policy.tenant_reference}:adjusting_journal:vat:v1",
+            journal_description="Reclass revenue to tax payable",
+            journal_lines=[
+                {
+                    "chart_account_code": "410100",
+                    "debit_credit_code": "debit",
+                    "amount": "400",
+                    "currency_code": "KRW",
+                },
+                {
+                    "chart_account_code": "210100",
+                    "debit_credit_code": "credit",
+                    "amount": "400",
+                    "currency_code": "KRW",
+                },
+            ],
+        )
+        void_status, _void = self._http_json("POST", "/journal-proposals", role_void)
+        adjust_status, _adjust = self._http_json("POST", "/journals", adjusting)
+        register_status, register = self._http_vat_period_register()
+        balances_status, balances = self._http_account_balances(chart_account_code="210100")
+        aging_status, aging = self._http_payable_aging()
+        tax_net = Decimal(str(balances["account_balances"][0]["credit_amount"])) - Decimal(
+            str(balances["account_balances"][0]["debit_amount"])
+        )
+
+        self.assertEqual(void_status, 200)
+        self.assertEqual(adjust_status, 200)
+        self.assertEqual(register_status, 200)
+        self.assertEqual(balances_status, 200)
+        self.assertEqual(aging_status, 200)
+        self.assertEqual(register["issued_amount"], "2500")
+        self.assertEqual(register["voided_amount"], "2500")
+        self.assertEqual(register["other_movement_amount"], "400")
+        self.assertEqual(register["closing_amount"], "400")
+        self.assertEqual(
+            Decimal(str(register["closing_amount"])),
+            Decimal(str(register["issued_amount"]))
+            - Decimal(str(register["voided_amount"]))
+            + Decimal(str(register["other_movement_amount"])),
+        )
+        self.assertEqual(Decimal(str(register["closing_amount"])), tax_net)
+        self.assertEqual(
+            Decimal(str(register["closing_amount"])),
+            Decimal(str(aging["total_outstanding_amount"])),
+        )
         server.shutdown()
 
     def test_http_reads_account_role_mappings_from_catalog(self) -> None:
@@ -11798,6 +12196,39 @@ class PostgresPostingTests(unittest.TestCase):
         return self._http_json(
             "GET",
             f"/unapplied-cash-rollforwards?{query}",
+            None,
+            tenant_header=tenant_header,
+        )
+
+    def _http_vat_period_register(
+        self,
+        *,
+        legal_entity_reference: str | None = None,
+        book_reference: str | None = None,
+        fiscal_period_reference: str | None = None,
+        tenant_header: str | None = "",
+    ) -> tuple[int, dict[str, object]]:
+        fields = {
+            "legal_entity_reference": (
+                self.policy.legal_entity_reference
+                if legal_entity_reference is None
+                else legal_entity_reference
+            ),
+            "book_reference": (
+                self.policy.accounting_book_reference
+                if book_reference is None
+                else book_reference
+            ),
+            "fiscal_period_reference": (
+                "urn:cwl:accounting:fiscal_period:2026-08"
+                if fiscal_period_reference is None
+                else fiscal_period_reference
+            ),
+        }
+        query = urllib.parse.urlencode(fields)
+        return self._http_json(
+            "GET",
+            f"/vat-period-registers?{query}",
             None,
             tenant_header=tenant_header,
         )
