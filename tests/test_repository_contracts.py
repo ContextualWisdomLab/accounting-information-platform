@@ -149,6 +149,16 @@ class RepositoryContractTests(unittest.TestCase):
             {"posted", "held", "rejected", "reversed"},
         )
 
+    def test_proposal_schema_forbids_retained_earnings_role(self) -> None:
+        """Billing proposal contract cannot claim AIS close-only retained_earnings."""
+        proposal = self._schema("accounting-journal-proposal.schema.json")
+        account_role = proposal["$defs"]["journal_line"]["properties"][
+            "account_role_code"
+        ]
+        self.assertEqual(account_role["type"], "string")
+        self.assertEqual(account_role["pattern"], "^[a-z][a-z0-9_]{1,63}$")
+        self.assertEqual(account_role["not"], {"const": "retained_earnings"})
+
     def test_repository_reports_integrated_violations(self) -> None:
         """The aggregate validator reports mutable CI, placeholders, and SQL drift."""
         with tempfile.TemporaryDirectory() as temporary_directory:

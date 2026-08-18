@@ -68,7 +68,11 @@
       "required": ["line_number", "account_role_code", "debit_amount", "credit_amount"],
       "properties": {
         "line_number": {"type": "integer", "minimum": 1},
-        "account_role_code": {"type": "string", "pattern": "^[a-z][a-z0-9_]{1,63}$"},
+        "account_role_code": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{1,63}$",
+          "not": {"const": "retained_earnings"}
+        },
         "debit_amount": {"$ref": "#/$defs/non_negative_decimal"},
         "credit_amount": {"$ref": "#/$defs/non_negative_decimal"},
         "cost_center_reference": {"type": "string", "pattern": "^urn:cwl:"},
