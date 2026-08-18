@@ -54,6 +54,7 @@ from accounting_information_platform import (
     lookup_posted_journal,
     publish_outbox_event,
     lookup_published_receipt,
+    lookup_receivable_aging,
     lookup_trial_balance,
     pull_journal_proposal,
     pull_validated_journal_proposals,
@@ -5075,6 +5076,408 @@ class PostgresPostingTests(unittest.TestCase):
         )
         server.shutdown()
 
+    def test_http_reads_receivable_aging(self) -> None:
+        """GET /receivable-agings ages entity-level AR by FIFO through period end."""
+        server = self._start_http_server()
+        journals_before = self._count_table("accounting_core.general_journal")
+
+        empty_status, empty = self._http_receivable_aging()
+        empty_explicit_status, empty_explicit = self._http_receivable_aging(
+            chart_account_code="110100"
+        )
+        empty_library = lookup_receivable_aging(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-08",
+        )
+        empty_persist = self.ledger.load_receivable_aging(
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "2026-08",
+        )
+        zero_document = {
+            "tenant_reference": self.policy.tenant_reference,
+            "legal_entity_reference": self.policy.legal_entity_reference,
+            "accounting_book_reference": self.policy.accounting_book_reference,
+            "book_reference": self.policy.accounting_book_reference,
+            "fiscal_period_reference": "urn:cwl:accounting:fiscal_period:2026-08",
+            "chart_account_code": "110100",
+            "account_class_code": "asset",
+            "as_of_date": "2026-08-31",
+            "current_amount": "0",
+            "days_31_60_amount": "0",
+            "days_61_90_amount": "0",
+            "days_over_90_amount": "0",
+            "total_outstanding_amount": "0",
+        }
+
+        self.assertEqual(empty_status, 200)
+        self.assertEqual(empty_explicit_status, 200)
+        self.assertEqual(empty, zero_document)
+        self.assertEqual(empty_explicit, empty)
+        self.assertEqual(empty_library, empty)
+        self.assertEqual(empty_persist, empty)
+        self.assertNotIn("party_reference", empty)
+
+        self._seed_additional_period("2026-06", date(2026, 6, 1), date(2026, 6, 30))
+        self._seed_additional_period("2026-07", date(2026, 7, 1), date(2026, 7, 31))
+        june_invoice = self._billing_validated_payload(
+            proposal_id=str(uuid.uuid4()),
+            idempotency_key=(
+                f"{self.policy.tenant_reference}:invoice_draft:june:"
+                f"sha256:{'6' * 64}:v1"
+            ),
+            source_payload_hash="sha256:" + "6" * 64,
+            transaction_date="2026-06-01",
+            accounting_date="2026-06-01",
+            proposed_at="2026-06-01T00:00:00Z",
+            source_event_references=(f"{self.policy.tenant_reference}:invoice_draft:june",),
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "2000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "usage_revenue",
+                    "debit_amount": "0",
+                    "credit_amount": "2000",
+                },
+            ],
+        )
+        july_invoice = self._billing_validated_payload(
+            proposal_id=str(uuid.uuid4()),
+            idempotency_key=(
+                f"{self.policy.tenant_reference}:invoice_draft:july:"
+                f"sha256:{'7' * 64}:v1"
+            ),
+            source_payload_hash="sha256:" + "7" * 64,
+            transaction_date="2026-07-01",
+            accounting_date="2026-07-01",
+            proposed_at="2026-07-01T00:00:00Z",
+            source_event_references=(f"{self.policy.tenant_reference}:invoice_draft:july",),
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "10000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "usage_revenue",
+                    "debit_amount": "0",
+                    "credit_amount": "10000",
+                },
+            ],
+        )
+        late_july_invoice = self._billing_validated_payload(
+            proposal_id=str(uuid.uuid4()),
+            idempotency_key=(
+                f"{self.policy.tenant_reference}:invoice_draft:july31:"
+                f"sha256:{'8' * 64}:v1"
+            ),
+            source_payload_hash="sha256:" + "8" * 64,
+            transaction_date="2026-07-31",
+            accounting_date="2026-07-31",
+            proposed_at="2026-07-31T00:00:00Z",
+            source_event_references=(f"{self.policy.tenant_reference}:invoice_draft:july31",),
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "3000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "usage_revenue",
+                    "debit_amount": "0",
+                    "credit_amount": "3000",
+                },
+            ],
+        )
+        june_status, _june = self._http_json("POST", "/journal-proposals", june_invoice)
+        july_status, _july = self._http_json("POST", "/journal-proposals", july_invoice)
+        late_july_status, _late_july = self._http_json(
+            "POST", "/journal-proposals", late_july_invoice
+        )
+        august_invoice = self._billing_validated_payload(
+            proposal_id=str(uuid.uuid4()),
+            idempotency_key=(
+                f"{self.policy.tenant_reference}:invoice_draft:august:"
+                f"sha256:{'a' * 64}:v1"
+            ),
+            source_payload_hash="sha256:" + "a" * 64,
+            source_event_references=(
+                f"{self.policy.tenant_reference}:invoice_draft:august",
+            ),
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "8000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "usage_revenue",
+                    "debit_amount": "0",
+                    "credit_amount": "8000",
+                },
+            ],
+        )
+        august_status, _august = self._http_json("POST", "/journal-proposals", august_invoice)
+        aged_status, aged = self._http_receivable_aging()
+        fifo_cash = self._billing_cash_payload(
+            proposal_id=str(uuid.uuid4()),
+            idempotency_key=(
+                f"{self.policy.tenant_reference}:cash_receipt:fifo:"
+                f"sha256:{'d' * 64}:v1"
+            ),
+            source_payload_hash="sha256:" + "d" * 64,
+            source_event_references=(f"{self.policy.tenant_reference}:cash_receipt:fifo",),
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "cash_receipt",
+                    "debit_amount": "5000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "0",
+                    "credit_amount": "5000",
+                },
+            ],
+        )
+        fifo_status, _fifo = self._http_json("POST", "/journal-proposals", fifo_cash)
+        fifo_aging_status, fifo_aging = self._http_receivable_aging()
+        fifo_balances_status, fifo_balances = self._http_account_balances(
+            chart_account_code="110100"
+        )
+        fifo_net = Decimal(str(fifo_balances["account_balances"][0]["debit_amount"])) - Decimal(
+            str(fifo_balances["account_balances"][0]["credit_amount"])
+        )
+
+        self.assertEqual(june_status, 200)
+        self.assertEqual(july_status, 200)
+        self.assertEqual(late_july_status, 200)
+        self.assertEqual(august_status, 200)
+        self.assertEqual(aged_status, 200)
+        self.assertEqual(aged["current_amount"], "8000")
+        self.assertEqual(aged["days_31_60_amount"], "3000")
+        self.assertEqual(aged["days_61_90_amount"], "10000")
+        self.assertEqual(aged["days_over_90_amount"], "2000")
+        self.assertEqual(aged["total_outstanding_amount"], "23000")
+        self.assertEqual(fifo_status, 200)
+        self.assertEqual(fifo_aging_status, 200)
+        self.assertEqual(fifo_balances_status, 200)
+        self.assertEqual(fifo_aging["days_over_90_amount"], "0")
+        self.assertEqual(fifo_aging["days_61_90_amount"], "7000")
+        self.assertEqual(fifo_aging["days_31_60_amount"], "3000")
+        self.assertEqual(fifo_aging["current_amount"], "8000")
+        self.assertEqual(fifo_aging["total_outstanding_amount"], "18000")
+        self.assertEqual(Decimal(str(fifo_aging["total_outstanding_amount"])), fifo_net)
+
+        credit = self._billing_credit_payload()
+        credit_status, _credit = self._http_json("POST", "/journal-proposals", credit)
+        credit_aging_status, credit_aging = self._http_receivable_aging()
+        credit_balances_status, credit_balances = self._http_account_balances(
+            chart_account_code="110100"
+        )
+        credit_net = Decimal(str(credit_balances["account_balances"][0]["debit_amount"])) - Decimal(
+            str(credit_balances["account_balances"][0]["credit_amount"])
+        )
+
+        self.assertEqual(credit_status, 200)
+        self.assertEqual(credit_aging_status, 200)
+        self.assertEqual(credit_balances_status, 200)
+        self.assertEqual(credit_aging["days_61_90_amount"], "3000")
+        self.assertEqual(credit_aging["days_31_60_amount"], "3000")
+        self.assertEqual(credit_aging["current_amount"], "8000")
+        self.assertEqual(credit_aging["days_over_90_amount"], "0")
+        self.assertEqual(credit_aging["total_outstanding_amount"], "14000")
+        self.assertEqual(Decimal(str(credit_aging["total_outstanding_amount"])), credit_net)
+
+        settle = self._billing_cash_payload(
+            proposal_id=str(uuid.uuid4()),
+            idempotency_key=(
+                f"{self.policy.tenant_reference}:cash_receipt:settle:"
+                f"sha256:{'e' * 64}:v1"
+            ),
+            source_payload_hash="sha256:" + "e" * 64,
+            source_event_references=(f"{self.policy.tenant_reference}:cash_receipt:settle",),
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "cash_receipt",
+                    "debit_amount": "14000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "0",
+                    "credit_amount": "14000",
+                },
+            ],
+        )
+        settle_status, _settle = self._http_json("POST", "/journal-proposals", settle)
+        settled_status, settled = self._http_receivable_aging()
+
+        self.assertEqual(settle_status, 200)
+        self.assertEqual(settled_status, 200)
+        self.assertEqual(settled["current_amount"], "0")
+        self.assertEqual(settled["days_31_60_amount"], "0")
+        self.assertEqual(settled["days_61_90_amount"], "0")
+        self.assertEqual(settled["days_over_90_amount"], "0")
+        self.assertEqual(settled["total_outstanding_amount"], "0")
+
+        invoice = self._billing_validated_payload()
+        cash = self._billing_cash_payload()
+        invoice_status, _invoice = self._http_json("POST", "/journal-proposals", invoice)
+        cash_status, _cash = self._http_json("POST", "/journal-proposals", cash)
+        current_status, current = self._http_receivable_aging()
+        current_balances_status, current_balances = self._http_account_balances(
+            chart_account_code="110100"
+        )
+        current_net = Decimal(str(current_balances["account_balances"][0]["debit_amount"])) - Decimal(
+            str(current_balances["account_balances"][0]["credit_amount"])
+        )
+
+        self.assertEqual(invoice_status, 200)
+        self.assertEqual(cash_status, 200)
+        self.assertEqual(current_status, 200)
+        self.assertEqual(current_balances_status, 200)
+        self.assertEqual(current["current_amount"], "7000")
+        self.assertEqual(current["days_31_60_amount"], "0")
+        self.assertEqual(current["days_61_90_amount"], "0")
+        self.assertEqual(current["days_over_90_amount"], "0")
+        self.assertEqual(current["total_outstanding_amount"], "7000")
+        self.assertEqual(Decimal(str(current["total_outstanding_amount"])), current_net)
+        self.assertEqual(
+            Decimal(str(current["current_amount"]))
+            + Decimal(str(current["days_31_60_amount"]))
+            + Decimal(str(current["days_61_90_amount"]))
+            + Decimal(str(current["days_over_90_amount"])),
+            Decimal(str(current["total_outstanding_amount"])),
+        )
+
+        adjusting_status, _adjusting = self._http_json(
+            "POST", "/journals", self._adjusting_journal_payload()
+        )
+        hard_status, _hard = self._http_json("POST", "/period-closes", self._period_close_payload())
+        closed_status, closed = self._http_receivable_aging()
+        closed_balances_status, closed_balances = self._http_account_balances(
+            chart_account_code="110100"
+        )
+        closed_net = Decimal(str(closed_balances["account_balances"][0]["debit_amount"])) - Decimal(
+            str(closed_balances["account_balances"][0]["credit_amount"])
+        )
+
+        self.assertEqual(adjusting_status, 200)
+        self.assertEqual(hard_status, 200)
+        self.assertEqual(closed_status, 200)
+        self.assertEqual(closed_balances_status, 200)
+        self.assertEqual(self._count_closing_journals(), 1)
+        self.assertEqual(closed["current_amount"], "8000")
+        self.assertEqual(closed["days_31_60_amount"], "0")
+        self.assertEqual(closed["days_61_90_amount"], "0")
+        self.assertEqual(closed["days_over_90_amount"], "0")
+        self.assertEqual(closed["total_outstanding_amount"], "8000")
+        self.assertEqual(Decimal(str(closed["total_outstanding_amount"])), closed_net)
+        self.assertEqual(closed["as_of_date"], "2026-08-31")
+
+        missing_query = self._http_json("GET", "/receivable-agings", None)
+        post_status, _post = self._http_json("POST", "/receivable-agings", {})
+        cash_chart = self._http_receivable_aging(chart_account_code="110200")
+        revenue_chart = self._http_receivable_aging(chart_account_code="410100")
+        unknown_account = self._http_receivable_aging(chart_account_code="999999")
+        unknown_period = self._http_receivable_aging(
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:1999-01"
+        )
+        missing_header = self._http_receivable_aging(tenant_header=None)
+        cross_status, _cross = self._http_receivable_aging(tenant_header="urn:cwl:tenant_other")
+        with self.assertRaisesRegex(AccountingValidationError, "legal_entity_reference"):
+            lookup_receivable_aging(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                "",
+                self.policy.accounting_book_reference,
+                "urn:cwl:accounting:fiscal_period:2026-08",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "legal_entity_reference"):
+            lookup_receivable_aging(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                "",
+                "urn:cwl:accounting:fiscal_period:2026-08",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "legal_entity_reference"):
+            lookup_receivable_aging(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "legal_entity_reference"):
+            self.ledger.load_receivable_aging(
+                "",
+                self.policy.accounting_book_reference,
+                "2026-08",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "legal_entity_reference"):
+            self.ledger.load_receivable_aging(
+                self.policy.legal_entity_reference,
+                "",
+                "2026-08",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "legal_entity_reference"):
+            self.ledger.load_receivable_aging(
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "accounts_receivable"):
+            lookup_receivable_aging(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "urn:cwl:accounting:fiscal_period:2026-08",
+                chart_account_code="110200",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "accounts_receivable"):
+            self.ledger.load_receivable_aging(
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "2026-08",
+                chart_account_code="110200",
+            )
+
+        self.assertEqual(missing_query[0], 400)
+        self.assertEqual(post_status, 405)
+        self.assertEqual(cash_chart[0], 422)
+        self.assertIn("accounts_receivable", str(cash_chart[1]["error_message"]))
+        self.assertEqual(revenue_chart[0], 422)
+        self.assertEqual(unknown_account[0], 404)
+        self.assertEqual(unknown_period[0], 404)
+        self.assertEqual(missing_header[0], 400)
+        self.assertEqual(cross_status, 403)
+        self.assertEqual(
+            self._count_table("accounting_core.general_journal"),
+            journals_before + 11,
+        )
+        server.shutdown()
+
     def test_http_reads_and_publishes_outbox_events(self) -> None:
         """GET lists unpublished outbox rows; POST publish marks one row idempotently."""
         invoice = self._billing_validated_payload()
@@ -8947,6 +9350,42 @@ class PostgresPostingTests(unittest.TestCase):
         return self._http_json(
             "GET",
             f"/account-balances?{query}",
+            None,
+            tenant_header=tenant_header,
+        )
+
+    def _http_receivable_aging(
+        self,
+        *,
+        legal_entity_reference: str | None = None,
+        book_reference: str | None = None,
+        fiscal_period_reference: str | None = None,
+        chart_account_code: str | None = None,
+        tenant_header: str | None = "",
+    ) -> tuple[int, dict[str, object]]:
+        fields = {
+            "legal_entity_reference": (
+                self.policy.legal_entity_reference
+                if legal_entity_reference is None
+                else legal_entity_reference
+            ),
+            "book_reference": (
+                self.policy.accounting_book_reference
+                if book_reference is None
+                else book_reference
+            ),
+            "fiscal_period_reference": (
+                "urn:cwl:accounting:fiscal_period:2026-08"
+                if fiscal_period_reference is None
+                else fiscal_period_reference
+            ),
+        }
+        if chart_account_code is not None:
+            fields["chart_account_code"] = chart_account_code
+        query = urllib.parse.urlencode(fields)
+        return self._http_json(
+            "GET",
+            f"/receivable-agings?{query}",
             None,
             tenant_header=tenant_header,
         )

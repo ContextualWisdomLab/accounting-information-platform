@@ -1518,6 +1518,156 @@ class PostgresPostingLedger:
             "next_cursor": next_cursor,
         }
 
+    def load_receivable_aging(
+        self,
+        legal_entity_reference: str,
+        book_reference: str,
+        period_code: str,
+        chart_account_code: str = "",
+    ) -> dict[str, object]:
+        """Return entity-level FIFO receivable aging as of the fiscal period end date."""
+        if not legal_entity_reference or not book_reference or not period_code:
+            raise AccountingValidationError(
+                "legal_entity_reference, book_reference, and fiscal_period_reference are required. "
+                "Supply those receivable-aging fields, then retry the receivable-aging read."
+            )
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            legal_entity_id = self._require_legal_entity(
+                connection,
+                tenant_id,
+                legal_entity_reference,
+                next_action="the receivable-aging read",
+            )
+            book_id = self._require_book_for_close(
+                connection,
+                tenant_id,
+                legal_entity_id,
+                book_reference,
+                next_action="the receivable-aging read",
+            )[0]
+            _period_id, _status, period_end_date = self._require_fiscal_period(
+                connection,
+                tenant_id,
+                period_code,
+                next_action="the receivable-aging read",
+            )
+            account_rows = connection.execute(
+                """
+                SELECT chart_account.chart_account_code,
+                       account_role_mapping.account_role_code,
+                       chart_account.account_class_code
+                FROM accounting_core.chart_account
+                LEFT JOIN accounting_core.account_role_mapping
+                  ON account_role_mapping.tenant_account_id = chart_account.tenant_account_id
+                 AND account_role_mapping.chart_account_id = chart_account.chart_account_id
+                 AND account_role_mapping.valid_to IS NULL
+                WHERE chart_account.tenant_account_id = %s
+                  AND chart_account.accounting_book_id = %s
+                  AND chart_account.valid_to IS NULL
+                """,
+                (tenant_id, book_id),
+            ).fetchall()
+            account_classes = {
+                str(account_code): str(account_class_code)
+                for account_code, _role_code, account_class_code in account_rows
+            }
+            catalog_receivable_code = next(
+                (
+                    str(account_code)
+                    for account_code, role_code, _class in account_rows
+                    if role_code == "accounts_receivable"
+                ),
+                "",
+            )
+            resolved_account_code = chart_account_code.strip() or catalog_receivable_code
+            if resolved_account_code not in account_classes:
+                raise AccountingValidationError(
+                    f"Chart account {resolved_account_code} is not recorded for this book. "
+                    "Create the chart_account row, then retry the receivable-aging read."
+                )
+            if resolved_account_code != catalog_receivable_code:
+                raise AccountingValidationError(
+                    "chart_account_code must be the catalog accounts_receivable account. "
+                    "Supply that receivable-aging account, then retry the receivable-aging read."
+                )
+            line_rows = connection.execute(
+                """
+                SELECT general_journal.accounting_date,
+                       general_journal.journal_reference,
+                       journal_entry_line.line_number,
+                       journal_entry_line.debit_amount,
+                       journal_entry_line.credit_amount
+                FROM accounting_core.journal_entry_line
+                JOIN accounting_core.general_journal
+                  ON general_journal.tenant_account_id = journal_entry_line.tenant_account_id
+                 AND general_journal.general_journal_id = journal_entry_line.general_journal_id
+                JOIN accounting_core.chart_account
+                  ON chart_account.tenant_account_id = journal_entry_line.tenant_account_id
+                 AND chart_account.chart_account_id = journal_entry_line.chart_account_id
+                WHERE general_journal.tenant_account_id = %s
+                  AND general_journal.legal_entity_id = %s
+                  AND general_journal.accounting_book_id = %s
+                  AND chart_account.chart_account_code = %s
+                  AND general_journal.accounting_date <= %s
+                  AND general_journal.journal_reference NOT LIKE %s
+                ORDER BY general_journal.accounting_date,
+                         CASE WHEN journal_entry_line.debit_amount > 0 THEN 0 ELSE 1 END,
+                         general_journal.journal_reference,
+                         journal_entry_line.line_number
+                """,
+                (
+                    tenant_id,
+                    legal_entity_id,
+                    book_id,
+                    resolved_account_code,
+                    period_end_date,
+                    "urn:cwl:accounting:general_journal:period_closing:%",
+                ),
+            ).fetchall()
+        open_debits: list[list[object]] = []
+        for accounting_date, _journal_reference, _line_number, debit_amount, credit_amount in line_rows:
+            debit_total = Decimal(debit_amount)
+            if debit_total > 0:
+                open_debits.append([accounting_date, debit_total])
+                continue
+            remaining_credit = Decimal(credit_amount)
+            for open_item in open_debits:
+                applied_amount = min(open_item[1], remaining_credit)
+                open_item[1] = open_item[1] - applied_amount
+                remaining_credit = remaining_credit - applied_amount
+            open_debits = [open_item for open_item in open_debits if open_item[1] > 0]
+        bucket_amounts = {
+            "current": Decimal("0"),
+            "days_31_60": Decimal("0"),
+            "days_61_90": Decimal("0"),
+            "days_over_90": Decimal("0"),
+        }
+        for open_item in open_debits:
+            outstanding_days = (period_end_date - open_item[0]).days
+            bucket_amounts[_receivable_aging_bucket(outstanding_days)] += open_item[1]
+        total_outstanding_amount = (
+            bucket_amounts["current"]
+            + bucket_amounts["days_31_60"]
+            + bucket_amounts["days_61_90"]
+            + bucket_amounts["days_over_90"]
+        )
+        return {
+            "tenant_reference": self._tenant_reference,
+            "legal_entity_reference": legal_entity_reference,
+            "accounting_book_reference": book_reference,
+            "book_reference": book_reference,
+            "fiscal_period_reference": f"urn:cwl:accounting:fiscal_period:{period_code}",
+            "chart_account_code": resolved_account_code,
+            "account_class_code": account_classes[resolved_account_code],
+            "as_of_date": period_end_date.isoformat(),
+            "current_amount": _unsigned_aging_amount_text(bucket_amounts["current"]),
+            "days_31_60_amount": _unsigned_aging_amount_text(bucket_amounts["days_31_60"]),
+            "days_61_90_amount": _unsigned_aging_amount_text(bucket_amounts["days_61_90"]),
+            "days_over_90_amount": _unsigned_aging_amount_text(bucket_amounts["days_over_90"]),
+            "total_outstanding_amount": _unsigned_aging_amount_text(total_outstanding_amount),
+        }
+
     def _load_chart_account_classes(
         self, legal_entity_reference: str, accounting_book_reference: str
     ) -> dict[str, str]:
@@ -4731,3 +4881,20 @@ def _format_timestamp(value: datetime) -> str:
 
 def _exact_amount_text(value: Decimal) -> str:
     return format(value, "f")
+
+
+def _unsigned_aging_amount_text(value: Decimal) -> str:
+    amount_text = format(value, "f")
+    if "." not in amount_text:
+        return amount_text
+    return amount_text.rstrip("0").rstrip(".")
+
+
+def _receivable_aging_bucket(outstanding_days: int) -> str:
+    if outstanding_days <= 30:
+        return "current"
+    if outstanding_days <= 60:
+        return "days_31_60"
+    if outstanding_days <= 90:
+        return "days_61_90"
+    return "days_over_90"

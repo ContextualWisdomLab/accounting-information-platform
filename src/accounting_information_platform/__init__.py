@@ -37,6 +37,7 @@ from .accept import (
     lookup_period_journals,
     lookup_posted_journal,
     lookup_published_receipt,
+    lookup_receivable_aging,
     lookup_trial_balance,
     publish_outbox_event,
 )
@@ -93,6 +94,7 @@ __all__ = [
     "lookup_period_journals",
     "lookup_posted_journal",
     "lookup_published_receipt",
+    "lookup_receivable_aging",
     "lookup_trial_balance",
     "publish_outbox_event",
     "pull_journal_proposal",
