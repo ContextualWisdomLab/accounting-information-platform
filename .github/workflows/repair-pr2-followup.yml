@@ -139,6 +139,12 @@ jobs:
         run: |
           rm .github/workflows/repair-pr2-review-cluster.yml
           rm .github/workflows/repair-pr2-followup.yml
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("tests/test_http_api.py")
+          path.write_text(path.read_text(encoding="utf-8").rstrip() + "\n", encoding="utf-8")
+          PY
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
