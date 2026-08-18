@@ -89,6 +89,7 @@ REQUIRED_FILES = (
     "docs/adr/0044-http-unapplied-cash-rollforward.md",
     "docs/adr/0045-http-vat-period-register.md",
     "docs/adr/0046-http-home-tax-submission.md",
+    "docs/adr/0047-wage-income-withholding-reservation.md",
     "docs/doctoring/REFERENCES.md",
     "docs/doctoring/STANDARD_TRACEABILITY.md",
     "docs/superpowers/specs/2026-08-16-accounting-information-platform-design.md",

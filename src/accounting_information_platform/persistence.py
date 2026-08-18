@@ -3269,6 +3269,11 @@ class PostgresPostingLedger:
                 book_reference,
                 period_code,
             )
+            vat_period_register = self.load_vat_period_register(
+                legal_entity_reference,
+                book_reference,
+                period_code,
+            )
             close_page = self.load_period_closes(legal_entity_reference, period_code)
             stored_closes = close_page["period_closes"]
             period_close = stored_closes[-1] if stored_closes else None
@@ -3284,6 +3289,7 @@ class PostgresPostingLedger:
                 "receivable_aging": receivable_aging,
                 "payable_aging": payable_aging,
                 "unapplied_cash_rollforward": unapplied_cash_rollforward,
+                "vat_period_register": vat_period_register,
                 "period_close": period_close,
             }
 

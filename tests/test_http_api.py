@@ -942,11 +942,18 @@ class PeriodClosePackageHttpTests(unittest.TestCase):
         empty_status, empty_package = case._http_period_close_package()
         empty_payable_status, empty_payable = case._http_payable_aging()
         empty_leftover_status, empty_leftover = case._http_unapplied_cash_rollforward()
+        empty_register_status, empty_register = case._http_vat_period_register()
 
         self.assertEqual(empty_status, 200)
         self.assertEqual(empty_payable_status, 200)
         self.assertEqual(empty_leftover_status, 200)
+        self.assertEqual(empty_register_status, 200)
         self.assertEqual(empty_package["payable_aging"], empty_payable)
+        self.assertEqual(empty_package["vat_period_register"], empty_register)
+        self.assertEqual(empty_package["vat_period_register"]["issued_amount"], "0")
+        self.assertEqual(empty_package["vat_period_register"]["voided_amount"], "0")
+        self.assertEqual(empty_package["vat_period_register"]["closing_amount"], "0")
+        self.assertNotIn("home_tax_submissions", empty_package)
         self.assertEqual(empty_package["payable_aging"]["total_outstanding_amount"], "0")
         self.assertEqual(
             empty_package["payable_aging"]["as_of_date"],
@@ -964,12 +971,17 @@ class PeriodClosePackageHttpTests(unittest.TestCase):
         open_status, opened = case._http_period_close_package()
         payable_status, payable_aging = case._http_payable_aging()
         receivable_status, receivable_aging = case._http_receivable_aging()
+        register_status, vat_register = case._http_vat_period_register()
 
         self.assertEqual(taxed_status, 200)
         self.assertEqual(open_status, 200)
         self.assertEqual(payable_status, 200)
         self.assertEqual(receivable_status, 200)
+        self.assertEqual(register_status, 200)
         self.assertEqual(opened["payable_aging"], payable_aging)
+        self.assertEqual(opened["vat_period_register"], vat_register)
+        self.assertEqual(opened["vat_period_register"]["issued_amount"], "2500")
+        self.assertEqual(opened["vat_period_register"]["closing_amount"], "2500")
         self.assertEqual(opened["receivable_aging"], receivable_aging)
         self.assertEqual(opened["payable_aging"]["chart_account_code"], "210100")
         self.assertEqual(opened["payable_aging"]["total_outstanding_amount"], "2500")
@@ -989,6 +1001,7 @@ class PeriodClosePackageHttpTests(unittest.TestCase):
                 "receivable_aging",
                 "payable_aging",
                 "unapplied_cash_rollforward",
+                "vat_period_register",
                 "period_close",
             },
         )
@@ -1002,6 +1015,7 @@ class PeriodClosePackageHttpTests(unittest.TestCase):
         self.assertEqual(soft_status, 200)
         self.assertEqual(soft_status_code, 200)
         self.assertEqual(soft_package["payable_aging"], case._http_payable_aging()[1])
+        self.assertEqual(soft_package["vat_period_register"], case._http_vat_period_register()[1])
         self.assertIsNone(soft_package["period_close"])
 
         hard_status, _hard = case._http_json("POST", "/period-closes", case._period_close_payload())
@@ -1009,6 +1023,7 @@ class PeriodClosePackageHttpTests(unittest.TestCase):
         self.assertEqual(hard_status, 200)
         self.assertEqual(hard_status_code, 200)
         self.assertEqual(hard_package["payable_aging"], case._http_payable_aging()[1])
+        self.assertEqual(hard_package["vat_period_register"], case._http_vat_period_register()[1])
         self.assertEqual(
             hard_package["payable_aging"]["as_of_date"],
             hard_package["receivable_aging"]["as_of_date"],

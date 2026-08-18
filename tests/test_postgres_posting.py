@@ -3526,6 +3526,9 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(by_code["usage_revenue"]["chart_account_code"], "410100")
         self.assertEqual(by_code["cash_receipt"]["chart_account_code"], "110200")
         self.assertEqual(by_code["tax_payable"]["chart_account_code"], "210100")
+        self.assertNotIn("wage_withholding", by_code)
+        self.assertNotIn("year_end_settlement", by_code)
+        self.assertNotIn("payroll_withholding", by_code)
         self.assertEqual(by_code["retained_earnings"]["chart_account_code"], "310100")
         self.assertEqual(by_code["write_off_expense"]["chart_account_code"], "510100")
         self.assertEqual(by_code["unapplied_cash"]["chart_account_code"], "210200")
@@ -8066,6 +8069,7 @@ class PostgresPostingTests(unittest.TestCase):
         leftover_balance_status, leftover_balances = self._http_account_balances(
             chart_account_code="210200"
         )
+        register_status, vat_register = self._http_vat_period_register()
         leftover_net = Decimal(
             str(leftover_balances["account_balances"][0]["credit_amount"])
         ) - Decimal(str(leftover_balances["account_balances"][0]["debit_amount"]))
@@ -8074,7 +8078,15 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(opened["payable_aging"]["chart_account_code"], "210100")
         self.assertEqual(leftover_status, 200)
         self.assertEqual(leftover_balance_status, 200)
+        self.assertEqual(register_status, 200)
         self.assertEqual(opened["unapplied_cash_rollforward"], leftover)
+        self.assertEqual(opened["vat_period_register"], vat_register)
+        self.assertEqual(opened["vat_period_register"]["chart_account_code"], "210100")
+        self.assertEqual(opened["vat_period_register"]["account_role_code"], "tax_payable")
+        self.assertEqual(opened["vat_period_register"]["issued_amount"], "2500")
+        self.assertEqual(opened["vat_period_register"]["voided_amount"], "0")
+        self.assertEqual(opened["vat_period_register"]["closing_amount"], "2500")
+        self.assertNotIn("home_tax_submissions", opened)
         self.assertEqual(opened["unapplied_cash_rollforward"]["chart_account_code"], "210200")
         self.assertEqual(opened["unapplied_cash_rollforward"]["account_role_code"], "unapplied_cash")
         self.assertEqual(opened["unapplied_cash_rollforward"]["closing_amount"], "0")
@@ -8094,6 +8106,7 @@ class PostgresPostingTests(unittest.TestCase):
             "receivable_aging",
             "payable_aging",
             "unapplied_cash_rollforward",
+            "vat_period_register",
             "period_close",
         })
         self.assertIsNone(opened["period_close"])
@@ -8131,6 +8144,7 @@ class PostgresPostingTests(unittest.TestCase):
         )
         self.assertEqual(soft_package["receivable_aging"], self._http_receivable_aging()[1])
         self.assertEqual(soft_package["payable_aging"], self._http_payable_aging()[1])
+        self.assertEqual(soft_package["vat_period_register"], self._http_vat_period_register()[1])
         self.assertEqual(
             soft_package["payable_aging"]["as_of_date"],
             soft_package["receivable_aging"]["as_of_date"],
@@ -8150,6 +8164,7 @@ class PostgresPostingTests(unittest.TestCase):
         hard_package_statements = self._http_financial_statement_package()[1]
         hard_aging_status, hard_aging = self._http_receivable_aging()
         hard_payable_status, hard_payable = self._http_payable_aging()
+        hard_register_status, hard_register = self._http_vat_period_register()
         hard_balance_status, hard_balances = self._http_account_balances(
             chart_account_code="110100"
         )
@@ -8171,6 +8186,9 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(hard_package["receivable_aging"], hard_aging)
         self.assertEqual(hard_payable_status, 200)
         self.assertEqual(hard_package["payable_aging"], hard_payable)
+        self.assertEqual(hard_register_status, 200)
+        self.assertEqual(hard_package["vat_period_register"], hard_register)
+        self.assertEqual(hard_package["vat_period_register"]["closing_amount"], "2500")
         self.assertEqual(
             hard_package["payable_aging"]["as_of_date"],
             hard_package["receivable_aging"]["as_of_date"],
@@ -8225,6 +8243,7 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(ytd["trial_balance"], hard_package["trial_balance"])
         self.assertEqual(ytd["receivable_aging"], hard_package["receivable_aging"])
         self.assertEqual(ytd["payable_aging"], hard_package["payable_aging"])
+        self.assertEqual(ytd["vat_period_register"], hard_package["vat_period_register"])
         self.assertEqual(ytd["period_close"], hard_package["period_close"])
         self.assertEqual(compare_status, 200)
         self.assertNotIn("comparison_fiscal_period_reference", compared)
@@ -8236,6 +8255,7 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(compared["trial_balance"], hard_package["trial_balance"])
         self.assertEqual(compared["receivable_aging"], hard_package["receivable_aging"])
         self.assertEqual(compared["payable_aging"], hard_package["payable_aging"])
+        self.assertEqual(compared["vat_period_register"], hard_package["vat_period_register"])
 
         missing_query = self._http_json("GET", "/period-close-packages", None)
         missing_book = self._http_json(
@@ -13257,6 +13277,7 @@ class PostgresPostingTests(unittest.TestCase):
         receivable = Decimal(str(package["receivable_aging"]["total_outstanding_amount"]))
         payable = Decimal(str(package["payable_aging"]["total_outstanding_amount"]))
         leftover = Decimal(str(package["unapplied_cash_rollforward"]["closing_amount"]))
+        register_closing = Decimal(str(package["vat_period_register"]["closing_amount"]))
         self.assertEqual(
             set(package),
             {
@@ -13271,10 +13292,14 @@ class PostgresPostingTests(unittest.TestCase):
                 "receivable_aging",
                 "payable_aging",
                 "unapplied_cash_rollforward",
+                "vat_period_register",
                 "period_close",
             },
         )
+        self.assertNotIn("home_tax_submissions", package)
         self.assertEqual(package["payable_aging"]["chart_account_code"], "210100")
+        self.assertEqual(package["vat_period_register"]["chart_account_code"], "210100")
+        self.assertEqual(package["vat_period_register"]["account_role_code"], "tax_payable")
         self.assertEqual(
             receivable,
             self._trial_balance_account_net(trial_balance, "110100"),
@@ -13284,8 +13309,10 @@ class PostgresPostingTests(unittest.TestCase):
                 payable,
                 -self._trial_balance_account_net(trial_balance, "210100"),
             )
+            self.assertEqual(register_closing, payable)
         else:
             self.assertEqual(payable, Decimal("0"))
+            self.assertEqual(register_closing, Decimal("0"))
         if "210200" in codes:
             self.assertEqual(
                 leftover,
