@@ -2527,6 +2527,361 @@ class PostgresPostingTests(unittest.TestCase):
         )
         server.shutdown()
 
+    def test_http_reads_changes_in_equity_statement(self) -> None:
+        """GET /financial-statements?statement_type_code=changes_in_equity ties opening + NI + other to closing equity."""
+        self._seed_issued_capital_account()
+        self._seed_expense_account()
+        self._seed_additional_period("2026-06", date(2026, 6, 1), date(2026, 6, 30))
+        self._seed_additional_period("2026-07", date(2026, 7, 1), date(2026, 7, 31))
+        july = self._billing_validated_payload(
+            proposal_id=str(uuid.uuid4()),
+            idempotency_key=(
+                f"{self.policy.tenant_reference}:invoice_draft:july:"
+                f"sha256:{'4' * 64}:v1"
+            ),
+            source_payload_hash="sha256:" + "4" * 64,
+            transaction_date="2026-07-15",
+            accounting_date="2026-07-15",
+            proposed_at="2026-07-15T00:00:00Z",
+            source_event_references=(
+                f"{self.policy.tenant_reference}:invoice_draft:july",
+            ),
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "accounts_receivable",
+                    "debit_amount": "10000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "usage_revenue",
+                    "debit_amount": "0",
+                    "credit_amount": "10000",
+                },
+            ],
+        )
+        june_loss = self._adjusting_journal_payload(
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-06",
+            journal_date="2026-06-15",
+            idempotency_key=f"{self.policy.tenant_reference}:adjusting_journal:june-loss:v1",
+            journal_description="June usage cost",
+            journal_lines=[
+                {
+                    "chart_account_code": "510100",
+                    "debit_credit_code": "debit",
+                    "amount": "1000",
+                    "currency_code": "KRW",
+                },
+                {
+                    "chart_account_code": "110200",
+                    "debit_credit_code": "credit",
+                    "amount": "1000",
+                    "currency_code": "KRW",
+                },
+            ],
+        )
+        capital = self._adjusting_journal_payload(
+            idempotency_key=f"{self.policy.tenant_reference}:adjusting_journal:issued-capital:v1",
+            journal_description="Owner capital contribution",
+            journal_lines=[
+                {
+                    "chart_account_code": "110200",
+                    "debit_credit_code": "debit",
+                    "amount": "5000",
+                    "currency_code": "KRW",
+                },
+                {
+                    "chart_account_code": "320100",
+                    "debit_credit_code": "credit",
+                    "amount": "5000",
+                    "currency_code": "KRW",
+                },
+            ],
+        )
+        server = self._start_http_server()
+        journals_before = self._count_table("accounting_core.general_journal")
+
+        empty_status, empty = self._http_financial_statement("changes_in_equity")
+        empty_library = lookup_financial_statement(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-08",
+            "changes_in_equity",
+        )
+        empty_by_role = {
+            str(item["account_role_code"]): item for item in empty["statement_lines"]
+        }
+
+        self.assertEqual(empty_status, 200)
+        self.assertEqual(empty, empty_library)
+        self.assertEqual(empty["statement_type_code"], "changes_in_equity")
+        self.assertNotIn("statement_scope_code", empty)
+        self.assertNotIn("comparison_fiscal_period_reference", empty)
+        self.assertEqual(
+            list(empty_by_role),
+            [
+                "opening_equity",
+                "period_net_income",
+                "other_equity_movements",
+                "closing_equity",
+            ],
+        )
+        for role_code in empty_by_role:
+            self.assertEqual(empty_by_role[role_code]["account_class_code"], "equity")
+            self.assertEqual(Decimal(str(empty_by_role[role_code]["debit_amount"])), Decimal("0"))
+            self.assertEqual(Decimal(str(empty_by_role[role_code]["credit_amount"])), Decimal("0"))
+        self.assertEqual(empty["net_income_amount"], "0")
+
+        june_status, _june = self._http_json("POST", "/journals", june_loss)
+        july_status, _july = self._http_json("POST", "/journal-proposals", july)
+        august_status, _august = self._http_json(
+            "POST", "/journal-proposals", self._billing_taxed_payload()
+        )
+        capital_status, _capital = self._http_json("POST", "/journals", capital)
+        income_status, income = self._http_financial_statement("income_statement")
+        sheet_status, sheet = self._http_financial_statement("balance_sheet")
+        equity_status, equity = self._http_financial_statement("changes_in_equity")
+        library = lookup_financial_statement(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-08",
+            "changes_in_equity",
+        )
+        persist = PostgresPostingLedger(
+            DATABASE_URL, self.policy.tenant_reference
+        ).load_financial_statement(
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "2026-08",
+            "changes_in_equity",
+        )
+        by_role = {str(item["account_role_code"]): item for item in equity["statement_lines"]}
+        sheet_equity = sum(
+            Decimal(str(item["credit_amount"])) - Decimal(str(item["debit_amount"]))
+            for item in sheet["statement_lines"]
+            if item["account_class_code"] == "equity"
+        )
+        opening = Decimal(str(by_role["opening_equity"]["credit_amount"])) - Decimal(
+            str(by_role["opening_equity"]["debit_amount"])
+        )
+        period_ni = Decimal(str(by_role["period_net_income"]["credit_amount"])) - Decimal(
+            str(by_role["period_net_income"]["debit_amount"])
+        )
+        other = Decimal(str(by_role["other_equity_movements"]["credit_amount"])) - Decimal(
+            str(by_role["other_equity_movements"]["debit_amount"])
+        )
+        closing = Decimal(str(by_role["closing_equity"]["credit_amount"])) - Decimal(
+            str(by_role["closing_equity"]["debit_amount"])
+        )
+
+        self.assertEqual(june_status, 200)
+        self.assertEqual(july_status, 200)
+        self.assertEqual(august_status, 200)
+        self.assertEqual(capital_status, 200)
+        self.assertEqual(income_status, 200)
+        self.assertEqual(sheet_status, 200)
+        self.assertEqual(equity_status, 200)
+        self.assertEqual(equity, library)
+        self.assertEqual(equity, persist)
+        self.assertEqual(period_ni, Decimal(str(income["net_income_amount"])))
+        self.assertEqual(opening, Decimal("0"))
+        self.assertEqual(other, Decimal("5000"))
+        self.assertEqual(closing, opening + period_ni + other)
+        self.assertEqual(closing, sheet_equity + Decimal(str(sheet["net_income_amount"])))
+
+        soft_status, _soft = self._http_json(
+            "POST", "/period-closes", self._period_close_payload(period_status_code="soft_closed")
+        )
+        soft_equity_status, soft_equity = self._http_financial_statement("changes_in_equity")
+        self.assertEqual(soft_status, 200)
+        self.assertEqual(soft_equity_status, 200)
+        self.assertEqual(soft_equity["statement_lines"], equity["statement_lines"])
+        self.assertEqual(soft_equity["net_income_amount"], equity["net_income_amount"])
+
+        july_close_status, _july_close = self._http_json(
+            "POST",
+            "/period-closes",
+            self._period_close_payload(
+                fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-07"
+            ),
+        )
+        opened_after_july_status, opened_after_july = self._http_financial_statement(
+            "changes_in_equity"
+        )
+        opened_after_july_roles = {
+            str(item["account_role_code"]): item
+            for item in opened_after_july["statement_lines"]
+        }
+        self.assertEqual(july_close_status, 200)
+        self.assertEqual(opened_after_july_status, 200)
+        self.assertEqual(
+            Decimal(str(opened_after_july_roles["opening_equity"]["credit_amount"]))
+            - Decimal(str(opened_after_july_roles["opening_equity"]["debit_amount"])),
+            Decimal("9000"),
+        )
+        self.assertEqual(
+            Decimal(str(opened_after_july_roles["other_equity_movements"]["credit_amount"]))
+            - Decimal(str(opened_after_july_roles["other_equity_movements"]["debit_amount"])),
+            Decimal("5000"),
+        )
+
+        hard_status, _hard = self._http_json("POST", "/period-closes", self._period_close_payload())
+        closed_income_status, closed_income = self._http_financial_statement("income_statement")
+        closed_sheet_status, closed_sheet = self._http_financial_statement("balance_sheet")
+        closed_equity_status, closed_equity = self._http_financial_statement("changes_in_equity")
+        closed_roles = {
+            str(item["account_role_code"]): item
+            for item in closed_equity["statement_lines"]
+        }
+        closed_sheet_equity = sum(
+            Decimal(str(item["credit_amount"])) - Decimal(str(item["debit_amount"]))
+            for item in closed_sheet["statement_lines"]
+            if item["account_class_code"] == "equity"
+        )
+        closed_ni = Decimal(str(closed_roles["period_net_income"]["credit_amount"])) - Decimal(
+            str(closed_roles["period_net_income"]["debit_amount"])
+        )
+        closed_other = Decimal(
+            str(closed_roles["other_equity_movements"]["credit_amount"])
+        ) - Decimal(str(closed_roles["other_equity_movements"]["debit_amount"]))
+        closed_closing = Decimal(str(closed_roles["closing_equity"]["credit_amount"])) - Decimal(
+            str(closed_roles["closing_equity"]["debit_amount"])
+        )
+        self.assertEqual(hard_status, 200)
+        self.assertEqual(closed_income_status, 200)
+        self.assertEqual(closed_sheet_status, 200)
+        self.assertEqual(closed_equity_status, 200)
+        self.assertEqual(closed_ni, Decimal(str(income["net_income_amount"])))
+        self.assertEqual(closed_ni, Decimal(str(closed_income["net_income_amount"])))
+        self.assertEqual(closed_other, Decimal("5000"))
+        self.assertEqual(closed_sheet["net_income_amount"], "0")
+        self.assertEqual(closed_closing, closed_sheet_equity)
+        self.assertEqual(
+            closed_closing,
+            Decimal(str(closed_roles["opening_equity"]["credit_amount"]))
+            - Decimal(str(closed_roles["opening_equity"]["debit_amount"]))
+            + closed_ni
+            + closed_other,
+        )
+
+        ytd_status, ytd = self._http_financial_statement(
+            "changes_in_equity",
+            statement_scope_code="year_to_date",
+        )
+        ytd_income_status, ytd_income = self._http_financial_statement(
+            "income_statement",
+            statement_scope_code="year_to_date",
+        )
+        ytd_sheet_status, ytd_sheet = self._http_financial_statement(
+            "balance_sheet",
+            statement_scope_code="year_to_date",
+        )
+        ytd_roles = {str(item["account_role_code"]): item for item in ytd["statement_lines"]}
+        ytd_sheet_equity = sum(
+            Decimal(str(item["credit_amount"])) - Decimal(str(item["debit_amount"]))
+            for item in ytd_sheet["statement_lines"]
+            if item["account_class_code"] == "equity"
+        )
+        explicit_period_status, explicit_period = self._http_financial_statement(
+            "changes_in_equity",
+            statement_scope_code="period",
+        )
+        compare_status, compare = self._http_financial_statement(
+            "changes_in_equity",
+            comparison_fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-06",
+        )
+        june_only = lookup_financial_statement(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-06",
+            "changes_in_equity",
+        )
+        compare_roles = {
+            str(item["account_role_code"]): item
+            for item in compare["comparison_statement_lines"]
+        }
+
+        self.assertEqual(ytd_status, 200)
+        self.assertEqual(ytd_income_status, 200)
+        self.assertEqual(ytd_sheet_status, 200)
+        self.assertEqual(explicit_period_status, 200)
+        self.assertEqual(compare_status, 200)
+        self.assertEqual(ytd["statement_scope_code"], "year_to_date")
+        self.assertNotIn("statement_scope_code", explicit_period)
+        self.assertEqual(explicit_period["statement_lines"], closed_equity["statement_lines"])
+        self.assertEqual(
+            Decimal(str(ytd_roles["period_net_income"]["credit_amount"]))
+            - Decimal(str(ytd_roles["period_net_income"]["debit_amount"])),
+            Decimal(str(ytd_income["net_income_amount"])),
+        )
+        self.assertEqual(
+            Decimal(str(ytd_roles["opening_equity"]["credit_amount"]))
+            - Decimal(str(ytd_roles["opening_equity"]["debit_amount"])),
+            Decimal("0"),
+        )
+        self.assertEqual(
+            Decimal(str(ytd_roles["other_equity_movements"]["credit_amount"]))
+            - Decimal(str(ytd_roles["other_equity_movements"]["debit_amount"])),
+            Decimal("5000"),
+        )
+        self.assertEqual(
+            Decimal(str(ytd_roles["closing_equity"]["credit_amount"]))
+            - Decimal(str(ytd_roles["closing_equity"]["debit_amount"])),
+            ytd_sheet_equity + Decimal(str(ytd_sheet["net_income_amount"])),
+        )
+        self.assertEqual(
+            compare["comparison_fiscal_period_reference"],
+            "urn:cwl:accounting:fiscal_period:2026-06",
+        )
+        self.assertEqual(compare["comparison_statement_lines"], june_only["statement_lines"])
+        self.assertEqual(
+            Decimal(str(compare_roles["period_net_income"]["debit_amount"]))
+            - Decimal(str(compare_roles["period_net_income"]["credit_amount"])),
+            Decimal("1000"),
+        )
+        self.assertNotIn("comparison_fiscal_period_reference", closed_equity)
+
+        unknown_period = self._http_financial_statement(
+            "changes_in_equity",
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:1999-01",
+        )
+        unknown_entity = self._http_financial_statement(
+            "changes_in_equity",
+            legal_entity_reference="urn:cwl:legal_entity:missing",
+        )
+        missing_header = self._http_financial_statement(
+            "changes_in_equity", tenant_header=None
+        )
+        cross_status, _cross = self._http_financial_statement(
+            "changes_in_equity", tenant_header="urn:cwl:tenant_other"
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "statement_type_code"):
+            lookup_financial_statement(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "urn:cwl:accounting:fiscal_period:2026-08",
+                "cash_flow",
+            )
+
+        self.assertEqual(unknown_period[0], 404)
+        self.assertEqual(unknown_entity[0], 404)
+        self.assertEqual(missing_header[0], 400)
+        self.assertEqual(cross_status, 403)
+        self.assertEqual(
+            self._count_table("accounting_core.general_journal"),
+            journals_before + 6,
+        )
+        server.shutdown()
+
     def test_http_reads_posted_journal_lines(self) -> None:
         """GET returns persisted journal lines and keeps original vs reversing journals distinct."""
         invoice = self._billing_validated_payload()
@@ -6020,6 +6375,44 @@ class PostgresPostingTests(unittest.TestCase):
                     "urn:cwl:accounting:general_journal:period_closing:%",
                 ),
             ).fetchone()[0]
+
+    def _seed_issued_capital_account(self) -> None:
+        with psycopg.connect(DATABASE_URL) as connection:
+            connection.execute(
+                "SELECT set_config('app.tenant_account_id', %s, false)",
+                (self.tenant_id,),
+            )
+            book_id = connection.execute(
+                """
+                SELECT accounting_book_id
+                FROM accounting_core.accounting_book
+                WHERE tenant_account_id = %s
+                """,
+                (self.tenant_id,),
+            ).fetchone()[0]
+            chart_account_id = connection.execute(
+                """
+                INSERT INTO accounting_core.chart_account (
+                    tenant_account_id, accounting_book_id, chart_account_code,
+                    account_name, normal_balance_code, account_class_code, valid_from
+                )
+                VALUES (%s, %s, '320100', 'Issued capital', 'credit', 'equity', %s)
+                RETURNING chart_account_id
+                """,
+                (self.tenant_id, book_id, VALID_FROM),
+            ).fetchone()[0]
+            connection.execute(
+                """
+                INSERT INTO accounting_core.account_role_mapping (
+                    tenant_account_id, accounting_book_id, account_role_code,
+                    chart_account_id, accounting_policy_version, posting_rule_version,
+                    valid_from
+                )
+                VALUES (%s, %s, 'issued_capital', %s, 'ifrs-v1', 'billing-issued-v1', %s)
+                """,
+                (self.tenant_id, book_id, chart_account_id, VALID_FROM),
+            )
+            connection.commit()
 
     def _seed_expense_account(self) -> None:
         with psycopg.connect(DATABASE_URL) as connection:

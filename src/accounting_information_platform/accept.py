@@ -558,15 +558,19 @@ def lookup_financial_statement(
     comparison_fiscal_period_reference: str = "",
     statement_scope_code: str = "",
 ) -> dict[str, object]:
-    """Return the income statement or balance sheet for one book and fiscal period."""
+    """Return the income statement, balance sheet, or changes in equity for one book and period."""
     if not legal_entity_reference or not book_reference or not fiscal_period_reference:
         raise AccountingValidationError(
             "legal_entity_reference, book_reference, and fiscal_period_reference are required. "
             "Supply those financial-statement fields, then retry the financial-statement read."
         )
-    if statement_type_code not in {"income_statement", "balance_sheet"}:
+    if statement_type_code not in {
+        "income_statement",
+        "balance_sheet",
+        "changes_in_equity",
+    }:
         raise AccountingValidationError(
-            "statement_type_code must be income_statement or balance_sheet. "
+            "statement_type_code must be income_statement, balance_sheet, or changes_in_equity. "
             "Supply a known statement type, then retry the financial-statement read."
         )
     if statement_scope_code and statement_scope_code not in {"period", "year_to_date"}:

@@ -8,7 +8,7 @@ import json
 import re
 import uuid
 from contextlib import contextmanager
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Iterator
@@ -1858,7 +1858,7 @@ class PostgresPostingLedger:
         comparison_period_code: str = "",
         statement_scope_code: str = "",
     ) -> dict[str, object]:
-        """Project income-statement or balance-sheet lines from the period trial balance."""
+        """Project income-statement, balance-sheet, or changes-in-equity lines from posted books."""
         if statement_scope_code not in {"", "period", "year_to_date"}:
             raise AccountingValidationError(
                 "statement_scope_code must be period or year_to_date. "
@@ -1868,9 +1868,11 @@ class PostgresPostingLedger:
             allowed_classes = frozenset({"revenue", "expense"})
         elif statement_type_code == "balance_sheet":
             allowed_classes = frozenset({"asset", "liability", "equity"})
+        elif statement_type_code == "changes_in_equity":
+            allowed_classes = frozenset({"equity"})
         else:
             raise AccountingValidationError(
-                "statement_type_code must be income_statement or balance_sheet. "
+                "statement_type_code must be income_statement, balance_sheet, or changes_in_equity. "
                 "Supply a known statement type, then retry the financial-statement read."
             )
         trial_balance = self.load_period_trial_balance(
@@ -1884,7 +1886,14 @@ class PostgresPostingLedger:
         income_scope_code = (
             "period" if statement_type_code == "balance_sheet" else statement_scope_code
         )
-        if statement_type_code == "income_statement":
+        if statement_type_code == "changes_in_equity":
+            source_lines = self._load_changes_in_equity_lines(
+                legal_entity_reference=legal_entity_reference,
+                accounting_book_reference=accounting_book_reference,
+                period_code=period_code,
+                statement_scope_code=statement_scope_code,
+            )
+        elif statement_type_code == "income_statement":
             source_lines = self._load_operational_income_lines(
                 legal_entity_reference=legal_entity_reference,
                 accounting_book_reference=accounting_book_reference,
@@ -1938,6 +1947,13 @@ class PostgresPostingLedger:
                     for raw_line in source_lines
                 ),
                 Decimal("0"),
+            )
+        elif statement_type_code == "changes_in_equity":
+            net_income_amount = next(
+                Decimal(str(raw_line["credit_amount"]))
+                - Decimal(str(raw_line["debit_amount"]))
+                for raw_line in source_lines
+                if raw_line["account_role_code"] == "period_net_income"
             )
         elif str(trial_balance["period_status_code"]) == "hard_closed":
             net_income_amount = Decimal("0")
@@ -2023,6 +2039,203 @@ class PostgresPostingLedger:
         return {
             str(account_code): (str(account_role_code), str(account_class_code))
             for account_code, account_role_code, account_class_code in rows
+        }
+
+    def _load_changes_in_equity_lines(
+        self,
+        *,
+        legal_entity_reference: str,
+        accounting_book_reference: str,
+        period_code: str,
+        statement_scope_code: str,
+    ) -> list[dict[str, object]]:
+        income_lines = self._load_operational_income_lines(
+            legal_entity_reference=legal_entity_reference,
+            accounting_book_reference=accounting_book_reference,
+            period_code=period_code,
+            statement_scope_code=statement_scope_code,
+        )
+        period_net_income = sum(
+            (
+                Decimal(str(line["credit_amount"])) - Decimal(str(line["debit_amount"]))
+                for line in income_lines
+            ),
+            Decimal("0"),
+        )
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            legal_entity_id = self._require_legal_entity(
+                connection,
+                tenant_id,
+                legal_entity_reference,
+                next_action="the financial-statement read",
+            )
+            book_id = self._require_book_for_close(
+                connection,
+                tenant_id,
+                legal_entity_id,
+                accounting_book_reference,
+                next_action="the financial-statement read",
+            )[0]
+            period_ids = self._statement_period_ids(
+                connection,
+                tenant_id,
+                period_code,
+                statement_scope_code,
+            )
+            scope_start = connection.execute(
+                f"""
+                SELECT MIN(period_start_date)
+                FROM accounting_core.fiscal_period
+                WHERE tenant_account_id = %s
+                  AND fiscal_period_id IN ({", ".join(["%s"] * len(period_ids))})
+                """,
+                (tenant_id, *period_ids),
+            ).fetchone()[0]
+            opening_equity = self._opening_equity_amount(
+                connection,
+                tenant_id,
+                legal_entity_id,
+                book_id,
+                scope_start,
+            )
+            other_equity_movements = self._other_equity_movement_amount(
+                connection,
+                tenant_id,
+                legal_entity_id,
+                book_id,
+                period_ids,
+            )
+        closing_equity = opening_equity + period_net_income + other_equity_movements
+        return [
+            self._equity_movement_line("opening_equity", opening_equity),
+            self._equity_movement_line("period_net_income", period_net_income),
+            self._equity_movement_line("other_equity_movements", other_equity_movements),
+            self._equity_movement_line("closing_equity", closing_equity),
+        ]
+
+    def _opening_equity_amount(
+        self,
+        connection: object,
+        tenant_id: UUID,
+        legal_entity_id: UUID,
+        book_id: UUID,
+        scope_start: date,
+    ) -> Decimal:
+        prior_snapshot = connection.execute(
+            """
+            SELECT trial_balance_snapshot.trial_balance_snapshot_id
+            FROM accounting_core.fiscal_period
+            JOIN accounting_reporting.trial_balance_snapshot
+              ON trial_balance_snapshot.tenant_account_id = fiscal_period.tenant_account_id
+             AND trial_balance_snapshot.fiscal_period_id = fiscal_period.fiscal_period_id
+             AND trial_balance_snapshot.legal_entity_id = %s
+             AND trial_balance_snapshot.accounting_book_id = %s
+            WHERE fiscal_period.tenant_account_id = %s
+              AND fiscal_period.period_end_date < %s
+              AND fiscal_period.period_status_code = 'hard_closed'
+            ORDER BY fiscal_period.period_end_date DESC, fiscal_period.period_code DESC
+            LIMIT 1
+            """,
+            (legal_entity_id, book_id, tenant_id, scope_start),
+        ).fetchone()
+        if prior_snapshot is not None:
+            amount = connection.execute(
+                """
+                SELECT COALESCE(
+                    SUM(
+                        trial_balance_line.credit_total_amount
+                        - trial_balance_line.debit_total_amount
+                    ),
+                    0
+                )
+                FROM accounting_reporting.trial_balance_line
+                JOIN accounting_core.chart_account
+                  ON chart_account.tenant_account_id = trial_balance_line.tenant_account_id
+                 AND chart_account.chart_account_id = trial_balance_line.chart_account_id
+                WHERE trial_balance_line.tenant_account_id = %s
+                  AND trial_balance_line.trial_balance_snapshot_id = %s
+                  AND chart_account.account_class_code = 'equity'
+                """,
+                (tenant_id, prior_snapshot[0]),
+            ).fetchone()[0]
+            return Decimal(amount)
+        amount = connection.execute(
+            """
+            SELECT COALESCE(
+                SUM(journal_entry_line.credit_amount - journal_entry_line.debit_amount),
+                0
+            )
+            FROM accounting_core.journal_entry_line
+            JOIN accounting_core.general_journal
+              ON general_journal.tenant_account_id = journal_entry_line.tenant_account_id
+             AND general_journal.general_journal_id = journal_entry_line.general_journal_id
+            JOIN accounting_core.chart_account
+              ON chart_account.tenant_account_id = journal_entry_line.tenant_account_id
+             AND chart_account.chart_account_id = journal_entry_line.chart_account_id
+            WHERE general_journal.tenant_account_id = %s
+              AND general_journal.legal_entity_id = %s
+              AND general_journal.accounting_book_id = %s
+              AND general_journal.accounting_date <= %s
+              AND chart_account.account_class_code = 'equity'
+            """,
+            (
+                tenant_id,
+                legal_entity_id,
+                book_id,
+                scope_start - timedelta(days=1),
+            ),
+        ).fetchone()[0]
+        return Decimal(amount)
+
+    def _other_equity_movement_amount(
+        self,
+        connection: object,
+        tenant_id: UUID,
+        legal_entity_id: UUID,
+        book_id: UUID,
+        period_ids: list[UUID],
+    ) -> Decimal:
+        placeholders = ", ".join(["%s"] * len(period_ids))
+        amount = connection.execute(
+            f"""
+            SELECT COALESCE(
+                SUM(journal_entry_line.credit_amount - journal_entry_line.debit_amount),
+                0
+            )
+            FROM accounting_core.journal_entry_line
+            JOIN accounting_core.general_journal
+              ON general_journal.tenant_account_id = journal_entry_line.tenant_account_id
+             AND general_journal.general_journal_id = journal_entry_line.general_journal_id
+            JOIN accounting_core.chart_account
+              ON chart_account.tenant_account_id = journal_entry_line.tenant_account_id
+             AND chart_account.chart_account_id = journal_entry_line.chart_account_id
+            WHERE general_journal.tenant_account_id = %s
+              AND general_journal.legal_entity_id = %s
+              AND general_journal.accounting_book_id = %s
+              AND general_journal.fiscal_period_id IN ({placeholders})
+              AND chart_account.account_class_code = 'equity'
+              AND general_journal.journal_reference NOT LIKE %s
+            """,
+            (
+                tenant_id,
+                legal_entity_id,
+                book_id,
+                *period_ids,
+                "urn:cwl:accounting:general_journal:period_closing:%",
+            ),
+        ).fetchone()[0]
+        return Decimal(amount)
+
+    def _equity_movement_line(self, account_role_code: str, amount: Decimal) -> dict[str, object]:
+        debit_amount = Decimal("0") if amount >= 0 else -amount
+        credit_amount = amount if amount >= 0 else Decimal("0")
+        return {
+            "chart_account_code": "",
+            "account_role_code": account_role_code,
+            "account_class_code": "equity",
+            "debit_amount": debit_amount,
+            "credit_amount": credit_amount,
         }
 
     def _load_operational_income_lines(
