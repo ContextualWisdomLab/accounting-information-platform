@@ -219,6 +219,109 @@ class UnappliedCashRefundHttpTests(unittest.TestCase):
         server.shutdown()
         server.server_close()
 
+    def test_http_unapplied_cash_apply_reduces_receivable_aging(self) -> None:
+        """Park then #61 apply drops entity AR aging by the applied amount."""
+        case = self.case
+        invoice = case._billing_validated_payload()
+        park = case._billing_unapplied_cash_park_payload(
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "cash_receipt",
+                    "debit_amount": "7000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "unapplied_cash",
+                    "debit_amount": "0",
+                    "credit_amount": "7000",
+                },
+            ],
+        )
+        apply_payload = case._billing_unapplied_cash_application_payload()
+        later_apply = case._billing_unapplied_cash_application_payload(
+            proposal_id="019d7b92-8cc5-7a7f-b61c-962c0f4bf625",
+            idempotency_key=(
+                f"{case.policy.tenant_reference}:unapplied_cash_application:"
+                f"019d7b92-8cc5-7a7f-b61c-962c0f4bf625:sha256:{'e' * 64}:v1"
+            ),
+            source_payload_hash="sha256:" + "e" * 64,
+            source_event_references=(
+                f"{case.policy.tenant_reference}:unapplied_cash_application:"
+                "019d7b92-8cc5-7a7f-b61c-962c0f4bf625",
+            ),
+        )
+        server = case._start_http_server()
+
+        invoice_status, _invoice = case._http_json("POST", "/journal-proposals", invoice)
+        park_status, _park = case._http_json("POST", "/journal-proposals", park)
+        before_status, before = case._http_receivable_aging()
+        apply_status, receipt = case._http_json("POST", "/journal-proposals", apply_payload)
+        replay_status, replay = case._http_json("POST", "/journal-proposals", apply_payload)
+        after_status, after = case._http_receivable_aging()
+        balances_status, balances = case._http_account_balances(chart_account_code="110100")
+        payable_status, payable = case._http_payable_aging()
+
+        self.assertEqual(
+            apply_payload["idempotency_key"],
+            (
+                f"{case.policy.tenant_reference}:unapplied_cash_application:"
+                f"{apply_payload['proposal_id']}:{apply_payload['source_payload_hash']}:v1"
+            ),
+        )
+        self.assertEqual(apply_payload["lines"][0]["account_role_code"], "unapplied_cash")
+        self.assertEqual(apply_payload["lines"][1]["account_role_code"], "accounts_receivable")
+        self.assertEqual(invoice_status, 200)
+        self.assertEqual(park_status, 200)
+        self.assertEqual(before_status, 200)
+        self.assertEqual(before["total_outstanding_amount"], "25000")
+        self.assertNotIn("unapplied_credit_amount", before)
+        self.assertEqual(apply_status, 200)
+        self.assertEqual(replay_status, 200)
+        self.assertEqual(receipt, replay)
+        self.assertEqual(after_status, 200)
+        self.assertEqual(balances_status, 200)
+        self.assertEqual(after["current_amount"], "18000")
+        self.assertEqual(after["days_31_60_amount"], "0")
+        self.assertEqual(after["days_61_90_amount"], "0")
+        self.assertEqual(after["days_over_90_amount"], "0")
+        self.assertEqual(after["total_outstanding_amount"], "18000")
+        self.assertEqual(
+            Decimal(str(after["total_outstanding_amount"])),
+            Decimal(str(before["total_outstanding_amount"])) - Decimal("7000"),
+        )
+        self.assertEqual(
+            Decimal(str(after["total_outstanding_amount"])),
+            case._account_balance_net(balances, "110100"),
+        )
+        self.assertNotIn("unapplied_credit_amount", after)
+        self.assertNotIn("party_reference", after)
+        self.assertEqual(payable_status, 200)
+        self.assertEqual(payable["chart_account_code"], "210100")
+
+        soft_status, _soft = case._http_json(
+            "POST",
+            "/period-closes",
+            case._period_close_payload(period_status_code="soft_closed"),
+        )
+        rejected_status, rejected = case._http_json(
+            "POST", "/journal-proposals", later_apply
+        )
+        hard_status, _hard = case._http_json(
+            "POST", "/period-closes", case._period_close_payload()
+        )
+        closed_status, closed = case._http_receivable_aging()
+
+        self.assertEqual(soft_status, 200)
+        self.assertEqual(rejected_status, 422)
+        self.assertIn("open period", str(rejected["error_message"]))
+        self.assertEqual(hard_status, 200)
+        self.assertEqual(closed_status, 200)
+        self.assertEqual(closed["total_outstanding_amount"], "18000")
+        server.shutdown()
+        server.server_close()
+
 
 class PeriodClosePackageHttpTests(unittest.TestCase):
     """GET /period-close-packages includes the standalone payable-aging document."""
