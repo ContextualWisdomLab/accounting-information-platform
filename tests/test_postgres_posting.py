@@ -3889,6 +3889,300 @@ class PostgresPostingTests(unittest.TestCase):
         )
         server.shutdown()
 
+    def test_http_reads_trial_balance_basis(self) -> None:
+        """GET /trial-balances optional balance_basis_code is the unadjusted / adjusted / post-close worksheet."""
+        server = self._start_http_server()
+        journals_before = self._count_table("accounting_core.general_journal")
+
+        empty_status, empty = self._http_trial_balance()
+        empty_unadjusted_status, empty_unadjusted = self._http_trial_balance(
+            balance_basis_code="unadjusted"
+        )
+        empty_adjusted_status, empty_adjusted = self._http_trial_balance(
+            balance_basis_code="adjusted"
+        )
+        empty_post_close_status, empty_post_close = self._http_trial_balance(
+            balance_basis_code="post_close"
+        )
+        with self.assertRaisesRegex(
+            AccountingValidationError,
+            "post_close requires a stored trial_balance_snapshot",
+        ):
+            self.ledger.load_period_trial_balance(
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "2026-08",
+                balance_basis_code="post_close",
+            )
+        invalid_status, invalid_document = self._http_trial_balance(
+            balance_basis_code="working"
+        )
+        with self.assertRaisesRegex(
+            AccountingValidationError,
+            "must be unadjusted, adjusted, or post_close",
+        ):
+            lookup_trial_balance(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "urn:cwl:accounting:fiscal_period:2026-08",
+                balance_basis_code="working",
+            )
+        with self.assertRaisesRegex(
+            AccountingValidationError,
+            "must be unadjusted, adjusted, or post_close",
+        ):
+            self.ledger.load_period_trial_balance(
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "2026-08",
+                balance_basis_code="working",
+            )
+
+        self.assertEqual(empty_status, 200)
+        self.assertEqual(empty["lines"], [])
+        self.assertEqual(empty["balance_source_code"], "live")
+        self.assertNotIn("balance_basis_code", empty)
+        self.assertEqual(empty_unadjusted_status, 200)
+        self.assertEqual(empty_unadjusted["lines"], [])
+        self.assertEqual(empty_unadjusted["balance_basis_code"], "unadjusted")
+        self.assertEqual(empty_adjusted_status, 200)
+        self.assertEqual(empty_adjusted["lines"], [])
+        self.assertEqual(empty_adjusted["balance_basis_code"], "adjusted")
+        self.assertEqual(empty_post_close_status, 409)
+        self.assertIn(
+            "post_close requires a stored trial_balance_snapshot",
+            str(empty_post_close["error_message"]),
+        )
+        self.assertEqual(invalid_status, 400)
+        self.assertIn(
+            "must be unadjusted, adjusted, or post_close",
+            str(invalid_document["error_message"]),
+        )
+
+        invoice_status, _invoice = self._http_json(
+            "POST", "/journal-proposals", self._billing_validated_payload()
+        )
+        open_omit_status, open_omit = self._http_trial_balance()
+        open_unadjusted_status, open_unadjusted = self._http_trial_balance(
+            balance_basis_code="unadjusted"
+        )
+        open_adjusted_status, open_adjusted = self._http_trial_balance(
+            balance_basis_code="adjusted"
+        )
+
+        self.assertEqual(invoice_status, 200)
+        self.assertEqual(open_omit_status, 200)
+        self.assertEqual(open_omit["period_status_code"], "open")
+        self.assertEqual(open_omit["balance_source_code"], "live")
+        self.assertNotIn("balance_basis_code", open_omit)
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(open_omit, "110100")["debit_amount"])),
+            Decimal("25000"),
+        )
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(open_omit, "410100")["credit_amount"])),
+            Decimal("25000"),
+        )
+        self.assertEqual(open_unadjusted_status, 200)
+        self.assertEqual(open_unadjusted["balance_basis_code"], "unadjusted")
+        self.assertEqual(open_unadjusted["balance_source_code"], "live")
+        self.assertEqual(open_unadjusted["lines"], open_omit["lines"])
+        self.assertEqual(open_adjusted_status, 200)
+        self.assertEqual(open_adjusted["balance_basis_code"], "adjusted")
+        self.assertEqual(open_adjusted["lines"], open_omit["lines"])
+
+        cash_status, _cash = self._http_json(
+            "POST", "/journal-proposals", self._billing_cash_payload()
+        )
+        soft_status, _soft = self._http_json(
+            "POST",
+            "/period-closes",
+            self._period_close_payload(period_status_code="soft_closed"),
+        )
+        adjusting_status, _adjusting = self._http_json(
+            "POST", "/journals", self._adjusting_journal_payload()
+        )
+        soft_omit_status, soft_omit = self._http_trial_balance()
+        soft_adjusted_status, soft_adjusted = self._http_trial_balance(
+            balance_basis_code="adjusted"
+        )
+        soft_unadjusted_status, soft_unadjusted = self._http_trial_balance(
+            balance_basis_code="unadjusted"
+        )
+        soft_post_close_status, soft_post_close = self._http_trial_balance(
+            balance_basis_code="post_close"
+        )
+
+        self.assertEqual(cash_status, 200)
+        self.assertEqual(soft_status, 200)
+        self.assertEqual(adjusting_status, 200)
+        self.assertEqual(soft_omit_status, 200)
+        self.assertEqual(soft_omit["period_status_code"], "soft_closed")
+        self.assertEqual(soft_omit["balance_source_code"], "live")
+        self.assertNotIn("balance_basis_code", soft_omit)
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(soft_omit, "110100")["debit_amount"])),
+            Decimal("26000"),
+        )
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(soft_omit, "110100")["credit_amount"])),
+            Decimal("18000"),
+        )
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(soft_omit, "110200")["debit_amount"])),
+            Decimal("18000"),
+        )
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(soft_omit, "410100")["credit_amount"])),
+            Decimal("26000"),
+        )
+        self.assertNotIn(
+            "310100",
+            {str(item["chart_account_code"]) for item in soft_omit["lines"]},
+        )
+        self.assertEqual(soft_adjusted_status, 200)
+        self.assertEqual(soft_adjusted["balance_basis_code"], "adjusted")
+        self.assertEqual(soft_adjusted["lines"], soft_omit["lines"])
+        self.assertEqual(soft_unadjusted_status, 200)
+        self.assertEqual(soft_unadjusted["balance_basis_code"], "unadjusted")
+        self.assertEqual(soft_unadjusted["balance_source_code"], "live")
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(soft_unadjusted, "110100")["debit_amount"])),
+            Decimal("25000"),
+        )
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(soft_unadjusted, "110100")["credit_amount"])),
+            Decimal("18000"),
+        )
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(soft_unadjusted, "110200")["debit_amount"])),
+            Decimal("18000"),
+        )
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(soft_unadjusted, "410100")["credit_amount"])),
+            Decimal("25000"),
+        )
+        self.assertNotIn(
+            "310100",
+            {str(item["chart_account_code"]) for item in soft_unadjusted["lines"]},
+        )
+        self.assertEqual(soft_post_close_status, 409)
+        self.assertIn(
+            "post_close requires a stored trial_balance_snapshot",
+            str(soft_post_close["error_message"]),
+        )
+
+        hard_status, _hard = self._http_json(
+            "POST", "/period-closes", self._period_close_payload()
+        )
+        hard_omit_status, hard_omit = self._http_trial_balance()
+        hard_post_close_status, hard_post_close = self._http_trial_balance(
+            balance_basis_code="post_close"
+        )
+        hard_adjusted_status, hard_adjusted = self._http_trial_balance(
+            balance_basis_code="adjusted"
+        )
+        hard_unadjusted_status, hard_unadjusted = self._http_trial_balance(
+            balance_basis_code="unadjusted"
+        )
+        persist_adjusted = self.ledger.load_period_trial_balance(
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "2026-08",
+            balance_basis_code="adjusted",
+        )
+        lookup_adjusted = lookup_trial_balance(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-08",
+            balance_basis_code="adjusted",
+        )
+        persist_omit = self.ledger.load_period_trial_balance(
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "2026-08",
+        )
+        lookup_omit = lookup_trial_balance(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-08",
+        )
+
+        self.assertEqual(hard_status, 200)
+        self.assertEqual(hard_omit_status, 200)
+        self.assertEqual(hard_omit["period_status_code"], "hard_closed")
+        self.assertEqual(hard_omit["balance_source_code"], "snapshot")
+        self.assertNotIn("balance_basis_code", hard_omit)
+        self.assertIn("snapshot_record_id", hard_omit)
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(hard_omit, "310100")["credit_amount"])),
+            Decimal("26000"),
+        )
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(hard_omit, "410100")["debit_amount"])),
+            Decimal("26000"),
+        )
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(hard_omit, "410100")["credit_amount"])),
+            Decimal("26000"),
+        )
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(hard_omit, "110100")["debit_amount"])),
+            Decimal("26000"),
+        )
+        self.assertEqual(hard_post_close_status, 200)
+        self.assertEqual(hard_post_close["balance_basis_code"], "post_close")
+        self.assertEqual(hard_post_close["balance_source_code"], "snapshot")
+        self.assertEqual(hard_post_close["snapshot_record_id"], hard_omit["snapshot_record_id"])
+        self.assertEqual(hard_post_close["lines"], hard_omit["lines"])
+        self.assertEqual(hard_adjusted_status, 200)
+        self.assertEqual(hard_adjusted["balance_basis_code"], "adjusted")
+        self.assertEqual(hard_adjusted["balance_source_code"], "live")
+        self.assertNotIn("snapshot_record_id", hard_adjusted)
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(hard_adjusted, "410100")["credit_amount"])),
+            Decimal("26000"),
+        )
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(hard_adjusted, "110100")["debit_amount"])),
+            Decimal("26000"),
+        )
+        self.assertNotIn(
+            "310100",
+            {str(item["chart_account_code"]) for item in hard_adjusted["lines"]},
+        )
+        self.assertEqual(hard_unadjusted_status, 200)
+        self.assertEqual(hard_unadjusted["balance_basis_code"], "unadjusted")
+        self.assertEqual(hard_unadjusted["balance_source_code"], "live")
+        self.assertNotIn("snapshot_record_id", hard_unadjusted)
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(hard_unadjusted, "410100")["credit_amount"])),
+            Decimal("25000"),
+        )
+        self.assertEqual(
+            Decimal(str(self._trial_balance_line(hard_unadjusted, "110100")["debit_amount"])),
+            Decimal("25000"),
+        )
+        self.assertNotIn(
+            "310100",
+            {str(item["chart_account_code"]) for item in hard_unadjusted["lines"]},
+        )
+        self.assertEqual(persist_adjusted, hard_adjusted)
+        self.assertEqual(lookup_adjusted, hard_adjusted)
+        self.assertEqual(persist_omit, hard_omit)
+        self.assertEqual(lookup_omit, hard_omit)
+        self.assertEqual(
+            self._count_table("accounting_core.general_journal"),
+            journals_before + 4,
+        )
+        server.shutdown()
+
     def test_http_reads_posted_journal_lines(self) -> None:
         """GET returns persisted journal lines and keeps original vs reversing journals distinct."""
         invoice = self._billing_validated_payload()
@@ -8519,27 +8813,29 @@ class PostgresPostingTests(unittest.TestCase):
         legal_entity_reference: str | None = None,
         book_reference: str | None = None,
         fiscal_period_reference: str | None = None,
+        balance_basis_code: str | None = None,
         tenant_header: str | None = "",
     ) -> tuple[int, dict[str, object]]:
-        query = urllib.parse.urlencode(
-            {
-                "legal_entity_reference": (
-                    self.policy.legal_entity_reference
-                    if legal_entity_reference is None
-                    else legal_entity_reference
-                ),
-                "book_reference": (
-                    self.policy.accounting_book_reference
-                    if book_reference is None
-                    else book_reference
-                ),
-                "fiscal_period_reference": (
-                    "urn:cwl:accounting:fiscal_period:2026-08"
-                    if fiscal_period_reference is None
-                    else fiscal_period_reference
-                ),
-            }
-        )
+        fields = {
+            "legal_entity_reference": (
+                self.policy.legal_entity_reference
+                if legal_entity_reference is None
+                else legal_entity_reference
+            ),
+            "book_reference": (
+                self.policy.accounting_book_reference
+                if book_reference is None
+                else book_reference
+            ),
+            "fiscal_period_reference": (
+                "urn:cwl:accounting:fiscal_period:2026-08"
+                if fiscal_period_reference is None
+                else fiscal_period_reference
+            ),
+        }
+        if balance_basis_code is not None:
+            fields["balance_basis_code"] = balance_basis_code
+        query = urllib.parse.urlencode(fields)
         return self._http_json(
             "GET",
             f"/trial-balances?{query}",

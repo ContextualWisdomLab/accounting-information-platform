@@ -309,6 +309,7 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         legal_entity_reference = _first_query(fields, "legal_entity_reference")
         book_reference = _first_query(fields, "book_reference")
         fiscal_period_reference = _first_query(fields, "fiscal_period_reference")
+        balance_basis_code = _first_query(fields, "balance_basis_code")
         if not legal_entity_reference or not book_reference or not fiscal_period_reference:
             self._write_error(
                 400,
@@ -323,9 +324,17 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
                 legal_entity_reference,
                 book_reference,
                 fiscal_period_reference,
+                balance_basis_code,
             )
         except AccountingValidationError as error:
-            self._write_error(404, str(error))
+            message = str(error)
+            if "must be unadjusted, adjusted, or post_close" in message:
+                self._write_error(400, message)
+                return
+            if "post_close requires a stored trial_balance_snapshot" in message:
+                self._write_error(409, message)
+                return
+            self._write_error(404, message)
             return
         self._write_json(200, document)
 

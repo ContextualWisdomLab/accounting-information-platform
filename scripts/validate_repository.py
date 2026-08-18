@@ -77,6 +77,7 @@ REQUIRED_FILES = (
     "docs/adr/0033-http-cash-flow.md",
     "docs/adr/0034-http-account-balances.md",
     "docs/adr/0035-http-account-rollforward.md",
+    "docs/adr/0036-http-trial-balance-basis.md",
     "docs/doctoring/REFERENCES.md",
     "docs/doctoring/STANDARD_TRACEABILITY.md",
     "docs/superpowers/specs/2026-08-16-accounting-information-platform-design.md",

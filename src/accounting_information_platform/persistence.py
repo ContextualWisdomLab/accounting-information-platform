@@ -2092,13 +2092,23 @@ class PostgresPostingLedger:
         legal_entity_reference: str,
         accounting_book_reference: str,
         period_code: str,
+        balance_basis_code: str = "",
     ) -> dict[str, object]:
-        """Return snapshot balances for a hard-closed period, or live totals otherwise."""
+        """Return snapshot or live trial-balance totals, optionally on an unadjusted, adjusted, or post-close basis."""
         _require_reference(legal_entity_reference, "legal entity reference")
         _require_reference(accounting_book_reference, "accounting book reference")
         if not period_code.strip():
             raise AccountingValidationError(
                 "period_code is required. Supply the fiscal period code, then retry the trial-balance read."
+            )
+        if balance_basis_code and balance_basis_code not in {
+            "unadjusted",
+            "adjusted",
+            "post_close",
+        }:
+            raise AccountingValidationError(
+                "balance_basis_code must be unadjusted, adjusted, or post_close. "
+                "Supply a known trial-balance basis, then retry the trial-balance read."
             )
         with self._session() as connection:
             tenant_id = self._require_tenant(connection)
@@ -2122,7 +2132,47 @@ class PostgresPostingLedger:
                 next_action="the trial-balance read",
             )
             snapshot_record_id = None
-            if period_status_code == "hard_closed":
+            if balance_basis_code == "post_close":
+                snapshot = self._latest_close_snapshot(
+                    connection, tenant_id, legal_entity_id, book_id, period_id
+                )
+                if snapshot is None:
+                    raise AccountingValidationError(
+                        "balance_basis_code=post_close requires a stored trial_balance_snapshot. "
+                        "Hard-close the period, then retry the trial-balance read."
+                    )
+                snapshot_record_id = str(snapshot[0])
+                line_rows = self._load_snapshot_balance_lines(
+                    connection, tenant_id, snapshot[0]
+                )
+                balance_source_code = "snapshot"
+            elif balance_basis_code == "unadjusted":
+                line_rows = tuple(
+                    (account_code, debit_total, credit_total)
+                    for _account_id, account_code, debit_total, credit_total in self._aggregate_worksheet_trial_balance(
+                        connection,
+                        tenant_id,
+                        legal_entity_id,
+                        book_id,
+                        period_end_date,
+                        exclude_adjusting=True,
+                    )
+                )
+                balance_source_code = "live"
+            elif balance_basis_code == "adjusted":
+                line_rows = tuple(
+                    (account_code, debit_total, credit_total)
+                    for _account_id, account_code, debit_total, credit_total in self._aggregate_worksheet_trial_balance(
+                        connection,
+                        tenant_id,
+                        legal_entity_id,
+                        book_id,
+                        period_end_date,
+                        exclude_adjusting=False,
+                    )
+                )
+                balance_source_code = "live"
+            elif period_status_code == "hard_closed":
                 snapshot = self._latest_close_snapshot(
                     connection, tenant_id, legal_entity_id, book_id, period_id
                 )
@@ -2166,6 +2216,8 @@ class PostgresPostingLedger:
         }
         if snapshot_record_id is not None:
             document["snapshot_record_id"] = snapshot_record_id
+        if balance_basis_code:
+            document["balance_basis_code"] = balance_basis_code
         return document
 
     def load_financial_statement(
@@ -3325,6 +3377,50 @@ class PostgresPostingLedger:
             ORDER BY chart_account.chart_account_code
             """,
             (tenant_id, legal_entity_id, book_id, through_date),
+        ).fetchall()
+        return tuple(
+            (row[0], row[1], Decimal(row[2]), Decimal(row[3])) for row in rows
+        )
+
+    def _aggregate_worksheet_trial_balance(
+        self,
+        connection: object,
+        tenant_id: UUID,
+        legal_entity_id: UUID,
+        book_id: UUID,
+        through_date: date,
+        *,
+        exclude_adjusting: bool,
+    ) -> tuple[tuple[UUID, str, Decimal, Decimal], ...]:
+        extra_sql = " AND general_journal.journal_reference NOT LIKE %s"
+        extra_params: list[object] = [
+            "urn:cwl:accounting:general_journal:period_closing:%"
+        ]
+        if exclude_adjusting:
+            extra_sql += " AND journal_entry_line.account_role_code IS DISTINCT FROM %s"
+            extra_params.append("adjusting")
+        rows = connection.execute(
+            f"""
+            SELECT chart_account.chart_account_id,
+                   chart_account.chart_account_code,
+                   SUM(journal_entry_line.debit_amount),
+                   SUM(journal_entry_line.credit_amount)
+            FROM accounting_core.journal_entry_line
+            JOIN accounting_core.general_journal
+              ON general_journal.tenant_account_id = journal_entry_line.tenant_account_id
+             AND general_journal.general_journal_id = journal_entry_line.general_journal_id
+            JOIN accounting_core.chart_account
+              ON chart_account.tenant_account_id = journal_entry_line.tenant_account_id
+             AND chart_account.chart_account_id = journal_entry_line.chart_account_id
+            WHERE general_journal.tenant_account_id = %s
+              AND general_journal.legal_entity_id = %s
+              AND general_journal.accounting_book_id = %s
+              AND general_journal.accounting_date <= %s
+              {extra_sql}
+            GROUP BY chart_account.chart_account_id, chart_account.chart_account_code
+            ORDER BY chart_account.chart_account_code
+            """,
+            (tenant_id, legal_entity_id, book_id, through_date, *extra_params),
         ).fetchall()
         return tuple(
             (row[0], row[1], Decimal(row[2]), Decimal(row[3])) for row in rows

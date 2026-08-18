@@ -595,18 +595,29 @@ def lookup_trial_balance(
     legal_entity_reference: str,
     book_reference: str,
     fiscal_period_reference: str,
+    balance_basis_code: str = "",
 ) -> dict[str, object]:
-    """Return the snapshot or live trial balance for one book and fiscal period."""
+    """Return the snapshot or live trial balance, optionally on an unadjusted, adjusted, or post-close basis."""
     if not legal_entity_reference or not book_reference or not fiscal_period_reference:
         raise AccountingValidationError(
             "legal_entity_reference, book_reference, and fiscal_period_reference are required. "
             "Supply those trial-balance fields, then retry the trial-balance read."
+        )
+    if balance_basis_code and balance_basis_code not in {
+        "unadjusted",
+        "adjusted",
+        "post_close",
+    }:
+        raise AccountingValidationError(
+            "balance_basis_code must be unadjusted, adjusted, or post_close. "
+            "Supply a known trial-balance basis, then retry the trial-balance read."
         )
     ledger = PostgresPostingLedger(database_url, tenant_reference)
     return ledger.load_period_trial_balance(
         legal_entity_reference=legal_entity_reference,
         accounting_book_reference=book_reference,
         period_code=_period_code_from_reference(fiscal_period_reference),
+        balance_basis_code=balance_basis_code,
     )
 
 
