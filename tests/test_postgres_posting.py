@@ -479,6 +479,25 @@ class PostgresPostingTests(unittest.TestCase):
             {},
         )
 
+    def test_reverse_fails_closed_when_reversal_reference_is_occupied(self) -> None:
+        """A posted journal at the reversal reference is not overwritten."""
+        posted = self.ledger.post(self._two_line_proposal(), self.policy)
+        self._raw_insert_general_journal(f"{posted.journal_reference}:reversal")
+        journals_before = self._count_table("accounting_core.general_journal")
+        with self.assertRaisesRegex(
+            AccountingValidationError, "posted journal is immutable"
+        ):
+            self.ledger.reverse(
+                posted.journal_reference,
+                date(2026, 8, 31),
+                "billing_correction",
+                self.policy,
+            )
+        self.assertEqual(
+            self._count_table("accounting_core.general_journal"), journals_before
+        )
+        self.assertEqual(self._original_journal_status(posted.journal_reference), "posted")
+
     def test_operator_setup_failures_name_the_next_action(self) -> None:
         """Missing driver, URL, server, or migration file fail closed with a retry action."""
         with self.assertRaisesRegex(AccountingValidationError, "Set a PostgreSQL 18 URL"):

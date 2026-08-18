@@ -138,6 +138,100 @@ class AccountingCoreTests(unittest.TestCase):
         self.assertEqual(replay, first)
         self.assertEqual(self.ledger.journal_count, 1)
 
+    def test_proposal_id_must_be_a_hyphenated_uuid(self) -> None:
+        """Commercial proposal_id cannot construct a reversal journal_reference."""
+        original_id = "019d7b92-1aa0-7a7f-b61c-962c0f4bf611"
+        for proposal_id in (
+            f"{original_id}:reversal",
+            "not-a-uuid",
+            original_id.replace("-", ""),
+        ):
+            with self.subTest(proposal_id=proposal_id):
+                with self.assertRaisesRegex(
+                    AccountingValidationError, "proposal_id must be a UUID"
+                ):
+                    self._invoice_proposal(proposal_id=proposal_id)
+
+    def test_reverse_fails_closed_when_reversal_reference_is_occupied(self) -> None:
+        """A posted journal at the reversal reference is not overwritten."""
+        first = self.ledger.post(self._invoice_proposal(), self.policy)
+        colliding = self.ledger.post(
+            self._invoice_proposal(
+                proposal_id="019d7b92-1aa0-7a7f-b61c-962c0f4bf699",
+                idempotency_key="invoice-reversal-collision-v1",
+                source_payload_hash="sha256:" + "e" * 64,
+            ),
+            self.policy,
+        )
+        colliding_key = self.ledger._tenant_cache_key(
+            self.policy.tenant_reference, colliding.journal_reference
+        )
+        occupant = self.ledger._journals.pop(colliding_key)
+        reversal_reference = f"{first.journal_reference}:reversal"
+        reversal_key = self.ledger._tenant_cache_key(
+            self.policy.tenant_reference, reversal_reference
+        )
+        self.ledger._journals[reversal_key] = occupant
+
+        with self.assertRaisesRegex(
+            AccountingValidationError, "posted journal is immutable"
+        ):
+            self.ledger.reverse(
+                first.journal_reference,
+                date(2026, 8, 31),
+                "billing_correction",
+                self.policy,
+            )
+
+        self.assertIs(self.ledger._journals[reversal_key], occupant)
+        self.assertEqual(self.ledger.journal_count, 2)
+        self.assertEqual(
+            self.ledger._journals[
+                self.ledger._tenant_cache_key(
+                    self.policy.tenant_reference, first.journal_reference
+                )
+            ].source_proposal_id,
+            first.source_proposal_id,
+        )
+
+    def test_reverse_replays_existing_reversal_when_receipt_cache_is_missing(self) -> None:
+        """Idempotent reverse still returns the original reversing journal."""
+        first = self.ledger.post(self._invoice_proposal(), self.policy)
+        reversal = self.ledger.reverse(
+            first.journal_reference,
+            date(2026, 8, 31),
+            "billing_correction",
+            self.policy,
+        )
+        del self.ledger._reversal_receipts[
+            self.ledger._tenant_cache_key(
+                self.policy.tenant_reference, first.journal_reference
+            )
+        ]
+        stored = self.ledger._journals[
+            self.ledger._tenant_cache_key(
+                self.policy.tenant_reference, reversal.journal_reference
+            )
+        ]
+
+        replay = self.ledger.reverse(
+            first.journal_reference,
+            date(2026, 8, 31),
+            "billing_correction",
+            self.policy,
+        )
+
+        self.assertEqual(replay, reversal)
+        self.assertIs(
+            self.ledger._journals[
+                self.ledger._tenant_cache_key(
+                    self.policy.tenant_reference, reversal.journal_reference
+                )
+            ],
+            stored,
+        )
+        self.assertEqual(self.ledger.journal_count, 2)
+
     def test_same_proposal_id_posts_independently_per_tenant(self) -> None:
         """journal_reference identity is tenant-scoped, matching PostgreSQL uniqueness."""
         first = self.ledger.post(self._invoice_proposal(), self.policy)

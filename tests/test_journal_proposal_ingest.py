@@ -181,6 +181,16 @@ class JournalProposalIngestTests(unittest.TestCase):
         ):
             ingest_journal_proposal(payload)
 
+    def test_billing_proposal_id_cannot_construct_a_reversal_key(self) -> None:
+        """Billing proposal_id stays a UUID and cannot carry a :reversal suffix."""
+        payload = self._billing_proposal(
+            proposal_id="019d7b92-1aa0-7a7f-b61c-962c0f4bf612:reversal"
+        )
+        with self.assertRaisesRegex(
+            AccountingValidationError, "proposal_id must be a UUID"
+        ):
+            ingest_journal_proposal(payload)
+
     def test_unapplied_cash_refund_ingests_published_billing_key(self) -> None:
         """Billing #59 refund JSON becomes a status-free proposal on the published key."""
         source_payload_hash = "sha256:" + "8" * 64

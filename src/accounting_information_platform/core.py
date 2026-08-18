@@ -21,6 +21,9 @@ _CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 _CURRENCY_PATTERN = re.compile(r"^[A-Z]{3}$")
 _DECIMAL_PATTERN = re.compile(r"^(0|[1-9][0-9]*)(\.[0-9]{1,6})?$")
 _HASH_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+_PROPOSAL_ID_PATTERN = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 _REFERENCE_PATTERN = re.compile(r"^urn:cwl:[A-Za-z0-9_:.\-]+$")
 
 
@@ -77,6 +80,7 @@ class JournalProposal:
         """Validate identity, provenance, exact balancing, and line uniqueness."""
         if not self.proposal_id or self.proposal_contract_version < 1:
             raise AccountingValidationError("proposal identity and contract version are required")
+        _require_proposal_id(self.proposal_id)
         if not self.idempotency_key:
             raise AccountingValidationError("idempotency key is required")
         _require_reference(self.tenant_reference, "tenant reference")
@@ -392,6 +396,17 @@ class PostingLedger:
             raise AccountingValidationError("reversal policy scope does not match original journal")
         _require_code(reversal_reason_code, "reversal reason code")
         reversal_reference = f"{journal_reference}:reversal"
+        occupant = self._journals.get(
+            self._tenant_cache_key(original.tenant_reference, reversal_reference)
+        )
+        if occupant is not None:
+            if occupant.reversal_of_journal_reference == journal_reference:
+                receipt = self._receipt_for_posted_journal(occupant)
+                self._reversal_receipts[reversal_key] = receipt
+                return receipt
+            raise AccountingValidationError(
+                "posted journal is immutable. Reverse the existing journal, then post a replacement."
+            )
         reversal_lines = tuple(
             PostedJournalLine(
                 line_number=line.line_number,
@@ -508,6 +523,24 @@ class PostingLedger:
         return prior_receipt
 
     @staticmethod
+    def _receipt_for_posted_journal(journal: PostedJournal) -> PostingReceipt:
+        """Rebuild the posting receipt for an already-retained journal."""
+        return PostingReceipt(
+            receipt_reference=f"{journal.journal_reference}:receipt",
+            journal_reference=journal.journal_reference,
+            posting_status_code="posted",
+            source_proposal_id=journal.source_proposal_id,
+            source_payload_hash=journal.source_payload_hash,
+            tenant_reference=journal.tenant_reference,
+            legal_entity_reference=journal.legal_entity_reference,
+            accounting_book_reference=journal.accounting_book_reference,
+            accounting_policy_version=journal.accounting_policy_version,
+            posting_rule_version=journal.posting_rule_version,
+            line_count=len(journal.lines),
+            reversal_of_journal_reference=journal.reversal_of_journal_reference,
+        )
+
+    @staticmethod
     def _resolve_line(
         line: JournalLineProposal, policy: AccountingPolicy
     ) -> PostedJournalLine:
@@ -556,6 +589,16 @@ def _parse_amount(value: Decimal | str) -> Decimal:
     except InvalidOperation as error:  # pragma: no cover - guarded by the regex.
         raise AccountingValidationError("amount is not a valid decimal") from error
     return amount
+
+
+def _require_proposal_id(proposal_id: str) -> str:
+    """Require a hyphenated UUID so a commercial id cannot form a reversal key."""
+    if _PROPOSAL_ID_PATTERN.fullmatch(proposal_id) is None:
+        raise AccountingValidationError(
+            "proposal_id must be a UUID. Supply the Billing published proposal_id, "
+            "then retry posting."
+        )
+    return proposal_id
 
 
 def _require_code(value: str, label: str) -> None:

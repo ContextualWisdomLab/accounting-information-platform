@@ -159,6 +159,17 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertEqual(account_role["pattern"], "^[a-z][a-z0-9_]{1,63}$")
         self.assertEqual(account_role["not"], {"const": "retained_earnings"})
 
+    def test_proposal_schema_requires_uuid_proposal_id(self) -> None:
+        """Billing proposal_id cannot include a colon or :reversal suffix."""
+        proposal = self._schema("accounting-journal-proposal.schema.json")
+        proposal_id = proposal["properties"]["proposal_id"]
+        self.assertEqual(proposal_id["type"], "string")
+        self.assertEqual(proposal_id["format"], "uuid")
+        self.assertEqual(
+            proposal_id["pattern"],
+            "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        )
+
     def test_repository_reports_integrated_violations(self) -> None:
         """The aggregate validator reports mutable CI, placeholders, and SQL drift."""
         with tempfile.TemporaryDirectory() as temporary_directory:

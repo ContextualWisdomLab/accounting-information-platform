@@ -8,4 +8,4 @@ AIS exposes `accept_journal_reversal` and `POST /journal-reversals` on the same 
 
 ## Consequences
 
-Controllers can reverse a posted journal without an in-process Python import. Cross-tenant reverse is rejected before a write. A closed period, unknown journal, or unknown Billing key fails closed and does not invent a reversal.
+Controllers can reverse a posted journal without an in-process Python import. Cross-tenant reverse is rejected before a write. A closed period, unknown journal, or unknown Billing key fails closed and does not invent a reversal. If `{journal_reference}:reversal` is already a posted journal that is not this original's reversing journal, reverse fails closed (`posted journal is immutable`) and writes no second journal. Replay of the same reversal request still returns the original reversing receipt.

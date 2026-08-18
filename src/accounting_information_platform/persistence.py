@@ -26,6 +26,7 @@ from .core import (
     PostingReceipt,
     _require_code,
     _require_currency,
+    _require_proposal_id,
     _require_reference,
 )
 
@@ -2577,6 +2578,19 @@ class PostgresPostingLedger:
                 for line in original_lines
             )
             reversal_reference = f"{journal_reference}:reversal"
+            occupant = connection.execute(
+                """
+                SELECT 1
+                FROM accounting_core.general_journal
+                WHERE tenant_account_id = %s AND journal_reference = %s
+                """,
+                (tenant_id, reversal_reference),
+            ).fetchone()
+            if occupant is not None:
+                raise AccountingValidationError(
+                    "posted journal is immutable. Reverse the existing journal, "
+                    "then post a replacement."
+                )
             source_hash, source_proposal_id = self._proposal_identity(
                 connection, tenant_id, original[5]
             )
@@ -5609,12 +5623,7 @@ def _import_psycopg():
 
 
 def _require_proposal_uuid(proposal_id: str) -> UUID:
-    try:
-        return uuid.UUID(proposal_id)
-    except ValueError as error:
-        raise AccountingValidationError(
-            "proposal_id must be a UUID. Supply the source proposal UUID, then retry posting."
-        ) from error
+    return uuid.UUID(_require_proposal_id(proposal_id))
 
 
 def _canonical_snapshot_hash(
