@@ -1595,6 +1595,18 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(refund["lines"][1]["account_role_code"], "cash_receipt")
         self.assertNotIn("210200", json.dumps(refund["lines"]))
         self.assertNotIn("110200", json.dumps(refund["lines"]))
+        self.assertEqual(
+            park["idempotency_key"],
+            (
+                f"{self.policy.tenant_reference}:unapplied_cash:"
+                f"{park['proposal_id']}:{park['source_payload_hash']}:v1"
+            ),
+        )
+        self.assertEqual(park["proposal_status"], "validated")
+        self.assertEqual(park["lines"][0]["account_role_code"], "cash_receipt")
+        self.assertEqual(park["lines"][1]["account_role_code"], "unapplied_cash")
+        self.assertNotIn("210200", json.dumps(park["lines"]))
+        self.assertNotIn("110200", json.dumps(park["lines"]))
 
         mapping_status, mappings = self._http_account_role_mappings()
         pull_status, pull_body = self._http_json(
@@ -1605,6 +1617,7 @@ class PostgresPostingTests(unittest.TestCase):
         post_status, post_receipt = self._http_json("POST", "/journal-proposals", refund)
         replay_status, replay_receipt = self._http_json("POST", "/journal-proposals", refund)
         park_status, park_receipt = self._http_json("POST", "/journal-proposals", park)
+        park_replay_status, park_replay = self._http_json("POST", "/journal-proposals", park)
         journal_status, journal = self._http_journal(
             idempotency_key=str(refund["idempotency_key"])
         )
@@ -1631,10 +1644,13 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(post_status, 200)
         self.assertEqual(replay_status, 200)
         self.assertEqual(park_status, 200)
+        self.assertEqual(park_replay_status, 200)
         self.assertEqual(post_receipt, replay_receipt)
         self.assertEqual(post_receipt, pull_body["posting_receipts"][0])
         self.assertEqual(post_receipt["line_count"], 2)
         self.assertEqual(post_receipt["idempotency_key"], refund["idempotency_key"])
+        self.assertEqual(park_receipt, park_replay)
+        self.assertEqual(park_receipt["idempotency_key"], park["idempotency_key"])
         self.assertNotEqual(park_receipt["idempotency_key"], refund["idempotency_key"])
         self.assertEqual(journal_status, 200)
         self.assertEqual(set(by_code), {"210200", "110200"})
@@ -10287,13 +10303,13 @@ class PostgresPostingTests(unittest.TestCase):
 
     def _billing_unapplied_cash_park_payload(self, **overrides: object) -> dict[str, object]:
         source_payload_hash = "sha256:" + "4" * 64
-        park_id = "019d7b92-8cc5-7a7f-b61c-962c0f4bf622"
+        unapplied_cash_id = "019d7b92-8cc5-7a7f-b61c-962c0f4bf622"
         values: dict[str, object] = {
-            "proposal_id": park_id,
+            "proposal_id": unapplied_cash_id,
             "proposal_contract_version": 1,
             "idempotency_key": (
-                f"{self.policy.tenant_reference}:unapplied_cash_refund:"
-                f"{park_id}:{source_payload_hash}:v1"
+                f"{self.policy.tenant_reference}:unapplied_cash:"
+                f"{unapplied_cash_id}:{source_payload_hash}:v1"
             ),
             "tenant_reference": self.policy.tenant_reference,
             "legal_entity_reference": self.policy.legal_entity_reference,
@@ -10305,7 +10321,7 @@ class PostgresPostingTests(unittest.TestCase):
             "proposed_at": "2026-08-31T00:00:00Z",
             "proposal_status": "validated",
             "source_event_references": (
-                f"{self.policy.tenant_reference}:unapplied_cash_refund:{park_id}",
+                f"{self.policy.tenant_reference}:unapplied_cash:{unapplied_cash_id}",
             ),
             "lines": [
                 {

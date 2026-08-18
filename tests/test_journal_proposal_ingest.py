@@ -227,6 +227,52 @@ class JournalProposalIngestTests(unittest.TestCase):
         self.assertEqual(proposal.lines[1].credit_amount, Decimal("8000"))
         self.assertFalse(hasattr(proposal, "proposal_status"))
 
+    def test_unapplied_cash_park_ingests_published_billing_key(self) -> None:
+        """Billing #60 park JSON uses the published unapplied_cash leftover key."""
+        source_payload_hash = "sha256:" + "4" * 64
+        unapplied_cash_id = "019d7b92-8cc5-7a7f-b61c-962c0f4bf622"
+        payload = self._billing_proposal(
+            proposal_id=unapplied_cash_id,
+            idempotency_key=(
+                f"urn:cwl:tenant_001:unapplied_cash:{unapplied_cash_id}"
+                f":{source_payload_hash}:v1"
+            ),
+            source_payload_hash=source_payload_hash,
+            source_event_references=(
+                f"urn:cwl:tenant_001:unapplied_cash:{unapplied_cash_id}",
+            ),
+            lines=[
+                {
+                    "line_number": 1,
+                    "account_role_code": "cash_receipt",
+                    "debit_amount": "3000",
+                    "credit_amount": "0",
+                },
+                {
+                    "line_number": 2,
+                    "account_role_code": "unapplied_cash",
+                    "debit_amount": "0",
+                    "credit_amount": "3000",
+                },
+            ],
+        )
+
+        proposal = ingest_journal_proposal(payload)
+
+        self.assertEqual(proposal.proposal_id, unapplied_cash_id)
+        self.assertEqual(
+            proposal.idempotency_key,
+            (
+                f"urn:cwl:tenant_001:unapplied_cash:{unapplied_cash_id}"
+                f":{source_payload_hash}:v1"
+            ),
+        )
+        self.assertEqual(proposal.lines[0].account_role_code, "cash_receipt")
+        self.assertEqual(proposal.lines[0].debit_amount, Decimal("3000"))
+        self.assertEqual(proposal.lines[1].account_role_code, "unapplied_cash")
+        self.assertEqual(proposal.lines[1].credit_amount, Decimal("3000"))
+        self.assertFalse(hasattr(proposal, "proposal_status"))
+
     def _policy(self) -> AccountingPolicy:
         return AccountingPolicy(
             tenant_reference="urn:cwl:tenant_001",

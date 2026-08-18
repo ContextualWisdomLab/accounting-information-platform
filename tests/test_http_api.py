@@ -157,6 +157,7 @@ class UnappliedCashRefundHttpTests(unittest.TestCase):
         refund_status, receipt = case._http_json("POST", "/journal-proposals", refund)
         replay_status, replay = case._http_json("POST", "/journal-proposals", refund)
         park_status, park_receipt = case._http_json("POST", "/journal-proposals", park)
+        park_replay_status, park_replay = case._http_json("POST", "/journal-proposals", park)
         journal_status, journal = case._http_journal(
             idempotency_key=str(refund["idempotency_key"])
         )
@@ -174,7 +175,17 @@ class UnappliedCashRefundHttpTests(unittest.TestCase):
         by_code = {str(item["chart_account_code"]): item for item in journal["lines"]}
         self.assertEqual(replay_status, 200)
         self.assertEqual(receipt, replay)
+        self.assertEqual(
+            park["idempotency_key"],
+            (
+                f"{case.policy.tenant_reference}:unapplied_cash:"
+                f"{park['proposal_id']}:{park['source_payload_hash']}:v1"
+            ),
+        )
         self.assertEqual(park_status, 200)
+        self.assertEqual(park_replay_status, 200)
+        self.assertEqual(park_receipt, park_replay)
+        self.assertEqual(park_receipt["idempotency_key"], park["idempotency_key"])
         self.assertNotEqual(park_receipt["idempotency_key"], receipt["idempotency_key"])
         self.assertEqual(journal_status, 200)
         self.assertEqual(set(by_code), {"210200", "110200"})
