@@ -293,6 +293,41 @@ def lookup_fiscal_periods(
     )
 
 
+def lookup_account_rollforward(
+    database_url: str,
+    tenant_reference: str,
+    legal_entity_reference: str,
+    book_reference: str,
+    fiscal_period_reference: str,
+    chart_account_code: str,
+    statement_scope_code: str = "",
+) -> dict[str, object]:
+    """Return opening, period, and closing sides for one tenant book, period, and chart account."""
+    if not legal_entity_reference or not book_reference or not fiscal_period_reference:
+        raise AccountingValidationError(
+            "legal_entity_reference, book_reference, and fiscal_period_reference are required. "
+            "Supply those account-rollforward fields, then retry the account-rollforward read."
+        )
+    if not chart_account_code:
+        raise AccountingValidationError(
+            "chart_account_code is required. "
+            "Supply that account-rollforward field, then retry the account-rollforward read."
+        )
+    if statement_scope_code and statement_scope_code not in {"period", "year_to_date"}:
+        raise AccountingValidationError(
+            "statement_scope_code must be period or year_to_date. "
+            "Supply a known statement scope, then retry the account-rollforward read."
+        )
+    ledger = PostgresPostingLedger(database_url, tenant_reference)
+    return ledger.load_account_rollforward(
+        legal_entity_reference,
+        book_reference,
+        _period_code_from_reference(fiscal_period_reference),
+        chart_account_code,
+        statement_scope_code=statement_scope_code,
+    )
+
+
 def lookup_account_balances(
     database_url: str,
     tenant_reference: str,

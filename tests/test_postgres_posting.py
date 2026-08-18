@@ -36,6 +36,7 @@ from accounting_information_platform import (
     create_journal_proposal_server,
     ingest_journal_proposal,
     lookup_account_balances,
+    lookup_account_rollforward,
     lookup_account_ledger,
     lookup_account_role_mappings,
     lookup_accounting_books,
@@ -3542,6 +3543,344 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(unknown_account[0], 404)
         self.assertEqual(bad_limit[0], 400)
         self.assertEqual(high_limit[0], 400)
+        self.assertEqual(missing_header[0], 400)
+        self.assertEqual(cross_status, 403)
+        self.assertEqual(
+            self._count_table("accounting_core.general_journal"),
+            journals_before + 4,
+        )
+        server.shutdown()
+
+    def test_http_reads_account_rollforward(self) -> None:
+        """GET /account-rollforwards ties opening + period sides to closing and account-balances."""
+        self._seed_additional_period("2026-06", date(2026, 6, 1), date(2026, 6, 30))
+        self._seed_additional_period("2026-09", date(2026, 9, 1), date(2026, 9, 30))
+        server = self._start_http_server()
+        journals_before = self._count_table("accounting_core.general_journal")
+
+        empty_status, empty = self._http_account_rollforward("110100")
+        empty_library = lookup_account_rollforward(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-08",
+            "110100",
+        )
+        self.assertEqual(empty_status, 200)
+        self.assertEqual(empty, empty_library)
+        self.assertEqual(empty["chart_account_code"], "110100")
+        self.assertEqual(empty["account_class_code"], "asset")
+        self.assertNotIn("statement_scope_code", empty)
+        for key in (
+            "opening_debit_amount",
+            "opening_credit_amount",
+            "period_debit_amount",
+            "period_credit_amount",
+            "closing_debit_amount",
+            "closing_credit_amount",
+        ):
+            self.assertEqual(Decimal(str(empty[key])), Decimal("0"))
+
+        invoice_status, _invoice = self._http_json(
+            "POST", "/journal-proposals", self._billing_validated_payload()
+        )
+        cash_status, _cash = self._http_json(
+            "POST", "/journal-proposals", self._billing_cash_payload()
+        )
+        ar_status, ar_roll = self._http_account_rollforward("110100")
+        cash_roll_status, cash_roll = self._http_account_rollforward("110200")
+        ar_balance_status, ar_balance = self._http_account_balances(
+            chart_account_code="110100"
+        )
+        cash_balance_status, cash_balance = self._http_account_balances(
+            chart_account_code="110200"
+        )
+        cash_flow_status, cash_flow = self._http_financial_statement("cash_flow")
+        library = lookup_account_rollforward(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-08",
+            "110100",
+        )
+        persist = PostgresPostingLedger(
+            DATABASE_URL, self.policy.tenant_reference
+        ).load_account_rollforward(
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "2026-08",
+            "110100",
+        )
+        cash_flow_closing = next(
+            Decimal(str(item["credit_amount"])) - Decimal(str(item["debit_amount"]))
+            for item in cash_flow["statement_lines"]
+            if item["account_role_code"] == "closing_cash"
+        )
+
+        self.assertEqual(invoice_status, 200)
+        self.assertEqual(cash_status, 200)
+        self.assertEqual(ar_status, 200)
+        self.assertEqual(cash_roll_status, 200)
+        self.assertEqual(ar_balance_status, 200)
+        self.assertEqual(cash_balance_status, 200)
+        self.assertEqual(cash_flow_status, 200)
+        self.assertEqual(ar_roll, library)
+        self.assertEqual(ar_roll, persist)
+        self.assertEqual(Decimal(str(ar_roll["opening_debit_amount"])), Decimal("0"))
+        self.assertEqual(Decimal(str(ar_roll["opening_credit_amount"])), Decimal("0"))
+        self.assertEqual(Decimal(str(ar_roll["period_debit_amount"])), Decimal("25000"))
+        self.assertEqual(Decimal(str(ar_roll["period_credit_amount"])), Decimal("18000"))
+        self.assertEqual(Decimal(str(ar_roll["closing_debit_amount"])), Decimal("25000"))
+        self.assertEqual(Decimal(str(ar_roll["closing_credit_amount"])), Decimal("18000"))
+        self.assertEqual(
+            ar_roll["closing_debit_amount"],
+            ar_balance["account_balances"][0]["debit_amount"],
+        )
+        self.assertEqual(
+            ar_roll["closing_credit_amount"],
+            ar_balance["account_balances"][0]["credit_amount"],
+        )
+        self.assertEqual(Decimal(str(cash_roll["opening_debit_amount"])), Decimal("0"))
+        self.assertEqual(Decimal(str(cash_roll["period_debit_amount"])), Decimal("18000"))
+        self.assertEqual(Decimal(str(cash_roll["period_credit_amount"])), Decimal("0"))
+        self.assertEqual(
+            cash_roll["closing_debit_amount"],
+            cash_balance["account_balances"][0]["debit_amount"],
+        )
+        self.assertEqual(
+            Decimal(str(cash_roll["closing_debit_amount"]))
+            - Decimal(str(cash_roll["closing_credit_amount"])),
+            cash_flow_closing,
+        )
+
+        soft_status, _soft = self._http_json(
+            "POST", "/period-closes", self._period_close_payload(period_status_code="soft_closed")
+        )
+        adjusting_status, _adjusting = self._http_json(
+            "POST", "/journals", self._adjusting_journal_payload()
+        )
+        soft_ar_status, soft_ar = self._http_account_rollforward("110100")
+        soft_balance_status, soft_balance = self._http_account_balances(
+            chart_account_code="110100"
+        )
+        self.assertEqual(soft_status, 200)
+        self.assertEqual(adjusting_status, 200)
+        self.assertEqual(soft_ar_status, 200)
+        self.assertEqual(soft_balance_status, 200)
+        self.assertEqual(Decimal(str(soft_ar["period_debit_amount"])), Decimal("26000"))
+        self.assertEqual(Decimal(str(soft_ar["period_credit_amount"])), Decimal("18000"))
+        self.assertEqual(
+            soft_ar["closing_debit_amount"],
+            soft_balance["account_balances"][0]["debit_amount"],
+        )
+        self.assertEqual(
+            soft_ar["closing_credit_amount"],
+            soft_balance["account_balances"][0]["credit_amount"],
+        )
+
+        hard_status, _hard = self._http_json("POST", "/period-closes", self._period_close_payload())
+        closed_re_status, closed_re = self._http_account_rollforward("310100")
+        closed_re_balance_status, closed_re_balance = self._http_account_balances(
+            chart_account_code="310100"
+        )
+        closed_tb_status, closed_tb = self._http_trial_balance()
+        self.assertEqual(hard_status, 200)
+        self.assertEqual(closed_re_status, 200)
+        self.assertEqual(closed_re_balance_status, 200)
+        self.assertEqual(closed_tb_status, 200)
+        self.assertEqual(closed_re["account_class_code"], "equity")
+        self.assertGreater(Decimal(str(closed_re["period_credit_amount"])), Decimal("0"))
+        self.assertEqual(
+            Decimal(str(closed_re["opening_credit_amount"]))
+            + Decimal(str(closed_re["period_credit_amount"])),
+            Decimal(str(closed_re["closing_credit_amount"])),
+        )
+        self.assertEqual(
+            closed_re["closing_debit_amount"],
+            closed_re_balance["account_balances"][0]["debit_amount"],
+        )
+        self.assertEqual(
+            closed_re["closing_credit_amount"],
+            closed_re_balance["account_balances"][0]["credit_amount"],
+        )
+        self.assertEqual(
+            Decimal(str(closed_re["closing_credit_amount"])),
+            Decimal(str(self._trial_balance_line(closed_tb, "310100")["credit_amount"])),
+        )
+
+        ytd_status, ytd = self._http_account_rollforward(
+            "110100", statement_scope_code="year_to_date"
+        )
+        explicit_period_status, explicit_period = self._http_account_rollforward(
+            "110100", statement_scope_code="period"
+        )
+        self.assertEqual(ytd_status, 200)
+        self.assertEqual(explicit_period_status, 200)
+        self.assertEqual(ytd["statement_scope_code"], "year_to_date")
+        self.assertNotIn("statement_scope_code", explicit_period)
+        self.assertEqual(explicit_period["period_debit_amount"], soft_ar["period_debit_amount"])
+        self.assertEqual(explicit_period["period_credit_amount"], soft_ar["period_credit_amount"])
+
+        september_status, september = self._http_account_rollforward(
+            "110200",
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-09",
+        )
+        september_balance_status, september_balance = self._http_account_balances(
+            chart_account_code="110200",
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-09",
+        )
+        self.assertEqual(september_status, 200)
+        self.assertEqual(september_balance_status, 200)
+        self.assertEqual(Decimal(str(september["opening_debit_amount"])), Decimal("18000"))
+        self.assertEqual(Decimal(str(september["period_debit_amount"])), Decimal("0"))
+        self.assertEqual(Decimal(str(september["closing_debit_amount"])), Decimal("18000"))
+        self.assertEqual(
+            september["closing_debit_amount"],
+            september_balance["account_balances"][0]["debit_amount"],
+        )
+        september_tax_status, september_tax = self._http_account_rollforward(
+            "210100",
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:2026-09",
+        )
+        self.assertEqual(september_tax_status, 200)
+        self.assertEqual(Decimal(str(september_tax["opening_debit_amount"])), Decimal("0"))
+        self.assertEqual(Decimal(str(september_tax["opening_credit_amount"])), Decimal("0"))
+        self.assertEqual(Decimal(str(september_tax["closing_debit_amount"])), Decimal("0"))
+
+        missing_query = self._http_json("GET", "/account-rollforwards", None)
+        missing_chart_query = self._http_json(
+            "GET",
+            "/account-rollforwards?"
+            + urllib.parse.urlencode(
+                {
+                    "legal_entity_reference": self.policy.legal_entity_reference,
+                    "book_reference": self.policy.accounting_book_reference,
+                    "fiscal_period_reference": "urn:cwl:accounting:fiscal_period:2026-08",
+                }
+            ),
+            None,
+        )
+        missing_book_query = self._http_json(
+            "GET",
+            "/account-rollforwards?"
+            + urllib.parse.urlencode(
+                {
+                    "legal_entity_reference": self.policy.legal_entity_reference,
+                    "fiscal_period_reference": "urn:cwl:accounting:fiscal_period:2026-08",
+                    "chart_account_code": "110100",
+                }
+            ),
+            None,
+        )
+        missing_period_query = self._http_json(
+            "GET",
+            "/account-rollforwards?"
+            + urllib.parse.urlencode(
+                {
+                    "legal_entity_reference": self.policy.legal_entity_reference,
+                    "book_reference": self.policy.accounting_book_reference,
+                    "chart_account_code": "110100",
+                }
+            ),
+            None,
+        )
+        post_status, _post = self._http_json("POST", "/account-rollforwards", {})
+        unknown_account = self._http_account_rollforward("999999")
+        unknown_period = self._http_account_rollforward(
+            "110100",
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:1999-01",
+        )
+        unknown_entity = self._http_account_rollforward(
+            "110100", legal_entity_reference="urn:cwl:legal_entity:missing"
+        )
+        unknown_book = self._http_account_rollforward(
+            "110100", book_reference="urn:cwl:accounting_book:missing"
+        )
+        bad_scope = self._http_account_rollforward(
+            "110100", statement_scope_code="life_to_date"
+        )
+        missing_header = self._http_account_rollforward("110100", tenant_header=None)
+        cross_status, _cross = self._http_account_rollforward(
+            "110100", tenant_header="urn:cwl:tenant_other"
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "chart_account_code"):
+            lookup_account_rollforward(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "urn:cwl:accounting:fiscal_period:2026-08",
+                "",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "legal_entity_reference"):
+            lookup_account_rollforward(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                "",
+                self.policy.accounting_book_reference,
+                "urn:cwl:accounting:fiscal_period:2026-08",
+                "110100",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "book_reference"):
+            lookup_account_rollforward(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                "",
+                "urn:cwl:accounting:fiscal_period:2026-08",
+                "110100",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "fiscal_period_reference"):
+            lookup_account_rollforward(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "",
+                "110100",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "statement_scope_code"):
+            lookup_account_rollforward(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "urn:cwl:accounting:fiscal_period:2026-08",
+                "110100",
+                statement_scope_code="life_to_date",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "statement_scope_code"):
+            PostgresPostingLedger(
+                DATABASE_URL, self.policy.tenant_reference
+            ).load_account_rollforward(
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "2026-08",
+                "110100",
+                statement_scope_code="life_to_date",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "chart_account_code"):
+            PostgresPostingLedger(
+                DATABASE_URL, self.policy.tenant_reference
+            ).load_account_rollforward(
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "2026-08",
+                "",
+            )
+
+        self.assertEqual(missing_query[0], 400)
+        self.assertEqual(missing_chart_query[0], 400)
+        self.assertEqual(missing_book_query[0], 400)
+        self.assertEqual(missing_period_query[0], 400)
+        self.assertEqual(post_status, 405)
+        self.assertEqual(unknown_account[0], 404)
+        self.assertEqual(unknown_period[0], 404)
+        self.assertEqual(unknown_entity[0], 404)
+        self.assertEqual(unknown_book[0], 404)
+        self.assertEqual(bad_scope[0], 400)
         self.assertEqual(missing_header[0], 400)
         self.assertEqual(cross_status, 403)
         self.assertEqual(
@@ -7705,6 +8044,44 @@ class PostgresPostingTests(unittest.TestCase):
             ),
             accounting_date="2026-09-15",
             transaction_date="2026-09-15",
+        )
+
+    def _http_account_rollforward(
+        self,
+        chart_account_code: str,
+        *,
+        legal_entity_reference: str | None = None,
+        book_reference: str | None = None,
+        fiscal_period_reference: str | None = None,
+        statement_scope_code: str | None = None,
+        tenant_header: str | None = "",
+    ) -> tuple[int, dict[str, object]]:
+        fields = {
+            "legal_entity_reference": (
+                self.policy.legal_entity_reference
+                if legal_entity_reference is None
+                else legal_entity_reference
+            ),
+            "book_reference": (
+                self.policy.accounting_book_reference
+                if book_reference is None
+                else book_reference
+            ),
+            "fiscal_period_reference": (
+                "urn:cwl:accounting:fiscal_period:2026-08"
+                if fiscal_period_reference is None
+                else fiscal_period_reference
+            ),
+            "chart_account_code": chart_account_code,
+        }
+        if statement_scope_code is not None:
+            fields["statement_scope_code"] = statement_scope_code
+        query = urllib.parse.urlencode(fields)
+        return self._http_json(
+            "GET",
+            f"/account-rollforwards?{query}",
+            None,
+            tenant_header=tenant_header,
         )
 
     def _http_account_balances(

@@ -1188,6 +1188,214 @@ class PostgresPostingLedger:
                 "next_cursor": next_cursor,
             }
 
+    def load_account_rollforward(
+        self,
+        legal_entity_reference: str,
+        accounting_book_reference: str,
+        period_code: str,
+        chart_account_code: str,
+        statement_scope_code: str = "",
+    ) -> dict[str, object]:
+        """Return opening + period = closing sides for one chart account and scope."""
+        if statement_scope_code not in {"", "period", "year_to_date"}:
+            raise AccountingValidationError(
+                "statement_scope_code must be period or year_to_date. "
+                "Supply a known statement scope, then retry the account-rollforward read."
+            )
+        if not chart_account_code:
+            raise AccountingValidationError(
+                "chart_account_code is required. "
+                "Supply that account-rollforward field, then retry the account-rollforward read."
+            )
+        account_classes = self._load_chart_account_classes(
+            legal_entity_reference, accounting_book_reference
+        )
+        if chart_account_code not in account_classes:
+            raise AccountingValidationError(
+                f"Chart account {chart_account_code} is not recorded for this book. "
+                "Create the chart_account row, then retry the account-rollforward read."
+            )
+        with self._session() as connection:
+            tenant_id = self._require_tenant(connection)
+            legal_entity_id = self._require_legal_entity(
+                connection,
+                tenant_id,
+                legal_entity_reference,
+                next_action="the account-rollforward read",
+            )
+            book_id = self._require_book_for_close(
+                connection,
+                tenant_id,
+                legal_entity_id,
+                accounting_book_reference,
+                next_action="the account-rollforward read",
+            )[0]
+            self._require_fiscal_period(
+                connection,
+                tenant_id,
+                period_code,
+                next_action="the account-rollforward read",
+            )
+            period_ids = self._statement_period_ids(
+                connection,
+                tenant_id,
+                period_code,
+                statement_scope_code,
+            )
+            scope_start = connection.execute(
+                f"""
+                SELECT MIN(period_start_date)
+                FROM accounting_core.fiscal_period
+                WHERE tenant_account_id = %s
+                  AND fiscal_period_id IN ({", ".join(["%s"] * len(period_ids))})
+                """,
+                (tenant_id, *period_ids),
+            ).fetchone()[0]
+            opening_debit_amount, opening_credit_amount = self._opening_account_sides(
+                connection,
+                tenant_id,
+                legal_entity_id,
+                book_id,
+                chart_account_code,
+                scope_start,
+            )
+            period_debit_amount, period_credit_amount = self._period_account_sides(
+                connection,
+                tenant_id,
+                legal_entity_id,
+                book_id,
+                chart_account_code,
+                period_ids,
+            )
+        closing_debit_amount = opening_debit_amount + period_debit_amount
+        closing_credit_amount = opening_credit_amount + period_credit_amount
+        document = {
+            "tenant_reference": self._tenant_reference,
+            "legal_entity_reference": legal_entity_reference,
+            "accounting_book_reference": accounting_book_reference,
+            "book_reference": accounting_book_reference,
+            "fiscal_period_reference": f"urn:cwl:accounting:fiscal_period:{period_code}",
+            "chart_account_code": chart_account_code,
+            "account_class_code": account_classes[chart_account_code],
+            "opening_debit_amount": _exact_amount_text(opening_debit_amount),
+            "opening_credit_amount": _exact_amount_text(opening_credit_amount),
+            "period_debit_amount": _exact_amount_text(period_debit_amount),
+            "period_credit_amount": _exact_amount_text(period_credit_amount),
+            "closing_debit_amount": _exact_amount_text(closing_debit_amount),
+            "closing_credit_amount": _exact_amount_text(closing_credit_amount),
+        }
+        if statement_scope_code == "year_to_date":
+            document["statement_scope_code"] = "year_to_date"
+        return document
+
+    def _opening_account_sides(
+        self,
+        connection: object,
+        tenant_id: UUID,
+        legal_entity_id: UUID,
+        book_id: UUID,
+        chart_account_code: str,
+        scope_start: date,
+    ) -> tuple[Decimal, Decimal]:
+        prior_snapshot = connection.execute(
+            """
+            SELECT trial_balance_snapshot.trial_balance_snapshot_id
+            FROM accounting_core.fiscal_period
+            JOIN accounting_reporting.trial_balance_snapshot
+              ON trial_balance_snapshot.tenant_account_id = fiscal_period.tenant_account_id
+             AND trial_balance_snapshot.fiscal_period_id = fiscal_period.fiscal_period_id
+             AND trial_balance_snapshot.legal_entity_id = %s
+             AND trial_balance_snapshot.accounting_book_id = %s
+            WHERE fiscal_period.tenant_account_id = %s
+              AND fiscal_period.period_end_date < %s
+              AND fiscal_period.period_status_code = 'hard_closed'
+            ORDER BY fiscal_period.period_end_date DESC, fiscal_period.period_code DESC
+            LIMIT 1
+            """,
+            (legal_entity_id, book_id, tenant_id, scope_start),
+        ).fetchone()
+        if prior_snapshot is not None:
+            row = connection.execute(
+                """
+                SELECT COALESCE(trial_balance_line.debit_total_amount, 0),
+                       COALESCE(trial_balance_line.credit_total_amount, 0)
+                FROM accounting_reporting.trial_balance_line
+                JOIN accounting_core.chart_account
+                  ON chart_account.tenant_account_id = trial_balance_line.tenant_account_id
+                 AND chart_account.chart_account_id = trial_balance_line.chart_account_id
+                WHERE trial_balance_line.tenant_account_id = %s
+                  AND trial_balance_line.trial_balance_snapshot_id = %s
+                  AND chart_account.chart_account_code = %s
+                """,
+                (tenant_id, prior_snapshot[0], chart_account_code),
+            ).fetchone()
+            if row is None:
+                return Decimal("0"), Decimal("0")
+            return Decimal(row[0]), Decimal(row[1])
+        row = connection.execute(
+            """
+            SELECT COALESCE(SUM(journal_entry_line.debit_amount), 0),
+                   COALESCE(SUM(journal_entry_line.credit_amount), 0)
+            FROM accounting_core.journal_entry_line
+            JOIN accounting_core.general_journal
+              ON general_journal.tenant_account_id = journal_entry_line.tenant_account_id
+             AND general_journal.general_journal_id = journal_entry_line.general_journal_id
+            JOIN accounting_core.chart_account
+              ON chart_account.tenant_account_id = journal_entry_line.tenant_account_id
+             AND chart_account.chart_account_id = journal_entry_line.chart_account_id
+            WHERE general_journal.tenant_account_id = %s
+              AND general_journal.legal_entity_id = %s
+              AND general_journal.accounting_book_id = %s
+              AND chart_account.chart_account_code = %s
+              AND general_journal.accounting_date <= %s
+            """,
+            (
+                tenant_id,
+                legal_entity_id,
+                book_id,
+                chart_account_code,
+                scope_start - timedelta(days=1),
+            ),
+        ).fetchone()
+        return Decimal(row[0]), Decimal(row[1])
+
+    def _period_account_sides(
+        self,
+        connection: object,
+        tenant_id: UUID,
+        legal_entity_id: UUID,
+        book_id: UUID,
+        chart_account_code: str,
+        period_ids: list[UUID],
+    ) -> tuple[Decimal, Decimal]:
+        placeholders = ", ".join(["%s"] * len(period_ids))
+        row = connection.execute(
+            f"""
+            SELECT COALESCE(SUM(journal_entry_line.debit_amount), 0),
+                   COALESCE(SUM(journal_entry_line.credit_amount), 0)
+            FROM accounting_core.journal_entry_line
+            JOIN accounting_core.general_journal
+              ON general_journal.tenant_account_id = journal_entry_line.tenant_account_id
+             AND general_journal.general_journal_id = journal_entry_line.general_journal_id
+            JOIN accounting_core.chart_account
+              ON chart_account.tenant_account_id = journal_entry_line.tenant_account_id
+             AND chart_account.chart_account_id = journal_entry_line.chart_account_id
+            WHERE general_journal.tenant_account_id = %s
+              AND general_journal.legal_entity_id = %s
+              AND general_journal.accounting_book_id = %s
+              AND chart_account.chart_account_code = %s
+              AND general_journal.fiscal_period_id IN ({placeholders})
+            """,
+            (
+                tenant_id,
+                legal_entity_id,
+                book_id,
+                chart_account_code,
+                *period_ids,
+            ),
+        ).fetchone()
+        return Decimal(row[0]), Decimal(row[1])
+
     def load_account_balances(
         self,
         legal_entity_reference: str,
