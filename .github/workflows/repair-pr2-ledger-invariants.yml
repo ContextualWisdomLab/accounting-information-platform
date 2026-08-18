@@ -10,7 +10,7 @@ permissions:
 
 concurrency:
   group: verify-pr2-ledger-invariants
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   verify-and-publish:
