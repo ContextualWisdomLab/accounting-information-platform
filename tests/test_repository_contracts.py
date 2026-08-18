@@ -13,11 +13,13 @@ from unittest import mock
 from pathlib import Path
 
 from scripts.validate_repository import (
+    APPEND_ONLY_JOURNAL_MUTATION_ERROR,
     COVERAGE_CP313_MANYLINUX_X86_64_WHEEL_HASH,
     COVERAGE_UNIVERSAL_WHEEL_HASH,
     main,
     find_mutable_action_references,
     find_placeholder_tokens,
+    validate_append_only_journal_sql,
     validate_public_docstrings,
     validate_quality_requirements,
     validate_repository,
@@ -299,6 +301,70 @@ class RepositoryContractTests(unittest.TestCase):
         )
         self.assertEqual(inline_valid, ())
 
+    def test_append_only_journal_sql_rejects_update_and_delete(self) -> None:
+        """Migrations cannot UPDATE or DELETE posted journal tables."""
+        forbidden_statements = (
+            "UPDATE accounting_core.general_journal SET journal_status_code = 'posted';",
+            "UPDATE journal_entry_line SET debit_amount = 0;",
+            "UPDATE ONLY general_journal SET journal_status_code = 'posted';",
+            "DELETE FROM accounting_core.journal_entry_line;",
+            "DELETE FROM general_journal;",
+            "DELETE FROM ONLY journal_entry_line;",
+        )
+        for statement in forbidden_statements:
+            with self.subTest(statement=statement):
+                self.assertEqual(
+                    validate_append_only_journal_sql(statement),
+                    (APPEND_ONLY_JOURNAL_MUTATION_ERROR,),
+                )
+
+    def test_append_only_journal_sql_allows_unrelated_mutations(self) -> None:
+        """Unrelated UPDATE or DELETE of other tables remains valid."""
+        allowed_statements = (
+            "UPDATE accounting_core.chart_account SET account_class_code = 'asset';",
+            "UPDATE ONLY accounting_core.account_role_mapping SET policy_version = '1';",
+            "DELETE FROM accounting_core.account_role_mapping;",
+            "DELETE FROM ONLY accounting_reporting.trial_balance_line;",
+            "CREATE TRIGGER journal_balance_guard AFTER UPDATE ON general_journal "
+            "FOR EACH ROW EXECUTE FUNCTION accounting_core.guard_journal();",
+        )
+        for statement in allowed_statements:
+            with self.subTest(statement=statement):
+                self.assertEqual(validate_append_only_journal_sql(statement), ())
+
+    def test_repository_reports_journal_update_and_unhashed_dependency(self) -> None:
+        """An UPDATE of general_journal fails the repository validator."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            copied_root = Path(temporary_directory) / "repository"
+            shutil.copytree(ROOT, copied_root)
+            mutation = copied_root / "database/migrations/0099_update_general_journal.sql"
+            mutation.write_text(
+                "UPDATE accounting_core.general_journal "
+                "SET journal_status_code = 'posted';\n",
+                encoding="utf-8",
+            )
+            (copied_root / "requirements-quality.txt").write_text(
+                "coverage==7.15.4\n", encoding="utf-8"
+            )
+            errors = validate_repository(copied_root)
+        self.assertIn(APPEND_ONLY_JOURNAL_MUTATION_ERROR, errors)
+        self.assertIn("quality dependencies must be hash locked", errors)
+
+    def test_repository_allows_unrelated_migration_update_and_delete(self) -> None:
+        """Unrelated UPDATE or DELETE on other tables still passes the validator."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            copied_root = Path(temporary_directory) / "repository"
+            shutil.copytree(ROOT, copied_root)
+            mutation = copied_root / "database/migrations/0099_unrelated_mutation.sql"
+            mutation.write_text(
+                "UPDATE accounting_core.chart_account "
+                "SET account_name = account_name;\n"
+                "DELETE FROM accounting_reporting.trial_balance_line;\n",
+                encoding="utf-8",
+            )
+            errors = validate_repository(copied_root)
+        self.assertEqual(errors, ())
+
     def test_repository_reports_destructive_sql_and_unhashed_dependency(self) -> None:
         """Destructive journal SQL and mutable quality resolution fail closed."""
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -314,9 +380,7 @@ class RepositoryContractTests(unittest.TestCase):
                 "coverage==7.15.4\n", encoding="utf-8"
             )
             errors = validate_repository(copied_root)
-        self.assertIn(
-            "accounting migrations must not define destructive journal deletion", errors
-        )
+        self.assertIn(APPEND_ONLY_JOURNAL_MUTATION_ERROR, errors)
         self.assertIn("quality dependencies must be hash locked", errors)
 
     def test_duplicate_schema_identity_is_rejected(self) -> None:

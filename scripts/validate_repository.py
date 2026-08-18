@@ -125,6 +125,15 @@ COLUMN_NAME_PATTERN = re.compile(
     r"(?:uuid|text|timestamptz|timestamp|date|integer|bigint|numeric|boolean|jsonb)\b",
     re.IGNORECASE | re.MULTILINE,
 )
+APPEND_ONLY_JOURNAL_MUTATION_ERROR = (
+    "accounting migrations must not UPDATE or DELETE "
+    "general_journal or journal_entry_line"
+)
+APPEND_ONLY_JOURNAL_MUTATION_PATTERN = re.compile(
+    r"\b(?:UPDATE(?:\s+ONLY)?|DELETE\s+FROM(?:\s+ONLY)?)\s+"
+    r"(?:(?:[A-Za-z_][A-Za-z0-9_]*)\.)?(?:general_journal|journal_entry_line)\b",
+    re.IGNORECASE,
+)
 
 
 def find_mutable_action_references(text: str) -> tuple[str, ...]:
@@ -140,6 +149,13 @@ def find_mutable_action_references(text: str) -> tuple[str, ...]:
 def find_placeholder_tokens(text: str) -> tuple[str, ...]:
     """Return unresolved implementation placeholder tokens in *text*."""
     return tuple(sorted({match.group(1) for match in PLACEHOLDER_PATTERN.finditer(text)}))
+
+
+def validate_append_only_journal_sql(sql_text: str) -> tuple[str, ...]:
+    """Reject UPDATE or DELETE of posted journal tables in migrations."""
+    if APPEND_ONLY_JOURNAL_MUTATION_PATTERN.search(sql_text) is None:
+        return ()
+    return (APPEND_ONLY_JOURNAL_MUTATION_ERROR,)
 
 
 def validate_sql_object_names(sql_text: str) -> tuple[str, ...]:
@@ -280,10 +296,7 @@ def validate_repository(root: Path) -> tuple[str, ...]:
         for migration_path in sorted(migrations_directory.glob("*.sql")):
             sql_text = migration_path.read_text(encoding="utf-8")
             errors.extend(validate_sql_object_names(sql_text))
-            if re.search(r"\bDELETE\s+FROM\b", sql_text, re.IGNORECASE):
-                errors.append(
-                    "accounting migrations must not define destructive journal deletion"
-                )
+            errors.extend(validate_append_only_journal_sql(sql_text))
 
     requirements_path = root / "requirements-quality.txt"
     if requirements_path.is_file():

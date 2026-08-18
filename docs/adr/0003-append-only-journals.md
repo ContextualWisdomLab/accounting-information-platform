@@ -10,6 +10,8 @@ The in-memory `PostingLedger` is the reference oracle PostgreSQL must preserve. 
 
 When a `journal_reference` for an existing `proposal_id` is already posted in that tenant and the incoming `idempotency_key` differs, the oracle fails closed and writes no second journal. Matching tenant, matching idempotency key, and matching source payload still return the original receipt. AIS does not invent a void journal key.
 
+Checked-in PostgreSQL migrations cannot `UPDATE` or `DELETE` `general_journal` or `journal_entry_line`. `scripts/validate_repository.py` rejects those statements so later schema work cannot rewrite posted journals and still pass CI. `UPDATE` or `DELETE` of other tables remains valid. This gate does not add deferred balance triggers or `FORCE ROW LEVEL SECURITY` to the foundation migration.
+
 ## Consequences
 
-Historical audit evidence remains intact. APIs and database permissions must not expose journal update or delete operations. Reporting reconstructs effects from the complete population. A later command that reuses a posted `proposal_id` with a new idempotency key must reverse the existing journal, then post a replacement.
+Historical audit evidence remains intact. APIs, database permissions, and migration CI must not expose journal update or delete operations. Reporting reconstructs effects from the complete population. A later command that reuses a posted `proposal_id` with a new idempotency key must reverse the existing journal, then post a replacement.
