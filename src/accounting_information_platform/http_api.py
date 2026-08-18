@@ -808,10 +808,15 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
                     fiscal_period_reference,
                     page_limit=page_limit,
                     cursor=_first_query(fields, "cursor"),
+                    journal_source_code=_first_query(fields, "journal_source_code"),
                 )
             except AccountingValidationError as error:
                 message = str(error)
-                if "page_limit" in message or "cursor" in message:
+                if (
+                    "page_limit" in message
+                    or "cursor" in message
+                    or "journal_source_code" in message
+                ):
                     self._write_error(400, message)
                     return
                 self._write_error(404, message)

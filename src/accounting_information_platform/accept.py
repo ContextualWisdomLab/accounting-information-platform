@@ -393,12 +393,23 @@ def lookup_period_journals(
     fiscal_period_reference: str,
     page_limit: int | None = None,
     cursor: str = "",
+    journal_source_code: str = "",
 ) -> dict[str, object]:
-    """Return one page of existing posted and reversing journals for a tenant period."""
+    """Return one page of existing posted and reversing journals for a tenant period, optionally by source."""
     if not legal_entity_reference or not book_reference or not fiscal_period_reference:
         raise AccountingValidationError(
             "legal_entity_reference, book_reference, and fiscal_period_reference are required. "
             "Supply those journal-list fields, then retry the journal list."
+        )
+    if journal_source_code and journal_source_code not in {
+        "billing",
+        "adjusting",
+        "period_closing",
+        "reversal",
+    }:
+        raise AccountingValidationError(
+            "journal_source_code must be billing, adjusting, period_closing, or reversal. "
+            "Supply a known journal source, then retry the journal list."
         )
     ledger = PostgresPostingLedger(database_url, tenant_reference)
     return ledger.load_period_journals(
@@ -407,6 +418,7 @@ def lookup_period_journals(
         _period_code_from_reference(fiscal_period_reference),
         page_limit=_resolve_journal_list_page_limit(page_limit),
         cursor_after=_parse_journal_list_cursor(cursor),
+        journal_source_code=journal_source_code,
     )
 
 

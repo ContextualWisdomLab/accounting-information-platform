@@ -332,12 +332,23 @@ class PostgresPostingLedger:
         *,
         page_limit: int = 50,
         cursor_after: tuple[date, str] | None = None,
+        journal_source_code: str = "",
     ) -> dict[str, object]:
-        """Return one page of existing journals for a tenant entity, book, and period."""
+        """Return one page of existing journals for a tenant entity, book, and period, optionally by source."""
         if not legal_entity_reference or not book_reference or not period_code:
             raise AccountingValidationError(
                 "legal_entity_reference, book_reference, and fiscal_period_reference are required. "
                 "Supply those journal-list fields, then retry the journal list."
+            )
+        if journal_source_code and journal_source_code not in {
+            "billing",
+            "adjusting",
+            "period_closing",
+            "reversal",
+        }:
+            raise AccountingValidationError(
+                "journal_source_code must be billing, adjusting, period_closing, or reversal. "
+                "Supply a known journal source, then retry the journal list."
             )
         with self._session() as connection:
             tenant_id = self._require_tenant(connection)
@@ -362,6 +373,36 @@ class PostgresPostingLedger:
                     "> (%s, %s)"
                 )
                 parameters.extend(cursor_after)
+            source_clause = ""
+            closing_reference_pattern = (
+                "urn:cwl:accounting:general_journal:period_closing:%"
+            )
+            adjusting_exists_sql = """
+                EXISTS (
+                    SELECT 1
+                    FROM accounting_core.journal_entry_line
+                    WHERE journal_entry_line.tenant_account_id = general_journal.tenant_account_id
+                      AND journal_entry_line.general_journal_id = general_journal.general_journal_id
+                      AND journal_entry_line.account_role_code = 'adjusting'
+                )
+            """
+            if journal_source_code == "reversal":
+                source_clause = "AND journal_reversal.reversal_journal_id IS NOT NULL"
+            elif journal_source_code == "period_closing":
+                source_clause = "AND general_journal.journal_reference LIKE %s"
+                parameters.append(closing_reference_pattern)
+            elif journal_source_code == "adjusting":
+                source_clause = (
+                    "AND journal_reversal.reversal_journal_id IS NULL "
+                    f"AND {adjusting_exists_sql}"
+                )
+            elif journal_source_code == "billing":
+                source_clause = (
+                    "AND journal_reversal.reversal_journal_id IS NULL "
+                    "AND general_journal.journal_reference NOT LIKE %s "
+                    f"AND NOT {adjusting_exists_sql}"
+                )
+                parameters.append(closing_reference_pattern)
             parameters.append(page_limit + 1)
             rows = connection.execute(
                 f"""
@@ -392,6 +433,7 @@ class PostgresPostingLedger:
                   AND general_journal.accounting_book_id = %s
                   AND general_journal.fiscal_period_id = %s
                   {cursor_clause}
+                  {source_clause}
                 ORDER BY general_journal.accounting_date, general_journal.journal_reference
                 LIMIT %s
                 """,
@@ -414,7 +456,7 @@ class PostgresPostingLedger:
             if has_more:
                 last = page_rows[-1]
                 next_cursor = f"{last[3].isoformat()}|{last[0]}"
-            return {
+            document: dict[str, object] = {
                 "tenant_reference": self._tenant_reference,
                 "legal_entity_reference": legal_entity_reference,
                 "accounting_book_reference": book_reference,
@@ -424,6 +466,9 @@ class PostgresPostingLedger:
                 "journals": journals,
                 "next_cursor": next_cursor,
             }
+            if journal_source_code:
+                document["journal_source_code"] = journal_source_code
+            return document
 
     def load_journal_reversals(
         self,

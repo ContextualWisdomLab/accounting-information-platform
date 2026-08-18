@@ -4816,6 +4816,265 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before + 5)
         server.shutdown()
 
+    def test_http_lists_period_journals_by_source(self) -> None:
+        """GET /journals optional journal_source_code isolates billing, adjusting, closing, and reversal journals."""
+        server = self._start_http_server()
+        journals_before = self._count_table("accounting_core.general_journal")
+
+        empty_status, empty = self._http_period_journals()
+        empty_billing_status, empty_billing = self._http_period_journals(
+            journal_source_code="billing"
+        )
+        empty_adjusting_status, empty_adjusting = self._http_period_journals(
+            journal_source_code="adjusting"
+        )
+        empty_closing_status, empty_closing = self._http_period_journals(
+            journal_source_code="period_closing"
+        )
+        empty_reversal_status, empty_reversal = self._http_period_journals(
+            journal_source_code="reversal"
+        )
+        invalid_status, invalid_document = self._http_period_journals(
+            journal_source_code="working"
+        )
+        with self.assertRaisesRegex(
+            AccountingValidationError,
+            "must be billing, adjusting, period_closing, or reversal",
+        ):
+            lookup_period_journals(
+                DATABASE_URL,
+                self.policy.tenant_reference,
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "urn:cwl:accounting:fiscal_period:2026-08",
+                journal_source_code="working",
+            )
+        with self.assertRaisesRegex(
+            AccountingValidationError,
+            "must be billing, adjusting, period_closing, or reversal",
+        ):
+            self.ledger.load_period_journals(
+                self.policy.legal_entity_reference,
+                self.policy.accounting_book_reference,
+                "2026-08",
+                journal_source_code="working",
+            )
+
+        self.assertEqual(empty_status, 200)
+        self.assertEqual(empty["journals"], [])
+        self.assertNotIn("journal_source_code", empty)
+        self.assertEqual(empty_billing_status, 200)
+        self.assertEqual(empty_billing["journals"], [])
+        self.assertEqual(empty_billing["journal_source_code"], "billing")
+        self.assertEqual(empty_adjusting_status, 200)
+        self.assertEqual(empty_adjusting["journals"], [])
+        self.assertEqual(empty_adjusting["journal_source_code"], "adjusting")
+        self.assertEqual(empty_closing_status, 200)
+        self.assertEqual(empty_closing["journals"], [])
+        self.assertEqual(empty_closing["journal_source_code"], "period_closing")
+        self.assertEqual(empty_reversal_status, 200)
+        self.assertEqual(empty_reversal["journals"], [])
+        self.assertEqual(empty_reversal["journal_source_code"], "reversal")
+        self.assertEqual(invalid_status, 400)
+        self.assertIn(
+            "must be billing, adjusting, period_closing, or reversal",
+            str(invalid_document["error_message"]),
+        )
+
+        invoice = self._billing_validated_payload()
+        cash = self._billing_cash_payload()
+        adjusting = self._adjusting_journal_payload()
+        invoice_status, invoice_receipt = self._http_json(
+            "POST", "/journal-proposals", invoice
+        )
+        cash_status, cash_receipt = self._http_json("POST", "/journal-proposals", cash)
+        adjusting_status, adjusting_receipt = self._http_json(
+            "POST", "/journals", adjusting
+        )
+        omit_status, omitted = self._http_period_journals()
+        adjusting_list_status, adjusting_list = self._http_period_journals(
+            journal_source_code="adjusting"
+        )
+        billing_list_status, billing_list = self._http_period_journals(
+            journal_source_code="billing"
+        )
+        persist_adjusting = self.ledger.load_period_journals(
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "2026-08",
+            journal_source_code="adjusting",
+        )
+        lookup_adjusting = lookup_period_journals(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "urn:cwl:accounting:fiscal_period:2026-08",
+            journal_source_code="adjusting",
+        )
+        omit_keys = {str(item["idempotency_key"]) for item in omitted["journals"]}
+        adjusting_keys = {
+            str(item["idempotency_key"]) for item in adjusting_list["journals"]
+        }
+        billing_keys = {str(item["idempotency_key"]) for item in billing_list["journals"]}
+
+        self.assertEqual(invoice_status, 200)
+        self.assertEqual(cash_status, 200)
+        self.assertEqual(adjusting_status, 200)
+        self.assertEqual(omit_status, 200)
+        self.assertNotIn("journal_source_code", omitted)
+        self.assertEqual(
+            omit_keys,
+            {
+                str(invoice["idempotency_key"]),
+                str(cash["idempotency_key"]),
+                str(adjusting["idempotency_key"]),
+            },
+        )
+        self.assertEqual(adjusting_list_status, 200)
+        self.assertEqual(adjusting_list["journal_source_code"], "adjusting")
+        self.assertEqual(adjusting_keys, {str(adjusting["idempotency_key"])})
+        self.assertEqual(
+            adjusting_list["journals"][0]["journal_reference"],
+            adjusting_receipt["journal_reference"],
+        )
+        self.assertEqual(adjusting_list["journals"][0]["line_count"], 2)
+        self.assertEqual(billing_list_status, 200)
+        self.assertEqual(billing_list["journal_source_code"], "billing")
+        self.assertEqual(
+            billing_keys,
+            {str(invoice["idempotency_key"]), str(cash["idempotency_key"])},
+        )
+        self.assertNotIn(str(adjusting["idempotency_key"]), billing_keys)
+        self.assertEqual(persist_adjusting, adjusting_list)
+        self.assertEqual(lookup_adjusting, adjusting_list)
+
+        reverse_status, reversing_receipt = self._http_json(
+            "POST",
+            "/journal-reversals",
+            {
+                "tenant_reference": self.policy.tenant_reference,
+                "journal_reference": invoice_receipt["journal_reference"],
+                "reversal_date": "2026-08-31",
+                "reversal_reason_code": "billing_correction",
+            },
+        )
+        reversal_list_status, reversal_list = self._http_period_journals(
+            journal_source_code="reversal"
+        )
+        billing_after_reverse_status, billing_after_reverse = self._http_period_journals(
+            journal_source_code="billing"
+        )
+        single_status, single = self._http_journal(
+            idempotency_key=str(invoice["idempotency_key"])
+        )
+        single_by_reference_status, single_by_reference = self._http_journal(
+            journal_reference=str(invoice_receipt["journal_reference"])
+        )
+        reversal_keys = {
+            str(item["idempotency_key"]) for item in reversal_list["journals"]
+        }
+        billing_after_keys = {
+            str(item["idempotency_key"]) for item in billing_after_reverse["journals"]
+        }
+
+        self.assertEqual(reverse_status, 200)
+        self.assertEqual(reversal_list_status, 200)
+        self.assertEqual(reversal_list["journal_source_code"], "reversal")
+        self.assertEqual(
+            reversal_keys,
+            {f"reversal:{invoice_receipt['journal_reference']}"},
+        )
+        self.assertEqual(
+            reversal_list["journals"][0]["journal_reference"],
+            reversing_receipt["journal_reference"],
+        )
+        self.assertEqual(
+            reversal_list["journals"][0]["reversal_of_journal_reference"],
+            invoice_receipt["journal_reference"],
+        )
+        self.assertEqual(reversal_list["journals"][0]["line_count"], 2)
+        self.assertEqual(billing_after_reverse_status, 200)
+        self.assertEqual(
+            billing_after_keys,
+            {str(invoice["idempotency_key"]), str(cash["idempotency_key"])},
+        )
+        self.assertNotIn(f"reversal:{invoice_receipt['journal_reference']}", billing_after_keys)
+        self.assertEqual(single_status, 200)
+        self.assertEqual(single_by_reference_status, 200)
+        self.assertEqual(single, single_by_reference)
+        self.assertEqual(single["journal_reference"], invoice_receipt["journal_reference"])
+        self.assertEqual(single["idempotency_key"], invoice["idempotency_key"])
+        self.assertIn("lines", single)
+        self.assertEqual(len(single["lines"]), 2)
+
+        hard_status, _hard = self._http_json(
+            "POST", "/period-closes", self._period_close_payload()
+        )
+        closing_list_status, closing_list = self._http_period_journals(
+            journal_source_code="period_closing"
+        )
+        adjusting_after_close_status, adjusting_after_close = self._http_period_journals(
+            journal_source_code="adjusting"
+        )
+        billing_after_close_status, billing_after_close = self._http_period_journals(
+            journal_source_code="billing"
+        )
+        omit_after_close_status, omit_after_close = self._http_period_journals()
+        closing_keys = {str(item["idempotency_key"]) for item in closing_list["journals"]}
+        billing_close_keys = {
+            str(item["idempotency_key"]) for item in billing_after_close["journals"]
+        }
+
+        self.assertEqual(hard_status, 200)
+        self.assertEqual(closing_list_status, 200)
+        self.assertEqual(closing_list["journal_source_code"], "period_closing")
+        self.assertEqual(len(closing_list["journals"]), 1)
+        self.assertEqual(
+            closing_keys,
+            {f"{self.policy.tenant_reference}:period_closing:2026-08"},
+        )
+        self.assertTrue(
+            str(closing_list["journals"][0]["journal_reference"]).startswith(
+                "urn:cwl:accounting:general_journal:period_closing:"
+            )
+        )
+        self.assertEqual(adjusting_after_close_status, 200)
+        self.assertEqual(
+            {str(item["idempotency_key"]) for item in adjusting_after_close["journals"]},
+            {str(adjusting["idempotency_key"])},
+        )
+        self.assertEqual(billing_after_close_status, 200)
+        self.assertEqual(
+            billing_close_keys,
+            {str(invoice["idempotency_key"]), str(cash["idempotency_key"])},
+        )
+        self.assertNotIn(
+            f"{self.policy.tenant_reference}:period_closing:2026-08",
+            billing_close_keys,
+        )
+        self.assertEqual(omit_after_close_status, 200)
+        self.assertNotIn("journal_source_code", omit_after_close)
+        self.assertEqual(len(omit_after_close["journals"]), 5)
+        unknown_period = self._http_period_journals(
+            journal_source_code="billing",
+            fiscal_period_reference="urn:cwl:accounting:fiscal_period:1999-01",
+        )
+        missing_header = self._http_period_journals(
+            journal_source_code="billing", tenant_header=None
+        )
+        cross_status, _cross = self._http_period_journals(
+            journal_source_code="billing", tenant_header="urn:cwl:tenant_other"
+        )
+        self.assertEqual(unknown_period[0], 404)
+        self.assertEqual(missing_header[0], 400)
+        self.assertEqual(cross_status, 403)
+        self.assertEqual(
+            self._count_table("accounting_core.general_journal"),
+            journals_before + 5,
+        )
+        server.shutdown()
+
     def test_http_reads_and_publishes_outbox_events(self) -> None:
         """GET lists unpublished outbox rows; POST publish marks one row idempotently."""
         invoice = self._billing_validated_payload()
@@ -8902,6 +9161,7 @@ class PostgresPostingTests(unittest.TestCase):
         fiscal_period_reference: str | None = None,
         page_limit: object | None = None,
         cursor: str | None = None,
+        journal_source_code: str | None = None,
         use_book_alias: bool = False,
         tenant_header: str | None = "",
     ) -> tuple[int, dict[str, object]]:
@@ -8927,6 +9187,8 @@ class PostgresPostingTests(unittest.TestCase):
             query["page_limit"] = str(page_limit)
         if cursor is not None:
             query["cursor"] = cursor
+        if journal_source_code is not None:
+            query["journal_source_code"] = journal_source_code
         return self._http_json(
             "GET",
             f"/journals?{urllib.parse.urlencode(query)}",
