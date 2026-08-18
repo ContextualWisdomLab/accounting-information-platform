@@ -5202,6 +5202,28 @@ class PostgresPostingTests(unittest.TestCase):
                 DATABASE_URL,
                 self.policy.tenant_reference,
             )
+        unknown_chart = self._http_json(
+            "POST",
+            "/journals",
+            self._adjusting_journal_payload(
+                idempotency_key=f"{self.policy.tenant_reference}:adjusting_journal:missing-account:v1",
+                journal_lines=[
+                    {
+                        "chart_account_code": "999999",
+                        "debit_credit_code": "debit",
+                        "amount": "1000",
+                        "currency_code": "KRW",
+                    },
+                    {
+                        "chart_account_code": "410100",
+                        "debit_credit_code": "credit",
+                        "amount": "1000",
+                        "currency_code": "KRW",
+                    },
+                ],
+            ),
+        )
+        self.assertEqual(unknown_chart[0], 422)
 
         soft_status, _soft = self._http_json(
             "POST", "/period-closes", self._period_close_payload(period_status_code="soft_closed")
@@ -5246,27 +5268,6 @@ class PostgresPostingTests(unittest.TestCase):
                         "chart_account_code": "410100",
                         "debit_credit_code": "credit",
                         "amount": "900",
-                        "currency_code": "KRW",
-                    },
-                ],
-            ),
-        )
-        unknown_chart = self._http_json(
-            "POST",
-            "/journals",
-            self._adjusting_journal_payload(
-                idempotency_key=f"{self.policy.tenant_reference}:adjusting_journal:missing-account:v1",
-                journal_lines=[
-                    {
-                        "chart_account_code": "999999",
-                        "debit_credit_code": "debit",
-                        "amount": "1000",
-                        "currency_code": "KRW",
-                    },
-                    {
-                        "chart_account_code": "410100",
-                        "debit_credit_code": "credit",
-                        "amount": "1000",
                         "currency_code": "KRW",
                     },
                 ],
@@ -5511,7 +5512,6 @@ class PostgresPostingTests(unittest.TestCase):
             )
 
         self.assertEqual(unbalanced[0], 422)
-        self.assertEqual(unknown_chart[0], 422)
         self.assertEqual(outside_period[0], 422)
         self.assertEqual(before_period[0], 422)
         self.assertEqual(missing_header[0], 400)
