@@ -42,7 +42,7 @@ jobs:
         with:
           ref: agent/accounting-posting-foundation
           fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
       - name: Install pinned Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
@@ -89,6 +89,8 @@ jobs:
           python scripts/validate_repository.py .
           python -m compileall -q src scripts tests
       - name: Publish verified repair
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -109,4 +111,4 @@ jobs:
           git add -A
           git diff --cached --check
           git commit -m "fix: enforce accounting command and ledger invariants"
-          git push origin HEAD:agent/accounting-posting-foundation
+          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:agent/accounting-posting-foundation
