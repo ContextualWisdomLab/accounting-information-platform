@@ -21,7 +21,7 @@ jobs:
     timeout-minutes: 35
     env:
       ACCOUNTING_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/accounting_test
-      REPAIR_SOURCE_SHA: eb2d7f574ded1482352f615672fdf60731384a85
+      REPAIR_SOURCE_SHA: 8b6db1de1dad7fa095708e2cd22d77ed2aad78ed
     services:
       postgres:
         image: postgres:18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
@@ -59,6 +59,7 @@ jobs:
             repair_pr2_ledger_invariants.py \
             repair_pr2_command_idempotency.py \
             repair_pr2_followup_adjustments.py \
+            repair_pr2_reversal_temporal_order.py \
             repair_pr2_database_immutability.py \
             repair_pr2_home_tax_replay_outcome.py \
             repair_pr2_force_rls.py \
