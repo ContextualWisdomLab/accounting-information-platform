@@ -138,6 +138,7 @@ def update_final_release_notes() -> None:
         "- Enforced posted-ledger immutability in PostgreSQL itself: direct UPDATE or DELETE of journal headers, lines, source references, and reversal links now fails closed; corrections remain reversal/reposting operations.\n",
         "- Forced row-level security on authoritative tenant tables and documented a separate non-superuser, non-BYPASSRLS application-role boundary from migration and break-glass administration.\n",
         "- Rejected reversal commands whose accounting date precedes the original journal, preventing a correcting entry from appearing before the fact it reverses.\n",
+        "- Preserved required adjusting-journal descriptions as durable header evidence, accepted only exact decimal-string monetary input, and fail-closed unknown period-close target states.\n",
     )
     marker = "### Changed\n"
     if marker not in text:
@@ -159,6 +160,7 @@ def main() -> None:
     command.main()
     fix_reversal_key_after_reference_resolution()
     _load("repair_pr2_reversal_temporal_order").main()
+    _load("repair_pr2_remaining_review_contracts").main()
 
     followup = _load("repair_pr2_followup_adjustments")
     followup.retain_tenant_defense_on_reversal_cache()
