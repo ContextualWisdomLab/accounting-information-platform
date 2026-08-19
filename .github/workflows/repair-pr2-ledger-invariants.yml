@@ -62,7 +62,21 @@ jobs:
           done
       - name: Apply exact review repairs
         run: |
-          python /tmp/repair_pr2_ledger_invariants.py
+          python - <<'PY'
+          import importlib.util
+
+          spec = importlib.util.spec_from_file_location(
+              "repair_pr2_ledger_invariants",
+              "/tmp/repair_pr2_ledger_invariants.py",
+          )
+          if spec is None or spec.loader is None:
+              raise SystemExit("unable to load PR2 ledger repair module")
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          module.replace_period_guard_migration()
+          module.add_database_regression_tests()
+          module.update_documentation()
+          PY
           python /tmp/repair_pr2_command_idempotency.py
           python /tmp/repair_pr2_followup_adjustments.py
       - name: Install hash-locked quality dependencies
