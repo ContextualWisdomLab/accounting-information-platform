@@ -162,24 +162,16 @@ class BillingPullOriginAllowlistTests(unittest.TestCase):
                 omitted = _accept_pull(_pull_payload())
                 matching = _accept_pull(_pull_payload(f"{_BILLING_ORIGIN}/v1"))
                 extra = _accept_pull(_pull_payload(_DR_ORIGIN))
-                loopback_env = dict(env)
-                loopback_env["BILLING_BASE_URL"] = "http://127.0.0.1:18765"
-                with mock.patch.dict(os.environ, loopback_env, clear=False):
-                    allowlisted_loopback = _accept_pull(
-                        _pull_payload("http://127.0.0.1:18765")
-                    )
 
         self.assertEqual(omitted, {"posting_receipts": [], "rejected_proposals": []})
         self.assertEqual(matching, omitted)
         self.assertEqual(extra, omitted)
-        self.assertEqual(allowlisted_loopback, omitted)
         self.assertEqual(
             [call.args[0] for call in pull.call_args_list],
             [
                 _BILLING_ORIGIN,
                 _BILLING_ORIGIN,
                 _DR_ORIGIN,
-                "http://127.0.0.1:18765",
             ],
         )
 
@@ -205,12 +197,12 @@ class BillingPullOriginAllowlistTests(unittest.TestCase):
                 os.environ,
                 {
                     "BILLING_BASE_URL": "http://billing.example.test",
-                    "BILLING_ALLOWED_ORIGINS": "http://[fe80::1]:18765",
+                    "BILLING_ALLOWED_ORIGINS": "http://[2001:4860:4860::8888]:18765",
                 },
                 clear=False,
             ):
                 _accept_pull(_pull_payload("http://billing.example.test:80"))
-                _accept_pull(_pull_payload("http://[fe80::1]:18765"))
+                _accept_pull(_pull_payload("http://[2001:4860:4860::8888]:18765"))
 
         self.assertEqual(
             [call.args[0] for call in pull.call_args_list],
@@ -219,9 +211,56 @@ class BillingPullOriginAllowlistTests(unittest.TestCase):
                 _BILLING_ORIGIN,
                 _DR_ORIGIN,
                 "http://billing.example.test",
-                "http://[fe80::1]:18765",
+                "http://[2001:4860:4860::8888]:18765",
             ],
         )
+
+
+    def test_configured_loopback_and_link_local_origins_fail_closed(self) -> None:
+        """Primary and additional configured origins reject local networks."""
+        unsafe_environments = (
+            {
+                "BILLING_BASE_URL": "http://127.0.0.1:18765",
+                "BILLING_ALLOWED_ORIGINS": _DR_ORIGIN,
+            },
+            {
+                "BILLING_BASE_URL": _BILLING_ORIGIN,
+                "BILLING_ALLOWED_ORIGINS": "http://169.254.169.254,http://[fe80::1]",
+            },
+            {
+                "BILLING_BASE_URL": "http://localhost:18765",
+                "BILLING_ALLOWED_ORIGINS": "",
+            },
+        )
+        with mock.patch(
+            "accounting_information_platform.billing_pull.pull_validated_journal_proposals"
+        ) as pull:
+            for environment in unsafe_environments:
+                with self.subTest(environment=environment):
+                    with mock.patch.dict(os.environ, environment, clear=False):
+                        with self.assertRaisesRegex(
+                            AccountingValidationError, "loopback or link-local"
+                        ):
+                            _accept_pull(_pull_payload())
+                    pull.assert_not_called()
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "BILLING_BASE_URL": "https://8.8.8.8",
+                "BILLING_ALLOWED_ORIGINS": "",
+            },
+            clear=False,
+        ):
+            with mock.patch(
+                "accounting_information_platform.billing_pull.pull_validated_journal_proposals",
+                return_value=JournalProposalPage((), None),
+            ) as safe_pull:
+                self.assertEqual(
+                    _accept_pull(_pull_payload()),
+                    {"posting_receipts": [], "rejected_proposals": []},
+                )
+                safe_pull.assert_called_once()
 
 
 if __name__ == "__main__":

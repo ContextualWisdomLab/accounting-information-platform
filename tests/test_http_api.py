@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import http.client
+import io
 import json
 import os
 import unittest
+from unittest import mock
 from decimal import Decimal
 from pathlib import Path
 
 from accounting_information_platform import AccountingValidationError
 from accounting_information_platform.billing_pull import accept_billing_proposal_pull
+from accounting_information_platform.http_api import JournalProposalHandler
 from accounting_information_platform.accept import (
     accept_home_tax_submission,
     accept_period_close,
@@ -35,6 +38,8 @@ class CollectionWriteOffAgingHttpTests(unittest.TestCase):
     def setUp(self) -> None:
         self.case = postgres_posting.PostgresPostingTests("setUp")
         self.case.setUp()
+        self.addCleanup(self.case.doCleanups)
+        self.addCleanup(self.case.tearDown)
 
     def test_http_collection_write_off_reduces_receivable_aging(self) -> None:
         """Invoice AR then a collection write-off lowers entity aging by that amount."""
@@ -54,6 +59,8 @@ class CollectionWriteOffAgingHttpTests(unittest.TestCase):
             ),
         )
         server = case._start_http_server()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
 
         invoice_status, _invoice = case._http_json("POST", "/journal-proposals", invoice)
         before_status, before = case._http_receivable_aging()
@@ -123,8 +130,6 @@ class CollectionWriteOffAgingHttpTests(unittest.TestCase):
             Decimal(str(closed["total_outstanding_amount"])),
             case._account_balance_net(closed_balances, "110100"),
         )
-        server.shutdown()
-        server.server_close()
 
 
 class IssuedInvoiceVoidAgingHttpTests(unittest.TestCase):
@@ -137,6 +142,8 @@ class IssuedInvoiceVoidAgingHttpTests(unittest.TestCase):
     def setUp(self) -> None:
         self.case = postgres_posting.PostgresPostingTests("setUp")
         self.case.setUp()
+        self.addCleanup(self.case.doCleanups)
+        self.addCleanup(self.case.tearDown)
 
     def test_http_issued_invoice_void_reduces_receivable_aging(self) -> None:
         """Taxed invoice then published void lowers 110100 aging by inclusive AR."""
@@ -168,6 +175,8 @@ class IssuedInvoiceVoidAgingHttpTests(unittest.TestCase):
             ],
         )
         server = case._start_http_server()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
 
         invoice_status, _invoice = case._http_json("POST", "/journal-proposals", invoice)
         before_status, before = case._http_receivable_aging()
@@ -319,8 +328,6 @@ class IssuedInvoiceVoidAgingHttpTests(unittest.TestCase):
         self.assertEqual(hard_status, 200)
         self.assertEqual(closed_status, 200)
         self.assertEqual(closed["total_outstanding_amount"], "0")
-        server.shutdown()
-        server.server_close()
 
     def test_http_untaxed_issued_invoice_void_leaves_payable_aging_zero(self) -> None:
         """Untaxed invoice then published void does not move 210100 payable aging."""
@@ -348,6 +355,8 @@ class IssuedInvoiceVoidAgingHttpTests(unittest.TestCase):
             ],
         )
         server = case._start_http_server()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
 
         invoice_status, _invoice = case._http_json("POST", "/journal-proposals", invoice)
         before_status, before = case._http_payable_aging()
@@ -383,8 +392,6 @@ class IssuedInvoiceVoidAgingHttpTests(unittest.TestCase):
         self.assertEqual(explicit, after)
         self.assertEqual(clearing_payable[0], 422)
         self.assertIn("tax_payable", str(clearing_payable[1]["error_message"]))
-        server.shutdown()
-        server.server_close()
 
 
 class IssuedCreditNoteVoidAgingHttpTests(unittest.TestCase):
@@ -397,6 +404,8 @@ class IssuedCreditNoteVoidAgingHttpTests(unittest.TestCase):
     def setUp(self) -> None:
         self.case = postgres_posting.PostgresPostingTests("setUp")
         self.case.setUp()
+        self.addCleanup(self.case.doCleanups)
+        self.addCleanup(self.case.tearDown)
 
     def test_http_issued_credit_note_void_restores_receivable_aging(self) -> None:
         """Taxed invoice then credit then published void restores 110100 aging."""
@@ -429,6 +438,8 @@ class IssuedCreditNoteVoidAgingHttpTests(unittest.TestCase):
             ],
         )
         server = case._start_http_server()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
 
         invoice_status, _invoice = case._http_json("POST", "/journal-proposals", invoice)
         after_invoice_status, after_invoice = case._http_receivable_aging()
@@ -538,8 +549,6 @@ class IssuedCreditNoteVoidAgingHttpTests(unittest.TestCase):
         self.assertEqual(hard_status, 200)
         self.assertEqual(closed_status, 200)
         self.assertEqual(closed["total_outstanding_amount"], "27500")
-        server.shutdown()
-        server.server_close()
 
     def test_http_untaxed_issued_credit_note_void_is_two_line(self) -> None:
         """Untaxed credit then published void restores AR without moving 210100."""
@@ -568,6 +577,8 @@ class IssuedCreditNoteVoidAgingHttpTests(unittest.TestCase):
             ],
         )
         server = case._start_http_server()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
 
         invoice_status, _invoice = case._http_json("POST", "/journal-proposals", invoice)
         after_invoice_status, after_invoice = case._http_receivable_aging()
@@ -608,8 +619,6 @@ class IssuedCreditNoteVoidAgingHttpTests(unittest.TestCase):
         self.assertEqual(after_payable_status, 200)
         self.assertEqual(before_payable["total_outstanding_amount"], "0")
         self.assertEqual(after_payable["total_outstanding_amount"], "0")
-        server.shutdown()
-        server.server_close()
 
 
 class UnappliedCashRefundHttpTests(unittest.TestCase):
@@ -622,6 +631,8 @@ class UnappliedCashRefundHttpTests(unittest.TestCase):
     def setUp(self) -> None:
         self.case = postgres_posting.PostgresPostingTests("setUp")
         self.case.setUp()
+        self.addCleanup(self.case.doCleanups)
+        self.addCleanup(self.case.tearDown)
 
     def test_http_unapplied_cash_refund_posts_and_stays_off_payable_aging(self) -> None:
         """Refund and park post on the catalog; 210200 is not a payable-aging account."""
@@ -641,6 +652,8 @@ class UnappliedCashRefundHttpTests(unittest.TestCase):
             ),
         )
         server = case._start_http_server()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
 
         mapping_status, mappings = case._http_account_role_mappings()
         refund_status, receipt = case._http_json("POST", "/journal-proposals", refund)
@@ -705,8 +718,6 @@ class UnappliedCashRefundHttpTests(unittest.TestCase):
         self.assertEqual(closed_balances_status, 200)
         self.assertEqual(case._account_balance_net(closed_balances, "210200"), Decimal("5000"))
         self.assertEqual(case._count_closing_journals(), 0)
-        server.shutdown()
-        server.server_close()
 
     def test_http_unapplied_cash_apply_reduces_receivable_aging(self) -> None:
         """Park then #61 apply drops entity AR aging by the applied amount."""
@@ -742,6 +753,8 @@ class UnappliedCashRefundHttpTests(unittest.TestCase):
             ),
         )
         server = case._start_http_server()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
 
         invoice_status, _invoice = case._http_json("POST", "/journal-proposals", invoice)
         park_status, _park = case._http_json("POST", "/journal-proposals", park)
@@ -808,8 +821,6 @@ class UnappliedCashRefundHttpTests(unittest.TestCase):
         self.assertEqual(hard_status, 200)
         self.assertEqual(closed_status, 200)
         self.assertEqual(closed["total_outstanding_amount"], "18000")
-        server.shutdown()
-        server.server_close()
 
 
 class UnappliedCashRollforwardHttpTests(unittest.TestCase):
@@ -822,6 +833,8 @@ class UnappliedCashRollforwardHttpTests(unittest.TestCase):
     def setUp(self) -> None:
         self.case = postgres_posting.PostgresPostingTests("setUp")
         self.case.setUp()
+        self.addCleanup(self.case.doCleanups)
+        self.addCleanup(self.case.tearDown)
 
     def test_http_unapplied_cash_rollforward_parks_applies_and_refunds(self) -> None:
         """Park then apply then refund: closing equals 210200 credit minus debit."""
@@ -875,6 +888,8 @@ class UnappliedCashRollforwardHttpTests(unittest.TestCase):
             ],
         )
         server = case._start_http_server()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
 
         empty_status, empty = case._http_unapplied_cash_rollforward()
         park_status, _park = case._http_json("POST", "/journal-proposals", park)
@@ -998,8 +1013,6 @@ class UnappliedCashRollforwardHttpTests(unittest.TestCase):
         self.assertEqual(unknown_entity[0], 404)
         self.assertEqual(unknown_book[0], 404)
         self.assertEqual(unknown_period[0], 404)
-        server.shutdown()
-        server.server_close()
 
 
 class VatPeriodRegisterHttpTests(unittest.TestCase):
@@ -1012,11 +1025,15 @@ class VatPeriodRegisterHttpTests(unittest.TestCase):
     def setUp(self) -> None:
         self.case = postgres_posting.PostgresPostingTests("setUp")
         self.case.setUp()
+        self.addCleanup(self.case.doCleanups)
+        self.addCleanup(self.case.tearDown)
 
     def test_http_vat_period_register_issues_then_voids_tax(self) -> None:
         """Taxed issue 2500 then void 2500 closes at zero; an untaxed issue stays zeros."""
         case = self.case
         server = case._start_http_server()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
         empty_status, empty = case._http_vat_period_register()
         untaxed_status, _untaxed = case._http_json(
             "POST", "/journal-proposals", case._billing_validated_payload()
@@ -1068,8 +1085,6 @@ class VatPeriodRegisterHttpTests(unittest.TestCase):
         self.assertEqual(voided["account_role_code"], "tax_payable")
         self.assertNotIn("party_reference", voided)
         self.assertNotIn("next_cursor", voided)
-        server.shutdown()
-        server.server_close()
 
 
 class HomeTaxSubmissionHttpTests(unittest.TestCase):
@@ -1082,11 +1097,15 @@ class HomeTaxSubmissionHttpTests(unittest.TestCase):
     def setUp(self) -> None:
         self.case = postgres_posting.PostgresPostingTests("setUp")
         self.case.setUp()
+        self.addCleanup(self.case.doCleanups)
+        self.addCleanup(self.case.tearDown)
 
     def test_http_home_tax_submission_requires_register_then_credential(self) -> None:
         """Unknown period is 404; a live register without a credential is 422 rejected."""
         case = self.case
         server = case._start_http_server()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
         unknown_status, unknown = case._http_home_tax_submission(
             fiscal_period_reference="urn:cwl:accounting:fiscal_period:1999-01"
         )
@@ -1117,8 +1136,6 @@ class HomeTaxSubmissionHttpTests(unittest.TestCase):
         self.assertEqual(vat_after_status, 200)
         self.assertEqual(vat_after, register)
         self.assertEqual(vat_post_status, 405)
-        server.shutdown()
-        server.server_close()
 
     def test_accept_home_tax_submission_requires_object_and_matching_tenant(self) -> None:
         """Library accept fail-closes before a ledger write when the command is unbound."""
@@ -1159,11 +1176,15 @@ class PeriodClosePackageHttpTests(unittest.TestCase):
     def setUp(self) -> None:
         self.case = postgres_posting.PostgresPostingTests("setUp")
         self.case.setUp()
+        self.addCleanup(self.case.doCleanups)
+        self.addCleanup(self.case.tearDown)
 
     def test_http_period_close_package_includes_payable_aging(self) -> None:
         """Package payable_aging matches GET /payable-agings on the same entity period."""
         case = self.case
         server = case._start_http_server()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
         empty_status, empty_package = case._http_period_close_package()
         empty_payable_status, empty_payable = case._http_payable_aging()
         empty_leftover_status, empty_leftover = case._http_unapplied_cash_rollforward()
@@ -1260,8 +1281,6 @@ class PeriodClosePackageHttpTests(unittest.TestCase):
             tenant_header="urn:cwl:tenant_other"
         )
         self.assertEqual(cross_status, 403)
-        server.shutdown()
-        server.server_close()
 
 
 class BillingIngestFailClosedHttpTests(unittest.TestCase):
@@ -1274,11 +1293,15 @@ class BillingIngestFailClosedHttpTests(unittest.TestCase):
     def setUp(self) -> None:
         self.case = postgres_posting.PostgresPostingTests("setUp")
         self.case.setUp()
+        self.addCleanup(self.case.doCleanups)
+        self.addCleanup(self.case.tearDown)
 
     def test_http_rejects_malformed_billing_lines_and_posts_query_string(self) -> None:
         """Missing keys, JSON-number amounts, and reserved RE are 422; ?trace=1 posts."""
         case = self.case
         server = case._start_http_server()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
         journals_before = case._count_table("accounting_core.general_journal")
         missing = case._billing_validated_payload()
         del missing["lines"][0]["line_number"]
@@ -1350,13 +1373,13 @@ class BillingIngestFailClosedHttpTests(unittest.TestCase):
         self.assertEqual(posted_status, 200)
         self.assertEqual(posted["posting_status_code"], "posted")
         self.assertEqual(case._count_table("accounting_core.general_journal"), journals_before + 1)
-        server.shutdown()
-        server.server_close()
 
     def test_http_rejects_empty_period_status_and_naive_cursors_and_oversize(self) -> None:
         """Empty close status is 422, naive list cursors are 422, oversize is 413."""
         case = self.case
         server = case._start_http_server()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
         journals_before = case._count_table("accounting_core.general_journal")
         empty_close = case._period_close_payload(period_status_code="")
         null_close = case._period_close_payload(period_status_code=None)
@@ -1437,8 +1460,6 @@ class BillingIngestFailClosedHttpTests(unittest.TestCase):
         self.assertIn("1 MiB", str(oversize_body["error_message"]))
         self.assertIn("then retry", str(oversize_body["error_message"]))
         self.assertEqual(case._count_table("accounting_core.general_journal"), journals_before)
-        server.shutdown()
-        server.server_close()
 
     def _http_oversize(
         self, case: postgres_posting.PostgresPostingTests
@@ -1466,6 +1487,13 @@ class BillingPullRejectedProposalHttpTests(unittest.TestCase):
     def setUp(self) -> None:
         self.case = postgres_posting.PostgresPostingTests("setUp")
         self.case.setUp()
+        self.addCleanup(self.case.doCleanups)
+        self.addCleanup(self.case.tearDown)
+        self._local_billing_origin_patch = mock.patch(
+            "accounting_information_platform.billing_pull._require_safe_configured_billing_origin"
+        )
+        self._local_billing_origin_patch.start()
+        self.addCleanup(self._local_billing_origin_patch.stop)
 
     def test_http_pull_returns_receipt_and_rejected_unknown_role(self) -> None:
         """One valid plus one unknown-role page posts one journal and lists the reject."""
@@ -1500,6 +1528,8 @@ class BillingPullRejectedProposalHttpTests(unittest.TestCase):
         )
         billing_url = case._start_fake_billing([invoice, unknown])
         server = case._start_http_server()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
         journals_before = case._count_table("accounting_core.general_journal")
 
         status, body = case._http_json(
@@ -1537,14 +1567,14 @@ class BillingPullRejectedProposalHttpTests(unittest.TestCase):
         self.assertEqual(replay["posting_receipts"], body["posting_receipts"])
         self.assertEqual(replay["rejected_proposals"], body["rejected_proposals"])
         self.assertEqual(case._count_table("accounting_core.general_journal"), journals_before + 1)
-        server.shutdown()
-        server.server_close()
 
     def test_http_pull_empty_page_includes_rejected_proposals(self) -> None:
         """An empty Billing page still returns rejected_proposals []."""
         case = self.case
         billing_url = case._start_fake_billing([])
         server = case._start_http_server()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
 
         status, body = case._http_json(
             "POST",
@@ -1556,13 +1586,13 @@ class BillingPullRejectedProposalHttpTests(unittest.TestCase):
         self.assertEqual(body["posting_receipts"], [])
         self.assertEqual(body["rejected_proposals"], [])
         self.assertEqual(set(body), {"posting_receipts", "rejected_proposals"})
-        server.shutdown()
-        server.server_close()
 
     def test_http_pull_stuck_cursor_and_page_cap_are_422(self) -> None:
         """A repeating next_cursor or a 21-page list stops the HTTP pull thread."""
         case = self.case
         server = case._start_http_server()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
         stuck_url = case._start_fake_billing(
             [],
             list_raw=json.dumps(
@@ -1628,14 +1658,14 @@ class BillingPullRejectedProposalHttpTests(unittest.TestCase):
         self.assertIn("20 pages", str(cap_body["error_message"]))
         self.assertIn("then retry", str(cap_body["error_message"]))
         self.assertEqual(case._count_table("accounting_core.general_journal"), journals_before)
-        server.shutdown()
-        server.server_close()
 
     def test_http_pull_rejects_body_origin_off_allowlist(self) -> None:
         """POST /billing-proposal-pulls does not fetch an unallowlisted body origin."""
         case = self.case
         billing_url = case._start_fake_billing([])
         server = case._start_http_server()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
         journals_before = case._count_table("accounting_core.general_journal")
 
         status, body = case._http_json(
@@ -1662,5 +1692,39 @@ class BillingPullRejectedProposalHttpTests(unittest.TestCase):
         self.assertEqual(allowed_body["posting_receipts"], [])
         self.assertEqual(allowed_body["rejected_proposals"], [])
         self.assertEqual(case._count_table("accounting_core.general_journal"), journals_before)
-        server.shutdown()
-        server.server_close()
+
+
+class StrictContentLengthSyntaxTests(unittest.TestCase):
+    """HTTP body reads reject Python-only integer spellings."""
+
+    def test_read_body_accepts_ascii_digits_only(self) -> None:
+        """Signs, underscores, whitespace, and Unicode digits are invalid."""
+        for value in ("+2", "1_0", " 2", "٢"):
+            with self.subTest(value=value):
+                handler = object.__new__(JournalProposalHandler)
+                handler.headers = {"Content-Length": value}
+                handler.rfile = io.BytesIO(b"{}")
+                handler._write_error = mock.Mock()
+                self.assertEqual(handler._read_body(), b"")
+                handler._write_error.assert_not_called()
+
+        present = object.__new__(JournalProposalHandler)
+        present.headers = {"Content-Length": "2"}
+        present.rfile = io.BytesIO(b"{}")
+        present._write_error = mock.Mock()
+        self.assertEqual(present._read_body(), b"{}")
+        present._write_error.assert_not_called()
+
+        empty = object.__new__(JournalProposalHandler)
+        empty.headers = {"Content-Length": "0"}
+        empty.rfile = io.BytesIO(b"")
+        empty._write_error = mock.Mock()
+        self.assertEqual(empty._read_body(), b"")
+        empty._write_error.assert_not_called()
+
+        oversized = object.__new__(JournalProposalHandler)
+        oversized.headers = {"Content-Length": "1048577"}
+        oversized.rfile = io.BytesIO(b"")
+        oversized._write_error = mock.Mock()
+        self.assertIsNone(oversized._read_body())
+        oversized._write_error.assert_called_once()

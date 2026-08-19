@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import http.client
+import ipaddress
 import json
 import os
 import ssl
@@ -259,6 +260,25 @@ def _canonical_billing_origin(billing_base_url: str) -> str:
     return f"{parsed.scheme}://{host}:{port}"
 
 
+def _require_safe_configured_billing_origin(origin: str) -> None:
+    """Reject loopback and link-local hosts in trusted Billing configuration."""
+    hostname = (urlparse(origin).hostname or "").rstrip(".")
+    if hostname.lower() == "localhost":
+        raise AccountingValidationError(
+            "Billing configured origins must not use loopback or link-local hosts. "
+            "Set BILLING_BASE_URL to a routable Billing service, then retry the pull."
+        )
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return
+    if address.is_loopback or address.is_link_local:
+        raise AccountingValidationError(
+            "Billing configured origins must not use loopback or link-local hosts. "
+            "Set BILLING_BASE_URL to a routable Billing service, then retry the pull."
+        )
+
+
 def _configured_billing_bases() -> tuple[tuple[str, str], ...]:
     """Map operator-configured origins to the fetch base they authorize."""
     raw_values = [os.environ.get("BILLING_BASE_URL", "")]
@@ -272,6 +292,7 @@ def _configured_billing_bases() -> tuple[tuple[str, str], ...]:
             continue
         fetch_base = _require_billing_base_url(raw)
         origin = _canonical_billing_origin(fetch_base)
+        _require_safe_configured_billing_origin(origin)
         if origin in seen:
             continue
         seen.add(origin)

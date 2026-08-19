@@ -394,6 +394,11 @@ class RepositoryContractTests(unittest.TestCase):
             "DELETE FROM accounting_core.journal_entry_line;",
             "DELETE FROM general_journal;",
             "DELETE FROM ONLY journal_entry_line;",
+            "TRUNCATE accounting_core.general_journal;",
+            "TRUNCATE TABLE ONLY accounting_core.journal_entry_line;",
+            "DROP TABLE accounting_core.general_journal;",
+            'DROP TABLE IF EXISTS "accounting_core"."journal_entry_line" CASCADE;',
+            "UPDATE \"accounting_core\".\"general_journal\" SET journal_status_code = 'posted';",
         )
         for statement in forbidden_statements:
             with self.subTest(statement=statement):
