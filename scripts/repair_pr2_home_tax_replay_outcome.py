@@ -99,8 +99,8 @@ def add_runtime_change_regression() -> None:
     regression = '''    def test_home_tax_exact_replay_preserves_stored_outcome(self) -> None:
         """Runtime credential changes do not change an already-recorded command receipt."""
         server = self._start_http_server()
-        self.addCleanup(server.shutdown)
         self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
         command_key = f"{self.policy.tenant_reference}:home_tax_submission:stable:v1"
         first_status, first = self._http_home_tax_submission(
             idempotency_key=command_key
