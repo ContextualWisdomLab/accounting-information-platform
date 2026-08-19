@@ -22,7 +22,7 @@ jobs:
     timeout-minutes: 35
     env:
       ACCOUNTING_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/accounting_test
-      REPAIR_SOURCE_SHA: 4b145587971708a6d6a48017eb0b3f3a8163e6da
+      REPAIR_SOURCE_SHA: e5298360948c2b3ad819406b971f573687afc915
     services:
       postgres:
         image: postgres:18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
@@ -67,6 +67,7 @@ jobs:
             repair_pr2_force_rls.py \
             repair_pr2_close_binder_regression.py \
             repair_pr2_all.py \
+            repair_pr2_reversal_key_namespace.py \
             repair_pr2_http_auth.py \
             repair_pr2_http_auth_followup.py
           do
@@ -75,6 +76,7 @@ jobs:
       - name: Apply exact review repairs
         run: |
           python /tmp/repair_pr2_all.py
+          python /tmp/repair_pr2_reversal_key_namespace.py
           python /tmp/repair_pr2_close_binder_regression.py
           python /tmp/repair_pr2_http_auth.py
           python /tmp/repair_pr2_http_auth_followup.py
