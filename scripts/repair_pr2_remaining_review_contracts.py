@@ -262,16 +262,16 @@ def update_documentation() -> None:
     """Align data-model and API behavior docs with the strengthened contracts."""
     data_model_path = "docs/DATA_MODEL.md"
     data_model = _read(data_model_path)
-    sentence = "`general_journal` is the immutable posted-journal header."
+    bullet = "- `general_journal`: authoritative posted or reversed header."
     replacement = (
-        sentence
-        + " AIS-owned adjusting journals also retain their required `journal_description` "
-        "on that header so the approved narrative is durable audit evidence."
+        "- `general_journal`: authoritative posted or reversed header. AIS-owned "
+        "adjusting journals retain their required `journal_description` on this header "
+        "so the approved narrative is durable audit evidence."
     )
     if replacement not in data_model:
-        if sentence not in data_model:
+        if bullet not in data_model:
             raise SystemExit("DATA_MODEL general_journal description anchor drifted")
-        data_model = data_model.replace(sentence, replacement, 1)
+        data_model = data_model.replace(bullet, replacement, 1)
         _write(data_model_path, data_model)
 
     test_path = "docs/TEST_STRATEGY.md"
