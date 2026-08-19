@@ -21,7 +21,7 @@ jobs:
     timeout-minutes: 35
     env:
       ACCOUNTING_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/accounting_test
-      REPAIR_SOURCE_SHA: 810c2138bdef431007aecedc38ddd616400c5d78
+      REPAIR_SOURCE_SHA: c7db39927de2078f1983fec5b166aff8bac6a1ae
     services:
       postgres:
         image: postgres:18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
