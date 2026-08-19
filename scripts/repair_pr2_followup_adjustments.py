@@ -73,20 +73,22 @@ ALTER TABLE accounting_integration.home_tax_submission ENABLE ROW LEVEL SECURITY
 
     http_path = "src/accounting_information_platform/http_api.py"
     http = read(http_path)
-    anchor = '''        self._write_json(422, document)
-
-    def _read_body(self) -> bytes | None:
-'''
-    replacement = '''        response_status = (
+    desired = '''        response_status = (
             422 if document.get("submission_status_code") == "rejected" else 200
         )
         self._write_json(response_status, document)
 
-    def _read_body(self) -> bytes | None:
+    def _post_billing_proposal_pull(self, raw_body: bytes) -> None:
+'''
+    if desired in http:
+        return
+    anchor = '''        self._write_json(422, document)
+
+    def _post_billing_proposal_pull(self, raw_body: bytes) -> None:
 '''
     if anchor not in http:
         raise SystemExit("HomeTax HTTP response anchor drifted")
-    write(http_path, http.replace(anchor, replacement, 1))
+    write(http_path, http.replace(anchor, desired, 1))
 
 
 def normalize_trigger_and_test_cleanup() -> None:
