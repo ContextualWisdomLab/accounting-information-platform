@@ -6,6 +6,8 @@ CREATE TABLE accounting_integration.home_tax_submission (
     legal_entity_id uuid NOT NULL,
     accounting_book_id uuid NOT NULL,
     fiscal_period_id uuid NOT NULL,
+    submission_idempotency_key text NOT NULL
+        CHECK (btrim(submission_idempotency_key) <> ''),
     submission_status_code text NOT NULL CHECK (submission_status_code IN ('rejected')),
     rejection_reason_code text NOT NULL CHECK (
         rejection_reason_code IN (
@@ -24,6 +26,7 @@ CREATE TABLE accounting_integration.home_tax_submission (
         REFERENCES accounting_core.accounting_book (tenant_account_id, accounting_book_id),
     FOREIGN KEY (tenant_account_id, fiscal_period_id)
         REFERENCES accounting_core.fiscal_period (tenant_account_id, fiscal_period_id),
+    UNIQUE (tenant_account_id, submission_idempotency_key),
     UNIQUE (tenant_account_id, home_tax_submission_id)
 );
 
