@@ -49,6 +49,56 @@ def add_force_rls_migration() -> None:
     path.write_text("\n".join(statements), encoding="utf-8")
 
 
+def apply_force_rls_migration() -> None:
+    """Extend the foundation installer so the forced-RLS migration is never skipped."""
+    path = "src/accounting_information_platform/persistence.py"
+    text = _read(path)
+    old_doc = (
+        '    """Apply the checked-in PostgreSQL 18 foundation through the closed-period guard."""\n'
+    )
+    new_doc = (
+        '    """Apply every checked-in PostgreSQL 18 accounting foundation migration."""\n'
+    )
+    if old_doc not in text:
+        raise SystemExit("foundation migration docstring anchor drifted")
+    text = text.replace(old_doc, new_doc, 1)
+
+    guard_check = '''    period_guard_migration_path = migration_path.parent / "0005_closed_period_guard.sql"
+    if not period_guard_migration_path.is_file():
+        raise AccountingValidationError(
+            f"Closed-period guard migration is missing at {period_guard_migration_path}. "
+            "Restore database/migrations/0005_closed_period_guard.sql, then retry."
+        )
+    psycopg = _import_psycopg()
+'''
+    force_check = '''    period_guard_migration_path = migration_path.parent / "0005_closed_period_guard.sql"
+    if not period_guard_migration_path.is_file():
+        raise AccountingValidationError(
+            f"Closed-period guard migration is missing at {period_guard_migration_path}. "
+            "Restore database/migrations/0005_closed_period_guard.sql, then retry."
+        )
+    force_rls_migration_path = migration_path.parent / "0006_force_tenant_rls.sql"
+    if not force_rls_migration_path.is_file():
+        raise AccountingValidationError(
+            f"Forced-RLS migration is missing at {force_rls_migration_path}. "
+            "Restore database/migrations/0006_force_tenant_rls.sql, then retry."
+        )
+    psycopg = _import_psycopg()
+'''
+    if guard_check not in text:
+        raise SystemExit("foundation forced-RLS path anchor drifted")
+    text = text.replace(guard_check, force_check, 1)
+
+    execute_anchor = '''            connection.execute(close_key_migration_path.read_text(encoding="utf-8"))
+            connection.execute(period_guard_migration_path.read_text(encoding="utf-8"))
+'''
+    execute_replacement = execute_anchor + '''            connection.execute(force_rls_migration_path.read_text(encoding="utf-8"))
+'''
+    if execute_anchor not in text:
+        raise SystemExit("foundation forced-RLS execution anchor drifted")
+    _write(path, text.replace(execute_anchor, execute_replacement, 1))
+
+
 def add_force_rls_regression() -> None:
     """Prove every tenant-scoped authoritative table has enabled and forced RLS."""
     path = "tests/test_postgres_posting.py"
@@ -113,6 +163,7 @@ All authoritative tenant tables use `FORCE ROW LEVEL SECURITY`. Run the service 
 def main() -> None:
     """Apply forced-RLS storage and operating contracts exactly once."""
     add_force_rls_migration()
+    apply_force_rls_migration()
     add_force_rls_regression()
     update_security_docs()
 
