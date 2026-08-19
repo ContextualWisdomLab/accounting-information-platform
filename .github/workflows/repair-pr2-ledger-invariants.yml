@@ -21,7 +21,7 @@ jobs:
     timeout-minutes: 35
     env:
       ACCOUNTING_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/accounting_test
-      REPAIR_SOURCE_SHA: 9272b946caad48cae0b91d36875f8f421a97164f
+      REPAIR_SOURCE_SHA: f846dd72c409afccc72f0a950ea183f28f01cfbe
     services:
       postgres:
         image: postgres:18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
@@ -65,7 +65,8 @@ jobs:
             repair_pr2_home_tax_replay_outcome.py \
             repair_pr2_force_rls.py \
             repair_pr2_all.py \
-            repair_pr2_http_auth.py
+            repair_pr2_http_auth.py \
+            repair_pr2_http_auth_followup.py
           do
             git show "${REPAIR_SOURCE_SHA}:scripts/${script}" > "/tmp/${script}"
           done
@@ -73,6 +74,7 @@ jobs:
         run: |
           python /tmp/repair_pr2_all.py
           python /tmp/repair_pr2_http_auth.py
+          python /tmp/repair_pr2_http_auth_followup.py
       - name: Install hash-locked quality dependencies
         run: >-
           python -m pip install
