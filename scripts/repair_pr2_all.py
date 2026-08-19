@@ -18,6 +18,89 @@ def _load(name: str) -> ModuleType:
     return module
 
 
+def repair_close_idempotency_migration() -> None:
+    """Backfill legacy close keys deterministically and enforce a scoped non-empty key."""
+    path = Path("database/migrations/0004_close_idempotency_key.sql")
+    current = path.read_text(encoding="utf-8")
+    legacy = """BEGIN;
+
+ALTER TABLE accounting_reporting.trial_balance_snapshot
+    ADD COLUMN close_idempotency_key text NOT NULL DEFAULT '';
+
+ALTER TABLE accounting_reporting.trial_balance_snapshot
+    ALTER COLUMN close_idempotency_key DROP DEFAULT;
+
+COMMIT;
+"""
+    repaired = """BEGIN;
+
+ALTER TABLE accounting_reporting.trial_balance_snapshot
+    ADD COLUMN close_idempotency_key text;
+
+UPDATE accounting_reporting.trial_balance_snapshot AS snapshot_record
+SET close_idempotency_key =
+    tenant_record.tenant_account_code || ':period_close:' || period_record.period_code
+FROM accounting_core.tenant_account AS tenant_record,
+     accounting_core.fiscal_period AS period_record
+WHERE tenant_record.tenant_account_id = snapshot_record.tenant_account_id
+  AND period_record.tenant_account_id = snapshot_record.tenant_account_id
+  AND period_record.fiscal_period_id = snapshot_record.fiscal_period_id
+  AND snapshot_record.close_idempotency_key IS NULL;
+
+ALTER TABLE accounting_reporting.trial_balance_snapshot
+    ALTER COLUMN close_idempotency_key SET NOT NULL;
+
+ALTER TABLE accounting_reporting.trial_balance_snapshot
+    ADD CONSTRAINT close_idempotency_nonempty_check
+    CHECK (btrim(close_idempotency_key) <> '');
+
+ALTER TABLE accounting_reporting.trial_balance_snapshot
+    ADD CONSTRAINT close_idempotency_scope_unique
+    UNIQUE (
+        tenant_account_id,
+        legal_entity_id,
+        accounting_book_id,
+        fiscal_period_id,
+        close_idempotency_key
+    );
+
+COMMIT;
+"""
+    if current == repaired:
+        return
+    if current != legacy:
+        raise SystemExit("close-idempotency migration anchor drifted")
+    path.write_text(repaired, encoding="utf-8")
+
+    tests_path = Path("tests/test_repository_contracts.py")
+    tests = tests_path.read_text(encoding="utf-8")
+    if "test_close_idempotency_migration_backfills_a_scoped_nonempty_key" not in tests:
+        marker = "    def _schema(self, name: str) -> dict[str, object]:\n"
+        regression = '''    def test_close_idempotency_migration_backfills_a_scoped_nonempty_key(self) -> None:
+        """Legacy close snapshots receive replayable keys before NOT NULL and UNIQUE gates."""
+        migration = (
+            ROOT / "database/migrations/0004_close_idempotency_key.sql"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("NOT NULL DEFAULT ''", migration)
+        self.assertIn("tenant_record.tenant_account_code || ':period_close:'", migration)
+        self.assertIn("period_record.period_code", migration)
+        self.assertIn("ALTER COLUMN close_idempotency_key SET NOT NULL", migration)
+        self.assertIn("CHECK (btrim(close_idempotency_key) <> '')", migration)
+        self.assertRegex(
+            migration,
+            re.compile(
+                r"UNIQUE\s*\(\s*tenant_account_id,\s*legal_entity_id,\s*"
+                r"accounting_book_id,\s*fiscal_period_id,\s*close_idempotency_key\s*\)",
+                re.MULTILINE,
+            ),
+        )
+
+'''
+        if marker not in tests:
+            raise SystemExit("close-idempotency regression insertion marker drifted")
+        tests_path.write_text(tests.replace(marker, regression + marker, 1), encoding="utf-8")
+
+
 def normalize_adr_repair_anchors() -> None:
     """Normalize already-reviewed ADR prose so deterministic repair scripts can replay."""
     path = Path("docs/adr/0003-append-only-journals.md")
@@ -184,6 +267,7 @@ def update_final_release_notes() -> None:
         "- Forced row-level security on authoritative tenant tables and documented a separate non-superuser, non-BYPASSRLS application-role boundary from migration and break-glass administration.\n",
         "- Rejected reversal commands whose accounting date precedes the original journal, preventing a correcting entry from appearing before the fact it reverses.\n",
         "- Preserved required adjusting-journal descriptions as durable header evidence, accepted only exact decimal-string monetary input, and fail-closed unknown period-close target states.\n",
+        "- Repaired close-idempotency migration upgrades by deterministically backfilling legacy snapshots before enforcing non-empty scoped replay keys.\n",
     )
     marker = "### Changed\n"
     if marker not in text:
@@ -196,6 +280,8 @@ def update_final_release_notes() -> None:
 
 def main() -> None:
     """Apply all causal repairs before full validation and publication."""
+    repair_close_idempotency_migration()
+
     ledger = _load("repair_pr2_ledger_invariants")
     ledger.replace_period_guard_migration()
     ledger.add_database_regression_tests()
