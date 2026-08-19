@@ -1,6 +1,7 @@
 name: Verify remaining PR 2 accounting invariants
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - agent/accounting-posting-foundation
