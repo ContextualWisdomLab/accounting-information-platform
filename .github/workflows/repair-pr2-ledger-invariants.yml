@@ -78,7 +78,21 @@ jobs:
           module.update_documentation()
           PY
           python /tmp/repair_pr2_command_idempotency.py
-          python /tmp/repair_pr2_followup_adjustments.py
+          python - <<'PY'
+          import importlib.util
+
+          spec = importlib.util.spec_from_file_location(
+              "repair_pr2_followup_adjustments",
+              "/tmp/repair_pr2_followup_adjustments.py",
+          )
+          if spec is None or spec.loader is None:
+              raise SystemExit("unable to load PR2 follow-up repair module")
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          module.retain_tenant_defense_on_reversal_cache()
+          module.harden_home_tax_projection()
+          module.normalize_trigger_and_test_cleanup()
+          PY
       - name: Install hash-locked quality dependencies
         run: >-
           python -m pip install
