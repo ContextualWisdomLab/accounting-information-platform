@@ -191,6 +191,12 @@ def normalize_postgres_regression_setup() -> None:
     """Grant the purpose-limited close role and keep direct-journal fixtures balanced."""
     path = Path("tests/test_postgres_posting.py")
     text = path.read_text(encoding="utf-8")
+    sql_import = "import psycopg\nfrom psycopg import sql\n"
+    if sql_import not in text:
+        import_anchor = "import psycopg\n"
+        if import_anchor not in text:
+            raise SystemExit("PostgreSQL test psycopg import anchor drifted")
+        text = text.replace(import_anchor, sql_import, 1)
     migration_anchor = "        apply_foundation_migration(DATABASE_URL, MIGRATION_PATH)\n"
     migration_replacement = migration_anchor + '''        with psycopg.connect(DATABASE_URL, autocommit=True) as connection:
             runtime_role = connection.execute("SELECT current_user").fetchone()[0]
