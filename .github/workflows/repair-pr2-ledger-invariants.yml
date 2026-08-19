@@ -79,6 +79,44 @@ jobs:
           PY
           python /tmp/repair_pr2_command_idempotency.py
           python - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/accounting_information_platform/accept.py")
+          text = path.read_text(encoding="utf-8")
+          premature = '''    reversal_idempotency_key = str(
+              payload.get("reversal_idempotency_key") or f"reversal:{journal_reference}"
+          ).strip()
+          if not reversal_idempotency_key:
+              raise AccountingValidationError(
+                  "reversal_idempotency_key must not be empty"
+              )
+          ledger = PostgresPostingLedger(database_url, tenant_reference)
+'''.replace("          ", "")
+          if premature not in text:
+              raise SystemExit("reversal idempotency resolution anchor drifted")
+          text = text.replace(
+              premature,
+              "    ledger = PostgresPostingLedger(database_url, tenant_reference)\n",
+              1,
+          )
+          anchor = '''        journal_reference = resolved_reference
+    policy = ledger.load_reversal_policy(journal_reference, reversal_date)
+'''
+          replacement = '''        journal_reference = resolved_reference
+    reversal_idempotency_key = str(
+        payload.get("reversal_idempotency_key") or f"reversal:{journal_reference}"
+    ).strip()
+    if not reversal_idempotency_key:
+        raise AccountingValidationError(
+            "reversal_idempotency_key must not be empty"
+        )
+    policy = ledger.load_reversal_policy(journal_reference, reversal_date)
+'''
+          if anchor not in text:
+              raise SystemExit("resolved reversal idempotency anchor drifted")
+          path.write_text(text.replace(anchor, replacement, 1), encoding="utf-8")
+          PY
+          python - <<'PY'
           import importlib.util
 
           spec = importlib.util.spec_from_file_location(
