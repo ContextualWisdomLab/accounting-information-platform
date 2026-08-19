@@ -37,10 +37,10 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - name: Check out exact PR head
+      - name: Check out exact triggering PR head
         uses: actions/checkout@631c942040754b6e095e929c1677c07e10ed4f87
         with:
-          ref: agent/accounting-posting-foundation
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Install pinned Python
