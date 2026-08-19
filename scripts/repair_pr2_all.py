@@ -130,6 +130,23 @@ def normalize_postgres_regression_setup() -> None:
     path.write_text(text[:start] + helper + text[end:], encoding="utf-8")
 
 
+def update_final_release_notes() -> None:
+    """Record the database-owned accounting security and immutability boundary."""
+    path = Path("CHANGELOG.md")
+    text = path.read_text(encoding="utf-8")
+    entries = (
+        "- Enforced posted-ledger immutability in PostgreSQL itself: direct UPDATE or DELETE of journal headers, lines, source references, and reversal links now fails closed; corrections remain reversal/reposting operations.\n",
+        "- Forced row-level security on authoritative tenant tables and documented a separate non-superuser, non-BYPASSRLS application-role boundary from migration and break-glass administration.\n",
+    )
+    marker = "### Changed\n"
+    if marker not in text:
+        raise SystemExit("CHANGELOG changed-section anchor drifted")
+    for entry in reversed(entries):
+        if entry not in text:
+            text = text.replace(marker, marker + "\n" + entry, 1)
+    path.write_text(text, encoding="utf-8")
+
+
 def main() -> None:
     """Apply all causal repairs before full validation and publication."""
     ledger = _load("repair_pr2_ledger_invariants")
@@ -151,6 +168,7 @@ def main() -> None:
     _load("repair_pr2_database_immutability").main()
     _load("repair_pr2_home_tax_replay_outcome").main()
     _load("repair_pr2_force_rls").main()
+    update_final_release_notes()
 
 
 if __name__ == "__main__":
