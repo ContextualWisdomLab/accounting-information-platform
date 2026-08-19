@@ -32,19 +32,21 @@ def retain_tenant_defense_on_reversal_cache() -> None:
     """Do not return a foreign-tenant receipt from a corrupted cache row."""
     path = "src/accounting_information_platform/core.py"
     text = read(path)
-    anchor = '''        prior_key, prior_original, prior_hash, prior_receipt = prior
-        if (
-            prior_key != reversal_idempotency_key
-'''
-    replacement = '''        prior_key, prior_original, prior_hash, prior_receipt = prior
+    desired = '''        prior_key, prior_original, prior_hash, prior_receipt = prior
         if prior_receipt.tenant_reference != tenant_reference:
             return None
         if (
             prior_key != reversal_idempotency_key
 '''
+    if desired in text:
+        return
+    anchor = '''        prior_key, prior_original, prior_hash, prior_receipt = prior
+        if (
+            prior_key != reversal_idempotency_key
+'''
     if anchor not in text:
         raise SystemExit("reversal cache tenant-defense anchor drifted")
-    write(path, text.replace(anchor, replacement, 1))
+    write(path, text.replace(anchor, desired, 1))
 
 
 def harden_home_tax_projection() -> None:
