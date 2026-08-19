@@ -106,8 +106,8 @@ def normalize_trigger_and_test_cleanup() -> None:
         command_key = f"{self.policy.tenant_reference}:home_tax_submission:august:v1"
 '''
     replacement = '''        server = self._start_http_server()
-        self.addCleanup(server.shutdown)
         self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
         command_key = f"{self.policy.tenant_reference}:home_tax_submission:august:v1"
 '''
     if anchor not in tests:
