@@ -83,15 +83,16 @@ jobs:
 
           path = Path("src/accounting_information_platform/accept.py")
           text = path.read_text(encoding="utf-8")
-          premature = '''    reversal_idempotency_key = str(
-              payload.get("reversal_idempotency_key") or f"reversal:{journal_reference}"
-          ).strip()
-          if not reversal_idempotency_key:
-              raise AccountingValidationError(
-                  "reversal_idempotency_key must not be empty"
-              )
-          ledger = PostgresPostingLedger(database_url, tenant_reference)
-'''.replace("          ", "")
+          premature = (
+              "    reversal_idempotency_key = str(\n"
+              "        payload.get(\"reversal_idempotency_key\") or f\"reversal:{journal_reference}\"\n"
+              "    ).strip()\n"
+              "    if not reversal_idempotency_key:\n"
+              "        raise AccountingValidationError(\n"
+              "            \"reversal_idempotency_key must not be empty\"\n"
+              "        )\n"
+              "    ledger = PostgresPostingLedger(database_url, tenant_reference)\n"
+          )
           if premature not in text:
               raise SystemExit("reversal idempotency resolution anchor drifted")
           text = text.replace(
@@ -99,19 +100,21 @@ jobs:
               "    ledger = PostgresPostingLedger(database_url, tenant_reference)\n",
               1,
           )
-          anchor = '''        journal_reference = resolved_reference
-    policy = ledger.load_reversal_policy(journal_reference, reversal_date)
-'''
-          replacement = '''        journal_reference = resolved_reference
-    reversal_idempotency_key = str(
-        payload.get("reversal_idempotency_key") or f"reversal:{journal_reference}"
-    ).strip()
-    if not reversal_idempotency_key:
-        raise AccountingValidationError(
-            "reversal_idempotency_key must not be empty"
-        )
-    policy = ledger.load_reversal_policy(journal_reference, reversal_date)
-'''
+          anchor = (
+              "        journal_reference = resolved_reference\n"
+              "    policy = ledger.load_reversal_policy(journal_reference, reversal_date)\n"
+          )
+          replacement = (
+              "        journal_reference = resolved_reference\n"
+              "    reversal_idempotency_key = str(\n"
+              "        payload.get(\"reversal_idempotency_key\") or f\"reversal:{journal_reference}\"\n"
+              "    ).strip()\n"
+              "    if not reversal_idempotency_key:\n"
+              "        raise AccountingValidationError(\n"
+              "            \"reversal_idempotency_key must not be empty\"\n"
+              "        )\n"
+              "    policy = ledger.load_reversal_policy(journal_reference, reversal_date)\n"
+          )
           if anchor not in text:
               raise SystemExit("resolved reversal idempotency anchor drifted")
           path.write_text(text.replace(anchor, replacement, 1), encoding="utf-8")
