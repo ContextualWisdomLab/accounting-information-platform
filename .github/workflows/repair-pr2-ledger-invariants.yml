@@ -6,7 +6,7 @@ on:
       - agent/accounting-posting-foundation
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: verify-pr2-ledger-invariants-current-head
@@ -15,6 +15,8 @@ concurrency:
 jobs:
   verify-and-publish:
     if: github.actor != 'github-actions[bot]'
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
