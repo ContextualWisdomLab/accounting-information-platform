@@ -18,6 +18,51 @@ def _load(name: str) -> ModuleType:
     return module
 
 
+def normalize_adr_repair_anchors() -> None:
+    """Normalize already-reviewed ADR prose so deterministic repair scripts can replay."""
+    path = Path("docs/adr/0003-append-only-journals.md")
+    text = path.read_text(encoding="utf-8")
+
+    legacy_reversal = (
+        "If the occupant is the existing reversing journal for that original, "
+        "the same reversal request still replays."
+    )
+    if legacy_reversal not in text:
+        reviewed_variants = (
+            (
+                "A reversal replay is valid only when the tenant, reversal command "
+                "idempotency key, original journal reference, and immutable "
+                "reversal-command payload hash all match the stored reversal command; "
+                "any mismatch fails closed."
+            ),
+            (
+                "If the occupant is the existing reversing journal for that original, "
+                "the request replays only when tenant_reference, reversal idempotency "
+                "key, original journal_reference, and immutable canonical source-payload "
+                "hash all match; any mismatch fails closed."
+            ),
+        )
+        for reviewed in reviewed_variants:
+            if reviewed in text:
+                text = text.replace(reviewed, legacy_reversal, 1)
+                break
+        else:
+            raise SystemExit("ADR reversal replay normalization anchor drifted")
+
+    legacy_gate = """Checked-in PostgreSQL migrations cannot `UPDATE` or `DELETE` `general_journal` or `journal_entry_line`. `scripts/validate_repository.py` rejects those statements so later schema work cannot rewrite posted journals and still pass CI. `UPDATE` or `DELETE` of other tables remains valid. This gate does not add deferred balance triggers or `FORCE ROW LEVEL SECURITY` to the foundation migration.
+
+`0005_closed_period_guard.sql` adds `guard_period_insert` / `closed_period_guard` so an `INSERT` into `general_journal` for a `soft_closed` or `hard_closed` period fails at the database. Ordinary privileged SQL cannot land a later journal after close. AIS sets a transaction-local `accounting_core.journal_write_role` (`period_closing`, `adjusting`, or `reversal`) before the closer, adjusting, or reversal insert; that role is not a Billing `journal_type`. Hard-closed periods reject every insert, including reversal-shaped rows. The AIS closer still posts the period-closing journal first, then flips `period_status_code`.
+"""
+    if legacy_gate not in text:
+        start = text.find("Checked-in PostgreSQL migrations cannot")
+        end = text.find("\n\n## Consequences", start)
+        if start < 0 or end < 0:
+            raise SystemExit("ADR database-invariant normalization anchor drifted")
+        text = text[:start] + legacy_gate.rstrip() + text[end:]
+
+    path.write_text(text, encoding="utf-8")
+
+
 def fix_reversal_key_after_reference_resolution() -> None:
     """Derive the default reversal key only after resolving the original reference."""
     path = Path("src/accounting_information_platform/accept.py")
@@ -154,6 +199,7 @@ def main() -> None:
     ledger = _load("repair_pr2_ledger_invariants")
     ledger.replace_period_guard_migration()
     ledger.add_database_regression_tests()
+    normalize_adr_repair_anchors()
     ledger.update_documentation()
 
     command = _load("repair_pr2_command_idempotency")
