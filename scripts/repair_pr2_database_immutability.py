@@ -89,8 +89,7 @@ def add_database_immutability_regressions() -> None:
                     (self.tenant_id, receipt.journal_reference),
                 )
             connection.rollback()
-        journal = self.ledger.load_journal(receipt.journal_reference)
-        self.assertEqual(journal.journal_reference, receipt.journal_reference)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), 1)
 
     def test_database_rejects_posted_journal_line_delete(self) -> None:
         """A privileged direct DELETE cannot remove a posted journal line."""
@@ -119,8 +118,7 @@ def add_database_immutability_regressions() -> None:
                     (self.tenant_id, self.tenant_id, receipt.journal_reference),
                 )
             connection.rollback()
-        journal = self.ledger.load_journal(receipt.journal_reference)
-        self.assertEqual(len(journal.lines), 2)
+        self.assertEqual(self._count_table("accounting_core.journal_entry_line"), 2)
 
 '''
     if marker not in tests:
