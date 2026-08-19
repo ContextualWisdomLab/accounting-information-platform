@@ -167,6 +167,23 @@ def strengthen_in_memory_regressions() -> None:
             raise SystemExit("cross-original reversal-key regression anchor drifted")
         tests = tests.replace(cross_original_anchor, cross_original_replacement, 1)
 
+    delete_anchor = '''        del self.ledger._reversal_receipts[
+            self.ledger._tenant_cache_key(
+                self.policy.tenant_reference, first.journal_reference
+            )
+        ]
+'''
+    delete_replacement = '''        del self.ledger._reversal_receipts[
+            self.ledger._tenant_cache_key(
+                self.policy.tenant_reference, command_key
+            )
+        ]
+'''
+    if delete_replacement not in tests:
+        if delete_anchor not in tests:
+            raise SystemExit("reversal command cache-delete anchor drifted")
+        tests = tests.replace(delete_anchor, delete_replacement, 1)
+
     marker = "    def test_same_proposal_id_posts_independently_per_tenant(self) -> None:\n"
     cross_family_test = '''    def test_post_and_reversal_share_one_tenant_idempotency_namespace(self) -> None:
         """A key used by one command family cannot be reused by the other."""
