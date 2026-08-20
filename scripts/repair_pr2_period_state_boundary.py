@@ -61,7 +61,11 @@ def add_runtime_regression() -> None:
                 [(self.tenant_id,)],
             )
 '''
-    replacement = anchor + '''            fiscal_calendar_id = connection.execute(
+    cast_anchor = anchor.replace(
+        '"SELECT tenant_account_id FROM accounting_core.tenant_account"',
+        '"SELECT tenant_account_id::text FROM accounting_core.tenant_account"',
+    )
+    replacement_suffix = '''            fiscal_calendar_id = connection.execute(
                 """
                 SELECT fiscal_calendar_id
                   FROM accounting_core.fiscal_calendar
@@ -94,9 +98,10 @@ def add_runtime_regression() -> None:
                 )
             connection.rollback()
 '''
-    if anchor not in text:
+    if anchor not in text and cast_anchor not in text:
         raise SystemExit("runtime period-insert regression anchor drifted")
-    _write(path, text.replace(anchor, replacement, 1))
+    selected_anchor = anchor if anchor in text else cast_anchor
+    _write(path, text.replace(selected_anchor, selected_anchor + replacement_suffix, 1))
 
 
 def update_docs() -> None:
