@@ -6,6 +6,8 @@ import re
 import unittest
 from pathlib import Path
 
+from accounting_information_platform import AccountingValidationError, accept_home_tax_submission
+
 
 ROOT = Path(__file__).resolve().parents[1]
 HOME_TAX_MIGRATION = ROOT / "database/migrations/0003_home_tax_submission.sql"
@@ -50,6 +52,19 @@ class HomeTaxIdempotencyContractTests(unittest.TestCase):
             "submission_idempotency_key=submission_idempotency_key",
             command,
         )
+
+    def test_home_tax_command_rejects_whitespace_only_idempotency_key_before_scope_work(self) -> None:
+        """Whitespace is not a command identity and cannot produce a rejection-shaped receipt."""
+        tenant_reference = "urn:cwl:tenant_home_tax_contract"
+        with self.assertRaisesRegex(AccountingValidationError, "idempotency_key"):
+            accept_home_tax_submission(
+                {
+                    "tenant_reference": tenant_reference,
+                    "idempotency_key": "   ",
+                },
+                "postgresql://unused.example.invalid/accounting",
+                tenant_reference,
+            )
 
     def test_home_tax_persistence_uses_key_and_payload_hash_for_replay(self) -> None:
         """Same key+payload replays; the same key with changed evidence must fail closed."""
