@@ -180,6 +180,46 @@ CREATE TRIGGER journal_reversal_temporal_guard
     FOR EACH ROW
     EXECUTE FUNCTION accounting_core.guard_reversal_temporal_order();
 
+CREATE OR REPLACE FUNCTION accounting_core.guard_reversal_lineage_insert()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+          FROM accounting_integration.posting_receipt
+         WHERE posting_receipt.tenant_account_id = NEW.tenant_account_id
+           AND posting_receipt.general_journal_id = NEW.original_journal_id
+    )
+    THEN
+        RAISE EXCEPTION
+            'reversal lineage requires a finalized original journal (ledger_immutable)'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+          FROM accounting_integration.posting_receipt
+         WHERE posting_receipt.tenant_account_id = NEW.tenant_account_id
+           AND posting_receipt.general_journal_id = NEW.reversal_journal_id
+    )
+    THEN
+        RAISE EXCEPTION
+            'a finalized journal cannot later acquire reversal lineage (ledger_immutable)'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS journal_reversal_finalization_guard
+    ON accounting_core.journal_reversal;
+CREATE TRIGGER journal_reversal_finalization_guard
+    BEFORE INSERT ON accounting_core.journal_reversal
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.guard_reversal_lineage_insert();
+
 CREATE OR REPLACE FUNCTION accounting_core.reject_finalized_fact_mutation()
 RETURNS trigger
 LANGUAGE plpgsql
