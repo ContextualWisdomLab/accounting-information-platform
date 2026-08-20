@@ -60,6 +60,18 @@ jobs:
           --only-binary=:all:
           --require-hashes
           -r requirements-quality.txt
+      - name: Prove durable reversal command defect is RED
+        env:
+          PYTHONPATH: src:.
+        shell: bash
+        run: |
+          set +e
+          output="$(python -m unittest discover -s tests -p 'test_postgres_reversal_idempotency.py' -v 2>&1)"
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          test "$status" -ne 0
+          grep -F "unexpected keyword argument 'reversal_idempotency_key'" <<<"$output"
       - name: Apply narrow foundation repairs
         run: |
           python scripts/normalize_reversal_command_idempotency.py
@@ -74,6 +86,7 @@ jobs:
           tests.test_reversal_command_idempotency_postgres
           tests.test_reversal_temporal_database_guard
           tests.test_home_tax_incomplete_register_period_end
+          tests.test_postgres_reversal_idempotency
       - name: Run full behavior suite
         env:
           PYTHONPATH: src:.
