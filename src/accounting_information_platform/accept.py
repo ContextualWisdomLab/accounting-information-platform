@@ -401,7 +401,7 @@ def accept_home_tax_submission(
             "home tax submission idempotency_key is required. "
             "Supply a tenant-scoped command key, then retry the home-tax-submission."
         )
-    if not submission_idempotency_key:
+    if not submission_idempotency_key.strip():
         raise AccountingValidationError(
             "home tax submission idempotency_key is required. "
             "Supply a tenant-scoped command key, then retry the home-tax-submission."
