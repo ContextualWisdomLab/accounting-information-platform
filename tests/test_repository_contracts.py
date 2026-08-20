@@ -25,6 +25,7 @@ from scripts.validate_repository import (
     validate_quality_requirements,
     validate_repository,
     validate_sql_object_names,
+    _iter_contract_files,
 )
 
 
@@ -52,6 +53,18 @@ class RepositoryContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             errors = validate_repository(Path(temporary_directory))
         self.assertIn("missing required file: README.md", errors)
+
+    def test_generated_directories_are_not_treated_as_contracts(self) -> None:
+        """Local virtualenvs, indexes, and build output cannot fail source validation."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            (root / "tracked.md").write_text("TODO", encoding="utf-8")
+            for directory in (".venv", ".codegraph", "build", "dist"):
+                generated = root / directory
+                generated.mkdir()
+                (generated / "generated.md").write_text("TODO", encoding="utf-8")
+
+            self.assertEqual(_iter_contract_files(root), (root / "tracked.md",))
 
     def test_mutable_action_reference_is_rejected(self) -> None:
         """Mutable action tags cannot represent exact-head evidence."""

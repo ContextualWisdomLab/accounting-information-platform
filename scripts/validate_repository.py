@@ -45,6 +45,7 @@ REQUIRED_FILES = (
     "docs/SECURITY.md",
     "docs/TEST_STRATEGY.md",
     "docs/OPERABILITY.md",
+    "docs/product-technical-gap-baseline.md",
     "docs/adr/0001-accounting-authority.md",
     "docs/adr/0002-proposal-receipt-boundary.md",
     "docs/adr/0003-append-only-journals.md",
@@ -349,14 +350,26 @@ def main(arguments: Sequence[str] | None = None) -> int:
 
 
 def _iter_contract_files(root: Path) -> tuple[Path, ...]:
-    """Return checked-in text contracts while excluding tests and cache state."""
+    """Return checked-in text contracts while excluding tests and generated state."""
     included_suffixes = {".json", ".md", ".py", ".sql", ".toml", ".yaml", ".yml"}
+    excluded_parts = {
+        ".git",
+        ".codegraph",
+        ".venv",
+        "__pycache__",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        "build",
+        "dist",
+        "tests",
+    }
     files: list[Path] = []
     for file_path in root.rglob("*"):
         relative_parts = file_path.relative_to(root).parts
         if not file_path.is_file() or file_path.suffix not in included_suffixes:
             continue
-        if any(part in {".git", "__pycache__", "tests"} for part in relative_parts):
+        if any(part in excluded_parts for part in relative_parts):
             continue
         files.append(file_path)
     return tuple(sorted(files))

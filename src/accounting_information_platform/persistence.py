@@ -1782,10 +1782,16 @@ class PostgresPostingLedger:
         legal_entity_reference: str,
         accounting_book_reference: str,
         period_code: str,
+        submission_idempotency_key: str,
         register_document: dict[str, object],
         rejection_reason_code: str,
     ) -> dict[str, object]:
         """Persist one rejected HomeTax receipt for a resolved entity, book, and period."""
+        if not submission_idempotency_key:
+            raise AccountingValidationError(
+                "submission_idempotency_key is required. "
+                "Supply the original HomeTax command key, then retry the home-tax-submission."
+            )
         register_payload_hash = "sha256:" + hashlib.sha256(
             json.dumps(
                 register_document, separators=(",", ":"), sort_keys=True, default=str
@@ -1822,25 +1828,69 @@ class PostgresPostingLedger:
                     legal_entity_id,
                     accounting_book_id,
                     fiscal_period_id,
+                    submission_idempotency_key,
                     submission_status_code,
                     rejection_reason_code,
                     as_of_date,
                     closing_amount,
                     register_payload_hash
-                ) VALUES (%s, %s, %s, %s, 'rejected', %s, %s, %s, %s)
-                RETURNING home_tax_submission_id
+                ) VALUES (%s, %s, %s, %s, %s, 'rejected', %s, %s, %s, %s)
+                ON CONFLICT (tenant_account_id, submission_idempotency_key) DO NOTHING
+                RETURNING home_tax_submission_id,
+                          submission_status_code,
+                          rejection_reason_code,
+                          as_of_date,
+                          closing_amount,
+                          register_payload_hash,
+                          legal_entity_id,
+                          accounting_book_id,
+                          fiscal_period_id
                 """,
                 (
                     tenant_id,
                     legal_entity_id,
                     book_id,
                     period_id,
+                    submission_idempotency_key,
                     rejection_reason_code,
                     as_of_date,
                     closing_amount,
                     register_payload_hash,
                 ),
             ).fetchone()
+            if row is None:
+                row = connection.execute(
+                    """
+                    SELECT home_tax_submission_id,
+                           submission_status_code,
+                           rejection_reason_code,
+                           as_of_date,
+                           closing_amount,
+                           register_payload_hash,
+                           legal_entity_id,
+                           accounting_book_id,
+                           fiscal_period_id
+                    FROM accounting_integration.home_tax_submission
+                    WHERE tenant_account_id = %s
+                      AND submission_idempotency_key = %s
+                    """,
+                    (tenant_id, submission_idempotency_key),
+                ).fetchone()
+                if row is None:
+                    raise AccountingValidationError(
+                        "HomeTax command replay could not find its existing receipt. "
+                        "Retry the command with the same idempotency key."
+                    )
+                if (
+                    row[5] != register_payload_hash
+                    or row[6] != legal_entity_id
+                    or row[7] != book_id
+                    or row[8] != period_id
+                ):
+                    raise IdempotencyConflictError(
+                        "HomeTax idempotency key was already used with different evidence or scope. "
+                        "Use a new command key for the changed submission."
+                    )
         return _home_tax_submission_document(
             home_tax_submission_id=str(row[0]),
             tenant_reference=self._tenant_reference,
@@ -1848,7 +1898,8 @@ class PostgresPostingLedger:
             book_reference=accounting_book_reference,
             period_code=period_code,
             vat_period_register=_home_tax_register_view(register_document),
-            rejection_reason_code=rejection_reason_code,
+            rejection_reason_code=str(row[2]),
+            submission_status_code=str(row[1]),
         )
 
     def load_home_tax_submissions(

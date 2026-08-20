@@ -30,12 +30,17 @@ What is present:
 - `PostgresPostingLedger` and `apply_foundation_migration`, which persist the
   same posting, replay, reversal, and trial-balance invariants through that
   migration in one commit boundary;
+- a stdlib HTTP surface for proposal acceptance, posting receipts, journals,
+  reversals, period close/open, trial balances, financial statements, ledgers,
+  aging, VAT/HomeTax rejection receipts, outbox, audit, and catalog reads;
 - product, architecture, security, and standards documents listed below.
 
-What is not present: an HTTP or event API, foreign exchange, revenue
-schedules, bank ingestion, financial-statement production, consolidation, or
-tax calculation. The in-memory `PostingLedger` remains the reference oracle
-that the PostgreSQL adapter must match.
+What is not present: an automatically started listener, gRPC or live event
+transport, foreign exchange, revenue schedules, bank-statement ingestion and
+reconciliation, consolidation, tax calculation, or live HomeTax/NTS
+transmission. The outbox is durable but this tree does not publish it to a
+bus. The in-memory `PostingLedger` remains the reference oracle that the
+PostgreSQL adapter must match.
 
 The initial milestone does not claim production compliance with a
 jurisdiction's accounting, tax, or statutory reporting rules. It establishes
@@ -107,7 +112,9 @@ python3 -m pip install --no-deps --no-build-isolation -e .
 python3 -m pip wheel --no-deps --no-build-isolation -w dist .
 ```
 
-These commands do not open an application HTTP port and do not contact Naruon.
+These commands do not automatically open an application HTTP port and do not
+contact Naruon. To embed the stdlib HTTP surface, call the exported server
+factory/runner and provide the tenant-bound host boundary explicitly.
 `unittest` discovery also runs `tests/test_postgres_posting.py`, which needs a
 reachable PostgreSQL 18 instance and `ACCOUNTING_DATABASE_URL` (CI uses
 `postgresql://postgres:postgres@127.0.0.1:5432/accounting_test` and applies
@@ -122,9 +129,11 @@ python3 -c "import accounting_information_platform as aip; assert aip.PostingLed
 
 ## How a sibling calls this platform
 
-No HTTP, gRPC, or live event endpoint is published in this foundation. When a
+The stdlib HTTP surface is available for a host to mount; no listener starts
+automatically, and no gRPC or live event transport is published. When a
 sibling—including Naruon as composition hub—integrates, it uses the versioned
-file contracts in `schemas/` rather than a private table or undeclared payload.
+file contracts in `schemas/` and the documented HTTP/in-process boundary rather
+than a private table or undeclared payload.
 
 | Contract | Authority | Path |
 |---|---|---|
@@ -154,12 +163,14 @@ Call rules that already exist in those contracts and the reference core:
    journals, choose final chart-account identifiers, or require this process to
    start inside Naruon.
 
-Until an HTTP or CloudEvents adapter exists, the in-process calls are
-`PostingLedger.post(proposal, policy)` (reference core) and
+The in-process calls are `PostingLedger.post(proposal, policy)` (reference
+core) and
 `PostgresPostingLedger.post(proposal, policy)` (durable). Both also expose
 `reverse(...)` and `trial_balance(...)`. A transactional outbox row is written
 in the PostgreSQL posting transaction; nothing in this tree publishes those
-events onto a live bus.
+events onto a live bus. The same boundary exposes `POST /journals` for
+AIS-owned adjustments and `GET /financial-statements`, `GET /trial-balances`,
+`GET /account-ledgers`, and the aging/reporting routes for buyer-facing reads.
 
 ## Standards already cited
 
@@ -196,6 +207,7 @@ How those authorities map to current product decisions is in
 - [Technical requirements](docs/TRD.md)
 - [Accounting and billing boundary](docs/ACCOUNTING_BOUNDARY.md)
 - [Architecture](docs/ARCHITECTURE.md)
+- [Product and technical gap baseline](docs/product-technical-gap-baseline.md)
 - [Data model](docs/DATA_MODEL.md)
 - [Security](docs/SECURITY.md)
 - [Operability](docs/OPERABILITY.md)

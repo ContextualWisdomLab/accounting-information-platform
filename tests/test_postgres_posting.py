@@ -1164,8 +1164,19 @@ class PostgresPostingTests(unittest.TestCase):
     def test_hard_close_rejects_unbalanced_trial_balance(self) -> None:
         """Close fails closed when the binder trial balance does not balance."""
         self.ledger.post(self._two_line_proposal(), self.policy)
-        self._insert_unbalanced_receivable_debit()
-        with self.assertRaisesRegex(AccountingValidationError, "does not balance"):
+        unbalanced_package = {
+            "trial_balance": {
+                "lines": [
+                    {"debit_amount": "1", "credit_amount": "0"},
+                    {"debit_amount": "0", "credit_amount": "0"},
+                ]
+            }
+        }
+        with mock.patch.object(
+            self.ledger,
+            "_assemble_period_close_package",
+            return_value=unbalanced_package,
+        ), self.assertRaisesRegex(AccountingValidationError, "does not balance"):
             self._close_period(idempotency_key="period-close-unbalanced")
         self.assertEqual(self._period_status("2026-08"), "open")
         self.assertEqual(self._count_closing_journals(), 0)
@@ -3833,6 +3844,94 @@ class PostgresPostingTests(unittest.TestCase):
         )
         self.assertEqual(vat_status, 200)
         server.shutdown()
+
+    def test_home_tax_submission_replays_and_conflicts_on_changed_evidence(self) -> None:
+        """A command key returns one receipt and rejects changed register evidence."""
+        with self.assertRaisesRegex(AccountingValidationError, "submission_idempotency_key"):
+            self.ledger.persist_home_tax_submission(
+                legal_entity_reference=self.policy.legal_entity_reference,
+                accounting_book_reference=self.policy.accounting_book_reference,
+                period_code="2026-08",
+                submission_idempotency_key="",
+                register_document={},
+                rejection_reason_code="register_unavailable",
+            )
+        register = self.ledger.load_vat_period_register(
+            self.policy.legal_entity_reference,
+            self.policy.accounting_book_reference,
+            "2026-08",
+        )
+        command_key = f"urn:cwl:home_tax_submission:test:{uuid.uuid4().hex}:v1"
+        first = self.ledger.persist_home_tax_submission(
+            legal_entity_reference=self.policy.legal_entity_reference,
+            accounting_book_reference=self.policy.accounting_book_reference,
+            period_code="2026-08",
+            submission_idempotency_key=command_key,
+            register_document=register,
+            rejection_reason_code="hometax_transport_unavailable",
+        )
+        replay = self.ledger.persist_home_tax_submission(
+            legal_entity_reference=self.policy.legal_entity_reference,
+            accounting_book_reference=self.policy.accounting_book_reference,
+            period_code="2026-08",
+            submission_idempotency_key=command_key,
+            register_document=register,
+            rejection_reason_code="register_unavailable",
+        )
+        changed_register = dict(register)
+        changed_register["closing_amount"] = "2501"
+        with self.assertRaises(IdempotencyConflictError):
+            self.ledger.persist_home_tax_submission(
+                legal_entity_reference=self.policy.legal_entity_reference,
+                accounting_book_reference=self.policy.accounting_book_reference,
+                period_code="2026-08",
+                submission_idempotency_key=command_key,
+                register_document=changed_register,
+                rejection_reason_code="hometax_transport_unavailable",
+            )
+
+        self.assertEqual(first, replay)
+        self.assertEqual(first["rejection_reason_code"], "hometax_transport_unavailable")
+        self.assertEqual(
+            self._count_table("accounting_integration.home_tax_submission"),
+            1,
+        )
+
+    def test_home_tax_replay_without_existing_row_fails_closed(self) -> None:
+        """A conflict that loses its existing row cannot become a new receipt."""
+        connection = mock.MagicMock()
+        empty_cursor = mock.MagicMock()
+        empty_cursor.fetchone.return_value = None
+        connection.execute.side_effect = [empty_cursor, empty_cursor]
+        session = mock.MagicMock()
+        session.__enter__.return_value = connection
+        session.__exit__.return_value = False
+        tenant_id = uuid.uuid4()
+        ledger = PostgresPostingLedger("postgresql://unused", self.policy.tenant_reference)
+        with (
+            mock.patch.object(ledger, "_session", return_value=session),
+            mock.patch.object(ledger, "_require_tenant", return_value=tenant_id),
+            mock.patch.object(ledger, "_require_legal_entity", return_value=uuid.uuid4()),
+            mock.patch.object(
+                ledger,
+                "_require_book_for_close",
+                return_value=(uuid.uuid4(), "KRW"),
+            ),
+            mock.patch.object(
+                ledger,
+                "_require_fiscal_period",
+                return_value=(uuid.uuid4(), "open", date(2026, 8, 31)),
+            ),
+            self.assertRaisesRegex(AccountingValidationError, "could not find"),
+        ):
+            ledger.persist_home_tax_submission(
+                legal_entity_reference=self.policy.legal_entity_reference,
+                accounting_book_reference=self.policy.accounting_book_reference,
+                period_code="2026-08",
+                submission_idempotency_key="urn:cwl:home_tax_submission:missing:v1",
+                register_document={"as_of_date": "2026-08-31", "closing_amount": "0"},
+                rejection_reason_code="register_unavailable",
+            )
 
     def test_http_rejects_home_tax_submission_when_register_document_is_incomplete(self) -> None:
         """A loaded object missing always-present register keys is 422 register_unavailable."""
@@ -11801,7 +11900,7 @@ class PostgresPostingTests(unittest.TestCase):
                     "sha256:" + "c" * 64,
                 ),
             ).fetchone()[0]
-            connection.execute(
+            journal_id = connection.execute(
                 """
                 INSERT INTO accounting_core.general_journal (
                     tenant_account_id, legal_entity_id, accounting_book_id, fiscal_period_id,
@@ -11813,6 +11912,7 @@ class PostgresPostingTests(unittest.TestCase):
                     %s, %s, %s, %s, %s, 'posted', 'KRW', 'KRW', %s, %s, %s, 'ifrs-v1',
                     'billing-issued-v1'
                 )
+                RETURNING general_journal_id
                 """,
                 (
                     self.tenant_id,
@@ -11823,6 +11923,36 @@ class PostgresPostingTests(unittest.TestCase):
                     date(2026, 8, 31),
                     date(2026, 8, 31),
                     proposal_record_id,
+                ),
+            ).fetchone()[0]
+            chart_accounts = dict(
+                connection.execute(
+                    """
+                    SELECT chart_account_code, chart_account_id
+                    FROM accounting_core.chart_account
+                    WHERE tenant_account_id = %s
+                      AND chart_account_code IN ('110100', '410100')
+                      AND valid_to IS NULL
+                    """,
+                    (self.tenant_id,),
+                ).fetchall()
+            )
+            connection.execute(
+                """
+                INSERT INTO accounting_core.journal_entry_line (
+                    tenant_account_id, general_journal_id, line_number,
+                    chart_account_id, account_role_code, debit_amount, credit_amount
+                )
+                VALUES (%s, %s, 1, %s, 'accounts_receivable', 1, 0),
+                       (%s, %s, 2, %s, 'usage_revenue', 0, 1)
+                """,
+                (
+                    self.tenant_id,
+                    journal_id,
+                    chart_accounts["110100"],
+                    self.tenant_id,
+                    journal_id,
+                    chart_accounts["410100"],
                 ),
             )
             connection.commit()
@@ -11836,48 +11966,6 @@ class PostgresPostingTests(unittest.TestCase):
         }
         values.update(overrides)
         return self.ledger.close_fiscal_period(**values)
-
-    def _insert_unbalanced_receivable_debit(self) -> None:
-        with psycopg.connect(DATABASE_URL) as connection:
-            connection.execute(
-                "SELECT set_config('app.tenant_account_id', %s, false)",
-                (self.tenant_id,),
-            )
-            journal_id, line_number = connection.execute(
-                """
-                SELECT general_journal.general_journal_id,
-                       COALESCE(MAX(journal_entry_line.line_number), 0) + 1
-                FROM accounting_core.general_journal
-                LEFT JOIN accounting_core.journal_entry_line
-                  ON journal_entry_line.tenant_account_id = general_journal.tenant_account_id
-                 AND journal_entry_line.general_journal_id = general_journal.general_journal_id
-                WHERE general_journal.tenant_account_id = %s
-                GROUP BY general_journal.general_journal_id
-                LIMIT 1
-                """,
-                (self.tenant_id,),
-            ).fetchone()
-            chart_account_id = connection.execute(
-                """
-                SELECT chart_account_id
-                FROM accounting_core.chart_account
-                WHERE tenant_account_id = %s
-                  AND chart_account_code = '110100'
-                  AND valid_to IS NULL
-                """,
-                (self.tenant_id,),
-            ).fetchone()[0]
-            connection.execute(
-                """
-                INSERT INTO accounting_core.journal_entry_line (
-                    tenant_account_id, general_journal_id, line_number,
-                    chart_account_id, account_role_code, debit_amount, credit_amount
-                )
-                VALUES (%s, %s, %s, %s, 'accounts_receivable', 1, 0)
-                """,
-                (self.tenant_id, journal_id, line_number, chart_account_id),
-            )
-            connection.commit()
 
     def _policy_with(self, **overrides: object) -> AccountingPolicy:
         values: dict[str, object] = {
@@ -13199,6 +13287,7 @@ class PostgresPostingTests(unittest.TestCase):
         legal_entity_reference: str | None = None,
         book_reference: str | None = None,
         fiscal_period_reference: str | None = None,
+        idempotency_key: str | None = None,
         tenant_header: str | None = "",
     ) -> tuple[int, dict[str, object]]:
         payload = {
@@ -13222,6 +13311,7 @@ class PostgresPostingTests(unittest.TestCase):
                 if fiscal_period_reference is None
                 else fiscal_period_reference
             ),
+            "idempotency_key": idempotency_key or f"urn:cwl:home_tax_submission:test:{uuid.uuid4().hex}:v1",
         }
         return self._http_json(
             "POST",

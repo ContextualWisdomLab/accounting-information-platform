@@ -395,6 +395,17 @@ def accept_home_tax_submission(
             "home tax submission tenant_reference does not match the bound tenant. "
             "Call accept_home_tax_submission with that tenant_reference, then retry."
         )
+    submission_idempotency_key = payload.get("idempotency_key")
+    if not isinstance(submission_idempotency_key, str):
+        raise AccountingValidationError(
+            "home tax submission idempotency_key is required. "
+            "Supply a tenant-scoped command key, then retry the home-tax-submission."
+        )
+    if not submission_idempotency_key:
+        raise AccountingValidationError(
+            "home tax submission idempotency_key is required. "
+            "Supply a tenant-scoped command key, then retry the home-tax-submission."
+        )
     legal_entity_reference = str(payload.get("legal_entity_reference") or "")
     book_reference = str(
         payload.get("book_reference") or payload.get("accounting_book_reference") or ""
@@ -426,6 +437,7 @@ def accept_home_tax_submission(
         legal_entity_reference=legal_entity_reference,
         accounting_book_reference=book_reference,
         period_code=period_code,
+        submission_idempotency_key=submission_idempotency_key,
         register_document=register_document,
         rejection_reason_code=rejection_reason_code,
     )
