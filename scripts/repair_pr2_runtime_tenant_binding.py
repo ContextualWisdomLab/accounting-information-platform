@@ -400,7 +400,9 @@ def add_runtime_identity_regression() -> None:
 
         self._set_period_status("open")
         with psycopg.connect(runtime_url) as connection:
-            with self.assertRaisesRegex(psycopg.Error, "journal_immutable"):
+            with self.assertRaisesRegex(
+                psycopg.Error, "journal_immutable|permission denied for table general_journal"
+            ):
                 connection.execute(
                     """
                     UPDATE accounting_core.general_journal

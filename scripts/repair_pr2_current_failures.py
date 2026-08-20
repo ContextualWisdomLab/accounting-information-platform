@@ -89,7 +89,7 @@ def _normalize_postgres_regression_setup() -> None:
     helper_start = text.index("    def _raw_insert_general_journal(")
     helper_end = text.index("    def _close_period(", helper_start)
     helper = text[helper_start:helper_end]
-    if "account_ids = dict(" not in helper:
+    if "account_ids = dict(" not in helper and "chart_accounts = dict(" not in helper:
         commit_anchor = "            connection.commit()\n"
         if helper.count(commit_anchor) != 1:
             raise SystemExit("raw journal helper commit anchor drifted")
