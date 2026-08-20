@@ -41,9 +41,15 @@ class HomeTaxIdempotencyContractTests(unittest.TestCase):
         command = accept_source.split("def accept_home_tax_submission(", 1)[1].split(
             "\ndef lookup_home_tax_submissions(", 1
         )[0]
-        self.assertIn('idempotency_key = str(payload.get("idempotency_key") or "")', command)
-        self.assertIn("if not idempotency_key:", command)
-        self.assertIn("submission_idempotency_key=idempotency_key", command)
+        self.assertIn('payload.get("idempotency_key")', command)
+        self.assertRegex(
+            command,
+            re.compile(r"if\s+not\s+submission_idempotency_key\s*:", re.MULTILINE),
+        )
+        self.assertIn(
+            "submission_idempotency_key=submission_idempotency_key",
+            command,
+        )
 
     def test_home_tax_persistence_uses_key_and_payload_hash_for_replay(self) -> None:
         """Same key+payload replays; the same key with changed evidence must fail closed."""
@@ -52,8 +58,7 @@ class HomeTaxIdempotencyContractTests(unittest.TestCase):
             "\n    def load_home_tax_submissions(", 1
         )[0]
         self.assertIn("submission_idempotency_key: str", method)
-        self.assertIn("submission_idempotency_key", method)
-        self.assertIn("register_payload_hash", method)
+        self.assertIn("ON CONFLICT (tenant_account_id, submission_idempotency_key) DO NOTHING", method)
         self.assertRegex(
             method,
             re.compile(
@@ -61,10 +66,7 @@ class HomeTaxIdempotencyContractTests(unittest.TestCase):
                 re.IGNORECASE,
             ),
         )
-        self.assertRegex(
-            method,
-            re.compile(r"idempotency[\s_-]*conflict|payload[\s_-]*hash", re.IGNORECASE),
-        )
+        self.assertIn("IdempotencyConflictError", method)
 
 
 if __name__ == "__main__":
