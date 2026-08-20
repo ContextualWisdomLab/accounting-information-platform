@@ -36,7 +36,7 @@ _REJECTION_REASON_RULES = (
 
 @dataclass(frozen=True, slots=True)
 class JournalProposalPage:
-    """One Billing #15 list page after AIS drops non-validated wire items."""
+    """One Billing #15 list page whose closed envelope contains validated proposals only."""
 
     journal_proposals: tuple[dict[str, object], ...]
     next_cursor: str | None
@@ -50,7 +50,8 @@ def pull_validated_journal_proposals(
     cursor: str | None = None,
     page_limit: int | None = None,
 ) -> JournalProposalPage:
-    """GET one Billing journal-proposal page and keep `validated` proposals only."""
+    """GET one allowlisted Billing page and require its closed validated-proposal contract."""
+    fetch_base = _resolve_command_billing_origin(billing_base_url)
     query: dict[str, str] = {
         "tenant_reference": tenant_reference,
         "proposal_status": VALIDATED_PROPOSAL_STATUS,
@@ -61,30 +62,50 @@ def pull_validated_journal_proposals(
     if cursor:
         query["cursor"] = cursor
     document = _billing_get(
-        f"{_require_billing_base_url(billing_base_url)}/v1/journal-proposals",
+        f"{fetch_base}/v1/journal-proposals",
         tenant_reference,
         query,
     )
-    if "items" in document or "cursor" in document:
+    allowed_keys = {LIST_COLLECTION_KEY, LIST_CURSOR_KEY}
+    unknown_keys = set(document) - allowed_keys
+    if unknown_keys:
         raise AccountingValidationError(
-            "Billing list envelope used items or cursor. "
-            "Ask Billing to correct the published list contract "
-            "(journal_proposals + next_cursor), then retry the pull."
+            "Billing list envelope contains fields outside the closed list contract. "
+            "Ask Billing to publish only journal_proposals and next_cursor, then retry the pull."
         )
-    raw_items = document.get(LIST_COLLECTION_KEY)
-    if not isinstance(raw_items, list):
+    if LIST_COLLECTION_KEY not in document:
         raise AccountingValidationError(
             "Billing list envelope is missing journal_proposals. "
             "Ask Billing to correct the published list contract, then retry the pull."
         )
-    validated = tuple(
-        item
-        for item in raw_items
-        if isinstance(item, dict) and item.get("proposal_status") == VALIDATED_PROPOSAL_STATUS
-    )
-    raw_cursor = document.get(LIST_CURSOR_KEY)
-    next_cursor = raw_cursor if isinstance(raw_cursor, str) and raw_cursor else None
-    return JournalProposalPage(validated, next_cursor)
+    if LIST_CURSOR_KEY not in document:
+        raise AccountingValidationError(
+            "Billing list envelope is missing next_cursor. "
+            "Ask Billing to return next_cursor as null or a non-empty string, then retry the pull."
+        )
+    raw_items = document[LIST_COLLECTION_KEY]
+    if not isinstance(raw_items, list):
+        raise AccountingValidationError(
+            "Billing list envelope journal_proposals must be an array. "
+            "Ask Billing to correct the published list contract, then retry the pull."
+        )
+    validated_items: list[dict[str, object]] = []
+    for item in raw_items:
+        if not isinstance(item, dict) or item.get("proposal_status") != VALIDATED_PROPOSAL_STATUS:
+            raise AccountingValidationError(
+                "Billing list must contain validated proposal objects only. "
+                "Ask Billing to correct the list item contract, then retry the pull."
+            )
+        validated_items.append(item)
+    raw_cursor = document[LIST_CURSOR_KEY]
+    if raw_cursor is not None and (
+        not isinstance(raw_cursor, str) or not raw_cursor
+    ):
+        raise AccountingValidationError(
+            "Billing next_cursor must be null or a non-empty string. "
+            "Ask Billing to correct the list cursor, then retry the pull."
+        )
+    return JournalProposalPage(tuple(validated_items), raw_cursor)
 
 
 def pull_journal_proposal(
@@ -92,16 +113,14 @@ def pull_journal_proposal(
     tenant_reference: str,
     proposal_id: str,
 ) -> dict[str, object]:
-    """GET one same-tenant Billing proposal; treat 404 as unknown or cross-tenant."""
+    """GET one same-tenant proposal from an allowlisted Billing origin."""
     if not proposal_id:
         raise AccountingValidationError(
             "proposal_id is required. Supply the Billing proposal_id, then retry the pull."
         )
+    fetch_base = _resolve_command_billing_origin(billing_base_url)
     document = _billing_get(
-        (
-            f"{_require_billing_base_url(billing_base_url)}"
-            f"/v1/journal-proposals/{proposal_id}"
-        ),
+        f"{fetch_base}/v1/journal-proposals/{proposal_id}",
         tenant_reference,
         {"tenant_reference": tenant_reference},
     )
@@ -122,7 +141,7 @@ def accept_pulled_proposals(
     cursor: str | None = None,
     page_limit: int | None = None,
 ) -> dict[str, object]:
-    """Pull Billing pages until `next_cursor` is empty; keep receipts and rejects."""
+    """Pull Billing pages until `next_cursor` is null; keep receipts and rejects."""
     receipts: list[dict[str, object]] = []
     rejected: list[dict[str, object]] = []
     page_cursor = cursor
