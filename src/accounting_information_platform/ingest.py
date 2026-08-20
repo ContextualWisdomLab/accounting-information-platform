@@ -9,6 +9,7 @@ ingested. AIS posting status lives on ``accounting_posting_receipt``.
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal, InvalidOperation
 from typing import Mapping, Sequence
 
 from .core import AccountingValidationError, JournalLineProposal, JournalProposal
@@ -170,6 +171,15 @@ def _require_amount_string(value: object, field_name: str) -> str:
         raise AccountingValidationError(
             f"{field_name} must be a canonical decimal string. "
             "Supply exact decimal strings, not JSON numbers, then retry ingest."
+        )
+    try:
+        parsed = Decimal(value)
+    except InvalidOperation:
+        return value
+    if parsed == 0 and value != "0":
+        raise AccountingValidationError(
+            f"{field_name} must use canonical zero '0'. "
+            "Supply the Billing schema's literal zero representation, then retry ingest."
         )
     return value
 
