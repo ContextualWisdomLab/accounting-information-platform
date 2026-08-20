@@ -191,6 +191,39 @@ def add_runtime_identity_regression() -> None:
                 """,
                 (other_tenant_code,),
             ).fetchone()[0]
+
+        def cleanup_runtime_identity() -> None:
+            with psycopg.connect(DATABASE_URL, autocommit=True) as administrator:
+                administrator.execute(
+                    "DELETE FROM accounting_core.runtime_tenant_binding WHERE runtime_database_role = %s",
+                    (runtime_role,),
+                )
+                administrator.execute(
+                    "DELETE FROM accounting_core.legal_entity_record WHERE tenant_account_id = %s",
+                    (other_tenant_id,),
+                )
+                administrator.execute(
+                    "DELETE FROM accounting_core.tenant_account WHERE tenant_account_id = %s",
+                    (other_tenant_id,),
+                )
+                if administrator.execute(
+                    "SELECT to_regrole(%s)", (runtime_role,)
+                ).fetchone()[0] is not None:
+                    administrator.execute(
+                        sql.SQL("REVOKE accounting_runtime_user FROM {}").format(
+                            sql.Identifier(runtime_role)
+                        )
+                    )
+                    administrator.execute(
+                        sql.SQL("DROP OWNED BY {}").format(sql.Identifier(runtime_role))
+                    )
+                    administrator.execute(
+                        sql.SQL("DROP ROLE {}").format(sql.Identifier(runtime_role))
+                    )
+
+        self.addCleanup(cleanup_runtime_identity)
+
+        with psycopg.connect(DATABASE_URL, autocommit=True) as administrator:
             administrator.execute(
                 """
                 INSERT INTO accounting_core.legal_entity_record (
@@ -248,162 +281,136 @@ def add_runtime_identity_regression() -> None:
         runtime_receipt = runtime_ledger.post(runtime_proposal, self.policy)
         self.assertEqual(runtime_receipt.posting_status_code, "posted")
 
-        try:
-            with psycopg.connect(runtime_url) as connection:
-                identity = connection.execute(
-                    "SELECT session_user, current_user, accounting_core.current_tenant_account_id()"
-                ).fetchone()
-                self.assertEqual(identity, (runtime_role, runtime_role, self.tenant_id))
+        with psycopg.connect(runtime_url) as connection:
+            identity = connection.execute(
+                "SELECT session_user, current_user, accounting_core.current_tenant_account_id()"
+            ).fetchone()
+            self.assertEqual(identity, (runtime_role, runtime_role, self.tenant_id))
+            connection.execute(
+                "SELECT set_config('app.tenant_account_id', %s, false)",
+                (str(other_tenant_id),),
+            )
+            self.assertEqual(
                 connection.execute(
-                    "SELECT set_config('app.tenant_account_id', %s, false)",
-                    (str(other_tenant_id),),
-                )
-                self.assertEqual(
-                    connection.execute(
-                        "SELECT accounting_core.current_tenant_account_id()"
-                    ).fetchone()[0],
-                    self.tenant_id,
-                )
-                self.assertEqual(
-                    connection.execute(
-                        "SELECT tenant_account_id FROM accounting_core.tenant_account"
-                    ).fetchall(),
-                    [(self.tenant_id,)],
-                )
-                self.assertEqual(
-                    connection.execute(
-                        """
-                        SELECT count(*)
-                        FROM accounting_core.legal_entity_record
-                        WHERE tenant_account_id = %s
-                        """,
-                        (other_tenant_id,),
-                    ).fetchone()[0],
-                    0,
-                )
-                own_period_write = connection.execute(
+                    "SELECT accounting_core.current_tenant_account_id()"
+                ).fetchone()[0],
+                self.tenant_id,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT tenant_account_id FROM accounting_core.tenant_account"
+                ).fetchall(),
+                [(self.tenant_id,)],
+            )
+            self.assertEqual(
+                connection.execute(
+                    """
+                    SELECT count(*)
+                    FROM accounting_core.legal_entity_record
+                    WHERE tenant_account_id = %s
+                    """,
+                    (other_tenant_id,),
+                ).fetchone()[0],
+                0,
+            )
+            own_period_write = connection.execute(
+                """
+                UPDATE accounting_core.fiscal_period
+                   SET recorded_at = recorded_at
+                 WHERE tenant_account_id = %s
+                RETURNING fiscal_period_id
+                """,
+                (self.tenant_id,),
+            ).fetchone()
+            self.assertIsNotNone(own_period_write)
+            self.assertIsNone(
+                connection.execute(
                     """
                     UPDATE accounting_core.fiscal_period
                        SET recorded_at = recorded_at
                      WHERE tenant_account_id = %s
                     RETURNING fiscal_period_id
                     """,
-                    (self.tenant_id,),
+                    (other_tenant_id,),
                 ).fetchone()
-                self.assertIsNotNone(own_period_write)
-                self.assertIsNone(
-                    connection.execute(
-                        """
-                        UPDATE accounting_core.fiscal_period
-                           SET recorded_at = recorded_at
-                         WHERE tenant_account_id = %s
-                        RETURNING fiscal_period_id
-                        """,
-                        (other_tenant_id,),
-                    ).fetchone()
-                )
+            )
 
-            self._set_period_status("soft_closed")
-            with psycopg.connect(runtime_url) as connection:
-                connection.execute(
-                    "SELECT set_config('accounting_core.journal_write_role', 'adjusting', false)"
+        self._set_period_status("soft_closed")
+        with psycopg.connect(runtime_url) as connection:
+            connection.execute(
+                "SELECT set_config('accounting_core.journal_write_role', 'adjusting', false)"
+            )
+            legal_entity_id, book_id, period_id = connection.execute(
+                """
+                SELECT legal_entity_record.legal_entity_id,
+                       accounting_book.accounting_book_id,
+                       fiscal_period.fiscal_period_id
+                FROM accounting_core.legal_entity_record
+                JOIN accounting_core.accounting_book
+                  ON accounting_book.tenant_account_id = legal_entity_record.tenant_account_id
+                 AND accounting_book.legal_entity_id = legal_entity_record.legal_entity_id
+                JOIN accounting_core.fiscal_period
+                  ON fiscal_period.tenant_account_id = legal_entity_record.tenant_account_id
+                WHERE legal_entity_record.tenant_account_id = %s
+                  AND fiscal_period.period_code = '2026-08'
+                """,
+                (self.tenant_id,),
+            ).fetchone()
+            proposal_record_id = connection.execute(
+                """
+                INSERT INTO accounting_integration.journal_proposal_record (
+                    tenant_account_id, external_proposal_id, proposal_contract_version,
+                    idempotency_key, source_payload_hash, proposal_status_code, processed_at
                 )
-                legal_entity_id, book_id, period_id = connection.execute(
+                VALUES (%s, uuidv7(), 1, %s, %s, 'posted', clock_timestamp())
+                RETURNING proposal_record_id
+                """,
+                (
+                    self.tenant_id,
+                    f"runtime-bypass:{uuid.uuid4()}",
+                    "sha256:" + "8" * 64,
+                ),
+            ).fetchone()[0]
+            with self.assertRaisesRegex(psycopg.Error, "period_closed"):
+                connection.execute(
                     """
-                    SELECT legal_entity_record.legal_entity_id,
-                           accounting_book.accounting_book_id,
-                           fiscal_period.fiscal_period_id
-                    FROM accounting_core.legal_entity_record
-                    JOIN accounting_core.accounting_book
-                      ON accounting_book.tenant_account_id = legal_entity_record.tenant_account_id
-                     AND accounting_book.legal_entity_id = legal_entity_record.legal_entity_id
-                    JOIN accounting_core.fiscal_period
-                      ON fiscal_period.tenant_account_id = legal_entity_record.tenant_account_id
-                    WHERE legal_entity_record.tenant_account_id = %s
-                      AND fiscal_period.period_code = '2026-08'
-                    """,
-                    (self.tenant_id,),
-                ).fetchone()
-                proposal_record_id = connection.execute(
-                    """
-                    INSERT INTO accounting_integration.journal_proposal_record (
-                        tenant_account_id, external_proposal_id, proposal_contract_version,
-                        idempotency_key, source_payload_hash, proposal_status_code, processed_at
+                    INSERT INTO accounting_core.general_journal (
+                        tenant_account_id, legal_entity_id, accounting_book_id, fiscal_period_id,
+                        journal_reference, journal_status_code, transaction_currency_code,
+                        functional_currency_code, transaction_date, accounting_date,
+                        source_proposal_record_id, accounting_policy_version, posting_rule_version
                     )
-                    VALUES (%s, uuidv7(), 1, %s, %s, 'posted', clock_timestamp())
-                    RETURNING proposal_record_id
+                    VALUES (
+                        %s, %s, %s, %s, %s, 'posted', 'KRW', 'KRW', %s, %s, %s,
+                        'ifrs-v1', 'billing-issued-v1'
+                    )
                     """,
                     (
                         self.tenant_id,
-                        f"runtime-bypass:{uuid.uuid4()}",
-                        "sha256:" + "8" * 64,
+                        legal_entity_id,
+                        book_id,
+                        period_id,
+                        f"urn:cwl:accounting:general_journal:{uuid.uuid4()}",
+                        date(2026, 8, 31),
+                        date(2026, 8, 31),
+                        proposal_record_id,
                     ),
-                ).fetchone()[0]
-                with self.assertRaisesRegex(psycopg.Error, "period_closed"):
-                    connection.execute(
-                        """
-                        INSERT INTO accounting_core.general_journal (
-                            tenant_account_id, legal_entity_id, accounting_book_id, fiscal_period_id,
-                            journal_reference, journal_status_code, transaction_currency_code,
-                            functional_currency_code, transaction_date, accounting_date,
-                            source_proposal_record_id, accounting_policy_version, posting_rule_version
-                        )
-                        VALUES (
-                            %s, %s, %s, %s, %s, 'posted', 'KRW', 'KRW', %s, %s, %s,
-                            'ifrs-v1', 'billing-issued-v1'
-                        )
-                        """,
-                        (
-                            self.tenant_id,
-                            legal_entity_id,
-                            book_id,
-                            period_id,
-                            f"urn:cwl:accounting:general_journal:{uuid.uuid4()}",
-                            date(2026, 8, 31),
-                            date(2026, 8, 31),
-                            proposal_record_id,
-                        ),
-                    )
-                connection.rollback()
+                )
+            connection.rollback()
 
-            self._set_period_status("open")
-            with psycopg.connect(runtime_url) as connection:
-                with self.assertRaisesRegex(psycopg.Error, "immutable"):
-                    connection.execute(
-                        """
-                        UPDATE accounting_core.general_journal
-                           SET journal_status_code = 'reversed'
-                         WHERE tenant_account_id = %s
-                           AND journal_reference = %s
-                        """,
-                        (self.tenant_id, runtime_receipt.journal_reference),
-                    )
-                connection.rollback()
-        finally:
-            with psycopg.connect(DATABASE_URL, autocommit=True) as administrator:
-                administrator.execute(
-                    "DELETE FROM accounting_core.runtime_tenant_binding WHERE runtime_database_role = %s",
-                    (runtime_role,),
+        self._set_period_status("open")
+        with psycopg.connect(runtime_url) as connection:
+            with self.assertRaisesRegex(psycopg.Error, "journal_immutable"):
+                connection.execute(
+                    """
+                    UPDATE accounting_core.general_journal
+                       SET journal_status_code = 'reversed'
+                     WHERE tenant_account_id = %s
+                       AND journal_reference = %s
+                    """,
+                    (self.tenant_id, runtime_receipt.journal_reference),
                 )
-                administrator.execute(
-                    "DELETE FROM accounting_core.legal_entity_record WHERE tenant_account_id = %s",
-                    (other_tenant_id,),
-                )
-                administrator.execute(
-                    "DELETE FROM accounting_core.tenant_account WHERE tenant_account_id = %s",
-                    (other_tenant_id,),
-                )
-                administrator.execute(
-                    sql.SQL("REVOKE accounting_runtime_user FROM {}").format(
-                        sql.Identifier(runtime_role)
-                    )
-                )
-                administrator.execute(
-                    sql.SQL("DROP OWNED BY {}").format(sql.Identifier(runtime_role))
-                )
-                administrator.execute(
-                    sql.SQL("DROP ROLE {}").format(sql.Identifier(runtime_role))
-                )
+            connection.rollback()
 
 '''
     if marker not in text:
