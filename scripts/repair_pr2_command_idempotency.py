@@ -744,9 +744,12 @@ def update_reversal_contract() -> None:
     ledger = PostgresPostingLedger(database_url, tenant_reference)
 '''
     replacement = '''    reversal_date = _parse_reversal_date(str(payload.get("reversal_date") or ""))
-    reversal_idempotency_key = str(
-        payload.get("reversal_idempotency_key") or f"reversal:{journal_reference}"
-    ).strip()
+    raw_reversal_idempotency_key = payload.get("reversal_idempotency_key")
+    reversal_idempotency_key = (
+        f"reversal:{journal_reference}"
+        if raw_reversal_idempotency_key is None
+        else str(raw_reversal_idempotency_key).strip()
+    )
     if not reversal_idempotency_key:
         raise AccountingValidationError(
             "reversal_idempotency_key must not be empty"

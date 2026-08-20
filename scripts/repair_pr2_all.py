@@ -151,9 +151,12 @@ def fix_reversal_key_after_reference_resolution() -> None:
     path = Path("src/accounting_information_platform/accept.py")
     text = path.read_text(encoding="utf-8")
     premature = (
-        "    reversal_idempotency_key = str(\n"
-        "        payload.get(\"reversal_idempotency_key\") or f\"reversal:{journal_reference}\"\n"
-        "    ).strip()\n"
+        "    raw_reversal_idempotency_key = payload.get(\"reversal_idempotency_key\")\n"
+        "    reversal_idempotency_key = (\n"
+        "        f\"reversal:{journal_reference}\"\n"
+        "        if raw_reversal_idempotency_key is None\n"
+        "        else str(raw_reversal_idempotency_key).strip()\n"
+        "    )\n"
         "    if not reversal_idempotency_key:\n"
         "        raise AccountingValidationError(\n"
         "            \"reversal_idempotency_key must not be empty\"\n"
@@ -173,9 +176,12 @@ def fix_reversal_key_after_reference_resolution() -> None:
     )
     replacement = (
         "        journal_reference = resolved_reference\n"
-        "    reversal_idempotency_key = str(\n"
-        "        payload.get(\"reversal_idempotency_key\") or f\"reversal:{journal_reference}\"\n"
-        "    ).strip()\n"
+        "    raw_reversal_idempotency_key = payload.get(\"reversal_idempotency_key\")\n"
+        "    reversal_idempotency_key = (\n"
+        "        f\"reversal:{journal_reference}\"\n"
+        "        if raw_reversal_idempotency_key is None\n"
+        "        else str(raw_reversal_idempotency_key).strip()\n"
+        "    )\n"
         "    if not reversal_idempotency_key:\n"
         "        raise AccountingValidationError(\n"
         "            \"reversal_idempotency_key must not be empty\"\n"
