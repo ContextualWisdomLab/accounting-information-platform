@@ -18,7 +18,12 @@ jobs:
   accounting-foundation:
     name: Accounting foundation
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     env:
       ACCOUNTING_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/accounting_test
     services:
@@ -45,6 +50,11 @@ jobs:
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Pin reproducible build timestamp
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct \"$EXPECTED_SHA\")" >> "$GITHUB_ENV"
       - name: Install pinned Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
@@ -76,11 +86,50 @@ jobs:
         run: python -m pip install --no-deps --no-build-isolation -e .
       - name: Smoke-test installed public API
         run: python -c "import accounting_information_platform as aip; assert aip.PostingLedger.__name__ == 'PostingLedger'"
-      - name: Build and install wheel
+      - name: Build reproducible wheel and evidence
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
         run: |
+          set -euo pipefail
+          rm -rf dist dist-rebuild build src/*.egg-info
+          mkdir -p dist dist-rebuild
           python -m pip wheel --no-deps --no-build-isolation -w dist .
-          python -m pip install --no-index --no-deps --force-reinstall dist/*.whl
+          rm -rf build src/*.egg-info
+          python -m pip wheel --no-deps --no-build-isolation -w dist-rebuild .
+          primary_wheel="$(find dist -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          rebuilt_wheel="$(find dist-rebuild -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          test -n "$primary_wheel"
+          test -n "$rebuilt_wheel"
+          test "$(sha256sum "$primary_wheel" | cut -d' ' -f1)" = "$(sha256sum "$rebuilt_wheel" | cut -d' ' -f1)"
+          python scripts/generate_supply_chain_evidence.py \
+            --wheel "$primary_wheel" \
+            --project pyproject.toml \
+            --output-directory dist \
+            --source-sha "$EXPECTED_SHA" \
+            --source-date-epoch "$SOURCE_DATE_EPOCH"
+          (cd dist && sha256sum -c SHA256SUMS)
+          python -m pip install --no-index --no-deps --force-reinstall "$primary_wheel"
           cd "${RUNNER_TEMP}"
           python -c "import accounting_information_platform as aip; assert aip.PostingLedger.__name__ == 'PostingLedger'"
       - name: Verify typing marker is packaged
         run: python -c "import zipfile, glob; wheel=glob.glob('dist/*.whl')[0]; names=zipfile.ZipFile(wheel).namelist(); assert 'accounting_information_platform/py.typed' in names"
+      - name: Attest wheel provenance
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d
+        with:
+          subject-path: ${{ github.workspace }}/dist/*.whl
+      - name: Attest wheel SBOM
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d
+        with:
+          subject-path: ${{ github.workspace }}/dist/*.whl
+          sbom-path: ${{ github.workspace }}/dist/sbom.spdx.json
+      - name: Upload package evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: accounting-information-platform-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            dist/*.whl
+            dist/SHA256SUMS
+            dist/sbom.spdx.json
+          if-no-files-found: error
+          retention-days: 14
