@@ -22,7 +22,7 @@ jobs:
     timeout-minutes: 35
     env:
       ACCOUNTING_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/accounting_test
-      REPAIR_SOURCE_SHA: 2957229460088e0690d8b1c67af874163a0acb78
+      REPAIR_SOURCE_SHA: 5e5538adb5f7826243c1812a36c7824623bc512d
     services:
       postgres:
         image: postgres:18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
@@ -61,6 +61,7 @@ jobs:
             repair_pr2_command_idempotency.py \
             repair_pr2_followup_adjustments.py \
             repair_pr2_home_tax_replay_outcome.py \
+            repair_pr2_home_tax_command_boundary.py \
             repair_pr2_reversal_temporal_order.py \
             repair_pr2_reversal_key_namespace.py \
             repair_pr2_remaining_review_contracts.py \
@@ -80,6 +81,7 @@ jobs:
       - name: Apply current failing-boundary repairs
         run: |
           python /tmp/repair_pr2_current_failures.py
+          python /tmp/repair_pr2_home_tax_command_boundary.py
           python /tmp/repair_pr2_reversal_key_namespace.py
           python /tmp/repair_pr2_remaining_review_contracts.py
           python /tmp/repair_pr2_book_binding_and_readme.py
