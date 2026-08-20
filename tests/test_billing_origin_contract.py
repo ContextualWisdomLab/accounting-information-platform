@@ -14,9 +14,14 @@ class BillingOriginContractTests(unittest.TestCase):
     """Keep malformed configured Billing origins inside the accounting validation contract."""
 
     def test_invalid_port_is_accounting_validation_error(self) -> None:
-        """A malformed port must not escape as a raw urllib ValueError."""
+        """A non-numeric port must not escape as a raw urllib ValueError."""
         with self.assertRaisesRegex(AccountingValidationError, "http or https origin"):
             _canonical_billing_origin("https://billing.example.test:not-a-port")
+
+    def test_out_of_range_port_is_accounting_validation_error(self) -> None:
+        """A port outside the URI range must remain a domain validation failure."""
+        with self.assertRaisesRegex(AccountingValidationError, "http or https origin"):
+            _canonical_billing_origin("https://billing.example.test:65536")
 
     def test_malformed_ipv6_is_accounting_validation_error(self) -> None:
         """Malformed IPv6 syntax must fail closed before any Billing request is attempted."""
