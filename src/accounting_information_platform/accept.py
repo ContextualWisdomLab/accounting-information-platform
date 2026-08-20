@@ -396,6 +396,11 @@ def accept_home_tax_submission(
             "Call accept_home_tax_submission with that tenant_reference, then retry."
         )
     submission_idempotency_key = payload.get("idempotency_key")
+    if not submission_idempotency_key:
+        raise AccountingValidationError(
+            "home tax submission idempotency_key is required. "
+            "Supply a tenant-scoped command key, then retry the home-tax-submission."
+        )
     if not isinstance(submission_idempotency_key, str):
         raise AccountingValidationError(
             "home tax submission idempotency_key is required. "

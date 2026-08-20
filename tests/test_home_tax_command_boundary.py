@@ -116,6 +116,18 @@ class HomeTaxCommandBoundaryTests(unittest.TestCase):
                 accept_home_tax_submission(payload, "postgresql://unused", _TENANT_REFERENCE)
         self.assertEqual(_RecordingLedger.instances, [])
 
+    def test_non_string_idempotency_key_fails_before_ledger_work(self) -> None:
+        """A non-string command identity cannot cross the durable boundary."""
+        payload = self._payload(include_key=True)
+        payload["idempotency_key"] = 123
+        with mock.patch(
+            "accounting_information_platform.accept.PostgresPostingLedger",
+            _RecordingLedger,
+        ):
+            with self.assertRaisesRegex(AccountingValidationError, "idempotency_key"):
+                accept_home_tax_submission(payload, "postgresql://unused", _TENANT_REFERENCE)
+        self.assertEqual(_RecordingLedger.instances, [])
+
     def test_command_passes_exact_idempotency_key_to_durable_boundary(self) -> None:
         """A valid command carries the unchanged tenant-scoped key into persistence."""
         with mock.patch(

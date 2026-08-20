@@ -136,6 +136,11 @@ class FakeBillingHandler(BaseHTTPRequestHandler):
                 for item in server.proposals
                 if isinstance(item, dict) and item.get("tenant_reference") == header_tenant
             ]
+            proposal_status = query.get("proposal_status", [None])[0]
+            if proposal_status:
+                filtered = [
+                    item for item in filtered if item.get("proposal_status") == proposal_status
+                ]
             filtered.sort(
                 key=lambda item: (
                     str(item.get("proposed_at", "")),
@@ -10373,7 +10378,7 @@ class PostgresPostingTests(unittest.TestCase):
         server.shutdown()
 
     def test_pulls_validated_billing_proposals_and_posts(self) -> None:
-        """AIS pulls Billing #15 validated pages, posts them, and ignores other statuses."""
+        """AIS pulls Billing #15 validated pages and posts only the published status."""
         invoice = self._billing_validated_payload()
         cash = self._billing_cash_payload()
         draft = self._billing_validated_payload(
@@ -10480,7 +10485,7 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertIn("cursor", paged_queries[1])
         self.assertEqual(
             paged_queries[1]["cursor"][0],
-            f"{draft['proposed_at']}|{draft['proposal_id']}",
+            f"{invoice['proposed_at']}|{invoice['proposal_id']}",
         )
         self.assertEqual(
             [item["proposal_id"] for item in default_page.journal_proposals],
@@ -10520,10 +10525,11 @@ class PostgresPostingTests(unittest.TestCase):
             pull_journal_proposal(
                 billing_url, self.policy.tenant_reference, str(uuid.uuid4())
             )
-        with self.assertRaisesRegex(AccountingValidationError, "Set BILLING_BASE_URL"):
-            pull_validated_journal_proposals("", self.policy.tenant_reference)
-        with self.assertRaisesRegex(AccountingValidationError, "Set BILLING_BASE_URL"):
-            accept_pulled_proposals("", DATABASE_URL, self.policy.tenant_reference)
+        with mock.patch.dict(os.environ, {"BILLING_BASE_URL": ""}, clear=False):
+            with self.assertRaisesRegex(AccountingValidationError, "Set BILLING_BASE_URL"):
+                pull_validated_journal_proposals("", self.policy.tenant_reference)
+            with self.assertRaisesRegex(AccountingValidationError, "Set BILLING_BASE_URL"):
+                accept_pulled_proposals("", DATABASE_URL, self.policy.tenant_reference)
         with self.assertRaisesRegex(AccountingValidationError, "Ask Billing to correct"):
             pull_validated_journal_proposals(
                 self._start_fake_billing([], list_status=422),
@@ -10582,18 +10588,22 @@ class PostgresPostingTests(unittest.TestCase):
             DATABASE_URL,
             self.policy.tenant_reference,
         )
-        mixed_page = pull_validated_journal_proposals(
-            self._start_fake_billing(
-                [],
-                list_raw=json.dumps(
-                    {
-                        "journal_proposals": [1, {"proposal_status": "validated", "proposal_id": "x"}],
-                        "next_cursor": "",
-                    }
-                ).encode("utf-8"),
-            ),
-            self.policy.tenant_reference,
-        )
+        with self.assertRaisesRegex(AccountingValidationError, "validated proposal"):
+            pull_validated_journal_proposals(
+                self._start_fake_billing(
+                    [],
+                    list_raw=json.dumps(
+                        {
+                            "journal_proposals": [
+                                1,
+                                {"proposal_status": "validated", "proposal_id": "x"},
+                            ],
+                            "next_cursor": "",
+                        }
+                    ).encode("utf-8"),
+                ),
+                self.policy.tenant_reference,
+            )
         with self.assertRaisesRegex(AccountingValidationError, "page_limit"):
             accept_billing_proposal_pull(
                 {
@@ -10612,7 +10622,7 @@ class PostgresPostingTests(unittest.TestCase):
             pull_validated_journal_proposals(
                 billing_url, self.policy.tenant_reference, page_limit=101
             )
-        with self.assertRaisesRegex(AccountingValidationError, "items or cursor"):
+        with self.assertRaisesRegex(AccountingValidationError, "list contract"):
             pull_validated_journal_proposals(
                 self._start_fake_billing(
                     [],
@@ -10620,7 +10630,7 @@ class PostgresPostingTests(unittest.TestCase):
                 ),
                 self.policy.tenant_reference,
             )
-        with self.assertRaisesRegex(AccountingValidationError, "items or cursor"):
+        with self.assertRaisesRegex(AccountingValidationError, "list contract"):
             pull_validated_journal_proposals(
                 self._start_fake_billing(
                     [],
@@ -10653,35 +10663,24 @@ class PostgresPostingTests(unittest.TestCase):
                 self._start_fake_billing([], list_status=401),
                 self.policy.tenant_reference,
             )
-        with self.assertRaisesRegex(AccountingValidationError, "Retry the Billing pull"):
+        with self.assertRaisesRegex(AccountingValidationError, "allowed Billing origin"):
             pull_validated_journal_proposals(
                 "http://127.0.0.1:1", self.policy.tenant_reference
             )
-        with self.assertRaisesRegex(AccountingValidationError, "Retry the Billing pull"):
+        with self.assertRaisesRegex(AccountingValidationError, "allowed Billing origin"):
             pull_validated_journal_proposals(
                 "https://127.0.0.1:1", self.policy.tenant_reference
             )
-        with self.assertRaisesRegex(AccountingValidationError, "Retry the Billing pull"):
+        with self.assertRaisesRegex(AccountingValidationError, "allowed Billing origin"):
             pull_validated_journal_proposals(
                 "https://127.0.0.1", self.policy.tenant_reference
             )
         https_origin = urllib.parse.urlparse(self._start_fake_billing([]))
-        tls_context = mock.Mock()
-        tls_context.wrap_socket.side_effect = lambda sock, server_hostname=None: sock
-        with mock.patch(
-            "accounting_information_platform.billing_pull.ssl.create_default_context",
-            return_value=tls_context,
-        ):
-            https_page = pull_validated_journal_proposals(
+        with self.assertRaisesRegex(AccountingValidationError, "allowed Billing origin"):
+            pull_validated_journal_proposals(
                 f"https://{https_origin.hostname}:{https_origin.port}",
                 self.policy.tenant_reference,
             )
-        tls_context.wrap_socket.assert_called_once()
-        self.assertEqual(
-            tls_context.wrap_socket.call_args.kwargs["server_hostname"],
-            https_origin.hostname,
-        )
-        self.assertEqual(https_page.journal_proposals, ())
         with self.assertRaisesRegex(AccountingValidationError, "http or https origin"):
             pull_validated_journal_proposals(
                 "file:///tmp/billing", self.policy.tenant_reference
@@ -10722,8 +10721,6 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(billing.last_list_body["journal_proposals"], [])
         self.assertIsNone(billing.last_list_body["next_cursor"])
         self.assertEqual(set(billing.last_list_body), {"journal_proposals", "next_cursor"})
-        self.assertEqual(len(mixed_page.journal_proposals), 1)
-        self.assertIsNone(mixed_page.next_cursor)
         self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before)
         ais_server.shutdown()
 

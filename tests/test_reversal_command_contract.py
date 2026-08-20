@@ -6,6 +6,7 @@ import unittest
 from datetime import date
 
 from accounting_information_platform import (
+    AccountingValidationError,
     AccountingPolicy,
     IdempotencyConflictError,
     JournalLineProposal,
@@ -101,6 +102,45 @@ class ReversalCommandContractTests(unittest.TestCase):
                 "billing_correction",
                 self.policy,
             )
+
+    def test_empty_and_backdated_reversal_commands_fail_closed(self) -> None:
+        """Reversal identity and temporal order are validated before mutation."""
+        with self.assertRaisesRegex(AccountingValidationError, "idempotency key"):
+            self.ledger.reverse(
+                self.original.journal_reference,
+                date(2026, 8, 31),
+                "billing_correction",
+                self.policy,
+                reversal_idempotency_key="",
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "precede"):
+            self.ledger.reverse(
+                self.original.journal_reference,
+                date(2026, 8, 19),
+                "billing_correction",
+                self.policy,
+            )
+
+    def test_missing_reversal_evidence_reconstructs_from_the_posted_journal(self) -> None:
+        """A missing cache evidence tuple falls through to the immutable reversing journal."""
+        first = self.ledger.reverse(
+            self.original.journal_reference,
+            date(2026, 8, 31),
+            "billing_correction",
+            self.policy,
+        )
+        cache_key = self.ledger._tenant_cache_key(
+            self.policy.tenant_reference,
+            self.original.journal_reference,
+        )
+        self.ledger._reversal_command_evidence.pop(cache_key)
+        replay = self.ledger.reverse(
+            self.original.journal_reference,
+            date(2026, 8, 31),
+            "billing_correction",
+            self.policy,
+        )
+        self.assertEqual(replay, first)
 
 
 if __name__ == "__main__":

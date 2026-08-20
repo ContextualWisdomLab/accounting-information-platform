@@ -1376,6 +1376,12 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             document = accept_home_tax_submission(
                 payload, self.server.database_url, tenant_header
             )
+        except IdempotencyConflictError as error:
+            self._write_error(
+                409,
+                f"{error}. Supply a new HomeTax idempotency key, then retry.",
+            )
+            return
         except AccountingValidationError as error:
             self._write_error(404, str(error))
             return
@@ -1439,9 +1445,22 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         return payload
 
     def _read_body(self) -> bytes | None:
-        length_text = self.headers.get("Content-Length", "0")
+        length_values = self.headers.get_all("Content-Length")
+        if length_values is None or len(length_values) != 1:
+            self._write_error(
+                400,
+                "exactly one Content-Length header is required. "
+                "Send one ASCII decimal Content-Length, then retry.",
+            )
+            return None
+        length_text = length_values[0]
         if re.fullmatch(r"[0-9]+", length_text) is None:
-            return b""
+            self._write_error(
+                400,
+                "Content-Length must contain ASCII decimal digits only. "
+                "Send one ASCII decimal Content-Length, then retry.",
+            )
+            return None
         length = int(length_text)
         if length > _MAX_REQUEST_BODY_BYTES:
             self._write_error(

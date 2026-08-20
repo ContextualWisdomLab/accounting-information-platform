@@ -7,6 +7,7 @@ import io
 import json
 import os
 import unittest
+from email.message import Message
 from unittest import mock
 from decimal import Decimal
 from pathlib import Path
@@ -1702,28 +1703,32 @@ class StrictContentLengthSyntaxTests(unittest.TestCase):
         for value in ("+2", "1_0", " 2", "٢"):
             with self.subTest(value=value):
                 handler = object.__new__(JournalProposalHandler)
-                handler.headers = {"Content-Length": value}
+                handler.headers = Message()
+                handler.headers["Content-Length"] = value
                 handler.rfile = io.BytesIO(b"{}")
                 handler._write_error = mock.Mock()
-                self.assertEqual(handler._read_body(), b"")
-                handler._write_error.assert_not_called()
+                self.assertIsNone(handler._read_body())
+                handler._write_error.assert_called_once()
 
         present = object.__new__(JournalProposalHandler)
-        present.headers = {"Content-Length": "2"}
+        present.headers = Message()
+        present.headers["Content-Length"] = "2"
         present.rfile = io.BytesIO(b"{}")
         present._write_error = mock.Mock()
         self.assertEqual(present._read_body(), b"{}")
         present._write_error.assert_not_called()
 
         empty = object.__new__(JournalProposalHandler)
-        empty.headers = {"Content-Length": "0"}
+        empty.headers = Message()
+        empty.headers["Content-Length"] = "0"
         empty.rfile = io.BytesIO(b"")
         empty._write_error = mock.Mock()
         self.assertEqual(empty._read_body(), b"")
         empty._write_error.assert_not_called()
 
         oversized = object.__new__(JournalProposalHandler)
-        oversized.headers = {"Content-Length": "1048577"}
+        oversized.headers = Message()
+        oversized.headers["Content-Length"] = "1048577"
         oversized.rfile = io.BytesIO(b"")
         oversized._write_error = mock.Mock()
         self.assertIsNone(oversized._read_body())

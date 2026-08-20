@@ -5,9 +5,13 @@ from __future__ import annotations
 import os
 import unittest
 from unittest import mock
+from urllib.parse import urlparse
 
 from accounting_information_platform import AccountingValidationError
 from accounting_information_platform.billing_pull import (
+    _billing_get,
+    _open_billing_connection,
+    _require_billing_base_url,
     pull_journal_proposal,
     pull_validated_journal_proposals,
 )
@@ -70,6 +74,11 @@ class BillingListClosedContractTests(unittest.TestCase):
                         {"journal_proposals": [item], "next_cursor": None}
                     )
 
+    def test_rejects_a_non_array_journal_proposal_collection(self) -> None:
+        """The closed list envelope cannot carry an object in place of its array."""
+        with self.assertRaisesRegex(AccountingValidationError, "must be an array"):
+            self._pull_document({"journal_proposals": {}, "next_cursor": None})
+
 
 class BillingPublicFetchOriginTests(unittest.TestCase):
     """Every public Billing fetch path enforces operator-configured origin authority."""
@@ -95,6 +104,50 @@ class BillingPublicFetchOriginTests(unittest.TestCase):
                 with self.assertRaisesRegex(AccountingValidationError, "allowed Billing origin"):
                     pull_journal_proposal(_UNTRUSTED_ORIGIN, _TENANT, "proposal-1")
                 billing_get.assert_not_called()
+
+    def test_empty_billing_origin_is_rejected(self) -> None:
+        """Whitespace cannot become a remote Billing destination."""
+        with self.assertRaisesRegex(AccountingValidationError, "BILLING_BASE_URL is empty"):
+            _require_billing_base_url("  ")
+
+    def test_invalid_fetch_url_fails_before_network_call(self) -> None:
+        """A non-HTTP URL fails before a socket can be opened."""
+        with self.assertRaisesRegex(AccountingValidationError, "http or https origin"):
+            _billing_get("file:///tmp/billing", _TENANT, {})
+
+    def test_network_oserror_becomes_an_actionable_pull_error(self) -> None:
+        """Socket failures are converted to the operator retry contract."""
+        with mock.patch(
+            "accounting_information_platform.billing_pull._open_billing_connection",
+            side_effect=OSError("offline"),
+        ):
+            with self.assertRaisesRegex(AccountingValidationError, "Retry the Billing pull"):
+                _billing_get(
+                    "https://billing.example.test/v1/journal-proposals",
+                    _TENANT,
+                    {},
+                )
+
+    def test_https_connection_uses_default_ssl_context(self) -> None:
+        """HTTPS wraps the connected socket with certificate verification and SNI."""
+        connection = mock.Mock()
+        raw_socket = object()
+        connection.sock = raw_socket
+        tls_socket = object()
+        with mock.patch(
+            "accounting_information_platform.billing_pull.http.client.HTTPConnection",
+            return_value=connection,
+        ) as constructor, mock.patch(
+            "accounting_information_platform.billing_pull.ssl.create_default_context"
+        ) as create_context:
+            create_context.return_value.wrap_socket.return_value = tls_socket
+            result = _open_billing_connection(urlparse(_ALLOWED_ORIGIN))
+        constructor.assert_called_once_with("billing.example.test", 443, timeout=5)
+        connection.connect.assert_called_once_with()
+        create_context.return_value.wrap_socket.assert_called_once_with(
+            raw_socket, server_hostname="billing.example.test"
+        )
+        self.assertIs(result, connection)
 
 
 if __name__ == "__main__":

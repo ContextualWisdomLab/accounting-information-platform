@@ -71,6 +71,17 @@ class JournalZeroWireContractTests(unittest.TestCase):
         self.assertEqual(str(proposal.lines[0].credit_amount), "0")
         self.assertEqual(str(proposal.lines[1].debit_amount), "0")
 
+    def test_invalid_decimal_text_reaches_the_domain_amount_guard(self) -> None:
+        """Non-decimal text remains fail-closed when the domain value is constructed."""
+        payload = copy.deepcopy(self._payload())
+        lines = payload["lines"]
+        assert isinstance(lines, list)
+        line = lines[0]
+        assert isinstance(line, dict)
+        line["debit_amount"] = "not-a-decimal"
+        with self.assertRaisesRegex(AccountingValidationError, "amount"):
+            ingest_journal_proposal(payload)
+
 
 if __name__ == "__main__":
     unittest.main()

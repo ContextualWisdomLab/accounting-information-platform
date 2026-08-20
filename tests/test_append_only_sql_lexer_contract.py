@@ -32,8 +32,11 @@ class AppendOnlySqlLexerContractTests(unittest.TestCase):
         """Non-executable journal-mutation text must remain valid migration prose/data."""
         statements = (
             "/* DELETE FROM accounting_core.general_journal; */ SELECT 1;",
+            "/* outer\n/* nested */\n*/ SELECT 1;",
             "-- DROP TABLE accounting_core.journal_entry_line;\nSELECT 1;",
             "SELECT 'DELETE FROM accounting_core.general_journal;';",
+            "SELECT 'it''s\nstill text';",
+            "SELECT 'unterminated",
             "SELECT 'DROP/**/TABLE accounting_core.journal_entry_line;';",
         )
         for statement in statements:

@@ -12,11 +12,11 @@ success.
 - The protected default branch is `develop`; the repository was bootstrapped
   from an empty tree and the accounting foundation is currently developed on
   PR #2 (`feat: establish accounting posting foundation`).
-- PR #2 was observed as Draft before the latest validation; it is now Ready for
-  review at exact head `484663f49bd55712ffe31d07e1fb258ef793471f`. It remains
-  `MERGEABLE` but `BLOCKED`, with `REVIEW_REQUIRED` and required Checks queued.
-  Its repair lane is a temporary self-modifying workflow and is not itself
-  product evidence.
+- PR #2 is now Ready for review at its exact current head. It remains
+  `MERGEABLE` but `BLOCKED`, with `REVIEW_REQUIRED` and required Checks queued;
+  the head and gate state are re-fetched before every synchronized push. Its
+  temporary repair lane has been removed after the contract repairs and was not
+  itself product evidence.
 - PR #4 is a Draft documentation stack on top of the foundation branch. PR #5
   is merged documentation for the buyer/operator README.
 - Open product issues are #1 (foundation), #6 (book-to-bank reconciliation),
@@ -51,6 +51,10 @@ success.
   integration coverage.
 - Branch and statement coverage passed at 100%: 3,452 statements, 1,262
   branches, zero misses or partial branches.
+- The current synchronized tree's CI-equivalent local run also passed: 217
+  tests, 3,554 statements, 1,312 branches, zero misses or partial branches,
+  repository contracts, and compilation. This remains local evidence, not
+  remote Checks evidence.
 - `scripts/validate_repository.py`, `compileall`, and `git diff --check`
   passed locally. These are local observations, not remote Checks results.
 
