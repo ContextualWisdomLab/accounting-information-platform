@@ -57,6 +57,92 @@ def _document_current_reversal_contract() -> None:
         )
 
 
+def _normalize_postgres_regression_setup() -> None:
+    """Patch only the canonical fixture setup and direct-journal helper."""
+    path = Path("tests/test_postgres_posting.py")
+    text = path.read_text(encoding="utf-8")
+    sql_import = "import psycopg\nfrom psycopg import sql\n"
+    if sql_import not in text:
+        import_anchor = "import psycopg\n"
+        if import_anchor not in text:
+            raise SystemExit("PostgreSQL test psycopg import anchor drifted")
+        text = text.replace(import_anchor, sql_import, 1)
+
+    setup_start = text.index("    @classmethod\n    def setUpClass(cls) -> None:\n")
+    setup_end = text.index("\n    def setUp(self) -> None:\n", setup_start)
+    setup = text[setup_start:setup_end]
+    migration_anchor = "        apply_foundation_migration(DATABASE_URL, MIGRATION_PATH)\n"
+    grant_block = '''        with psycopg.connect(DATABASE_URL, autocommit=True) as connection:
+            runtime_role = connection.execute("SELECT current_user").fetchone()[0]
+            connection.execute(
+                sql.SQL("GRANT accounting_closing_writer TO {}").format(
+                    sql.Identifier(runtime_role)
+                )
+            )
+'''
+    if grant_block not in setup:
+        if setup.count(migration_anchor) != 1:
+            raise SystemExit("PostgreSQL setUpClass migration anchor drifted")
+        setup = setup.replace(migration_anchor, migration_anchor + grant_block, 1)
+        text = text[:setup_start] + setup + text[setup_end:]
+
+    helper_start = text.index("    def _raw_insert_general_journal(")
+    helper_end = text.index("    def _close_period(", helper_start)
+    helper = text[helper_start:helper_end]
+    if "account_ids = dict(" not in helper:
+        commit_anchor = "            connection.commit()\n"
+        if helper.count(commit_anchor) != 1:
+            raise SystemExit("raw journal helper commit anchor drifted")
+        balanced_lines = '''            journal_id = connection.execute(
+                """
+                SELECT general_journal_id
+                FROM accounting_core.general_journal
+                WHERE tenant_account_id = %s AND journal_reference = %s
+                """,
+                (self.tenant_id, journal_reference),
+            ).fetchone()[0]
+            account_ids = dict(
+                connection.execute(
+                    """
+                    SELECT chart_account_code, chart_account_id
+                    FROM accounting_core.chart_account
+                    WHERE tenant_account_id = %s
+                      AND chart_account_code IN ('110100', '410100')
+                      AND valid_to IS NULL
+                    """,
+                    (self.tenant_id,),
+                ).fetchall()
+            )
+            for line_number, account_code, role_code, debit_amount, credit_amount in (
+                (1, "110100", "accounts_receivable", Decimal("1"), Decimal("0")),
+                (2, "410100", "usage_revenue", Decimal("0"), Decimal("1")),
+            ):
+                connection.execute(
+                    """
+                    INSERT INTO accounting_core.journal_entry_line (
+                        tenant_account_id, general_journal_id, line_number,
+                        chart_account_id, account_role_code, debit_amount, credit_amount
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        self.tenant_id,
+                        journal_id,
+                        line_number,
+                        account_ids[account_code],
+                        role_code,
+                        debit_amount,
+                        credit_amount,
+                    ),
+                )
+            connection.commit()
+'''
+        helper = helper.replace(commit_anchor, balanced_lines, 1)
+        text = text[:helper_start] + helper + text[helper_end:]
+
+    path.write_text(text, encoding="utf-8")
+
+
 def main() -> None:
     """Repair current HomeTax, reversal, and database-regression failures."""
     command = _load("repair_pr2_command_idempotency")
@@ -77,7 +163,7 @@ def main() -> None:
     followup.normalize_trigger_and_test_cleanup()
 
     _load("repair_pr2_home_tax_replay_outcome").main()
-    aggregate.normalize_postgres_regression_setup()
+    _normalize_postgres_regression_setup()
     _document_current_reversal_contract()
 
 
