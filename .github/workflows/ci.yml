@@ -54,7 +54,11 @@ jobs:
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         shell: bash
-        run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct \"$EXPECTED_SHA\")" >> "$GITHUB_ENV"
+        run: |
+          set -euo pipefail
+          source_date_epoch="$(git show -s --format=%ct "$EXPECTED_SHA")"
+          test -n "$source_date_epoch"
+          printf 'SOURCE_DATE_EPOCH=%s\n' "$source_date_epoch" >> "$GITHUB_ENV"
       - name: Install pinned Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
