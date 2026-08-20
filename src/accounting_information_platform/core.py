@@ -9,6 +9,8 @@ source-to-posting provenance.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -247,6 +249,7 @@ class PostedJournal:
     lines: tuple[PostedJournalLine, ...]
     reversal_of_journal_reference: str | None = None
     reversal_reason_code: str | None = None
+    reversal_idempotency_key: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -309,6 +312,9 @@ class PostingLedger:
         self._journals: dict[tuple[str, str], PostedJournal] = {}
         self._receipts_by_idempotency: dict[tuple[str, str], tuple[str, PostingReceipt]] = {}
         self._reversal_receipts: dict[tuple[str, str], PostingReceipt] = {}
+        self._reversal_command_evidence: dict[
+            tuple[str, str], tuple[str, str, str]
+        ] = {}
 
     @property
     def journal_count(self) -> int:
@@ -376,10 +382,32 @@ class PostingLedger:
         reversal_date: date,
         reversal_reason_code: str,
         policy: AccountingPolicy,
+        *,
+        reversal_idempotency_key: str | None = None,
     ) -> PostingReceipt:
-        """Append the exact opposite of one original journal and preserve lineage."""
+        """Append or exactly replay the opposite of one original journal."""
+        _require_code(reversal_reason_code, "reversal reason code")
+        command_key = (
+            f"reversal:{journal_reference}"
+            if reversal_idempotency_key is None
+            else reversal_idempotency_key.strip()
+        )
+        if not command_key:
+            raise AccountingValidationError("reversal idempotency key must not be empty")
+        command_hash = _reversal_command_hash(
+            tenant_reference=policy.tenant_reference,
+            reversal_idempotency_key=command_key,
+            original_journal_reference=journal_reference,
+            reversal_date=reversal_date,
+            reversal_reason_code=reversal_reason_code,
+        )
         reversal_key = self._tenant_cache_key(policy.tenant_reference, journal_reference)
-        prior_receipt = self._cached_reversal_receipt(policy.tenant_reference, journal_reference)
+        prior_receipt = self._cached_reversal_receipt(
+            policy.tenant_reference,
+            journal_reference,
+            command_key,
+            command_hash,
+        )
         if prior_receipt is not None:
             return prior_receipt
         original = self._journals.get(reversal_key)
@@ -387,6 +415,10 @@ class PostingLedger:
             raise AccountingValidationError("journal does not exist")
         if original.reversal_of_journal_reference is not None:
             raise AccountingValidationError("a reversal journal cannot itself be reversed")
+        if reversal_date < original.accounting_date:
+            raise AccountingValidationError(
+                "reversal date must not precede the original journal accounting date"
+            )
         if not policy.permits(reversal_date):
             raise AccountingValidationError("reversal date belongs to a closed fiscal period")
         if (
@@ -394,19 +426,30 @@ class PostingLedger:
             or original.accounting_book_reference != policy.accounting_book_reference
         ):
             raise AccountingValidationError("reversal policy scope does not match original journal")
-        _require_code(reversal_reason_code, "reversal reason code")
         reversal_reference = f"{journal_reference}:reversal"
         occupant = self._journals.get(
             self._tenant_cache_key(original.tenant_reference, reversal_reference)
         )
         if occupant is not None:
-            if occupant.reversal_of_journal_reference == journal_reference:
-                receipt = self._receipt_for_posted_journal(occupant)
-                self._reversal_receipts[reversal_key] = receipt
-                return receipt
-            raise AccountingValidationError(
-                "posted journal is immutable. Reverse the existing journal, then post a replacement."
+            if occupant.reversal_of_journal_reference != journal_reference:
+                raise AccountingValidationError(
+                    "posted journal is immutable. Reverse the existing journal, then post a replacement."
+                )
+            if (
+                occupant.reversal_idempotency_key != command_key
+                or occupant.source_payload_hash != command_hash
+            ):
+                raise IdempotencyConflictError(
+                    "reversal idempotency key was already used with a different payload"
+                )
+            receipt = self._receipt_for_posted_journal(occupant)
+            self._reversal_receipts[reversal_key] = receipt
+            self._reversal_command_evidence[reversal_key] = (
+                command_key,
+                journal_reference,
+                command_hash,
             )
+            return receipt
         reversal_lines = tuple(
             PostedJournalLine(
                 line_number=line.line_number,
@@ -426,19 +469,20 @@ class PostingLedger:
             transaction_currency=original.transaction_currency,
             functional_currency=original.functional_currency,
             source_proposal_id=original.source_proposal_id,
-            source_payload_hash=original.source_payload_hash,
+            source_payload_hash=command_hash,
             accounting_policy_version=policy.accounting_policy_version,
             posting_rule_version=policy.posting_rule_version,
             lines=reversal_lines,
             reversal_of_journal_reference=journal_reference,
             reversal_reason_code=reversal_reason_code,
+            reversal_idempotency_key=command_key,
         )
         receipt = PostingReceipt(
             receipt_reference=f"{reversal_reference}:receipt",
             journal_reference=reversal_reference,
             posting_status_code="posted",
             source_proposal_id=original.source_proposal_id,
-            source_payload_hash=original.source_payload_hash,
+            source_payload_hash=command_hash,
             tenant_reference=original.tenant_reference,
             legal_entity_reference=original.legal_entity_reference,
             accounting_book_reference=original.accounting_book_reference,
@@ -451,6 +495,11 @@ class PostingLedger:
             reversal
         )
         self._reversal_receipts[reversal_key] = receipt
+        self._reversal_command_evidence[reversal_key] = (
+            command_key,
+            journal_reference,
+            command_hash,
+        )
         return receipt
 
     def trial_balance(
@@ -510,16 +559,29 @@ class PostingLedger:
         return prior_receipt
 
     def _cached_reversal_receipt(
-        self, tenant_reference: str, journal_reference: str
+        self,
+        tenant_reference: str,
+        journal_reference: str,
+        reversal_idempotency_key: str,
+        command_hash: str,
     ) -> PostingReceipt | None:
-        """Return the prior reversal receipt only when the cached tenant matches."""
-        prior_receipt = self._reversal_receipts.get(
-            self._tenant_cache_key(tenant_reference, journal_reference)
-        )
-        if prior_receipt is None:
+        """Return a reversal receipt only when its immutable command evidence matches."""
+        cache_key = self._tenant_cache_key(tenant_reference, journal_reference)
+        prior_receipt = self._reversal_receipts.get(cache_key)
+        if prior_receipt is None or prior_receipt.tenant_reference != tenant_reference:
             return None
-        if prior_receipt.tenant_reference != tenant_reference:
+        evidence = self._reversal_command_evidence.get(cache_key)
+        if evidence is None:
             return None
+        prior_key, prior_original_reference, prior_hash = evidence
+        if (
+            prior_key != reversal_idempotency_key
+            or prior_original_reference != journal_reference
+            or prior_hash != command_hash
+        ):
+            raise IdempotencyConflictError(
+                "reversal idempotency key was already used with a different payload"
+            )
         return prior_receipt
 
     @staticmethod
@@ -577,6 +639,28 @@ class PostingLedger:
             raise AccountingValidationError(
                 "foreign exchange accounting is outside the initial posting milestone"
             )
+
+
+def _reversal_command_hash(
+    *,
+    tenant_reference: str,
+    reversal_idempotency_key: str,
+    original_journal_reference: str,
+    reversal_date: date,
+    reversal_reason_code: str,
+) -> str:
+    """Return the canonical immutable hash for one reversal command."""
+    payload = {
+        "original_journal_reference": original_journal_reference,
+        "reversal_date": reversal_date.isoformat(),
+        "reversal_idempotency_key": reversal_idempotency_key,
+        "reversal_reason_code": reversal_reason_code,
+        "tenant_reference": tenant_reference,
+    }
+    digest = hashlib.sha256(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    return f"sha256:{digest}"
 
 
 def _parse_amount(value: Decimal | str) -> Decimal:
