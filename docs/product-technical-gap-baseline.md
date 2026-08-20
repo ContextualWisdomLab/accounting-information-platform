@@ -17,8 +17,9 @@ success.
   the head and gate state are re-fetched before every synchronized push. Its
   temporary repair lane has been removed after the contract repairs and was not
   itself product evidence.
-- PR #4 is a Draft documentation stack on top of the foundation branch. PR #5
-  is merged documentation for the buyer/operator README.
+- PR #4 is now Ready for review as a documentation and ADR stack on top of the
+  foundation branch; it is not independently mergeable until PR #2 integrates.
+  PR #5 is merged documentation for the buyer/operator README.
 - Open product issues are #1 (foundation), #6 (book-to-bank reconciliation),
   #7 (immutable ISO 20022 statement evidence), #8 (deterministic matching and
   bridge), and #9 (purpose-bound accounting authorization). #7 must precede
