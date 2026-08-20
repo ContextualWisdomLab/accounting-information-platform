@@ -22,7 +22,7 @@ jobs:
     timeout-minutes: 35
     env:
       ACCOUNTING_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/accounting_test
-      REPAIR_SOURCE_SHA: c3408bd501a1a8a7bc468ebea4f016efc2bc84c0
+      REPAIR_SOURCE_SHA: df0ab05b44881d84a6ddfcb93232bfe9928441f4
     services:
       postgres:
         image: postgres:18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
@@ -50,36 +50,25 @@ jobs:
           python-version: "3.13"
           cache: pip
           cache-dependency-path: requirements-quality.txt
-      - name: Materialize pinned repair scripts
+      - name: Materialize pinned current-head repair scripts
         shell: bash
         run: |
           set -euo pipefail
           git fetch --no-tags origin agent/accounting-pr2-ledger-invariants
           git cat-file -e "${REPAIR_SOURCE_SHA}^{commit}"
           for script in \
-            repair_pr2_ledger_invariants.py \
             repair_pr2_command_idempotency.py \
             repair_pr2_followup_adjustments.py \
-            repair_pr2_reversal_temporal_order.py \
-            repair_pr2_remaining_review_contracts.py \
-            repair_pr2_database_immutability.py \
-            repair_pr2_home_tax_replay_outcome.py \
-            repair_pr2_force_rls.py \
             repair_pr2_close_binder_regression.py \
             repair_pr2_all.py \
-            repair_pr2_reversal_key_namespace.py \
-            repair_pr2_http_auth.py \
-            repair_pr2_http_auth_followup.py
+            repair_pr2_current_failures.py
           do
             git show "${REPAIR_SOURCE_SHA}:scripts/${script}" > "/tmp/${script}"
           done
-      - name: Apply exact review repairs
+      - name: Apply current failing-boundary repairs
         run: |
-          python /tmp/repair_pr2_all.py
-          python /tmp/repair_pr2_reversal_key_namespace.py
+          python /tmp/repair_pr2_current_failures.py
           python /tmp/repair_pr2_close_binder_regression.py
-          python /tmp/repair_pr2_http_auth.py
-          python /tmp/repair_pr2_http_auth_followup.py
       - name: Install hash-locked quality dependencies
         run: >-
           python -m pip install
