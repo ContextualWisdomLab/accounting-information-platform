@@ -2,10 +2,30 @@
 
 **Status:** Accepted
 
+## Context
+
+A reversal is a new accounting fact, not a mutation of the original journal. Treating only the original `journal_reference` as the retry identity is insufficient: a second command could reuse that journal while changing the reversal date or reason and accidentally receive the first receipt.
+
 ## Decision
 
-AIS exposes `accept_journal_reversal` and `POST /journal-reversals` on the same stdlib HTTP surface as proposal accept. The command identifies the original journal by `journal_reference` and/or the Billing `idempotency_key` that produced the original receipt, plus `reversal_date` and `reversal_reason_code`. There is no `reversed_by_actor_reference` persistence field. The handler calls existing `PostgresPostingLedger.reverse` after resolving catalog policy from the original journal. The response is the published `accounting_posting_receipt` for the reversing journal. That receipt uses `posting_status_code=posted` (the existing core contract for the reversing journal). The original journal and its receipt stay `posted`. Replay of the same reversal returns the same reversing receipt and writes no second journal. `GET /journal-reversals` is 405. `GET /posting-receipts?idempotency_key=` still returns the original receipt; `reversal:{journal_reference}` looks up the reversing receipt.
+AIS exposes `accept_journal_reversal` and `POST /journal-reversals` on the same stdlib HTTP surface as proposal accept. The request identifies the original journal by `journal_reference`, the Billing `idempotency_key` that produced the original receipt, or both. When both are supplied they must resolve to the same original journal; otherwise the command fails closed. `reversal_date` and `reversal_reason_code` are material command evidence.
+
+The reversal command has a tenant-scoped deterministic retry identity `reversal:{journal_reference}` unless an internal caller supplies an explicit reversal command idempotency key. Its immutable command hash binds all of the following together:
+
+- `tenant_reference`;
+- reversal command idempotency identity;
+- original `journal_reference`;
+- `reversal_date`;
+- `reversal_reason_code`.
+
+Exact replay is permitted only when all of those values match the retained reversal evidence. Reusing the same command identity with a changed date, changed reason, changed original journal, or changed immutable command hash raises an idempotency conflict and writes no second journal. The retained reversing journal must carry enough command identity and hash evidence to make the same decision even when an in-memory receipt cache is absent.
+
+The reversing journal is equal-and-opposite and append-only. Its accounting date cannot precede the original journal accounting date. The original journal and original posting receipt remain unchanged. `{journal_reference}:reversal` is reserved for the reversing journal; an unrelated occupant at that reference fails closed as an immutable-journal collision.
+
+The HTTP handler resolves catalog policy from the original journal and delegates to the PostgreSQL adapter. `GET /journal-reversals` remains a read surface; `GET /posting-receipts?idempotency_key=` continues to return the original Billing receipt, while the reversing receipt is addressed through its reversal posting identity. No reversal path may update or delete posted journal facts.
 
 ## Consequences
 
-Controllers can reverse a posted journal without an in-process Python import. Cross-tenant reverse is rejected before a write. A closed period, unknown journal, or unknown Billing key fails closed and does not invent a reversal. If `{journal_reference}:reversal` is already a posted journal that is not this original's reversing journal, reverse fails closed (`posted journal is immutable`) and writes no second journal. Replay of the same reversal request still returns the original reversing receipt.
+Controllers can reverse a posted journal without editing history. Cross-tenant, cross-book, unknown-journal, invalid-period, temporal-order and occupied-reference cases fail closed before an authoritative second reversal is created. Soft-closed reversal still requires the purpose-limited database capability described in `docs/SECURITY.md` and `docs/OPERABILITY.md`; hard-closed periods reject a new reversal into the locked period.
+
+The in-memory `PostingLedger` is the executable reference oracle for exact command replay. The PostgreSQL adapter must preserve the same command-key plus immutable-hash semantics on durable rows before PR #2 can leave Draft. A passing cache-only replay or predecessor-head test is not sufficient release evidence.
