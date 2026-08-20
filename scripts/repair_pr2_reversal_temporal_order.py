@@ -116,6 +116,12 @@ def add_authority_edge_regression() -> None:
                 self.policy,
                 reversal_idempotency_key="",
             )
+        from accounting_information_platform.persistence import _home_tax_register_view
+
+        self.assertEqual(
+            _home_tax_register_view({"as_of_date": "2026-08-31"}),
+            {"as_of_date": "2026-08-31", "closing_amount": "0"},
+        )
 
         server = self._start_http_server()
         self.addCleanup(server.server_close)
