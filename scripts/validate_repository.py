@@ -171,9 +171,58 @@ def find_placeholder_tokens(text: str) -> tuple[str, ...]:
     return tuple(sorted({match.group(1) for match in PLACEHOLDER_PATTERN.finditer(text)}))
 
 
+def _lex_executable_sql(sql_text: str) -> str:
+    """Mask SQL comments and single-quoted literals while preserving executable tokens."""
+    output: list[str] = []
+    index = 0
+    length = len(sql_text)
+    while index < length:
+        if sql_text.startswith("--", index):
+            output.append(" ")
+            index += 2
+            while index < length and sql_text[index] not in "\r\n":
+                index += 1
+            continue
+        if sql_text.startswith("/*", index):
+            output.append(" ")
+            index += 2
+            depth = 1
+            while index < length and depth:
+                if sql_text.startswith("/*", index):
+                    depth += 1
+                    index += 2
+                    continue
+                if sql_text.startswith("*/", index):
+                    depth -= 1
+                    index += 2
+                    continue
+                if sql_text[index] in "\r\n":
+                    output.append(sql_text[index])
+                index += 1
+            continue
+        if sql_text[index] == "'":
+            output.append(" ")
+            index += 1
+            while index < length:
+                if sql_text[index] == "'":
+                    if index + 1 < length and sql_text[index + 1] == "'":
+                        index += 2
+                        continue
+                    index += 1
+                    break
+                if sql_text[index] in "\r\n":
+                    output.append(sql_text[index])
+                index += 1
+            continue
+        output.append(sql_text[index])
+        index += 1
+    return "".join(output)
+
+
 def validate_append_only_journal_sql(sql_text: str) -> tuple[str, ...]:
-    """Reject destructive mutation of posted journal tables in migrations."""
-    if APPEND_ONLY_JOURNAL_MUTATION_PATTERN.search(sql_text) is None:
+    """Reject executable destructive mutation of posted journal tables in migrations."""
+    executable_sql = _lex_executable_sql(sql_text)
+    if APPEND_ONLY_JOURNAL_MUTATION_PATTERN.search(executable_sql) is None:
         return ()
     return (APPEND_ONLY_JOURNAL_MUTATION_ERROR,)
 
@@ -294,6 +343,7 @@ def validate_public_docstrings(source_root: Path) -> tuple[str, ...]:
             if ast.get_docstring(node) is None:
                 errors.append(f"missing public docstring: {relative_path}:{node.name}")
     return tuple(errors)
+
 
 def validate_repository(root: Path) -> tuple[str, ...]:
     """Return all deterministic repository-contract violations below *root*."""
