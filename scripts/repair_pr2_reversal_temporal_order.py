@@ -146,7 +146,7 @@ def add_authority_edge_regression() -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_root = Path(temporary_directory)
             for name in migration_names:
-                (temporary_root / name).write_text("-- authority-path test\n", encoding="utf-8")
+                (temporary_root / name).write_text("-- authority-path test\\n", encoding="utf-8")
             with self.assertRaisesRegex(AccountingValidationError, "0006_force_tenant_rls"):
                 apply_foundation_migration(
                     DATABASE_URL, temporary_root / migration_names[0]
@@ -154,7 +154,7 @@ def add_authority_edge_regression() -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_root = Path(temporary_directory)
             for name in migration_names + ("0006_force_tenant_rls.sql",):
-                (temporary_root / name).write_text("-- authority-path test\n", encoding="utf-8")
+                (temporary_root / name).write_text("-- authority-path test\\n", encoding="utf-8")
             with self.assertRaisesRegex(AccountingValidationError, "0007_runtime_tenant_binding"):
                 apply_foundation_migration(
                     DATABASE_URL, temporary_root / migration_names[0]
