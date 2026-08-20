@@ -1,0 +1,164 @@
+name: One-shot PR 2 HTTP boundary repair
+
+on:
+  push:
+    branches:
+      - agent/accounting-posting-foundation
+
+permissions:
+  contents: read
+
+concurrency:
+  group: one-shot-pr2-http-boundary
+  cancel-in-progress: true
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact triggering head
+        uses: actions/checkout@631c942040754b6e095e929c1677c07e10ed4f87
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify exact checkout
+        run: test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+      - name: Apply tested HTTP boundary fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          http_path = Path("src/accounting_information_platform/http_api.py")
+          text = http_path.read_text(encoding="utf-8")
+          old_body = '''    def _read_body(self) -> bytes | None:
+              length_text = self.headers.get("Content-Length", "0")
+              if re.fullmatch(r"[0-9]+", length_text) is None:
+                  return b""
+              length = int(length_text)
+              if length > _MAX_REQUEST_BODY_BYTES:
+                  self._write_error(
+                      413,
+                      "request body exceeds 1 MiB. "
+                      "Send a smaller JSON command, then retry.",
+                  )
+                  return None
+              if length < 1:
+                  return b""
+              return self.rfile.read(length)
+          '''
+          new_body = '''    def _read_body(self) -> bytes | None:
+              length_values = self.headers.get_all("Content-Length")
+              if length_values is None or len(length_values) != 1:
+                  self._write_error(
+                      400,
+                      "exactly one Content-Length header is required. "
+                      "Send one ASCII decimal Content-Length, then retry.",
+                  )
+                  return None
+              length_text = length_values[0]
+              if re.fullmatch(r"[0-9]+", length_text) is None:
+                  self._write_error(
+                      400,
+                      "Content-Length must contain ASCII decimal digits only. "
+                      "Send one ASCII decimal Content-Length, then retry.",
+                  )
+                  return None
+              length = int(length_text)
+              if length > _MAX_REQUEST_BODY_BYTES:
+                  self._write_error(
+                      413,
+                      "request body exceeds 1 MiB. "
+                      "Send a smaller JSON command, then retry.",
+                  )
+                  return None
+              if length < 1:
+                  return b""
+              return self.rfile.read(length)
+          '''
+          if old_body not in text:
+              raise SystemExit("_read_body anchor drifted")
+          text = text.replace(old_body, new_body, 1)
+
+          old_tax = '''        try:
+              document = accept_home_tax_submission(
+                  payload, self.server.database_url, tenant_header
+              )
+          except AccountingValidationError as error:
+              self._write_error(404, str(error))
+              return
+          self._write_json(422, document)
+          '''
+          new_tax = '''        try:
+              document = accept_home_tax_submission(
+                  payload, self.server.database_url, tenant_header
+              )
+          except IdempotencyConflictError as error:
+              self._write_error(
+                  409,
+                  f"{error}. Supply a new HomeTax idempotency key, then retry.",
+              )
+              return
+          except AccountingValidationError as error:
+              self._write_error(404, str(error))
+              return
+          self._write_json(422, document)
+          '''
+          if old_tax not in text:
+              raise SystemExit("HomeTax handler anchor drifted")
+          http_path.write_text(text.replace(old_tax, new_tax, 1), encoding="utf-8")
+
+          changelog_path = Path("CHANGELOG.md")
+          changelog = changelog_path.read_text(encoding="utf-8")
+          old_close = "Soft-close still accepts AIS adjusting and append-only reversal through the existing commands; those writers set a transaction-local `accounting_core.journal_write_role` that Billing cannot send."
+          new_close = "Soft-close accepts approved AIS adjusting and append-only reversal writes only when the session login is a member of the purpose-limited `accounting_closing_writer` NOLOGIN capability role **and** the transaction sets the matching `accounting_core.journal_write_role`; the GUC alone is insufficient. Provision and revoke that membership through `docs/SECURITY.md` and `docs/OPERABILITY.md`."
+          if old_close not in changelog:
+              raise SystemExit("soft-close changelog anchor drifted")
+          changelog = changelog.replace(old_close, new_close, 1)
+          old_origin = "`file://`, link-local, and loopback are not fetched unless that exact origin is allowlisted; production config does not allowlist loopback."
+          new_origin = "`file://` is never accepted, and configured `localhost`, loopback, or link-local origins are rejected even when listed in `BILLING_ALLOWED_ORIGINS`."
+          if old_origin not in changelog:
+              raise SystemExit("Billing origin changelog anchor drifted")
+          changelog = changelog.replace(old_origin, new_origin, 1)
+          old_body_note = "Request bodies over 1 MiB are 413 and are not read as empty."
+          new_body_note = "Request bodies over 1 MiB are 413 and are not read as empty; missing, duplicated, non-ASCII, signed, whitespace-padded, or otherwise malformed `Content-Length` framing is 400 before JSON parsing."
+          if old_body_note not in changelog:
+              raise SystemExit("request-body changelog anchor drifted")
+          changelog = changelog.replace(old_body_note, new_body_note, 1)
+          old_tax_note = "HomeTax submission now requires a non-empty tenant-scoped `idempotency_key`, persists that key with the register evidence hash, replays the original rejected receipt on exact retry, and rejects changed evidence or scope without a second row."
+          new_tax_note = "HomeTax submission now requires a non-empty tenant-scoped `idempotency_key`, persists that key with the register evidence hash, replays the original rejected receipt on exact retry, and rejects changed evidence or scope without a second row; HTTP maps that changed-command conflict to 409 rather than a not-found response."
+          if old_tax_note not in changelog:
+              raise SystemExit("HomeTax changelog anchor drifted")
+          changelog_path.write_text(changelog.replace(old_tax_note, new_tax_note, 1), encoding="utf-8")
+          PY
+      - name: Run focused regressions
+        env:
+          PYTHONPATH: src:.
+        run: >-
+          python -m unittest -v
+          tests.test_http_request_boundary_contract
+          tests.test_billing_pull_closed_contract
+          tests.test_journal_zero_wire_contract
+      - name: Compile changed Python
+        run: python -m compileall -q src tests
+      - name: Publish only to unchanged canonical branch
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote_sha="$(git ls-remote origin refs/heads/agent/accounting-posting-foundation | cut -f1)"
+          test "$remote_sha" = "$GITHUB_SHA"
+          rm .github/workflows/repair-pr2-http-boundary.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "fix: reject ambiguous HTTP accounting commands"
+          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:agent/accounting-posting-foundation
