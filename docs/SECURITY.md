@@ -26,7 +26,7 @@ Purpose-bound application authorization is a separate control from PostgreSQL pr
 
 ## PostgreSQL runtime identities
 
-Production runtime access uses a non-owner, non-superuser, non-`BYPASSRLS` login with only the table / schema privileges required by supported application paths. Tenant-scoped authoritative tables use RLS. Real PostgreSQL integration tests must prove both supported same-tenant operations and cross-tenant denial with that restricted identity.
+Production runtime access uses a non-owner, non-superuser, non-`BYPASSRLS` login with only the table / schema privileges required by supported application paths. Tenant-scoped authoritative tables both enable and `FORCE ROW LEVEL SECURITY`; the runtime identity is still deliberately non-owner so ordinary service access never depends on owner-bypass semantics. Real PostgreSQL integration tests must prove an actual restricted login can execute a supported same-tenant posting/read path while cross-tenant rows remain invisible and the login is neither owner, superuser nor `BYPASSRLS`.
 
 Do not run the application as the migration owner. Keep administrative / break-glass credentials out of normal service configuration.
 
@@ -60,6 +60,7 @@ Record grant and revoke actions as control evidence. Do not rely on `SET ROLE` f
 - Money uses exact decimal arithmetic; binary floating-point values are rejected at the contract boundary.
 - PostgreSQL deferred constraint triggers require every durable journal to contain lines and to balance exactly at commit.
 - Posted journal facts are append-only. Corrections use reversal and separately posted replacement when required.
+- Database mutation guards reject update/delete of finalized journal, line, source, reversal, receipt and proposal evidence. Once a posting receipt exists, late line or source-reference inserts into that journal also fail closed; initial posting writes those populations before issuing the receipt.
 - Repository migration checks reject destructive journal mutation patterns, while database immutability controls are the authoritative runtime boundary.
 - Hard-closed periods reject later journal inserts.
 - Reversal accounting dates cannot precede the original accounting date.
