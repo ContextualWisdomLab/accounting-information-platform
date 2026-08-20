@@ -975,7 +975,7 @@ def update_tests() -> None:
     helper_start = tests.index(new_helper_signature)
     helper_end = tests.index("    def _http_home_tax_submissions(", helper_start)
     helper_text = tests[helper_start:helper_end]
-    if payload_tail not in helper_text and payload_tail_new not in helper_text:
+    if payload_tail not in helper_text and '            "idempotency_key":' not in helper_text:
         raise SystemExit("HomeTax HTTP helper payload drifted")
     helper_text = helper_text.replace(payload_tail, payload_tail_new, 1)
     tests = tests[:helper_start] + helper_text + tests[helper_end:]
