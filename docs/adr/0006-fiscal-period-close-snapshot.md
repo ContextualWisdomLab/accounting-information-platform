@@ -1,11 +1,15 @@
 # ADR 0006: Fiscal-period close is a snapshot-and-status transaction
 
-**Status:** Accepted
+**Status:** Superseded in part by ADR 0023
 
 ## Decision
 
-`PostgresPostingLedger.close_fiscal_period` is the first-class close command. In one PostgreSQL transaction it computes the trial balance for one tenant, legal entity, and book through the fiscal period end date, persists that population on the existing `trial_balance_snapshot` and `trial_balance_line` tables, and sets `fiscal_period.period_status_code` to `soft_closed` or `hard_closed`. Posted journals are never rewritten. Re-invoking close on an already `hard_closed` period, or on a period already at the requested status, replays the existing snapshot and writes no second snapshot or close event.
+`PostgresPostingLedger.close_fiscal_period` is the first-class close command. The current authoritative sequence is the two-step rule defined by ADR 0023. A `soft_closed` command changes the fiscal-period status only: it writes no `trial_balance_snapshot`, no `trial_balance_line`, and no period-closing journal. A later `hard_closed` command posts the AIS period-closing journal first, computes the live trial balance for the tenant, legal entity, and accounting book through the period end date, persists exactly one `trial_balance_snapshot` population, and then hard-closes the period in the same governed transaction. Posted journals are never rewritten.
+
+An exact hard-close replay returns the existing snapshot and writes no second snapshot, closing journal, or close event. A `hard_closed` period cannot transition back to `soft_closed`. Soft-close replay remains snapshot-free.
 
 ## Consequences
 
-Controllers close books through the posting adapter instead of a raw status update. Ordinary posting remains rejected for every non-open period status and writes zero proposal, journal, line, or receipt rows. The database insert guard in `0005_closed_period_guard.sql` enforces that same closed-period truth when a privileged connection bypasses Python: the closer inserts the AIS period-closing journal first, then sets `soft_closed` or `hard_closed`. Soft-close may later upgrade to hard-close by reusing the same snapshot. A hard-closed period without a snapshot fails closed and names the restore-and-retry action. ADR 0023 supersedes the snapshot-on-soft-close and reuse-on-upgrade parts: soft-close writes no snapshot, and hard-close after soft-close snapshots the live book once.
+Controllers close books through the posting adapter instead of a raw status update. Ordinary posting is rejected for every non-open period. The database insert guard in `0005_closed_period_guard.sql` permits only purpose-limited AIS close/adjust/reversal writes while a period is `soft_closed`; every insert is rejected once the period is `hard_closed`. The caller-controlled `accounting_core.journal_write_role` GUC is classification metadata, not sufficient authorization by itself.
+
+The former snapshot-on-soft-close and snapshot-reuse-on-upgrade wording in this ADR is superseded by ADR 0023. Operational and reporting code must therefore treat the hard-close snapshot as the only persisted post-close trial-balance population and must never infer that a soft-close created one.
