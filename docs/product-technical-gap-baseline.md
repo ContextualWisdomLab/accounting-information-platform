@@ -47,17 +47,19 @@ success.
 
 - Local Python 3.13.14 with hash-locked quality dependencies was used; no
   system-runtime dependency was added.
-- Real PostgreSQL 18.4 on `127.0.0.1` was used with a local test role and
-  database. The full suite passed: 182 tests, including HTTP and PostgreSQL
-  integration coverage.
-- Branch and statement coverage passed at 100%: 3,452 statements, 1,262
-  branches, zero misses or partial branches.
-- The current synchronized tree's CI-equivalent local run also passed: 217
-  tests, 3,554 statements, 1,312 branches, zero misses or partial branches,
-  repository contracts, and compilation. This remains local evidence, not
+- At foundation branch HEAD `7a360e3`, real PostgreSQL 18.4 on `127.0.0.1`
+  was used with a local test role and database. The full suite passed: 227
+  tests, including deferred-balance, finalized-ledger immutability, forced
+  runtime RLS, HTTP, and PostgreSQL integration coverage.
+- Branch and statement coverage passed at 100%: 3,626 statements, 1,334
+  branches, zero misses or partial branches. This is local evidence, not
   remote Checks evidence.
+- The local supply-chain evidence run produced two reproducible wheels with
+  identical SHA-256 digests, an SPDX 2.3 SBOM, and verified `SHA256SUMS`
+  output. This does not replace the remote attestation and artifact checks.
 - `scripts/validate_repository.py`, `compileall`, and `git diff --check`
-  passed locally. These are local observations, not remote Checks results.
+  passed locally. Remote PR #2 required Checks remain a separate gate, and
+  no qualifying approval or protected merge SHA has been observed yet.
 
 ## Ordered development loop
 
