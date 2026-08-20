@@ -1,0 +1,339 @@
+"""Bind tenant RLS to an admin-provisioned runtime database identity."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+
+def _read(path: str) -> str:
+    """Return one UTF-8 repository file."""
+    return Path(path).read_text(encoding="utf-8")
+
+
+def _write(path: str, text: str) -> None:
+    """Replace one UTF-8 repository file."""
+    Path(path).write_text(text, encoding="utf-8")
+
+
+def add_runtime_tenant_binding_migration() -> None:
+    """Make a runtime login's tenant authority independent of caller-settable GUCs."""
+    path = Path("database/migrations/0007_runtime_tenant_binding.sql")
+    if path.exists():
+        return
+    migration = r'''BEGIN;
+
+DO $role_setup$
+BEGIN
+    IF to_regrole('accounting_runtime_user') IS NULL THEN
+        CREATE ROLE accounting_runtime_user NOLOGIN;
+    END IF;
+END
+$role_setup$;
+
+CREATE TABLE accounting_core.runtime_tenant_binding (
+    runtime_tenant_binding_id uuid PRIMARY KEY DEFAULT uuidv7(),
+    runtime_database_role name NOT NULL UNIQUE,
+    tenant_account_id uuid NOT NULL REFERENCES accounting_core.tenant_account (tenant_account_id),
+    recorded_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    UNIQUE (tenant_account_id, runtime_tenant_binding_id)
+);
+
+REVOKE ALL ON accounting_core.runtime_tenant_binding FROM PUBLIC;
+REVOKE ALL ON accounting_core.runtime_tenant_binding FROM accounting_runtime_user;
+
+CREATE OR REPLACE FUNCTION accounting_core.current_tenant_account_id()
+RETURNS uuid
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, accounting_core
+AS $$
+    SELECT CASE
+        WHEN pg_has_role(session_user, 'accounting_runtime_user', 'MEMBER') THEN (
+            SELECT runtime_binding.tenant_account_id
+            FROM accounting_core.runtime_tenant_binding AS runtime_binding
+            WHERE runtime_binding.runtime_database_role = session_user::name
+        )
+        ELSE nullif(current_setting('app.tenant_account_id', true), '')::uuid
+    END
+$$;
+
+ALTER TABLE accounting_core.tenant_account ENABLE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.tenant_account FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_account_isolation ON accounting_core.tenant_account
+    USING (tenant_account_id = accounting_core.current_tenant_account_id())
+    WITH CHECK (tenant_account_id = accounting_core.current_tenant_account_id());
+
+GRANT USAGE ON SCHEMA accounting_core, accounting_integration, accounting_reporting
+    TO accounting_runtime_user;
+GRANT EXECUTE ON FUNCTION accounting_core.current_tenant_account_id()
+    TO accounting_runtime_user;
+
+GRANT SELECT ON accounting_core.tenant_account,
+                accounting_core.legal_entity_record,
+                accounting_core.accounting_book,
+                accounting_core.chart_account,
+                accounting_core.account_role_mapping,
+                accounting_core.fiscal_calendar,
+                accounting_core.fiscal_period,
+                accounting_core.general_journal,
+                accounting_core.journal_entry_line,
+                accounting_core.journal_source_reference,
+                accounting_core.journal_reversal,
+                accounting_integration.journal_proposal_record,
+                accounting_integration.posting_receipt,
+                accounting_integration.outbox_event,
+                accounting_integration.home_tax_submission,
+                accounting_reporting.trial_balance_snapshot,
+                accounting_reporting.trial_balance_line
+    TO accounting_runtime_user;
+
+GRANT INSERT ON accounting_core.fiscal_calendar,
+                accounting_core.fiscal_period,
+                accounting_core.general_journal,
+                accounting_core.journal_entry_line,
+                accounting_core.journal_source_reference,
+                accounting_core.journal_reversal,
+                accounting_integration.journal_proposal_record,
+                accounting_integration.posting_receipt,
+                accounting_integration.outbox_event,
+                accounting_integration.home_tax_submission,
+                accounting_reporting.trial_balance_snapshot,
+                accounting_reporting.trial_balance_line
+    TO accounting_runtime_user;
+
+GRANT UPDATE ON accounting_core.fiscal_period,
+                accounting_integration.journal_proposal_record,
+                accounting_integration.outbox_event
+    TO accounting_runtime_user;
+
+COMMIT;
+'''
+    path.write_text(migration, encoding="utf-8")
+
+
+def extend_foundation_installer() -> None:
+    """Apply the runtime-tenant binding after forced RLS on every clean install."""
+    path = "src/accounting_information_platform/persistence.py"
+    text = _read(path)
+    force_check = '''    force_rls_migration_path = migration_path.parent / "0006_force_tenant_rls.sql"
+    if not force_rls_migration_path.is_file():
+        raise AccountingValidationError(
+            f"Forced-RLS migration is missing at {force_rls_migration_path}. "
+            "Restore database/migrations/0006_force_tenant_rls.sql, then retry."
+        )
+    psycopg = _import_psycopg()
+'''
+    runtime_check = '''    force_rls_migration_path = migration_path.parent / "0006_force_tenant_rls.sql"
+    if not force_rls_migration_path.is_file():
+        raise AccountingValidationError(
+            f"Forced-RLS migration is missing at {force_rls_migration_path}. "
+            "Restore database/migrations/0006_force_tenant_rls.sql, then retry."
+        )
+    runtime_tenant_migration_path = migration_path.parent / "0007_runtime_tenant_binding.sql"
+    if not runtime_tenant_migration_path.is_file():
+        raise AccountingValidationError(
+            f"Runtime-tenant binding migration is missing at {runtime_tenant_migration_path}. "
+            "Restore database/migrations/0007_runtime_tenant_binding.sql, then retry."
+        )
+    psycopg = _import_psycopg()
+'''
+    if runtime_check not in text:
+        if force_check not in text:
+            raise SystemExit("runtime-tenant migration path anchor drifted")
+        text = text.replace(force_check, runtime_check, 1)
+
+    execute_anchor = '''            connection.execute(period_guard_migration_path.read_text(encoding="utf-8"))
+            connection.execute(force_rls_migration_path.read_text(encoding="utf-8"))
+'''
+    execute_replacement = execute_anchor + '''            connection.execute(runtime_tenant_migration_path.read_text(encoding="utf-8"))
+'''
+    if "connection.execute(runtime_tenant_migration_path.read_text" not in text:
+        if execute_anchor not in text:
+            raise SystemExit("runtime-tenant migration execution anchor drifted")
+        text = text.replace(execute_anchor, execute_replacement, 1)
+    _write(path, text)
+
+
+def add_runtime_identity_regression() -> None:
+    """Prove a runtime member cannot select another tenant by setting the old GUC."""
+    path = "tests/test_postgres_posting.py"
+    text = _read(path)
+    if "test_runtime_database_identity_cannot_switch_tenant_with_guc" in text:
+        return
+    marker = "    def _seed_master_data(self, *, period_status_code: str) -> str:\n"
+    regression = '''    def test_runtime_database_identity_cannot_switch_tenant_with_guc(self) -> None:
+        """RLS derives a runtime tenant from session_user, not a caller-controlled setting."""
+        runtime_role = f"accounting_runtime_{uuid.uuid4().hex[:12]}"
+        other_tenant_code = f"urn:cwl:tenant_other_{uuid.uuid4().hex[:12]}"
+        with psycopg.connect(DATABASE_URL, autocommit=True) as administrator:
+            other_tenant_id = administrator.execute(
+                """
+                INSERT INTO accounting_core.tenant_account (tenant_account_code)
+                VALUES (%s)
+                RETURNING tenant_account_id
+                """,
+                (other_tenant_code,),
+            ).fetchone()[0]
+            administrator.execute(
+                """
+                INSERT INTO accounting_core.legal_entity_record (
+                    tenant_account_id, legal_entity_code, entity_name,
+                    functional_currency_code, valid_from
+                )
+                VALUES (%s, 'OTHER-ENTITY', 'Other Tenant Entity', 'KRW', clock_timestamp())
+                """,
+                (other_tenant_id,),
+            )
+            administrator.execute(
+                sql.SQL("CREATE ROLE {} NOLOGIN").format(sql.Identifier(runtime_role))
+            )
+            administrator.execute(
+                sql.SQL("GRANT accounting_runtime_user TO {}").format(
+                    sql.Identifier(runtime_role)
+                )
+            )
+            administrator.execute(
+                """
+                INSERT INTO accounting_core.runtime_tenant_binding (
+                    runtime_database_role, tenant_account_id
+                )
+                VALUES (%s, %s)
+                """,
+                (runtime_role, self.tenant_id),
+            )
+
+        connection = psycopg.connect(DATABASE_URL)
+        try:
+            connection.execute(
+                sql.SQL("SET SESSION AUTHORIZATION {}").format(
+                    sql.Identifier(runtime_role)
+                )
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT accounting_core.current_tenant_account_id()"
+                ).fetchone()[0],
+                self.tenant_id,
+            )
+            connection.execute(
+                "SELECT set_config('app.tenant_account_id', %s, false)",
+                (str(other_tenant_id),),
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT accounting_core.current_tenant_account_id()"
+                ).fetchone()[0],
+                self.tenant_id,
+            )
+            visible_tenants = connection.execute(
+                "SELECT tenant_account_id FROM accounting_core.tenant_account"
+            ).fetchall()
+            self.assertEqual(visible_tenants, [(self.tenant_id,)])
+            other_entities = connection.execute(
+                """
+                SELECT count(*)
+                FROM accounting_core.legal_entity_record
+                WHERE tenant_account_id = %s
+                """,
+                (other_tenant_id,),
+            ).fetchone()[0]
+            self.assertEqual(other_entities, 0)
+            own_period_write = connection.execute(
+                """
+                UPDATE accounting_core.fiscal_period
+                   SET recorded_at = recorded_at
+                 WHERE tenant_account_id = %s
+                RETURNING fiscal_period_id
+                """,
+                (self.tenant_id,),
+            ).fetchone()
+            self.assertIsNotNone(own_period_write)
+            cross_tenant_write = connection.execute(
+                """
+                UPDATE accounting_core.fiscal_period
+                   SET recorded_at = recorded_at
+                 WHERE tenant_account_id = %s
+                RETURNING fiscal_period_id
+                """,
+                (other_tenant_id,),
+            ).fetchone()
+            self.assertIsNone(cross_tenant_write)
+            connection.rollback()
+        finally:
+            connection.close()
+            with psycopg.connect(DATABASE_URL, autocommit=True) as administrator:
+                administrator.execute(
+                    "DELETE FROM accounting_core.runtime_tenant_binding WHERE runtime_database_role = %s",
+                    (runtime_role,),
+                )
+                administrator.execute(
+                    "DELETE FROM accounting_core.legal_entity_record WHERE tenant_account_id = %s",
+                    (other_tenant_id,),
+                )
+                administrator.execute(
+                    "DELETE FROM accounting_core.tenant_account WHERE tenant_account_id = %s",
+                    (other_tenant_id,),
+                )
+                administrator.execute(
+                    sql.SQL("DROP OWNED BY {}").format(sql.Identifier(runtime_role))
+                )
+                administrator.execute(
+                    sql.SQL("DROP ROLE {}").format(sql.Identifier(runtime_role))
+                )
+
+'''
+    if marker not in text:
+        raise SystemExit("runtime-tenant PostgreSQL test insertion marker drifted")
+    _write(path, text.replace(marker, regression + marker, 1))
+
+
+def update_docs() -> None:
+    """Document that the tenant GUC is compatibility metadata, not runtime authority."""
+    security_path = "docs/SECURITY.md"
+    security = _read(security_path).rstrip()
+    section = '''
+
+## Database runtime tenant authority
+
+Production application logins are members of the NOLOGIN `accounting_runtime_user` role and are provisioned in `accounting_core.runtime_tenant_binding` by a migration/admin identity. For those runtime members, `accounting_core.current_tenant_account_id()` derives tenant authority from immutable `session_user` membership/binding and ignores caller changes to `app.tenant_account_id`. The legacy GUC remains an administrator/test compatibility path only for sessions that are not application-runtime members. Runtime roles have no privileges on `runtime_tenant_binding` and cannot rebind themselves. `tenant_account` itself is RLS-protected so a runtime login cannot enumerate sibling tenants.
+'''
+    if "## Database runtime tenant authority" not in security:
+        security += section
+    _write(security_path, security.rstrip() + "\n")
+
+    operability_path = "docs/OPERABILITY.md"
+    operability = _read(operability_path).rstrip()
+    section = '''
+
+## Runtime tenant provisioning
+
+Create the application login outside normal request handling, grant it membership in `accounting_runtime_user`, and insert exactly one `runtime_tenant_binding` row through an audited migration/admin session. Do not grant the runtime login privileges on that binding table, role administration, `BYPASSRLS`, or superuser. The HTTP server tenant binding and authenticated token tenant must match the tenant mapped to the database `session_user`; a mismatch fails before accounting work rather than switching RLS with a request-controlled GUC.
+'''
+    if "## Runtime tenant provisioning" not in operability:
+        operability += section
+    _write(operability_path, operability.rstrip() + "\n")
+
+    changelog_path = "CHANGELOG.md"
+    changelog = _read(changelog_path)
+    entry = "- Bound production tenant RLS to an admin-provisioned runtime database identity so application sessions cannot switch tenants by setting `app.tenant_account_id`.\n"
+    if entry not in changelog:
+        marker = "### Security\n"
+        if marker in changelog:
+            changelog = changelog.replace(marker, marker + "\n" + entry, 1)
+        else:
+            changelog = changelog.rstrip() + "\n\n### Security\n\n" + entry
+    _write(changelog_path, changelog)
+
+
+def main() -> None:
+    """Install runtime-role tenant binding, regression evidence, and operator contract."""
+    add_runtime_tenant_binding_migration()
+    extend_foundation_installer()
+    add_runtime_identity_regression()
+    update_docs()
+
+
+if __name__ == "__main__":
+    main()
