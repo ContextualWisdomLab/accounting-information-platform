@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 import psycopg
+from psycopg import sql
 
 from tests import test_postgres_posting as posting
 
@@ -133,17 +134,33 @@ class PostgresInvariantBoundaryTests(unittest.TestCase):
                 "WHERE tenant_account_id = %s AND fiscal_period_id = %s",
                 (self.case.tenant_id, ids[2]),
             )
-            admin.execute(f'CREATE ROLE "{plain_role}" LOGIN PASSWORD %s', (password,))
-            admin.execute(f'CREATE ROLE "{closer_role}" LOGIN PASSWORD %s', (password,))
             for role_name in (plain_role, closer_role):
-                admin.execute(f'GRANT USAGE ON SCHEMA accounting_core TO "{role_name}"')
                 admin.execute(
-                    f'GRANT SELECT ON accounting_core.fiscal_period TO "{role_name}"'
+                    sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(
+                        sql.Identifier(role_name),
+                        sql.Literal(password),
+                    )
                 )
                 admin.execute(
-                    f'GRANT INSERT ON accounting_core.general_journal TO "{role_name}"'
+                    sql.SQL("GRANT USAGE ON SCHEMA accounting_core TO {}").format(
+                        sql.Identifier(role_name)
+                    )
                 )
-            admin.execute(f'GRANT accounting_closing_writer TO "{closer_role}"')
+                admin.execute(
+                    sql.SQL(
+                        "GRANT SELECT ON accounting_core.fiscal_period TO {}"
+                    ).format(sql.Identifier(role_name))
+                )
+                admin.execute(
+                    sql.SQL(
+                        "GRANT INSERT ON accounting_core.general_journal TO {}"
+                    ).format(sql.Identifier(role_name))
+                )
+            admin.execute(
+                sql.SQL("GRANT accounting_closing_writer TO {}").format(
+                    sql.Identifier(closer_role)
+                )
+            )
 
         self.addCleanup(self._drop_test_roles, plain_role, closer_role)
 
@@ -343,8 +360,18 @@ class PostgresInvariantBoundaryTests(unittest.TestCase):
     def _drop_test_roles(plain_role: str, closer_role: str) -> None:
         """Remove purpose-limited test login roles even when an assertion fails."""
         with psycopg.connect(posting.DATABASE_URL, autocommit=True) as admin:
-            admin.execute(f'DROP ROLE IF EXISTS "{closer_role}"')
-            admin.execute(f'DROP ROLE IF EXISTS "{plain_role}"')
+            admin.execute(
+                sql.SQL("REVOKE accounting_closing_writer FROM {}").format(
+                    sql.Identifier(closer_role)
+                )
+            )
+            for role_name in (closer_role, plain_role):
+                admin.execute(
+                    sql.SQL("DROP OWNED BY {}").format(sql.Identifier(role_name))
+                )
+                admin.execute(
+                    sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(role_name))
+                )
 
 
 if __name__ == "__main__":
