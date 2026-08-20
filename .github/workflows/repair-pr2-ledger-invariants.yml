@@ -62,6 +62,7 @@ jobs:
             repair_pr2_followup_adjustments.py \
             repair_pr2_home_tax_replay_outcome.py \
             repair_pr2_reversal_temporal_order.py \
+            repair_pr2_remaining_review_contracts.py \
             repair_pr2_close_binder_regression.py \
             repair_pr2_balance_regression_after_finalization.py \
             repair_pr2_database_immutability.py \
@@ -74,6 +75,7 @@ jobs:
       - name: Apply current failing-boundary repairs
         run: |
           python /tmp/repair_pr2_current_failures.py
+          python /tmp/repair_pr2_remaining_review_contracts.py
           python /tmp/repair_pr2_close_binder_regression.py
           python - <<'PY'
           import importlib.util
