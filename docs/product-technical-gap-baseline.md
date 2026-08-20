@@ -47,7 +47,7 @@ success.
 
 - Local Python 3.13.14 with hash-locked quality dependencies was used; no
   system-runtime dependency was added.
-- At foundation branch HEAD `7a360e3`, real PostgreSQL 18.4 on `127.0.0.1`
+- At foundation branch HEAD `20e9fb4`, real PostgreSQL 18.4 on `127.0.0.1`
   was used with a local test role and database. The full suite passed: 227
   tests, including deferred-balance, finalized-ledger immutability, forced
   runtime RLS, HTTP, and PostgreSQL integration coverage.
