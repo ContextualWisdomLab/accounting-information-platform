@@ -242,8 +242,15 @@ def _require_billing_base_url(billing_base_url: str) -> str:
 
 def _canonical_billing_origin(billing_base_url: str) -> str:
     """Return scheme://host[:port] so a body path or userinfo cannot redirect the pull."""
-    parsed = urlparse(_require_billing_base_url(billing_base_url))
-    hostname = parsed.hostname
+    try:
+        parsed = urlparse(_require_billing_base_url(billing_base_url))
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError as error:
+        raise AccountingValidationError(
+            "BILLING_BASE_URL must be an http or https origin. "
+            "Set BILLING_BASE_URL to the Billing origin, then retry the pull."
+        ) from error
     if parsed.scheme not in {"http", "https"} or not hostname:
         raise AccountingValidationError(
             "BILLING_BASE_URL must be an http or https origin. "
@@ -252,7 +259,6 @@ def _canonical_billing_origin(billing_base_url: str) -> str:
     host = hostname.lower()
     if ":" in host:
         host = f"[{host}]"
-    port = parsed.port
     if port is None or (parsed.scheme == "http" and port == 80) or (
         parsed.scheme == "https" and port == 443
     ):
