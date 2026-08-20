@@ -21,13 +21,16 @@ ALTER TABLE accounting_reporting.trial_balance_snapshot
     CHECK (btrim(close_idempotency_key) <> '');
 
 ALTER TABLE accounting_reporting.trial_balance_snapshot
-    ADD CONSTRAINT close_idempotency_scope_unique
+    ADD CONSTRAINT close_idempotency_tenant_key_unique
+    UNIQUE (tenant_account_id, close_idempotency_key);
+
+ALTER TABLE accounting_reporting.trial_balance_snapshot
+    ADD CONSTRAINT close_snapshot_scope_unique
     UNIQUE (
         tenant_account_id,
         legal_entity_id,
         accounting_book_id,
-        fiscal_period_id,
-        close_idempotency_key
+        fiscal_period_id
     );
 
 COMMIT;
