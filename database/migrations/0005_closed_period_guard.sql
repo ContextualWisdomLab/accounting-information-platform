@@ -175,7 +175,9 @@ $$;
 
 DROP TRIGGER IF EXISTS journal_reversal_temporal_guard
     ON accounting_core.journal_reversal;
-CREATE TRIGGER journal_reversal_temporal_guard
+DROP TRIGGER IF EXISTS journal_reversal_first_temporal_guard
+    ON accounting_core.journal_reversal;
+CREATE TRIGGER journal_reversal_first_temporal_guard
     BEFORE INSERT ON accounting_core.journal_reversal
     FOR EACH ROW
     EXECUTE FUNCTION accounting_core.guard_reversal_temporal_order();
@@ -215,7 +217,9 @@ $$;
 
 DROP TRIGGER IF EXISTS journal_reversal_finalization_guard
     ON accounting_core.journal_reversal;
-CREATE TRIGGER journal_reversal_finalization_guard
+DROP TRIGGER IF EXISTS journal_reversal_second_finalization_guard
+    ON accounting_core.journal_reversal;
+CREATE TRIGGER journal_reversal_second_finalization_guard
     BEFORE INSERT ON accounting_core.journal_reversal
     FOR EACH ROW
     EXECUTE FUNCTION accounting_core.guard_reversal_lineage_insert();
