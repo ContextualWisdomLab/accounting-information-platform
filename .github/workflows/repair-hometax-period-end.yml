@@ -1,0 +1,189 @@
+name: Repair HomeTax rejected receipt period date
+
+on:
+  push:
+    branches:
+      - agent/accounting-posting-foundation
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repair-hometax-period-end-current-head
+  cancel-in-progress: true
+
+jobs:
+  red-green-normalize:
+    if: github.actor != 'github-actions[bot]'
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      ACCOUNTING_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/accounting_test
+      SOURCE_SHA: ${{ github.sha }}
+    services:
+      postgres:
+        image: postgres:18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: accounting_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d accounting_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Check out exact triggering head
+        uses: actions/checkout@631c942040754b6e095e929c1677c07e10ed4f87
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify exact checkout
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+      - name: Pin reproducible build timestamp
+        shell: bash
+        run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct \"$SOURCE_SHA\")" >> "$GITHUB_ENV"
+      - name: Install pinned Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-quality.txt
+      - name: Install hash-locked quality dependencies
+        run: >-
+          python -m pip install
+          --disable-pip-version-check
+          --only-binary=:all:
+          --require-hashes
+          -r requirements-quality.txt
+      - name: Strengthen RED PostgreSQL regression
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("tests/test_postgres_posting.py")
+          text = path.read_text(encoding="utf-8")
+          anchor = '''        self.assertEqual(len(listed["home_tax_submissions"]), 1)\n        self.assertEqual(\n            listed["home_tax_submissions"][0]["rejection_reason_code"],\n            "register_unavailable",\n        )\n'''
+          replacement = '''        self.assertEqual(len(listed["home_tax_submissions"]), 1)\n        self.assertEqual(\n            document["vat_period_register"]["as_of_date"],\n            "2026-08-31",\n        )\n        self.assertEqual(\n            listed["home_tax_submissions"][0]["vat_period_register"]["as_of_date"],\n            "2026-08-31",\n        )\n        self.assertNotEqual(\n            listed["home_tax_submissions"][0]["vat_period_register"]["as_of_date"],\n            "0001-01-01",\n        )\n        self.assertEqual(\n            listed["home_tax_submissions"][0]["rejection_reason_code"],\n            "register_unavailable",\n        )\n'''
+          if replacement in text:
+              raise SystemExit("RED regression already present; inspect current head before repairing")
+          if anchor not in text:
+              raise SystemExit("HomeTax incomplete-register regression anchor drifted")
+          path.write_text(text.replace(anchor, replacement, 1), encoding="utf-8")
+          PY
+      - name: Verify RED fails for synthetic minimum date
+        env:
+          PYTHONPATH: src:.
+        shell: bash
+        run: |
+          set +e
+          python -m unittest discover -s tests -p 'test_postgres_posting.py' -k register_document_is_incomplete -v > /tmp/red.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/red.log
+          test "$status" -ne 0
+          grep -F "0001-01-01" /tmp/red.log
+          grep -F "2026-08-31" /tmp/red.log
+      - name: Implement period-end fallback and document contract
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          persistence = Path("src/accounting_information_platform/persistence.py")
+          text = persistence.read_text(encoding="utf-8")
+          old_date = '''        raw_as_of_date = str(register_document.get("as_of_date") or "")\n        as_of_date = date.fromisoformat(raw_as_of_date) if raw_as_of_date else date.min\n        closing_amount = Decimal(str(register_document.get("closing_amount") or "0"))\n'''
+          new_date = '''        raw_as_of_date = str(register_document.get("as_of_date") or "")\n        as_of_date = date.fromisoformat(raw_as_of_date) if raw_as_of_date else None\n        closing_amount = Decimal(str(register_document.get("closing_amount") or "0"))\n'''
+          old_period = '''            period_id, _period_status, _period_end_date = self._require_fiscal_period(\n                connection,\n                tenant_id,\n                period_code,\n                next_action="the home-tax-submission",\n            )\n            row = connection.execute(\n'''
+          new_period = '''            period_id, _period_status, period_end_date = self._require_fiscal_period(\n                connection,\n                tenant_id,\n                period_code,\n                next_action="the home-tax-submission",\n            )\n            if as_of_date is None:\n                as_of_date = period_end_date\n            row = connection.execute(\n'''
+          old_return = '''        return _home_tax_submission_document(\n            home_tax_submission_id=str(row[0]),\n            tenant_reference=self._tenant_reference,\n            legal_entity_reference=legal_entity_reference,\n            book_reference=accounting_book_reference,\n            period_code=period_code,\n            vat_period_register=_home_tax_register_view(register_document),\n            rejection_reason_code=str(row[2]),\n            submission_status_code=str(row[1]),\n        )\n'''
+          new_return = '''        receipt_register = _home_tax_register_view(register_document)\n        if not receipt_register.get("as_of_date"):\n            receipt_register["as_of_date"] = row[3].isoformat()\n        return _home_tax_submission_document(\n            home_tax_submission_id=str(row[0]),\n            tenant_reference=self._tenant_reference,\n            legal_entity_reference=legal_entity_reference,\n            book_reference=accounting_book_reference,\n            period_code=period_code,\n            vat_period_register=receipt_register,\n            rejection_reason_code=str(row[2]),\n            submission_status_code=str(row[1]),\n        )\n'''
+          for old, new, label in (
+              (old_date, new_date, "date fallback"),
+              (old_period, new_period, "period resolution"),
+              (old_return, new_return, "receipt projection"),
+          ):
+              if old not in text:
+                  raise SystemExit(f"HomeTax {label} anchor drifted")
+              text = text.replace(old, new, 1)
+          persistence.write_text(text, encoding="utf-8")
+
+          adr = Path("docs/adr/0046-http-home-tax-submission.md")
+          adr_text = adr.read_text(encoding="utf-8")
+          old_sentence = "Rejected receipts that have resolved catalog foreign keys are persisted on `accounting_integration.home_tax_submission`. The command must carry a non-empty tenant-scoped `idempotency_key`; the database makes that key unique per tenant and stores `as_of_date`, `closing_amount`, and `register_payload_hash`."
+          new_sentence = "Rejected receipts that have resolved catalog foreign keys are persisted on `accounting_integration.home_tax_submission`. The command must carry a non-empty tenant-scoped `idempotency_key`; the database makes that key unique per tenant and stores `as_of_date`, `closing_amount`, and `register_payload_hash`. If a structurally incomplete register projection omits `as_of_date`, the rejected receipt derives `as_of_date` from the already-resolved fiscal period end; it never persists a synthetic minimum date."
+          if old_sentence not in adr_text:
+              raise SystemExit("HomeTax ADR persistence anchor drifted")
+          adr.write_text(adr_text.replace(old_sentence, new_sentence, 1), encoding="utf-8")
+
+          changelog = Path("CHANGELOG.md")
+          changelog_text = changelog.read_text(encoding="utf-8")
+          marker = "### Fixed\n"
+          bullet = "- HomeTax `register_unavailable` receipts now derive a missing register `as_of_date` from the resolved fiscal-period end instead of persisting `0001-01-01`, keeping the immediate rejection and later receipt read consistent.\n"
+          if bullet not in changelog_text:
+              if marker not in changelog_text:
+                  raise SystemExit("CHANGELOG Fixed section is missing")
+              changelog_text = changelog_text.replace(marker, marker + "\n" + bullet, 1)
+              changelog.write_text(changelog_text, encoding="utf-8")
+          PY
+      - name: Verify focused GREEN PostgreSQL regression
+        env:
+          PYTHONPATH: src:.
+        run: python -m unittest discover -s tests -p 'test_postgres_posting.py' -k register_document_is_incomplete -v
+      - name: Run full PostgreSQL and repository suite
+        env:
+          PYTHONPATH: src:.
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Run complete production branch coverage
+        env:
+          PYTHONPATH: src:.
+        run: python -m coverage run --branch -m unittest discover -s tests -p 'test_*.py'
+      - name: Enforce coverage and repository contracts
+        run: |
+          python -m coverage report --fail-under=100 --show-missing
+          python scripts/validate_repository.py .
+          python -m compileall -q src scripts tests
+          git diff --check
+      - name: Verify reproducible package and local SBOM evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf dist dist-rebuild build src/*.egg-info
+          mkdir -p dist dist-rebuild
+          python -m pip wheel --no-deps --no-build-isolation -w dist .
+          rm -rf build src/*.egg-info
+          python -m pip wheel --no-deps --no-build-isolation -w dist-rebuild .
+          primary_wheel="$(find dist -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          rebuilt_wheel="$(find dist-rebuild -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          test -n "$primary_wheel"
+          test -n "$rebuilt_wheel"
+          test "$(sha256sum "$primary_wheel" | cut -d' ' -f1)" = "$(sha256sum "$rebuilt_wheel" | cut -d' ' -f1)"
+          python scripts/generate_supply_chain_evidence.py \
+            --wheel "$primary_wheel" \
+            --project pyproject.toml \
+            --output-directory dist \
+            --source-sha "$SOURCE_SHA" \
+            --source-date-epoch "$SOURCE_DATE_EPOCH"
+          (cd dist && sha256sum -c SHA256SUMS)
+      - name: Normalize verified changes onto canonical branch
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin agent/accounting-posting-foundation
+          test "$(git rev-parse origin/agent/accounting-posting-foundation)" = "$SOURCE_SHA"
+          rm .github/workflows/repair-hometax-period-end.yml
+          rm -rf dist dist-rebuild build src/*.egg-info .coverage
+          git add -A
+          git diff --cached --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "fix: preserve HomeTax rejected receipt period date"
+          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:agent/accounting-posting-foundation
