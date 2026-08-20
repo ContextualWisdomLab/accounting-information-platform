@@ -23,6 +23,7 @@ class HomeTaxIncompleteRegisterPeriodEndTests(unittest.TestCase):
         self.case = postgres_posting.PostgresPostingTests("setUp")
         self.case.setUp()
         self.addCleanup(self.case.doCleanups)
+        self.addCleanup(self.case.tearDown)
 
     def test_incomplete_register_receipt_uses_resolved_period_end_not_date_min(self) -> None:
         """A durable register_unavailable receipt is scoped to the fiscal period end."""
