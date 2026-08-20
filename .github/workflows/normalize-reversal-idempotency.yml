@@ -60,8 +60,10 @@ jobs:
           --only-binary=:all:
           --require-hashes
           -r requirements-quality.txt
-      - name: Apply narrow reversal-command repair
-        run: python scripts/normalize_reversal_command_idempotency.py
+      - name: Apply narrow foundation repairs
+        run: |
+          python scripts/normalize_reversal_command_idempotency.py
+          python scripts/normalize_hometax_period_end.py
       - name: Verify focused PostgreSQL and contract boundaries
         env:
           PYTHONPATH: src:.
@@ -70,6 +72,7 @@ jobs:
           tests.test_reversal_command_idempotency_contract
           tests.test_reversal_command_idempotency_postgres
           tests.test_reversal_temporal_database_guard
+          tests.test_home_tax_incomplete_register_period_end
       - name: Run full behavior suite
         env:
           PYTHONPATH: src:.
@@ -99,8 +102,9 @@ jobs:
           test "$(git rev-parse origin/agent/accounting-posting-foundation)" = "$EXPECTED_SHA"
           rm .github/workflows/normalize-reversal-idempotency.yml
           rm scripts/normalize_reversal_command_idempotency.py
+          rm scripts/normalize_hometax_period_end.py
           rm -rf dist build src/*.egg-info
           git add -A
           git diff --cached --check
-          git commit -m "fix: bind reversals to immutable command identity"
+          git commit -m "fix: bind accounting commands to durable evidence"
           git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:agent/accounting-posting-foundation
