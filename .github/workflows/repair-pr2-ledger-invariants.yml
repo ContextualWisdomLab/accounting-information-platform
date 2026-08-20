@@ -57,6 +57,7 @@ jobs:
           git fetch --no-tags origin agent/accounting-pr2-ledger-invariants
           git cat-file -e "${REPAIR_SOURCE_SHA}^{commit}"
           for script in \
+            repair_pr2_ledger_invariants.py \
             repair_pr2_command_idempotency.py \
             repair_pr2_followup_adjustments.py \
             repair_pr2_home_tax_replay_outcome.py \
@@ -73,6 +74,18 @@ jobs:
         run: |
           python /tmp/repair_pr2_current_failures.py
           python /tmp/repair_pr2_close_binder_regression.py
+          python - <<'PY'
+          import importlib.util
+          from pathlib import Path
+
+          path = Path('/tmp/repair_pr2_ledger_invariants.py')
+          spec = importlib.util.spec_from_file_location('repair_pr2_ledger_invariants', path)
+          if spec is None or spec.loader is None:
+              raise SystemExit('unable to load database-invariant repair module')
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          module.add_database_regression_tests()
+          PY
           python /tmp/repair_pr2_database_immutability.py
           python /tmp/repair_pr2_force_rls.py
       - name: Install hash-locked quality dependencies
