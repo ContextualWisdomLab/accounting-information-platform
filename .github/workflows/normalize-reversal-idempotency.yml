@@ -63,6 +63,7 @@ jobs:
       - name: Apply narrow foundation repairs
         run: |
           python scripts/normalize_reversal_command_idempotency.py
+          python scripts/normalize_reversal_internal_compat.py
           python scripts/normalize_hometax_period_end.py
       - name: Verify focused PostgreSQL and contract boundaries
         env:
@@ -102,6 +103,7 @@ jobs:
           test "$(git rev-parse origin/agent/accounting-posting-foundation)" = "$EXPECTED_SHA"
           rm .github/workflows/normalize-reversal-idempotency.yml
           rm scripts/normalize_reversal_command_idempotency.py
+          rm scripts/normalize_reversal_internal_compat.py
           rm scripts/normalize_hometax_period_end.py
           rm -rf dist build src/*.egg-info
           git add -A
