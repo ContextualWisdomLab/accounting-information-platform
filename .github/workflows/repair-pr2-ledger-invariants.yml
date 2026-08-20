@@ -22,7 +22,7 @@ jobs:
     timeout-minutes: 35
     env:
       ACCOUNTING_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/accounting_test
-      REPAIR_SOURCE_SHA: d374d27769cd6088331246a34e4a3d16c93e1b63
+      REPAIR_SOURCE_SHA: 24784a538a4b2183361543db05d115c96510fe53
     services:
       postgres:
         image: postgres:18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
@@ -76,6 +76,7 @@ jobs:
             repair_pr2_force_rls.py \
             repair_pr2_runtime_tenant_binding.py \
             repair_pr2_purpose_limited_database_urls.py \
+            repair_pr2_period_state_boundary.py \
             repair_pr2_all.py \
             repair_pr2_current_failures.py
           do
@@ -110,6 +111,7 @@ jobs:
           python /tmp/repair_pr2_force_rls.py
           python /tmp/repair_pr2_runtime_tenant_binding.py
           python /tmp/repair_pr2_purpose_limited_database_urls.py
+          python /tmp/repair_pr2_period_state_boundary.py
       - name: Install hash-locked quality dependencies
         run: >-
           python -m pip install
