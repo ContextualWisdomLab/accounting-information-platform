@@ -2,9 +2,6 @@ name: Normalize reversal command idempotency
 
 # One-shot exact-head normalization; the successful job deletes this workflow before publish.
 on:
-  push:
-    branches:
-      - agent/accounting-posting-foundation
   pull_request:
     branches:
       - develop
