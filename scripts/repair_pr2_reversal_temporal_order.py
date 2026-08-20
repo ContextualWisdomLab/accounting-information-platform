@@ -83,7 +83,8 @@ def add_authority_edge_regression() -> None:
                 proposal_id=str(uuid.uuid4()),
                 idempotency_key=f"{self.policy.tenant_reference}:edge-post:v1",
                 source_payload_hash="sha256:" + "b" * 64,
-            )
+            ),
+            self.policy,
         )
         reverse_payload = {
             "tenant_reference": self.policy.tenant_reference,
