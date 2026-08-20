@@ -29,12 +29,14 @@ Required regressions include:
 - direct one-sided journal commit fails through the deferred balance trigger;
 - direct line-less journal commit fails and rollback leaves no journal row;
 - balanced application posting still commits normally;
-- direct mutation of finalized journal / receipt / source facts fails;
+- direct update/delete of finalized journal, line, source-reference, reversal, receipt and proposal-source facts fails at the database boundary;
+- after an authoritative posting receipt exists, a late journal-line or source-reference insert into that finalized journal fails before it can extend the monetary/evidence population;
 - hard-closed periods reject later inserts;
 - a login that merely sets `accounting_core.journal_write_role` cannot insert into a soft-closed period;
 - a purpose-limited session login that is a member of `accounting_closing_writer` can exercise the supported soft-close exception path;
 - migration `0005` changes a pre-existing LOGIN `accounting_closing_writer` back to `NOLOGIN`;
-- a non-owner, non-superuser, non-`BYPASSRLS` runtime login can use supported same-tenant paths but cannot read / write another tenant or acquire owner / administrative authority.
+- every tenant-scoped authoritative table both enables and forces RLS;
+- a non-owner, non-superuser, non-`BYPASSRLS` runtime login can execute an ordinary supported posting/read path for its bound tenant but cannot read another tenant or acquire owner / administrative authority.
 
 ## Reversal state matrix
 
