@@ -115,7 +115,7 @@ jobs:
           runtime.add_runtime_identity_regression()
           period_state.add_runtime_regression()
           PY
-      - name: Prove database authority regressions are RED
+      - name: Prove current accounting regressions are RED
         env:
           PYTHONPATH: src:.
         shell: bash
@@ -133,6 +133,17 @@ jobs:
               exit 1
             fi
           done
+          for reversal_test in \
+            test_exact_reversal_replays_but_changed_reason_conflicts \
+            test_changed_reversal_date_conflicts_even_after_receipt_cache_loss
+          do
+            if python -m unittest \
+              "tests.test_reversal_command_contract.ReversalCommandContractTests.${reversal_test}" -v
+            then
+              echo "${reversal_test} unexpectedly passed before reversal command repair"
+              exit 1
+            fi
+          done
       - name: Apply current command and database authority repairs
         shell: bash
         run: |
@@ -142,6 +153,7 @@ jobs:
           python /tmp/repair_pr2_close_binder_regression.py
           python - <<'PY'
           import importlib.util
+          import re
           from pathlib import Path
 
           def load(name: str):
@@ -153,10 +165,34 @@ jobs:
               spec.loader.exec_module(module)
               return module
 
+          command_idempotency = load('repair_pr2_command_idempotency')
           immutability = load('repair_pr2_database_immutability')
           force_rls = load('repair_pr2_force_rls')
           runtime = load('repair_pr2_runtime_tenant_binding')
           period_state = load('repair_pr2_period_state_boundary')
+
+          command_idempotency.update_reversal_contract()
+
+          core_tests_path = Path('tests/test_accounting_core.py')
+          core_tests = core_tests_path.read_text(encoding='utf-8')
+          foreign_pattern = re.compile(
+              r'''(?ms)        self\.ledger\._reversal_receipts\[reversal_key\] = PostingReceipt\(\n.*?^        \)\n'''
+          )
+          match = foreign_pattern.search(core_tests)
+          if match is not None:
+              assignment = match.group(0)
+              receipt_expression = assignment.split('= ', 1)[1].rstrip()
+              replacement = (
+                  '        self.ledger._reversal_receipts[reversal_key] = (\n'
+                  '            f"reversal:{first.journal_reference}",\n'
+                  '            first.journal_reference,\n'
+                  '            reversal.source_payload_hash,\n'
+                  + '\n'.join('            ' + line for line in receipt_expression.splitlines())
+                  + ',\n'
+                  '        )\n'
+              )
+              core_tests = core_tests[:match.start()] + replacement + core_tests[match.end():]
+              core_tests_path.write_text(core_tests, encoding='utf-8')
 
           immutability.add_database_immutability_guards()
           immutability.update_immutability_documentation()
