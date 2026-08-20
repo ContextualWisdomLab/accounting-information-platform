@@ -12,9 +12,11 @@ success.
 - The protected default branch is `develop`; the repository was bootstrapped
   from an empty tree and the accounting foundation is currently developed on
   PR #2 (`feat: establish accounting posting foundation`).
-- PR #2 is Draft, `MERGEABLE` at the observed remote head but `BLOCKED`, with
-  no qualifying approval and required Checks still pending. Its repair lane
-  is a temporary self-modifying workflow and is not itself product evidence.
+- PR #2 was observed as Draft before the latest validation; it is now Ready for
+  review at exact head `484663f49bd55712ffe31d07e1fb258ef793471f`. It remains
+  `MERGEABLE` but `BLOCKED`, with `REVIEW_REQUIRED` and required Checks queued.
+  Its repair lane is a temporary self-modifying workflow and is not itself
+  product evidence.
 - PR #4 is a Draft documentation stack on top of the foundation branch. PR #5
   is merged documentation for the buyer/operator README.
 - Open product issues are #1 (foundation), #6 (book-to-bank reconciliation),
@@ -56,7 +58,8 @@ success.
 
 1. Push the smallest current-head foundation fixes, re-fetch the exact PR
    head, and wait for required Checks/review without treating the wait as a
-   blocker.
+   blocker. The organization’s central hourly review scheduler is configured
+   for `27 * * * *`; it is not duplicated in this repository.
 2. Remove the temporary repair workflow only after its purpose is fulfilled
    and the integrated branch retains the verified database authority tests.
 3. Merge #2 through the protected path, verify the merge SHA, then stack #7.
