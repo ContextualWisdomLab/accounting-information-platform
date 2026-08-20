@@ -43,7 +43,7 @@
 
 ### Added
 
-- ADR 0048 records reporting taxonomy as a versioned projection over immutable
+- ADR 0049 records reporting taxonomy as a versioned projection over immutable
   journal facts; PostgreSQL exact `numeric` types are listed in the standards
   bibliography.
 
