@@ -26,7 +26,7 @@ class DurableReversalIdempotencyTests(unittest.TestCase):
         self.addCleanup(self.case.tearDown)
 
     def test_changed_reversal_command_does_not_replay_prior_receipt(self) -> None:
-        """Same command replays; changed reason or key conflicts without a second reversal."""
+        """Same command replays; changed date, reason, or key conflicts without a second reversal."""
         original = self.case.ledger.post(self.case._two_line_proposal(), self.case.policy)
         command_key = f"reversal:{original.journal_reference}"
 
@@ -49,6 +49,14 @@ class DurableReversalIdempotencyTests(unittest.TestCase):
         self.assertEqual(self.case._count_table("accounting_core.journal_reversal"), 1)
         self.assertEqual(self.case._count_table("accounting_core.general_journal"), 2)
 
+        with self.assertRaises(IdempotencyConflictError):
+            self.case.ledger.reverse(
+                original.journal_reference,
+                date(2026, 8, 30),
+                "billing_correction",
+                self.case.policy,
+                reversal_idempotency_key=command_key,
+            )
         with self.assertRaises(IdempotencyConflictError):
             self.case.ledger.reverse(
                 original.journal_reference,
