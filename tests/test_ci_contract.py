@@ -25,6 +25,21 @@ class AccountingCiContractTests(unittest.TestCase):
             ),
         )
 
+    def test_ci_checks_out_exact_pull_request_head_or_push_sha(self) -> None:
+        """PR evidence must execute the immutable PR head, never GitHub's merge ref."""
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "ref: ${{ github.event.pull_request.head.sha || github.sha }}",
+            workflow,
+        )
+        self.assertIn(
+            "EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}",
+            workflow,
+        )
+        self.assertIn('test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"', workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
