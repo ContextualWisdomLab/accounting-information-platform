@@ -149,8 +149,8 @@ COMMIT;
         normalized_key = submission_idempotency_key.strip()
         if not normalized_key:
             raise AccountingValidationError(
-                "idempotency_key is required. "
-                "Supply the home-tax-submission command idempotency key, then retry."
+                "submission_idempotency_key is required. "
+                "Supply the original HomeTax command key, then retry the home-tax-submission."
             )
         register_payload_hash = "sha256:" + hashlib.sha256(
             json.dumps(
@@ -477,6 +477,8 @@ def update_reversal_contract() -> None:
                 "reversal idempotency key was already used with a different payload"
             )
         return prior_receipt
+
+    @staticmethod
 '''
     replace_method(
         core_path,

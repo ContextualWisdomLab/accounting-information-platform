@@ -283,7 +283,7 @@ def add_runtime_identity_regression() -> None:
 
         with psycopg.connect(runtime_url) as connection:
             identity = connection.execute(
-                "SELECT session_user, current_user, accounting_core.current_tenant_account_id()"
+                "SELECT session_user, current_user, accounting_core.current_tenant_account_id()::text"
             ).fetchone()
             self.assertEqual(identity, (runtime_role, runtime_role, self.tenant_id))
             connection.execute(
@@ -292,13 +292,13 @@ def add_runtime_identity_regression() -> None:
             )
             self.assertEqual(
                 connection.execute(
-                    "SELECT accounting_core.current_tenant_account_id()"
+                    "SELECT accounting_core.current_tenant_account_id()::text"
                 ).fetchone()[0],
                 self.tenant_id,
             )
             self.assertEqual(
                 connection.execute(
-                    "SELECT tenant_account_id FROM accounting_core.tenant_account"
+                    "SELECT tenant_account_id::text FROM accounting_core.tenant_account"
                 ).fetchall(),
                 [(self.tenant_id,)],
             )

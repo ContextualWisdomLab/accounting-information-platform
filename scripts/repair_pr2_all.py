@@ -206,13 +206,18 @@ def normalize_postgres_regression_setup() -> None:
                 )
             )
 '''
-    if text.count(migration_anchor) != 1:
-        raise SystemExit("PostgreSQL test migration anchor drifted")
-    text = text.replace(migration_anchor, migration_replacement, 1)
+    grant_block = migration_replacement[len(migration_anchor):]
+    if grant_block not in text:
+        if text.count(migration_anchor) != 1:
+            raise SystemExit("PostgreSQL test migration anchor drifted")
+        text = text.replace(migration_anchor, migration_replacement, 1)
 
     start = text.index("    def _raw_insert_general_journal(")
     end = text.index("    def _close_period(", start)
     helper = text[start:end]
+    if "account_ids = dict(" in helper or "chart_accounts = dict(" in helper:
+        path.write_text(text, encoding="utf-8")
+        return
     commit_anchor = "            connection.commit()\n"
     if helper.count(commit_anchor) != 1:
         raise SystemExit("raw journal helper commit anchor drifted")

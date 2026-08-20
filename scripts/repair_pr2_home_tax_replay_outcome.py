@@ -53,7 +53,12 @@ def preserve_stored_home_tax_outcome() -> None:
             rejection_reason_code=rejection_reason_code,
         )
 '''
-    new = '''            actual_command_identity = (
+    new = '''            if row is None:
+                raise AccountingValidationError(
+                    "HomeTax command replay could not find its existing receipt. "
+                    "Retry the command with the same idempotency key."
+                )
+            actual_command_identity = (
                 row[1],
                 row[2],
                 row[3],
