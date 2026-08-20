@@ -25,7 +25,7 @@ jobs:
     timeout-minutes: 35
     env:
       ACCOUNTING_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/accounting_test
-      REPAIR_SOURCE_SHA: 1411f8f59a4c8e10d35029f5ae3540c80ba6cdd8
+      REPAIR_SOURCE_SHA: aff2c00bbfab924742c869f236f442293feb35e2
       TRIGGER_SHA: ${{ github.event.pull_request.head.sha }}
     services:
       postgres:
