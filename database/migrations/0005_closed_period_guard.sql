@@ -10,6 +10,23 @@ $role_setup$;
 
 ALTER ROLE accounting_closing_writer NOLOGIN;
 
+ALTER TABLE accounting_core.legal_entity_record FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.accounting_book FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.chart_account FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.account_role_mapping FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.fiscal_calendar FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.fiscal_period FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_integration.journal_proposal_record FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.general_journal FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.journal_entry_line FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.journal_source_reference FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.journal_reversal FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_integration.posting_receipt FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_reporting.trial_balance_snapshot FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_reporting.trial_balance_line FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_integration.outbox_event FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_integration.home_tax_submission FORCE ROW LEVEL SECURITY;
+
 CREATE OR REPLACE FUNCTION accounting_core.guard_period_insert()
 RETURNS trigger
 LANGUAGE plpgsql
