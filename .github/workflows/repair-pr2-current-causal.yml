@@ -1,0 +1,615 @@
+name: One-shot PR2 causal repair
+
+on:
+  push:
+    branches:
+      - agent/accounting-posting-foundation
+    paths:
+      - .github/workflows/repair-pr2-current-causal.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: one-shot-pr2-causal-repair
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: write
+    env:
+      ACCOUNTING_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/accounting_test
+      EXPECTED_PARENT_SHA: d55f26a5a1297a0b6dc418da6814b10ece77c842
+    services:
+      postgres:
+        image: postgres:18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: accounting_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d accounting_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Check out exact repair trigger
+        uses: actions/checkout@631c942040754b6e095e929c1677c07e10ed4f87
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Verify single-writer parent
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "$EXPECTED_PARENT_SHA"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Install pinned Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-quality.txt
+      - name: Install hash-locked quality dependencies
+        run: >-
+          python -m pip install
+          --disable-pip-version-check
+          --only-binary=:all:
+          --require-hashes
+          -r requirements-quality.txt
+      - name: Apply narrow causal repairs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def read(path: str) -> str:
+              return Path(path).read_text(encoding="utf-8")
+
+          def write(path: str, text: str) -> None:
+              Path(path).write_text(text, encoding="utf-8")
+
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
+              if text.count(old) != 1:
+                  raise SystemExit(f"{label}: expected one anchor, found {text.count(old)}")
+              return text.replace(old, new, 1)
+
+          # Reversal durable-command identity: mirror the in-memory reference oracle.
+          path = "src/accounting_information_platform/persistence.py"
+          text = read(path)
+          text = replace_once(
+              text,
+              "    _require_reference,\n)",
+              "    _require_reference,\n    _reversal_command_hash,\n)",
+              "persistence reversal hash import",
+          )
+          start = text.index("    def reverse(\n")
+          end = text.index("\n    def load_reversal_policy(", start)
+          replacement = '''    def reverse(
+              self,
+              journal_reference: str,
+              reversal_date: date,
+              reversal_reason_code: str,
+              policy: AccountingPolicy,
+              *,
+              reversal_idempotency_key: str = "",
+          ) -> PostingReceipt:
+              """Append or exactly replay one opposite journal using immutable command evidence."""
+              _require_code(reversal_reason_code, "reversal reason code")
+              command_key = reversal_idempotency_key.strip() or f"reversal:{journal_reference}"
+              command_hash = _reversal_command_hash(
+                  tenant_reference=policy.tenant_reference,
+                  reversal_idempotency_key=command_key,
+                  original_journal_reference=journal_reference,
+                  reversal_date=reversal_date,
+                  reversal_reason_code=reversal_reason_code,
+              )
+              with self._session() as connection:
+                  tenant_id = self._require_tenant(connection)
+                  existing = connection.execute(
+                      """
+                      SELECT reversal_journal.journal_reference,
+                             reversal_proposal.idempotency_key,
+                             reversal_proposal.source_payload_hash
+                      FROM accounting_core.journal_reversal
+                      JOIN accounting_core.general_journal AS original_journal
+                        ON original_journal.tenant_account_id = journal_reversal.tenant_account_id
+                       AND original_journal.general_journal_id = journal_reversal.original_journal_id
+                      JOIN accounting_core.general_journal AS reversal_journal
+                        ON reversal_journal.tenant_account_id = journal_reversal.tenant_account_id
+                       AND reversal_journal.general_journal_id = journal_reversal.reversal_journal_id
+                      JOIN accounting_integration.journal_proposal_record AS reversal_proposal
+                        ON reversal_proposal.tenant_account_id = reversal_journal.tenant_account_id
+                       AND reversal_proposal.proposal_record_id = reversal_journal.source_proposal_record_id
+                      WHERE journal_reversal.tenant_account_id = %s
+                        AND original_journal.journal_reference = %s
+                      """,
+                      (tenant_id, journal_reference),
+                  ).fetchone()
+                  if existing is not None:
+                      if str(existing[1]) != command_key or str(existing[2]) != command_hash:
+                          raise IdempotencyConflictError(
+                              "reversal command idempotency key was already used with different evidence"
+                          )
+                      return self._receipt_for_journal(connection, tenant_id, str(existing[0]))
+                  original = connection.execute(
+                      """
+                      SELECT general_journal_id, legal_entity_id, accounting_book_id,
+                             transaction_currency_code, functional_currency_code,
+                             source_proposal_record_id, transaction_date
+                      FROM accounting_core.general_journal
+                      WHERE tenant_account_id = %s AND journal_reference = %s
+                      """,
+                      (tenant_id, journal_reference),
+                  ).fetchone()
+                  if original is None:
+                      raise AccountingValidationError(
+                          "journal does not exist. Supply a posted journal reference, then retry reversal."
+                      )
+                  already_reversal = connection.execute(
+                      """
+                      SELECT 1
+                      FROM accounting_core.journal_reversal
+                      WHERE tenant_account_id = %s AND reversal_journal_id = %s
+                      """,
+                      (tenant_id, original[0]),
+                  ).fetchone()
+                  if already_reversal is not None:
+                      raise AccountingValidationError(
+                          "a reversal journal cannot itself be reversed. Reverse the original journal, or post a replacement."
+                      )
+                  if not policy.permits(reversal_date):
+                      raise AccountingValidationError("reversal date belongs to a closed fiscal period")
+                  if (
+                      self._tenant_reference != policy.tenant_reference
+                      or self._legal_entity_code(connection, tenant_id, original[1])
+                      != policy.legal_entity_reference
+                      or self._book_name(connection, tenant_id, original[2])
+                      != policy.accounting_book_reference
+                  ):
+                      raise AccountingValidationError(
+                          "reversal policy scope does not match original journal"
+                      )
+                  period_id = self._require_adjusting_period(connection, tenant_id, reversal_date)
+                  original_lines = self._load_lines(connection, tenant_id, original[0])
+                  reversal_lines = tuple(
+                      PostedJournalLine(
+                          line_number=line.line_number,
+                          chart_account_code=line.chart_account_code,
+                          account_role_code=line.account_role_code,
+                          debit_amount=line.credit_amount,
+                          credit_amount=line.debit_amount,
+                      )
+                      for line in original_lines
+                  )
+                  reversal_reference = f"{journal_reference}:reversal"
+                  occupant = connection.execute(
+                      """
+                      SELECT 1
+                      FROM accounting_core.general_journal
+                      WHERE tenant_account_id = %s AND journal_reference = %s
+                      """,
+                      (tenant_id, reversal_reference),
+                  ).fetchone()
+                  if occupant is not None:
+                      raise AccountingValidationError(
+                          "posted journal is immutable. Reverse the existing journal, "
+                          "then post a replacement."
+                      )
+                  _original_source_hash, source_proposal_id = self._proposal_identity(
+                      connection, tenant_id, original[5]
+                  )
+                  receipt = PostingReceipt(
+                      receipt_reference=f"{reversal_reference}:receipt",
+                      journal_reference=reversal_reference,
+                      posting_status_code="posted",
+                      source_proposal_id=source_proposal_id,
+                      source_payload_hash=command_hash,
+                      tenant_reference=policy.tenant_reference,
+                      legal_entity_reference=policy.legal_entity_reference,
+                      accounting_book_reference=policy.accounting_book_reference,
+                      accounting_policy_version=policy.accounting_policy_version,
+                      posting_rule_version=policy.posting_rule_version,
+                      line_count=len(reversal_lines),
+                      reversal_of_journal_reference=journal_reference,
+                  )
+                  reversal_proposal_id = connection.execute(
+                      """
+                      INSERT INTO accounting_integration.journal_proposal_record (
+                          tenant_account_id, external_proposal_id, proposal_contract_version,
+                          idempotency_key, source_payload_hash, proposal_status_code, processed_at
+                      )
+                      VALUES (%s, uuidv7(), 1, %s, %s, 'posted', clock_timestamp())
+                      RETURNING proposal_record_id
+                      """,
+                      (tenant_id, command_key, command_hash),
+                  ).fetchone()[0]
+                  reversal_journal_id = self._insert_journal(
+                      connection,
+                      tenant_id=tenant_id,
+                      legal_entity_id=original[1],
+                      book_id=original[2],
+                      period_id=period_id,
+                      journal_reference=reversal_reference,
+                      proposal=_ReversalProposal(
+                          source_payload_hash=command_hash,
+                          transaction_currency=original[3],
+                          transaction_date=original[6],
+                          accounting_date=reversal_date,
+                          source_event_references=(),
+                      ),
+                      policy=policy,
+                      proposal_record_id=reversal_proposal_id,
+                      lines=reversal_lines,
+                  )
+                  connection.execute(
+                      """
+                      INSERT INTO accounting_core.journal_reversal (
+                          tenant_account_id, original_journal_id, reversal_journal_id,
+                          reversal_reason_code
+                      )
+                      VALUES (%s, %s, %s, %s)
+                      """,
+                      (tenant_id, original[0], reversal_journal_id, reversal_reason_code),
+                  )
+                  self._insert_receipt(
+                      connection, tenant_id, reversal_proposal_id, reversal_journal_id, receipt
+                  )
+                  self._insert_outbox(
+                      connection,
+                      tenant_id,
+                      "journal_reversal",
+                      reversal_reference,
+                      receipt.receipt_reference,
+                      receipt,
+                  )
+                  return receipt
+          '''
+          text = text[:start] + replacement + text[end:]
+
+          # HomeTax rejected receipts use the resolved fiscal-period cutoff, never date.min.
+          home_start = text.index("    def persist_home_tax_submission(\n")
+          home_end = text.index("\n    def load_home_tax_submissions(", home_start)
+          home = text[home_start:home_end]
+          home = replace_once(
+              home,
+              '''            period_id, _period_status, _period_end_date = self._require_fiscal_period(
+                  connection,
+                  tenant_id,
+                  period_code,
+                  next_action="the home-tax-submission",
+              )
+              row = connection.execute(
+          ''',
+              '''            period_id, _period_status, _period_end_date = self._require_fiscal_period(
+                  connection,
+                  tenant_id,
+                  period_code,
+                  next_action="the home-tax-submission",
+              )
+              if as_of_date == date.min:
+                  as_of_date = _period_end_date
+              row = connection.execute(
+          ''',
+              "HomeTax period-end fallback",
+          )
+          home = replace_once(
+              home,
+              "            vat_period_register=_home_tax_register_view(register_document),\n",
+              '''            vat_period_register={
+                  "as_of_date": row[3].isoformat(),
+                  "closing_amount": _unsigned_aging_amount_text(Decimal(row[4])),
+              },
+          ''',
+              "HomeTax returned stored register cutoff",
+          )
+          text = text[:home_start] + home + text[home_end:]
+          write(path, text)
+
+          # Public reversal command threads a distinct command identity to durable storage.
+          path = "src/accounting_information_platform/accept.py"
+          text = read(path)
+          start = text.index("def accept_journal_reversal(\n")
+          end = text.index("\ndef accept_period_close(", start)
+          replacement = '''def accept_journal_reversal(
+              payload: object, database_url: str, tenant_reference: str
+          ) -> dict[str, object]:
+              """Reverse one posted journal for *tenant_reference* and return the reversing receipt."""
+              if not isinstance(payload, Mapping):
+                  raise AccountingValidationError(
+                      "journal reversal payload must be a JSON object. "
+                      "Supply a journal-reversal command, then retry the reverse."
+                  )
+              if payload.get("tenant_reference") != tenant_reference:
+                  raise AccountingValidationError(
+                      "reversal tenant_reference does not match the bound tenant. "
+                      "Call accept_journal_reversal with that tenant_reference, then retry."
+                  )
+              journal_reference = str(payload.get("journal_reference") or "")
+              idempotency_key = str(payload.get("idempotency_key") or "")
+              reversal_reason_code = str(payload.get("reversal_reason_code") or "")
+              if not journal_reference and not idempotency_key:
+                  raise AccountingValidationError(
+                      "journal_reference or idempotency_key is required. "
+                      "Supply the posted journal or the Billing idempotency key, then retry the reverse."
+                  )
+              if not reversal_reason_code:
+                  raise AccountingValidationError(
+                      "reversal_reason_code is required. "
+                      "Supply a reversal reason code, then retry the reverse."
+                  )
+              reversal_date = _parse_reversal_date(str(payload.get("reversal_date") or ""))
+              ledger = PostgresPostingLedger(database_url, tenant_reference)
+              if idempotency_key:
+                  original = ledger.load_published_receipt_by_key(idempotency_key)
+                  resolved_reference = str(original["journal_reference"])
+                  if journal_reference and journal_reference != resolved_reference:
+                      raise AccountingValidationError(
+                          "journal_reference and idempotency_key do not match the same posted journal. "
+                          "Supply one identity, then retry the reverse."
+                      )
+                  journal_reference = resolved_reference
+              reversal_idempotency_key = str(
+                  payload.get("reversal_idempotency_key") or ""
+              ).strip()
+              if not reversal_idempotency_key:
+                  reversal_idempotency_key = f"reversal:{journal_reference}"
+              policy = ledger.load_reversal_policy(journal_reference, reversal_date)
+              ledger.reverse(
+                  journal_reference,
+                  reversal_date,
+                  reversal_reason_code,
+                  policy,
+                  reversal_idempotency_key=reversal_idempotency_key,
+              )
+              return ledger.load_published_receipt_by_key(reversal_idempotency_key)
+          '''
+          text = text[:start] + replacement + text[end:]
+          write(path, text)
+
+          # HTTP idempotency conflicts are conflicts, not validation failures.
+          path = "src/accounting_information_platform/http_api.py"
+          text = read(path)
+          text = replace_once(
+              text,
+              '''        try:
+                  document = accept_journal_reversal(
+                      payload, self.server.database_url, tenant_header
+                  )
+              except AccountingValidationError as error:
+                  self._write_error(422, str(error))
+                  return
+              self._write_json(200, document)
+          ''',
+              '''        try:
+                  document = accept_journal_reversal(
+                      payload, self.server.database_url, tenant_header
+                  )
+              except IdempotencyConflictError as error:
+                  self._write_error(
+                      409,
+                      f"{error}. Supply a new reversal idempotency key, then retry.",
+                  )
+                  return
+              except AccountingValidationError as error:
+                  self._write_error(422, str(error))
+                  return
+              self._write_json(200, document)
+          ''',
+              "HTTP reversal conflict mapping",
+          )
+          write(path, text)
+
+          # PostgreSQL fires same-kind triggers alphabetically. Make temporal validation precede
+          # finalization validation so the causal temporal defect is reported deterministically.
+          path = "database/migrations/0005_closed_period_guard.sql"
+          text = read(path)
+          text = replace_once(
+              text,
+              '''DROP TRIGGER IF EXISTS journal_reversal_temporal_guard
+              ON accounting_core.journal_reversal;
+          CREATE TRIGGER journal_reversal_temporal_guard
+              BEFORE INSERT ON accounting_core.journal_reversal
+              FOR EACH ROW
+              EXECUTE FUNCTION accounting_core.guard_reversal_temporal_order();
+          ''',
+              '''DROP TRIGGER IF EXISTS journal_reversal_temporal_guard
+              ON accounting_core.journal_reversal;
+          DROP TRIGGER IF EXISTS journal_reversal_first_temporal_guard
+              ON accounting_core.journal_reversal;
+          CREATE TRIGGER journal_reversal_first_temporal_guard
+              BEFORE INSERT ON accounting_core.journal_reversal
+              FOR EACH ROW
+              EXECUTE FUNCTION accounting_core.guard_reversal_temporal_order();
+          ''',
+              "temporal trigger ordering",
+          )
+          text = replace_once(
+              text,
+              '''DROP TRIGGER IF EXISTS journal_reversal_finalization_guard
+              ON accounting_core.journal_reversal;
+          CREATE TRIGGER journal_reversal_finalization_guard
+              BEFORE INSERT ON accounting_core.journal_reversal
+              FOR EACH ROW
+              EXECUTE FUNCTION accounting_core.guard_reversal_lineage_insert();
+          ''',
+              '''DROP TRIGGER IF EXISTS journal_reversal_finalization_guard
+              ON accounting_core.journal_reversal;
+          DROP TRIGGER IF EXISTS journal_reversal_second_finalization_guard
+              ON accounting_core.journal_reversal;
+          CREATE TRIGGER journal_reversal_second_finalization_guard
+              BEFORE INSERT ON accounting_core.journal_reversal
+              FOR EACH ROW
+              EXECUTE FUNCTION accounting_core.guard_reversal_lineage_insert();
+          ''',
+              "finalization trigger ordering",
+          )
+          write(path, text)
+
+          # Reproducibility must fail closed if the exact-head commit timestamp cannot be read.
+          path = ".github/workflows/ci.yml"
+          text = read(path)
+          text = replace_once(
+              text,
+              '        run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct \\\"$EXPECTED_SHA\\\")" >> "$GITHUB_ENV"\n',
+              '''        run: |
+                    set -euo pipefail
+                    source_date_epoch="$(git show -s --format=%ct "$EXPECTED_SHA")"
+                    test -n "$source_date_epoch"
+                    printf 'SOURCE_DATE_EPOCH=%s\\n' "$source_date_epoch" >> "$GITHUB_ENV"
+          ''',
+              "SOURCE_DATE_EPOCH fail-closed command",
+          )
+          write(path, text)
+
+          # Strengthen deterministic CI regression for the exact-head timestamp command.
+          path = "tests/test_ci_contract.py"
+          text = read(path)
+          marker = '''    def test_ci_requires_reproducible_wheel_sbom_and_signed_attestations(self) -> None:
+          '''
+          addition = '''    def test_ci_reproducible_timestamp_is_read_from_the_exact_head_and_must_exist(self) -> None:
+              """A quoting error must not silently leave SOURCE_DATE_EPOCH empty."""
+              workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+                  encoding="utf-8"
+              )
+              self.assertIn(
+                  'source_date_epoch="$(git show -s --format=%ct "$EXPECTED_SHA")"',
+                  workflow,
+              )
+              self.assertIn('test -n "$source_date_epoch"', workflow)
+              self.assertNotIn('\\\\\"$EXPECTED_SHA\\\\\"', workflow)
+
+          '''
+          if addition not in text:
+              if marker not in text:
+                  raise SystemExit("CI contract insertion anchor drifted")
+              text = text.replace(marker, addition + marker, 1)
+          write(path, text)
+
+          # Exercise explicit reversal command identity and HTTP conflict semantics on PostgreSQL.
+          path = "tests/test_postgres_reversal_idempotency.py"
+          text = read(path)
+          marker = '''
+
+          if __name__ == "__main__":
+              unittest.main()
+          '''
+          addition = '''
+              def test_http_changed_reversal_command_returns_conflict(self) -> None:
+                  """HTTP exact replay is 200; a changed command under the same key is 409."""
+                  original = self.case.ledger.post(
+                      self.case._two_line_proposal(), self.case.policy
+                  )
+                  server = self.case._start_http_server()
+                  self.addCleanup(server.server_close)
+                  self.addCleanup(server.shutdown)
+                  command_key = f"reversal-http:{original.journal_reference}"
+                  body = {
+                      "tenant_reference": self.case.policy.tenant_reference,
+                      "journal_reference": original.journal_reference,
+                      "reversal_idempotency_key": command_key,
+                      "reversal_date": "2026-08-31",
+                      "reversal_reason_code": "billing_correction",
+                  }
+                  first_status, first = self.case._http_json(
+                      "POST", "/journal-reversals", body
+                  )
+                  replay_status, replay = self.case._http_json(
+                      "POST", "/journal-reversals", body
+                  )
+                  changed = dict(body)
+                  changed["reversal_reason_code"] = "customer_dispute"
+                  conflict_status, conflict = self.case._http_json(
+                      "POST", "/journal-reversals", changed
+                  )
+                  self.assertEqual(first_status, 200)
+                  self.assertEqual(replay_status, 200)
+                  self.assertEqual(replay, first)
+                  self.assertEqual(conflict_status, 409)
+                  self.assertIn("reversal", str(conflict).lower())
+                  self.assertEqual(
+                      self.case._count_table("accounting_core.journal_reversal"), 1
+                  )
+          '''
+          if "test_http_changed_reversal_command_returns_conflict" not in text:
+              if marker not in text:
+                  raise SystemExit("reversal HTTP test insertion anchor drifted")
+              text = text.replace(marker, addition + marker, 1)
+          write(path, text)
+
+          # Keep operator-facing decision record current with durable command evidence.
+          path = "docs/adr/0012-http-append-only-reversal.md"
+          text = read(path)
+          old = (
+              "The in-memory `PostingLedger` is the executable reference oracle for exact command replay. "
+              "The PostgreSQL adapter must preserve the same command-key plus immutable-hash semantics on durable rows before PR #2 can leave Draft. "
+              "A passing cache-only replay or predecessor-head test is not sufficient release evidence."
+          )
+          new = (
+              "The in-memory `PostingLedger` is the executable reference oracle for exact command replay. "
+              "The PostgreSQL adapter persists the reversal command idempotency key and canonical command hash on the reversal proposal record and compares both before replaying an existing lineage. "
+              "A passing cache-only replay, predecessor-head test, or queued check is not sufficient release evidence; the exact unchanged head must pass the real PostgreSQL and repository gates."
+          )
+          text = replace_once(text, old, new, "ADR durable reversal evidence")
+          write(path, text)
+
+          path = "CHANGELOG.md"
+          text = read(path)
+          marker = "### Fixed\n\n"
+          bullet = (
+              "- Durable PostgreSQL reversal replay now binds the original journal to a reversal-command idempotency key and canonical immutable command hash; exact retries return the existing reversal while changed reason/date/key evidence fails closed without a second lineage. Incomplete HomeTax register rejections now use the resolved fiscal-period end instead of `0001-01-01`, and CI fails closed if the exact-head commit timestamp cannot populate `SOURCE_DATE_EPOCH`.\n"
+          )
+          if bullet not in text:
+              if marker not in text:
+                  raise SystemExit("CHANGELOG Fixed anchor drifted")
+              text = text.replace(marker, marker + bullet, 1)
+          write(path, text)
+          PY
+      - name: Run focused causal regressions
+        env:
+          PYTHONPATH: src:.
+        run: >-
+          python -m unittest -v
+          tests.test_ci_contract
+          tests.test_home_tax_incomplete_register_period_end
+          tests.test_reversal_command_idempotency_contract
+          tests.test_reversal_command_idempotency_postgres
+          tests.test_postgres_reversal_idempotency
+          tests.test_reversal_temporal_database_guard
+      - name: Run full behavior and repository tests
+        env:
+          PYTHONPATH: src:.
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Enforce complete production branch coverage
+        env:
+          PYTHONPATH: src:.
+        run: |
+          python -m coverage run --branch -m unittest discover -s tests -p 'test_*.py'
+          python -m coverage report --fail-under=100 --show-missing
+      - name: Validate repository contracts and compile
+        run: |
+          python scripts/validate_repository.py .
+          python -m compileall -q src scripts tests
+      - name: Normalize verified changes into canonical PR branch
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote_sha="$(git ls-remote origin refs/heads/agent/accounting-posting-foundation | cut -f1)"
+          test "$remote_sha" = "$GITHUB_SHA"
+          rm .github/workflows/repair-pr2-current-causal.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "fix: bind durable reversal command evidence"
+          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:agent/accounting-posting-foundation
