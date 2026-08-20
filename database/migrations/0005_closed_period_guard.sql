@@ -119,4 +119,92 @@ CREATE CONSTRAINT TRIGGER journal_entry_balance_guard
     FOR EACH ROW
     EXECUTE FUNCTION accounting_core.assert_journal_balance();
 
+CREATE OR REPLACE FUNCTION accounting_core.reject_finalized_fact_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    RAISE EXCEPTION
+        'finalized accounting facts are immutable (ledger_immutable); correct posted facts by reversal and reposting'
+        USING ERRCODE = 'check_violation';
+END;
+$$;
+
+DROP TRIGGER IF EXISTS general_journal_immutable_guard
+    ON accounting_core.general_journal;
+CREATE TRIGGER general_journal_immutable_guard
+    BEFORE UPDATE OR DELETE ON accounting_core.general_journal
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.reject_finalized_fact_mutation();
+
+DROP TRIGGER IF EXISTS journal_entry_immutable_guard
+    ON accounting_core.journal_entry_line;
+CREATE TRIGGER journal_entry_immutable_guard
+    BEFORE UPDATE OR DELETE ON accounting_core.journal_entry_line
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.reject_finalized_fact_mutation();
+
+DROP TRIGGER IF EXISTS journal_source_immutable_guard
+    ON accounting_core.journal_source_reference;
+CREATE TRIGGER journal_source_immutable_guard
+    BEFORE UPDATE OR DELETE ON accounting_core.journal_source_reference
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.reject_finalized_fact_mutation();
+
+DROP TRIGGER IF EXISTS journal_reversal_immutable_guard
+    ON accounting_core.journal_reversal;
+CREATE TRIGGER journal_reversal_immutable_guard
+    BEFORE UPDATE OR DELETE ON accounting_core.journal_reversal
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.reject_finalized_fact_mutation();
+
+DROP TRIGGER IF EXISTS posting_receipt_immutable_guard
+    ON accounting_integration.posting_receipt;
+CREATE TRIGGER posting_receipt_immutable_guard
+    BEFORE UPDATE OR DELETE ON accounting_integration.posting_receipt
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.reject_finalized_fact_mutation();
+
+DROP TRIGGER IF EXISTS journal_proposal_immutable_guard
+    ON accounting_integration.journal_proposal_record;
+CREATE TRIGGER journal_proposal_immutable_guard
+    BEFORE UPDATE OR DELETE ON accounting_integration.journal_proposal_record
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.reject_finalized_fact_mutation();
+
+CREATE OR REPLACE FUNCTION accounting_core.guard_finalized_journal_extension()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+          FROM accounting_integration.posting_receipt
+         WHERE posting_receipt.tenant_account_id = NEW.tenant_account_id
+           AND posting_receipt.general_journal_id = NEW.general_journal_id
+    )
+    THEN
+        RAISE EXCEPTION
+            'finalized journal populations are immutable (ledger_immutable); reverse and repost instead of appending evidence'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS journal_entry_finalized_guard
+    ON accounting_core.journal_entry_line;
+CREATE TRIGGER journal_entry_finalized_guard
+    BEFORE INSERT ON accounting_core.journal_entry_line
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.guard_finalized_journal_extension();
+
+DROP TRIGGER IF EXISTS journal_source_finalized_guard
+    ON accounting_core.journal_source_reference;
+CREATE TRIGGER journal_source_finalized_guard
+    BEFORE INSERT ON accounting_core.journal_source_reference
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.guard_finalized_journal_extension();
+
 COMMIT;
