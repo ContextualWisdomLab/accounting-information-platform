@@ -34,16 +34,33 @@ def require_command_key_before_scope_validation() -> None:
         )
     ledger = PostgresPostingLedger(database_url, tenant_reference)
 '''
-    if late in text:
-        text = text.replace(late, "    ledger = PostgresPostingLedger(database_url, tenant_reference)\n", 1)
+    start_marker = "def accept_home_tax_submission(\n"
+    end_marker = "\ndef lookup_home_tax_submissions(\n"
+    if start_marker not in text:
+        raise SystemExit("HomeTax command method start drifted")
+    start = text.index(start_marker)
+    try:
+        end = text.index(end_marker, start)
+    except ValueError as error:
+        raise SystemExit("HomeTax command method end drifted") from error
+    method = text[start:end]
+
+    if late in method:
+        method = method.replace(
+            late,
+            "    ledger = PostgresPostingLedger(database_url, tenant_reference)\n",
+            1,
+        )
+
     anchor = '''    legal_entity_reference = str(payload.get("legal_entity_reference") or "")
 '''
-    prefix = text[: text.index(anchor)] if anchor in text else text
-    if early_key not in prefix:
-        if anchor not in text:
-            raise SystemExit("HomeTax command entry anchor drifted")
-        text = text.replace(anchor, early_key + anchor, 1)
-    _write(path, text)
+    if anchor not in method:
+        raise SystemExit("HomeTax command entry anchor drifted")
+    anchor_index = method.index(anchor)
+    if early_key not in method[:anchor_index]:
+        method = method.replace(anchor, early_key + anchor, 1)
+
+    _write(path, text[:start] + method + text[end:])
 
 
 def strengthen_http_regression() -> None:
