@@ -8,6 +8,8 @@ BEGIN
 END
 $role_setup$;
 
+ALTER ROLE accounting_closing_writer NOLOGIN;
+
 CREATE OR REPLACE FUNCTION accounting_core.guard_period_insert()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -101,12 +103,16 @@ BEGIN
 END;
 $$;
 
+DROP TRIGGER IF EXISTS general_journal_balance_guard
+    ON accounting_core.general_journal;
 CREATE CONSTRAINT TRIGGER general_journal_balance_guard
     AFTER INSERT OR UPDATE ON accounting_core.general_journal
     DEFERRABLE INITIALLY DEFERRED
     FOR EACH ROW
     EXECUTE FUNCTION accounting_core.assert_journal_balance();
 
+DROP TRIGGER IF EXISTS journal_entry_balance_guard
+    ON accounting_core.journal_entry_line;
 CREATE CONSTRAINT TRIGGER journal_entry_balance_guard
     AFTER INSERT OR UPDATE OR DELETE ON accounting_core.journal_entry_line
     DEFERRABLE INITIALLY DEFERRED
