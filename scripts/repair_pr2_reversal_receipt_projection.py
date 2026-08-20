@@ -104,7 +104,8 @@ def normalize_postgres_reversal_receipts() -> None:
                    journal_proposal_record.idempotency_key,
                    journal_proposal_record.external_proposal_id,
                    journal_proposal_record.source_payload_hash,
-                   original_journal.journal_reference
+                   original_journal.journal_reference,
+                   original_proposal.external_proposal_id
             FROM accounting_integration.posting_receipt
             JOIN accounting_integration.journal_proposal_record
               ON journal_proposal_record.tenant_account_id = posting_receipt.tenant_account_id
@@ -127,6 +128,9 @@ def normalize_postgres_reversal_receipts() -> None:
             LEFT JOIN accounting_core.general_journal AS original_journal
               ON original_journal.tenant_account_id = journal_reversal.tenant_account_id
              AND original_journal.general_journal_id = journal_reversal.original_journal_id
+            LEFT JOIN accounting_integration.journal_proposal_record AS original_proposal
+              ON original_proposal.tenant_account_id = original_journal.tenant_account_id
+             AND original_proposal.proposal_record_id = original_journal.source_proposal_record_id
             WHERE posting_receipt.tenant_account_id = %s
               AND journal_proposal_record.idempotency_key = %s
             """,
@@ -138,11 +142,12 @@ def normalize_postgres_reversal_receipts() -> None:
                 "Accept the proposal, then retry the receipt read."
             )
         recorded_at = _format_timestamp(row[1])
+        source_proposal_id = row[16] if row[15] is not None else row[13]
         document: dict[str, object] = {
             "receipt_id": str(row[0]),
             "receipt_contract_version": 1,
             "idempotency_key": row[12],
-            "source_proposal_id": str(row[13]),
+            "source_proposal_id": str(source_proposal_id),
             "source_payload_hash": row[14],
             "tenant_reference": self._tenant_reference,
             "legal_entity_reference": row[9],
@@ -164,7 +169,7 @@ def normalize_postgres_reversal_receipts() -> None:
 
 '''
     current_loader = text[loader_start:loader_end]
-    if 'original_journal.journal_reference' not in current_loader:
+    if 'original_proposal.external_proposal_id' not in current_loader:
         text = text[:loader_start] + replacement + text[loader_end:]
     elif 'document["reversal_of_journal_reference"]' not in current_loader:
         raise SystemExit("published receipt reversal projection partially drifted")
@@ -262,6 +267,7 @@ def add_reversal_receipt_regressions() -> None:
         self.assertEqual(
             reversing["reversal_of_journal_reference"], posted["journal_reference"]
         )
+        self.assertEqual(reversing["source_proposal_id"], posted["source_proposal_id"])
 '''
     if new_http not in tests:
         if old_http not in tests:
@@ -271,7 +277,7 @@ def add_reversal_receipt_regressions() -> None:
     if "test_database_reversal_receipt_state_requires_reversal_lineage" not in tests:
         marker = "    def _seed_master_data(self, *, period_status_code: str) -> str:\n"
         regression = '''    def test_database_reversal_receipt_state_requires_reversal_lineage(self) -> None:
-        """Receipt status and journal-reversal lineage must agree at the database boundary."""
+        """Receipt state, source identity, and journal-reversal lineage agree durably."""
         original = self.ledger.post(self._two_line_proposal(), self.policy)
         command_key = f"{self.policy.tenant_reference}:reversal:receipt-state:v1"
         reversal = self.ledger.reverse(
@@ -284,6 +290,8 @@ def add_reversal_receipt_regressions() -> None:
         document = self.ledger.load_published_receipt_by_key(command_key)
         self.assertEqual(reversal.posting_status_code, "reversed")
         self.assertEqual(document["posting_status_code"], "reversed")
+        self.assertEqual(document["source_proposal_id"], original.source_proposal_id)
+        self.assertEqual(reversal.source_proposal_id, original.source_proposal_id)
         self.assertEqual(
             document["reversal_of_journal_reference"], original.journal_reference
         )
@@ -350,9 +358,10 @@ def update_documentation() -> None:
     adr_path = "docs/adr/0003-append-only-journals.md"
     adr = _read(adr_path)
     sentence = (
-        "Reversal command receipts use `posting_status_code = reversed`, include the "
-        "original `reversal_of_journal_reference`, and are persisted only after the "
-        "reversal lineage row exists; ordinary posting receipts remain `posted`."
+        "Reversal command receipts use `posting_status_code = reversed`, retain the "
+        "original Billing `source_proposal_id`, include the original "
+        "`reversal_of_journal_reference`, and are persisted only after the reversal "
+        "lineage row exists; ordinary posting receipts remain `posted`."
     )
     if sentence not in adr:
         marker = "\n## Consequences\n"
@@ -364,8 +373,8 @@ def update_documentation() -> None:
     changelog_path = "CHANGELOG.md"
     changelog = _read(changelog_path)
     line = (
-        "- Aligned reversal receipts with the published `reversed` state, original-journal "
-        "lineage projection, and PostgreSQL state/lineage validation.\n"
+        "- Aligned reversal receipts with the published `reversed` state, original Billing "
+        "proposal identity, original-journal lineage projection, and PostgreSQL state/lineage validation.\n"
     )
     if line not in changelog:
         marker = "### Changed\n"
@@ -376,7 +385,7 @@ def update_documentation() -> None:
 
 
 def main() -> None:
-    """Apply reversal receipt state, database lineage, tests, and documentation."""
+    """Apply reversal receipt state, source identity, lineage, tests, and documentation."""
     normalize_reference_reversal_receipts()
     normalize_postgres_reversal_receipts()
     enforce_database_reversal_receipt_lineage()
