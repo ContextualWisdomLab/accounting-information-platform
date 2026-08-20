@@ -1,6 +1,13 @@
 name: Repair current PR 2 accounting failures
 
 on:
+  pull_request:
+    branches:
+      - develop
+    types:
+      - opened
+      - reopened
+      - synchronize
   push:
     branches:
       - agent/accounting-posting-foundation
@@ -14,7 +21,7 @@ concurrency:
 
 jobs:
   repair-verify-publish:
-    if: github.actor != 'github-actions[bot]'
+    if: github.actor != 'github-actions[bot]' && (github.event_name == 'push' || github.head_ref == 'agent/accounting-posting-foundation')
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -22,7 +29,7 @@ jobs:
     env:
       ACCOUNTING_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/accounting_test
       REPAIR_SOURCE_SHA: 2378859edb5b80e3ccce2d0f801f42a36b04e467
-      TRIGGER_SHA: ${{ github.sha }}
+      TRIGGER_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     services:
       postgres:
         image: postgres:18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
@@ -41,7 +48,7 @@ jobs:
       - name: Check out exact triggering head
         uses: actions/checkout@631c942040754b6e095e929c1677c07e10ed4f87
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Verify exact triggering checkout
