@@ -88,9 +88,11 @@ COMMIT;
         )
     ledger = PostgresPostingLedger(database_url, tenant_reference)
 '''
-    if block not in accept_text:
+    key_assignment = "    submission_idempotency_key = "
+    if key_assignment not in accept_text and block not in accept_text:
         raise SystemExit("HomeTax idempotency insertion anchor drifted")
-    accept_text = accept_text.replace(block, key_block, 1)
+    if key_assignment not in accept_text:
+        accept_text = accept_text.replace(block, key_block, 1)
     incomplete = '''    if not _vat_register_is_loadable(register_document):
         rejection_reason_code = "register_unavailable"
     elif not _home_tax_credential_present():
@@ -114,7 +116,7 @@ COMMIT;
         rejection_reason_code = "hometax_transport_unavailable"
     return ledger.persist_home_tax_submission(
 '''
-    if incomplete not in accept_text:
+    if incomplete not in accept_text and incomplete_new not in accept_text:
         raise SystemExit("HomeTax incomplete-register branch drifted")
     accept_text = accept_text.replace(incomplete, incomplete_new, 1)
     call_tail = '''        register_document=register_document,
@@ -126,9 +128,12 @@ COMMIT;
         submission_idempotency_key=submission_idempotency_key,
     )
 '''
-    if call_tail not in accept_text:
+    key_argument = "        submission_idempotency_key=submission_idempotency_key,\n"
+    if key_argument not in accept_text and call_tail not in accept_text:
         raise SystemExit("HomeTax persistence call drifted")
-    write(accept_path, accept_text.replace(call_tail, call_tail_new, 1))
+    if key_argument not in accept_text:
+        accept_text = accept_text.replace(call_tail, call_tail_new, 1)
+    write(accept_path, accept_text)
 
     persistence_method = '''    def persist_home_tax_submission(
         self,
