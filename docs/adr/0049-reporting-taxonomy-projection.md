@@ -1,4 +1,4 @@
-# ADR 0048: Reporting taxonomy as a versioned projection
+# ADR 0049: Reporting taxonomy as a versioned projection
 
 **Status:** Accepted
 
