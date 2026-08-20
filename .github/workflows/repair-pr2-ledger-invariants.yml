@@ -22,7 +22,7 @@ jobs:
     timeout-minutes: 35
     env:
       ACCOUNTING_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/accounting_test
-      REPAIR_SOURCE_SHA: b514bb5569738de5801922bd60e3dad3db5d078d
+      REPAIR_SOURCE_SHA: 6c6dc9b93d6f42fa95b38ad2793472dd2b65ceaf
     services:
       postgres:
         image: postgres:18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
@@ -67,6 +67,7 @@ jobs:
             repair_pr2_book_binding_and_readme.py \
             repair_pr2_http_bearer_auth.py \
             repair_pr2_receipt_state_contract.py \
+            repair_pr2_reversal_receipt_projection.py \
             repair_pr2_close_binder_regression.py \
             repair_pr2_balance_regression_after_finalization.py \
             repair_pr2_database_immutability.py \
@@ -84,6 +85,7 @@ jobs:
           python /tmp/repair_pr2_book_binding_and_readme.py
           python /tmp/repair_pr2_http_bearer_auth.py
           python /tmp/repair_pr2_receipt_state_contract.py
+          python /tmp/repair_pr2_reversal_receipt_projection.py
           python /tmp/repair_pr2_close_binder_regression.py
           python - <<'PY'
           import importlib.util
