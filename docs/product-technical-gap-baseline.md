@@ -12,14 +12,18 @@ success.
 - The protected default branch is `develop`; the repository was bootstrapped
   from an empty tree and the accounting foundation is currently developed on
   PR #2 (`feat: establish accounting posting foundation`).
-- PR #2 is now Ready for review at its exact current head. It remains
-  `MERGEABLE` but `BLOCKED`, with `REVIEW_REQUIRED` and required Checks queued;
-  the head and gate state are re-fetched before every synchronized push. Its
-  temporary repair lane has been removed after the contract repairs and was not
-  itself product evidence.
+- PR #2 is now Ready for review at exact head `49da8c9`. It remains
+  `MERGEABLE` but protected-gate blocked, with no qualifying approval and
+  required Checks queued; the head and gate state are re-fetched before every
+  synchronized push. The push-triggered `repair-hometax-period-end.yml` lane
+  is active and queued to add a real rejected-receipt period-end regression,
+  normalize the source/documentation, and remove itself after a successful
+  verified push. Until that run completes, it is workflow evidence only, not
+  product evidence.
 - PR #4 is now Ready for review as a documentation and ADR stack on top of the
-  foundation branch; it is not independently mergeable until PR #2 integrates.
-  PR #5 is merged documentation for the buyer/operator README.
+  foundation branch at base `9636e7c` with head `a3dd42b`; it must be
+  synchronized to the final foundation head before merge. PR #5 is merged
+  documentation for the buyer/operator README.
 - Open product issues are #1 (foundation), #6 (book-to-bank reconciliation),
   #7 (immutable ISO 20022 statement evidence), #8 (deterministic matching and
   bridge), and #9 (purpose-bound accounting authorization). #7 must precede
@@ -47,13 +51,16 @@ success.
 
 - Local Python 3.13.14 with hash-locked quality dependencies was used; no
   system-runtime dependency was added.
-- At foundation branch HEAD `20e9fb4`, real PostgreSQL 18.4 on `127.0.0.1`
+- At foundation branch HEAD `49da8c9`, real PostgreSQL 18.4 on `127.0.0.1`
   was used with a local test role and database. The full suite passed: 227
   tests, including deferred-balance, finalized-ledger immutability, forced
   runtime RLS, HTTP, and PostgreSQL integration coverage.
 - Branch and statement coverage passed at 100%: 3,626 statements, 1,334
   branches, zero misses or partial branches. This is local evidence, not
   remote Checks evidence.
+- The focused incomplete-register HomeTax rejection regression passed locally;
+  the period-end fallback assertion remains pending until the queued repair
+  workflow produces and verifies its source commit.
 - The local supply-chain evidence run produced two reproducible wheels with
   identical SHA-256 digests, an SPDX 2.3 SBOM, and verified `SHA256SUMS`
   output. This does not replace the remote attestation and artifact checks.
@@ -68,7 +75,8 @@ success.
    blocker. The organization’s central hourly review scheduler is configured
    for `27 * * * *`; it is not duplicated in this repository.
 2. Remove the temporary repair workflow only after its purpose is fulfilled
-   and the integrated branch retains the verified database authority tests.
+   and the integrated branch retains the verified database authority tests;
+   do not treat the queued workflow itself as a successful repair.
 3. Merge #2 through the protected path, verify the merge SHA, then stack #7.
 4. Deliver #7's immutable statement registry, then #8's deterministic match
    and bridge, then close the parent #6 product slice.
