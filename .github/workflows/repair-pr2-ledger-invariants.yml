@@ -22,7 +22,7 @@ jobs:
     timeout-minutes: 35
     env:
       ACCOUNTING_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/accounting_test
-      REPAIR_SOURCE_SHA: a99f163abedc6b14a149773f3b52f4dd806fe8ae
+      REPAIR_SOURCE_SHA: 749064f61e5a25a597b1bd7d383384f5d3adce34
     services:
       postgres:
         image: postgres:18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
@@ -63,6 +63,7 @@ jobs:
             repair_pr2_home_tax_replay_outcome.py \
             repair_pr2_reversal_temporal_order.py \
             repair_pr2_close_binder_regression.py \
+            repair_pr2_balance_regression_after_finalization.py \
             repair_pr2_database_immutability.py \
             repair_pr2_force_rls.py \
             repair_pr2_all.py \
@@ -86,6 +87,7 @@ jobs:
           spec.loader.exec_module(module)
           module.add_database_regression_tests()
           PY
+          python /tmp/repair_pr2_balance_regression_after_finalization.py
           python /tmp/repair_pr2_database_immutability.py
           python /tmp/repair_pr2_force_rls.py
       - name: Install hash-locked quality dependencies
