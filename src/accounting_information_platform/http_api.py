@@ -1529,7 +1529,7 @@ def run_journal_proposal_server(
     port: int | None = None,
     serve: Callable[[], None] | None = None,
 ) -> JournalProposalServer:
-    """Bind 0.0.0.0:$PORT by default and serve AIS HTTP commands."""
+    """Bind 127.0.0.1:$PORT by default and serve AIS HTTP commands."""
     resolved_url = (
         database_url
         if database_url is not None
@@ -1540,7 +1540,7 @@ def run_journal_proposal_server(
         if tenant_reference is not None
         else os.environ.get("ACCOUNTING_TENANT_REFERENCE", "")
     )
-    resolved_host = "0.0.0.0" if host is None else host
+    resolved_host = "127.0.0.1" if host is None else host
     if port is None:
         port_text = os.environ.get("PORT", "8080")
         try:
