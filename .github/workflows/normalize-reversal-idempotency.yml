@@ -5,6 +5,9 @@ on:
   push:
     branches:
       - agent/accounting-posting-foundation
+  pull_request:
+    branches:
+      - develop
 
 permissions:
   contents: read
@@ -40,12 +43,12 @@ jobs:
       - name: Check out exact triggering head
         uses: actions/checkout@631c942040754b6e095e929c1677c07e10ed4f87
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Verify exact checkout
         env:
-          EXPECTED_SHA: ${{ github.sha }}
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - name: Install pinned Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
@@ -110,7 +113,7 @@ jobs:
       - name: Publish normalized canonical branch
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          EXPECTED_SHA: ${{ github.sha }}
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         shell: bash
         run: |
           set -euo pipefail
