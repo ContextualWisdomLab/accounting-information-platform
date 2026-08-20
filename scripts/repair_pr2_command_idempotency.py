@@ -949,9 +949,10 @@ def update_tests() -> None:
         tenant_header: str | None = "",
     ) -> tuple[int, dict[str, object]]:
 '''
-    if old_helper_signature not in tests:
+    if old_helper_signature in tests:
+        tests = tests.replace(old_helper_signature, new_helper_signature, 1)
+    elif new_helper_signature not in tests:
         raise SystemExit("HomeTax HTTP helper signature drifted")
-    tests = tests.replace(old_helper_signature, new_helper_signature, 1)
     payload_tail = '''            "fiscal_period_reference": (
                 "urn:cwl:accounting:fiscal_period:2026-08"
                 if fiscal_period_reference is None
@@ -974,7 +975,7 @@ def update_tests() -> None:
     helper_start = tests.index(new_helper_signature)
     helper_end = tests.index("    def _http_home_tax_submissions(", helper_start)
     helper_text = tests[helper_start:helper_end]
-    if payload_tail not in helper_text:
+    if payload_tail not in helper_text and payload_tail_new not in helper_text:
         raise SystemExit("HomeTax HTTP helper payload drifted")
     helper_text = helper_text.replace(payload_tail, payload_tail_new, 1)
     tests = tests[:helper_start] + helper_text + tests[helper_end:]
@@ -989,7 +990,7 @@ def update_tests() -> None:
     incomplete_new = '''        self.assertEqual(listed_status, 200)
         self.assertEqual(listed["home_tax_submissions"], [])
 '''
-    if incomplete_old not in tests:
+    if incomplete_old not in tests and incomplete_new not in tests:
         raise SystemExit("incomplete HomeTax persistence assertion drifted")
     tests = tests.replace(incomplete_old, incomplete_new, 1)
 
