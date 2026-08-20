@@ -176,6 +176,7 @@ def main() -> None:
     temporal.harden_reference_oracle()
     temporal.harden_postgres_reversal()
     temporal.add_regressions()
+    temporal.add_authority_edge_regression()
 
     followup = _load("repair_pr2_followup_adjustments")
     followup.harden_home_tax_projection()
