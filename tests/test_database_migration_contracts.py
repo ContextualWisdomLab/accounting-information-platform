@@ -50,14 +50,18 @@ class DatabaseInvariantMigrationContracts(unittest.TestCase):
         self.assertIn("debit_total_value <> credit_total_value", migration)
         self.assertIn("CREATE CONSTRAINT TRIGGER general_journal_balance_guard", migration)
         self.assertIn("CREATE CONSTRAINT TRIGGER journal_entry_balance_guard", migration)
-        self.assertIn(
-            "DROP TRIGGER IF EXISTS general_journal_balance_guard ON accounting_core.general_journal",
-            migration,
-        )
-        self.assertIn(
-            "DROP TRIGGER IF EXISTS journal_entry_balance_guard ON accounting_core.journal_entry_line",
-            migration,
-        )
+        for trigger_name, table_name in (
+            ("general_journal_balance_guard", "accounting_core.general_journal"),
+            ("journal_entry_balance_guard", "accounting_core.journal_entry_line"),
+        ):
+            with self.subTest(trigger_name=trigger_name):
+                self.assertRegex(
+                    migration,
+                    re.compile(
+                        rf"DROP\s+TRIGGER\s+IF\s+EXISTS\s+{trigger_name}\s+ON\s+{re.escape(table_name)}",
+                        re.IGNORECASE | re.MULTILINE,
+                    ),
+                )
         self.assertGreaterEqual(migration.count("DEFERRABLE INITIALLY DEFERRED"), 2)
 
 
