@@ -1,4 +1,4 @@
-"""Bind tenant RLS to an admin-provisioned runtime database identity."""
+"""Bind tenant RLS to a real admin-provisioned runtime database login."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ def _write(path: str, text: str) -> None:
 
 
 def add_runtime_tenant_binding_migration() -> None:
-    """Make a runtime login's tenant authority independent of caller-settable GUCs."""
+    """Make runtime tenant authority independent of request-controlled session GUCs."""
     path = Path("database/migrations/0007_runtime_tenant_binding.sql")
     if path.exists():
         return
@@ -156,16 +156,31 @@ def extend_foundation_installer() -> None:
     _write(path, text)
 
 
-def add_runtime_identity_regression() -> None:
-    """Prove a runtime member cannot select another tenant by setting the old GUC."""
+def _ensure_test_imports() -> None:
+    """Provide cryptographic test credentials and psycopg SQL composition helpers."""
     path = "tests/test_postgres_posting.py"
     text = _read(path)
-    if "test_runtime_database_identity_cannot_switch_tenant_with_guc" in text:
+    if "import secrets\n" not in text:
+        text = text.replace("import os\n", "import os\nimport secrets\n", 1)
+    if "from psycopg import sql\n" not in text:
+        marker = "import psycopg\n"
+        if marker not in text:
+            raise SystemExit("psycopg import anchor drifted")
+        text = text.replace(marker, marker + "from psycopg import sql\n", 1)
+    _write(path, text)
+
+
+def add_runtime_identity_regression() -> None:
+    """Prove a real non-owner login is tenant-bound and cannot bypass ledger controls."""
+    path = "tests/test_postgres_posting.py"
+    text = _read(path)
+    if "test_real_runtime_login_is_tenant_bound_and_cannot_bypass_controls" in text:
         return
     marker = "    def _seed_master_data(self, *, period_status_code: str) -> str:\n"
-    regression = '''    def test_runtime_database_identity_cannot_switch_tenant_with_guc(self) -> None:
-        """RLS derives a runtime tenant from session_user, not a caller-controlled setting."""
+    regression = '''    def test_real_runtime_login_is_tenant_bound_and_cannot_bypass_controls(self) -> None:
+        """A real LOGIN uses RLS safely and cannot gain close or mutation authority from GUCs."""
         runtime_role = f"accounting_runtime_{uuid.uuid4().hex[:12]}"
+        runtime_password = secrets.token_urlsafe(24)
         other_tenant_code = f"urn:cwl:tenant_other_{uuid.uuid4().hex[:12]}"
         with psycopg.connect(DATABASE_URL, autocommit=True) as administrator:
             other_tenant_id = administrator.execute(
@@ -187,7 +202,10 @@ def add_runtime_identity_regression() -> None:
                 (other_tenant_id,),
             )
             administrator.execute(
-                sql.SQL("CREATE ROLE {} NOLOGIN").format(sql.Identifier(runtime_role))
+                sql.SQL(
+                    "CREATE ROLE {} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                    "INHERIT NOBYPASSRLS PASSWORD {}"
+                ).format(sql.Identifier(runtime_role), sql.Literal(runtime_password))
             )
             administrator.execute(
                 sql.SQL("GRANT accounting_runtime_user TO {}").format(
@@ -203,66 +221,165 @@ def add_runtime_identity_regression() -> None:
                 """,
                 (runtime_role, self.tenant_id),
             )
+            role_flags = administrator.execute(
+                """
+                SELECT rolsuper, rolcreatedb, rolcreaterole, rolcanlogin, rolbypassrls
+                FROM pg_catalog.pg_roles
+                WHERE rolname = %s
+                """,
+                (runtime_role,),
+            ).fetchone()
+            self.assertEqual(role_flags, (False, False, False, True, False))
 
-        connection = psycopg.connect(DATABASE_URL)
+        runtime_url = psycopg.conninfo.make_conninfo(
+            DATABASE_URL,
+            user=runtime_role,
+            password=runtime_password,
+        )
+        runtime_ledger = PostgresPostingLedger(
+            runtime_url,
+            tenant_reference=self.policy.tenant_reference,
+        )
+        runtime_proposal = self._two_line_proposal(
+            proposal_id=str(uuid.uuid4()),
+            idempotency_key=f"runtime-login:{uuid.uuid4()}",
+            source_payload_hash="sha256:" + "9" * 64,
+        )
+        runtime_receipt = runtime_ledger.post(runtime_proposal, self.policy)
+        self.assertEqual(runtime_receipt.posting_status_code, "posted")
+
         try:
-            connection.execute(
-                sql.SQL("SET SESSION AUTHORIZATION {}").format(
-                    sql.Identifier(runtime_role)
+            with psycopg.connect(runtime_url) as connection:
+                identity = connection.execute(
+                    "SELECT session_user, current_user, accounting_core.current_tenant_account_id()"
+                ).fetchone()
+                self.assertEqual(identity, (runtime_role, runtime_role, self.tenant_id))
+                connection.execute(
+                    "SELECT set_config('app.tenant_account_id', %s, false)",
+                    (str(other_tenant_id),),
                 )
-            )
-            self.assertEqual(
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT accounting_core.current_tenant_account_id()"
+                    ).fetchone()[0],
+                    self.tenant_id,
+                )
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT tenant_account_id FROM accounting_core.tenant_account"
+                    ).fetchall(),
+                    [(self.tenant_id,)],
+                )
+                self.assertEqual(
+                    connection.execute(
+                        """
+                        SELECT count(*)
+                        FROM accounting_core.legal_entity_record
+                        WHERE tenant_account_id = %s
+                        """,
+                        (other_tenant_id,),
+                    ).fetchone()[0],
+                    0,
+                )
+                own_period_write = connection.execute(
+                    """
+                    UPDATE accounting_core.fiscal_period
+                       SET recorded_at = recorded_at
+                     WHERE tenant_account_id = %s
+                    RETURNING fiscal_period_id
+                    """,
+                    (self.tenant_id,),
+                ).fetchone()
+                self.assertIsNotNone(own_period_write)
+                self.assertIsNone(
+                    connection.execute(
+                        """
+                        UPDATE accounting_core.fiscal_period
+                           SET recorded_at = recorded_at
+                         WHERE tenant_account_id = %s
+                        RETURNING fiscal_period_id
+                        """,
+                        (other_tenant_id,),
+                    ).fetchone()
+                )
+
+            self._set_period_status("soft_closed")
+            with psycopg.connect(runtime_url) as connection:
                 connection.execute(
-                    "SELECT accounting_core.current_tenant_account_id()"
-                ).fetchone()[0],
-                self.tenant_id,
-            )
-            connection.execute(
-                "SELECT set_config('app.tenant_account_id', %s, false)",
-                (str(other_tenant_id),),
-            )
-            self.assertEqual(
-                connection.execute(
-                    "SELECT accounting_core.current_tenant_account_id()"
-                ).fetchone()[0],
-                self.tenant_id,
-            )
-            visible_tenants = connection.execute(
-                "SELECT tenant_account_id FROM accounting_core.tenant_account"
-            ).fetchall()
-            self.assertEqual(visible_tenants, [(self.tenant_id,)])
-            other_entities = connection.execute(
-                """
-                SELECT count(*)
-                FROM accounting_core.legal_entity_record
-                WHERE tenant_account_id = %s
-                """,
-                (other_tenant_id,),
-            ).fetchone()[0]
-            self.assertEqual(other_entities, 0)
-            own_period_write = connection.execute(
-                """
-                UPDATE accounting_core.fiscal_period
-                   SET recorded_at = recorded_at
-                 WHERE tenant_account_id = %s
-                RETURNING fiscal_period_id
-                """,
-                (self.tenant_id,),
-            ).fetchone()
-            self.assertIsNotNone(own_period_write)
-            cross_tenant_write = connection.execute(
-                """
-                UPDATE accounting_core.fiscal_period
-                   SET recorded_at = recorded_at
-                 WHERE tenant_account_id = %s
-                RETURNING fiscal_period_id
-                """,
-                (other_tenant_id,),
-            ).fetchone()
-            self.assertIsNone(cross_tenant_write)
-            connection.rollback()
+                    "SELECT set_config('accounting_core.journal_write_role', 'adjusting', false)"
+                )
+                legal_entity_id, book_id, period_id = connection.execute(
+                    """
+                    SELECT legal_entity_record.legal_entity_id,
+                           accounting_book.accounting_book_id,
+                           fiscal_period.fiscal_period_id
+                    FROM accounting_core.legal_entity_record
+                    JOIN accounting_core.accounting_book
+                      ON accounting_book.tenant_account_id = legal_entity_record.tenant_account_id
+                     AND accounting_book.legal_entity_id = legal_entity_record.legal_entity_id
+                    JOIN accounting_core.fiscal_period
+                      ON fiscal_period.tenant_account_id = legal_entity_record.tenant_account_id
+                    WHERE legal_entity_record.tenant_account_id = %s
+                      AND fiscal_period.period_code = '2026-08'
+                    """,
+                    (self.tenant_id,),
+                ).fetchone()
+                proposal_record_id = connection.execute(
+                    """
+                    INSERT INTO accounting_integration.journal_proposal_record (
+                        tenant_account_id, external_proposal_id, proposal_contract_version,
+                        idempotency_key, source_payload_hash, proposal_status_code, processed_at
+                    )
+                    VALUES (%s, uuidv7(), 1, %s, %s, 'posted', clock_timestamp())
+                    RETURNING proposal_record_id
+                    """,
+                    (
+                        self.tenant_id,
+                        f"runtime-bypass:{uuid.uuid4()}",
+                        "sha256:" + "8" * 64,
+                    ),
+                ).fetchone()[0]
+                with self.assertRaisesRegex(psycopg.Error, "period_closed"):
+                    connection.execute(
+                        """
+                        INSERT INTO accounting_core.general_journal (
+                            tenant_account_id, legal_entity_id, accounting_book_id, fiscal_period_id,
+                            journal_reference, journal_status_code, transaction_currency_code,
+                            functional_currency_code, transaction_date, accounting_date,
+                            source_proposal_record_id, accounting_policy_version, posting_rule_version
+                        )
+                        VALUES (
+                            %s, %s, %s, %s, %s, 'posted', 'KRW', 'KRW', %s, %s, %s,
+                            'ifrs-v1', 'billing-issued-v1'
+                        )
+                        """,
+                        (
+                            self.tenant_id,
+                            legal_entity_id,
+                            book_id,
+                            period_id,
+                            f"urn:cwl:accounting:general_journal:{uuid.uuid4()}",
+                            date(2026, 8, 31),
+                            date(2026, 8, 31),
+                            proposal_record_id,
+                        ),
+                    )
+                connection.rollback()
+
+            self._set_period_status("open")
+            with psycopg.connect(runtime_url) as connection:
+                with self.assertRaisesRegex(psycopg.Error, "immutable"):
+                    connection.execute(
+                        """
+                        UPDATE accounting_core.general_journal
+                           SET journal_status_code = 'reversed'
+                         WHERE tenant_account_id = %s
+                           AND journal_reference = %s
+                        """,
+                        (self.tenant_id, runtime_receipt.journal_reference),
+                    )
+                connection.rollback()
         finally:
-            connection.close()
             with psycopg.connect(DATABASE_URL, autocommit=True) as administrator:
                 administrator.execute(
                     "DELETE FROM accounting_core.runtime_tenant_binding WHERE runtime_database_role = %s",
@@ -275,6 +392,11 @@ def add_runtime_identity_regression() -> None:
                 administrator.execute(
                     "DELETE FROM accounting_core.tenant_account WHERE tenant_account_id = %s",
                     (other_tenant_id,),
+                )
+                administrator.execute(
+                    sql.SQL("REVOKE accounting_runtime_user FROM {}").format(
+                        sql.Identifier(runtime_role)
+                    )
                 )
                 administrator.execute(
                     sql.SQL("DROP OWNED BY {}").format(sql.Identifier(runtime_role))
@@ -297,7 +419,7 @@ def update_docs() -> None:
 
 ## Database runtime tenant authority
 
-Production application logins are members of the NOLOGIN `accounting_runtime_user` role and are provisioned in `accounting_core.runtime_tenant_binding` by a migration/admin identity. For those runtime members, `accounting_core.current_tenant_account_id()` derives tenant authority from immutable `session_user` membership/binding and ignores caller changes to `app.tenant_account_id`. The legacy GUC remains an administrator/test compatibility path only for sessions that are not application-runtime members. Runtime roles have no privileges on `runtime_tenant_binding` and cannot rebind themselves. `tenant_account` itself is RLS-protected so a runtime login cannot enumerate sibling tenants.
+Production application logins are direct PostgreSQL `LOGIN` roles, are members of the NOLOGIN `accounting_runtime_user` privilege role, and are provisioned in `accounting_core.runtime_tenant_binding` by a migration/admin identity. They are non-superuser, non-`BYPASSRLS`, non-owner roles. For those runtime members, `accounting_core.current_tenant_account_id()` derives tenant authority from immutable `session_user` membership/binding and ignores caller changes to `app.tenant_account_id`. The legacy GUC remains an administrator/test compatibility path only for sessions that are not application-runtime members. Runtime roles have no privileges on `runtime_tenant_binding` and cannot rebind themselves. `tenant_account` itself is RLS-protected so a runtime login cannot enumerate sibling tenants.
 '''
     if "## Database runtime tenant authority" not in security:
         security += section
@@ -309,7 +431,7 @@ Production application logins are members of the NOLOGIN `accounting_runtime_use
 
 ## Runtime tenant provisioning
 
-Create the application login outside normal request handling, grant it membership in `accounting_runtime_user`, and insert exactly one `runtime_tenant_binding` row through an audited migration/admin session. Do not grant the runtime login privileges on that binding table, role administration, `BYPASSRLS`, or superuser. The HTTP server tenant binding and authenticated token tenant must match the tenant mapped to the database `session_user`; a mismatch fails before accounting work rather than switching RLS with a request-controlled GUC.
+Create a dedicated PostgreSQL `LOGIN` for each application runtime identity outside normal request handling, ensure it is non-superuser and does not have `BYPASSRLS`, grant it membership in `accounting_runtime_user`, and insert exactly one `runtime_tenant_binding` row through an audited migration/admin session. Do not grant the runtime login privileges on that binding table, role administration, migration ownership, or break-glass roles. The HTTP server tenant binding and authenticated token tenant must match the tenant mapped to the database `session_user`; a mismatch fails before accounting work rather than switching RLS with a request-controlled GUC. Integration tests connect as an actual runtime login and exercise supported posting/read paths plus cross-tenant, soft-close, and immutable-ledger denial paths.
 '''
     if "## Runtime tenant provisioning" not in operability:
         operability += section
@@ -317,7 +439,7 @@ Create the application login outside normal request handling, grant it membershi
 
     changelog_path = "CHANGELOG.md"
     changelog = _read(changelog_path)
-    entry = "- Bound production tenant RLS to an admin-provisioned runtime database identity so application sessions cannot switch tenants by setting `app.tenant_account_id`.\n"
+    entry = "- Bound production tenant RLS to a real admin-provisioned, non-owner PostgreSQL runtime login and verified supported posting/read paths plus cross-tenant, soft-close, and immutable-ledger denials without relying on caller-controlled tenant GUCs.\n"
     if entry not in changelog:
         marker = "### Security\n"
         if marker in changelog:
@@ -328,9 +450,10 @@ Create the application login outside normal request handling, grant it membershi
 
 
 def main() -> None:
-    """Install runtime-role tenant binding, regression evidence, and operator contract."""
+    """Install runtime-role tenant binding, real-login regression evidence, and docs."""
     add_runtime_tenant_binding_migration()
     extend_foundation_installer()
+    _ensure_test_imports()
     add_runtime_identity_regression()
     update_docs()
 
