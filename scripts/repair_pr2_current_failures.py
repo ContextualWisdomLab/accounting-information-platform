@@ -143,6 +143,25 @@ def _normalize_postgres_regression_setup() -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def _ensure_operability_database_invariant_anchor() -> None:
+    """Restore the code-current journal-balance runbook paragraph when predecessor prose drifted."""
+    path = Path("docs/OPERABILITY.md")
+    text = path.read_text(encoding="utf-8")
+    anchor = (
+        "PostgreSQL deferred constraint triggers verify the complete journal population "
+        "when a transaction commits. Every durable `general_journal` must contain lines "
+        "with exactly equal debit and credit totals. A direct-SQL mutation that leaves a "
+        "journal empty or unbalanced fails with `journal_unbalanced`; repair the transaction "
+        "before retrying rather than disabling the trigger.\n"
+    )
+    if anchor in text:
+        return
+    marker = "\n## Initial service objectives\n"
+    if marker not in text:
+        raise SystemExit("OPERABILITY service-objectives anchor drifted")
+    path.write_text(text.replace(marker, "\n" + anchor + marker, 1), encoding="utf-8")
+
+
 def main() -> None:
     """Repair current HomeTax, reversal, and database-regression failures."""
     command = _load("repair_pr2_command_idempotency")
@@ -164,6 +183,7 @@ def main() -> None:
 
     _load("repair_pr2_home_tax_replay_outcome").main()
     _normalize_postgres_regression_setup()
+    _ensure_operability_database_invariant_anchor()
     _document_current_reversal_contract()
 
 
