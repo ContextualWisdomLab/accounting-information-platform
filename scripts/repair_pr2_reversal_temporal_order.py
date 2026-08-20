@@ -69,6 +69,103 @@ def add_regressions() -> None:
         _write(postgres_path, postgres)
 
 
+def add_authority_edge_regression() -> None:
+    """Cover the new command, migration, and HTTP denial edges in one real DB test."""
+    path = "tests/test_postgres_posting.py"
+    tests = _read(path)
+    if "test_repair_authority_edge_cases" in tests:
+        return
+    marker = "    def test_closed_period_posts_zero_rows(self) -> None:\n"
+    regression = '''    def test_repair_authority_edge_cases(self) -> None:
+        """Exercise empty command identities, changed reversal evidence, and missing authority files."""
+        original = self.ledger.post(
+            self._two_line_proposal(
+                proposal_id=str(uuid.uuid4()),
+                idempotency_key=f"{self.policy.tenant_reference}:edge-post:v1",
+                source_payload_hash="sha256:" + "b" * 64,
+            )
+        )
+        reverse_payload = {
+            "tenant_reference": self.policy.tenant_reference,
+            "journal_reference": original.journal_reference,
+            "reversal_date": "2026-08-31",
+            "reversal_reason_code": "billing_correction",
+            "reversal_idempotency_key": "",
+        }
+        with self.assertRaisesRegex(
+            AccountingValidationError, "reversal_idempotency_key"
+        ):
+            accept_journal_reversal(reverse_payload, DATABASE_URL, self.policy.tenant_reference)
+        with self.assertRaisesRegex(AccountingValidationError, "complete VAT register"):
+            self.ledger.persist_home_tax_submission(
+                legal_entity_reference=self.policy.legal_entity_reference,
+                accounting_book_reference=self.policy.accounting_book_reference,
+                period_code="2026-08",
+                register_document={},
+                rejection_reason_code="register_unavailable",
+                submission_idempotency_key="edge:missing-register:v1",
+            )
+        with self.assertRaisesRegex(
+            AccountingValidationError, "reversal_idempotency_key"
+        ):
+            self.ledger.reverse(
+                original.journal_reference,
+                date(2026, 8, 31),
+                "billing_correction",
+                self.policy,
+                reversal_idempotency_key="",
+            )
+
+        server = self._start_http_server()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        command = {
+            "tenant_reference": self.policy.tenant_reference,
+            "journal_reference": original.journal_reference,
+            "reversal_date": "2026-08-31",
+            "reversal_reason_code": "billing_correction",
+            "reversal_idempotency_key": f"{self.policy.tenant_reference}:edge-reversal:v1",
+        }
+        first_status, _first = self._http_json("POST", "/journal-reversals", command)
+        conflict_status, conflict = self._http_json(
+            "POST",
+            "/journal-reversals",
+            {**command, "reversal_reason_code": "duplicate_charge"},
+        )
+        self.assertEqual(first_status, 200)
+        self.assertEqual(conflict_status, 409)
+        self.assertIn("reversal_idempotency_key", str(conflict))
+
+        migration_names = (
+            "0001_accounting_foundation.sql",
+            "0002_chart_account_class.sql",
+            "0003_home_tax_submission.sql",
+            "0004_close_idempotency_key.sql",
+            "0005_closed_period_guard.sql",
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            for name in migration_names:
+                (temporary_root / name).write_text("-- authority-path test\n", encoding="utf-8")
+            with self.assertRaisesRegex(AccountingValidationError, "0006_force_tenant_rls"):
+                apply_foundation_migration(
+                    DATABASE_URL, temporary_root / migration_names[0]
+                )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            for name in migration_names + ("0006_force_tenant_rls.sql",):
+                (temporary_root / name).write_text("-- authority-path test\n", encoding="utf-8")
+            with self.assertRaisesRegex(AccountingValidationError, "0007_runtime_tenant_binding"):
+                apply_foundation_migration(
+                    DATABASE_URL, temporary_root / migration_names[0]
+                )
+
+'''
+    if marker not in tests:
+        raise SystemExit("authority edge regression insertion marker drifted")
+    _write(path, tests.replace(marker, regression + marker, 1))
+
+
 def update_documentation() -> None:
     """Record the no-backdating reversal invariant in the canonical ADR."""
     path = "docs/adr/0003-append-only-journals.md"
@@ -96,6 +193,7 @@ def main() -> None:
     harden_reference_oracle()
     harden_postgres_reversal()
     add_regressions()
+    add_authority_edge_regression()
     update_documentation()
 
 

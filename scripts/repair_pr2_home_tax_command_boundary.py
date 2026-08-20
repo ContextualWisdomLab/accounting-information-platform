@@ -57,7 +57,10 @@ def require_command_key_before_scope_validation() -> None:
     if anchor not in method:
         raise SystemExit("HomeTax command entry anchor drifted")
     anchor_index = method.index(anchor)
-    if early_key not in method[:anchor_index]:
+    if (
+        "submission_idempotency_key = payload.get(" not in method[:anchor_index]
+        and early_key not in method[:anchor_index]
+    ):
         method = method.replace(anchor, early_key + anchor, 1)
 
     _write(path, text[:start] + method + text[end:])
