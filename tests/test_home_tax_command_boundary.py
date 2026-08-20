@@ -110,8 +110,8 @@ class HomeTaxCommandBoundaryTests(unittest.TestCase):
         persist_kwargs = _RecordingLedger.instances[0].persist_kwargs
         self.assertIsNotNone(persist_kwargs)
         assert persist_kwargs is not None
-        self.assertEqual(persist_kwargs["submission_idempotency_key"], _COMMAND_KEY)
-        self.assertEqual(persist_kwargs["register_document"], _loadable_register())
+        self.assertEqual(persist_kwargs.get("submission_idempotency_key"), _COMMAND_KEY)
+        self.assertEqual(persist_kwargs.get("register_document"), _loadable_register())
 
 
 if __name__ == "__main__":
