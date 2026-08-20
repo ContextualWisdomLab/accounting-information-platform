@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+import runpy
+import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 from scripts.generate_supply_chain_evidence import generate_supply_chain_evidence
 
@@ -117,6 +122,147 @@ class SupplyChainEvidenceTests(unittest.TestCase):
                     source_sha="c" * 40,
                     source_date_epoch=1,
                 )
+
+    def test_rejects_invalid_project_metadata_and_source_timestamp(self) -> None:
+        """Malformed PEP 621 metadata and timestamps cannot produce release evidence."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            wheel = root / "aip-1-py3-none-any.whl"
+            wheel.write_bytes(b"wheel")
+            project = root / "pyproject.toml"
+
+            with self.assertRaisesRegex(FileNotFoundError, "project metadata"):
+                generate_supply_chain_evidence(
+                    wheel_path=wheel,
+                    project_path=project,
+                    output_directory=root / "out",
+                    source_sha="d" * 40,
+                    source_date_epoch=1,
+                )
+
+            project.write_text("[tool]\nname = 'aip'\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, r"\[project\]"):
+                generate_supply_chain_evidence(
+                    wheel_path=wheel,
+                    project_path=project,
+                    output_directory=root / "out",
+                    source_sha="d" * 40,
+                    source_date_epoch=1,
+                )
+
+            project.write_text('[project]\nname = 1\nversion = "1"\n', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "project.name"):
+                generate_supply_chain_evidence(
+                    wheel_path=wheel,
+                    project_path=project,
+                    output_directory=root / "out",
+                    source_sha="d" * 40,
+                    source_date_epoch=1,
+                )
+            project.write_text('[project]\nname = " "\nversion = "1"\n', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "project.name"):
+                generate_supply_chain_evidence(
+                    wheel_path=wheel,
+                    project_path=project,
+                    output_directory=root / "out",
+                    source_sha="d" * 40,
+                    source_date_epoch=1,
+                )
+
+            project.write_text('[project]\nname = "aip"\nversion = 1\n', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "project.version"):
+                generate_supply_chain_evidence(
+                    wheel_path=wheel,
+                    project_path=project,
+                    output_directory=root / "out",
+                    source_sha="d" * 40,
+                    source_date_epoch=1,
+                )
+            project.write_text('[project]\nname = "aip"\nversion = " "\n', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "project.version"):
+                generate_supply_chain_evidence(
+                    wheel_path=wheel,
+                    project_path=project,
+                    output_directory=root / "out",
+                    source_sha="d" * 40,
+                    source_date_epoch=1,
+                )
+
+            project.write_text(
+                '[project]\nname = "aip"\nversion = "1"\ndependencies = "not-a-list"\n',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "project.dependencies"):
+                generate_supply_chain_evidence(
+                    wheel_path=wheel,
+                    project_path=project,
+                    output_directory=root / "out",
+                    source_sha="d" * 40,
+                    source_date_epoch=1,
+                )
+            project.write_text(
+                '[project]\nname = "aip"\nversion = "1"\ndependencies = [1]\n',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "project.dependencies"):
+                generate_supply_chain_evidence(
+                    wheel_path=wheel,
+                    project_path=project,
+                    output_directory=root / "out",
+                    source_sha="d" * 40,
+                    source_date_epoch=1,
+                )
+            project.write_text(
+                '[project]\nname = "aip"\nversion = "1"\ndependencies = [" "]\n',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "project.dependencies"):
+                generate_supply_chain_evidence(
+                    wheel_path=wheel,
+                    project_path=project,
+                    output_directory=root / "out",
+                    source_sha="d" * 40,
+                    source_date_epoch=1,
+                )
+
+            project.write_text('[project]\nname = "aip"\nversion = "1"\n', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "source_date_epoch"):
+                generate_supply_chain_evidence(
+                    wheel_path=wheel,
+                    project_path=project,
+                    output_directory=root / "out",
+                    source_sha="d" * 40,
+                    source_date_epoch=-1,
+                )
+
+    def test_command_line_entrypoint_emits_wheel_digest(self) -> None:
+        """The checked-in command-line entrypoint emits evidence for one valid artifact."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            project = root / "pyproject.toml"
+            project.write_text('[project]\nname = "aip"\nversion = "1"\n', encoding="utf-8")
+            wheel = root / "aip-1-py3-none-any.whl"
+            wheel.write_bytes(b"wheel")
+            output = io.StringIO()
+            arguments = [
+                "generate_supply_chain_evidence.py",
+                "--wheel",
+                str(wheel),
+                "--project",
+                str(project),
+                "--output-directory",
+                str(root / "out"),
+                "--source-sha",
+                "e" * 40,
+                "--source-date-epoch",
+                "1",
+            ]
+            with mock.patch.object(sys, "argv", arguments), redirect_stdout(output):
+                runpy.run_path(
+                    str(Path(__file__).parents[1] / "scripts/generate_supply_chain_evidence.py"),
+                    run_name="__main__",
+                )
+            self.assertEqual(output.getvalue().strip(), hashlib.sha256(b"wheel").hexdigest())
 
 
 if __name__ == "__main__":
