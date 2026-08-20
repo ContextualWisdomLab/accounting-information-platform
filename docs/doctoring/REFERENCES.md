@@ -6,6 +6,8 @@ Cloud Native Computing Foundation. (2022). *CloudEvents specification, version 1
 
 Financial Accounting Standards Board. (2024). *Accounting Standards Codification Topic 606: Revenue from contracts with customers*. https://asc.fasb.org/topic&trid=2121986
 
+GitHub. (2026). *Artifact attestations*. https://docs.github.com/en/actions/concepts/security/artifact-attestations
+
 IFRS Foundation. (2022). *IAS 1 presentation of financial statements*. https://www.ifrs.org/issued-standards/list-of-standards/ias-1-presentation-of-financial-statements/
 
 IFRS Foundation. (2022). *IAS 7 statement of cash flows*. https://www.ifrs.org/issued-standards/list-of-standards/ias-7-statement-of-cash-flows/
@@ -31,6 +33,10 @@ Korea Legislation Research Institute. (2024b). *Income Tax Act* [Unofficial tran
 Korea Legislation Research Institute. (2024a). *Value-Added Tax Act* [Unofficial translation]. https://elaw.klri.re.kr/eng_service/lawView.do?hseq=53110&lang=ENG
 
 PostgreSQL Global Development Group. (2026). *PostgreSQL 18.4 release notes*. https://www.postgresql.org/docs/release/18.4/
+
+SPDX Workgroup. (n.d.). *SPDX specifications*. https://spdx.dev/use/specifications/
+
+Supply-chain Levels for Software Artifacts. (2026). *SLSA specification, version 1.2*. https://slsa.dev/spec/v1.2/
 
 World Wide Web Consortium. (2013). *PROV-O: The PROV ontology*. https://www.w3.org/TR/prov-o/
 
