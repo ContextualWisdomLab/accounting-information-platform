@@ -77,11 +77,13 @@ jobs:
           python scripts/normalize_reversal_command_idempotency.py
           python scripts/normalize_reversal_internal_compat.py
           python scripts/normalize_hometax_period_end.py
+          python scripts/normalize_pr2_ci_temporal.py
       - name: Verify focused PostgreSQL and contract boundaries
         env:
           PYTHONPATH: src:.
         run: >-
           python -m unittest -v
+          tests.test_ci_contract
           tests.test_reversal_command_idempotency_contract
           tests.test_reversal_command_idempotency_postgres
           tests.test_reversal_temporal_database_guard
@@ -118,6 +120,7 @@ jobs:
           rm scripts/normalize_reversal_command_idempotency.py
           rm scripts/normalize_reversal_internal_compat.py
           rm scripts/normalize_hometax_period_end.py
+          rm scripts/normalize_pr2_ci_temporal.py
           rm -rf dist build src/*.egg-info
           git add -A
           git diff --cached --check
