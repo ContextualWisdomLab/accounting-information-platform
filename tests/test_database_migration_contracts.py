@@ -27,6 +27,20 @@ class DatabaseInvariantMigrationContracts(unittest.TestCase):
             ),
         )
 
+    def test_close_backfill_key_includes_full_snapshot_scope(self) -> None:
+        """Historical close keys cannot collide across entity/book snapshots in one period."""
+        migration = CLOSE_IDEMPOTENCY_MIGRATION.read_text(encoding="utf-8")
+        assignment = migration.split("SET close_idempotency_key =", 1)[1].split("\nFROM ", 1)[0]
+        for scoped_identifier in (
+            "snapshot_record.legal_entity_id",
+            "snapshot_record.accounting_book_id",
+            "snapshot_record.fiscal_period_id",
+        ):
+            with self.subTest(scoped_identifier=scoped_identifier):
+                self.assertIn(scoped_identifier, assignment)
+        self.assertIn("tenant_record.tenant_account_code", assignment)
+        self.assertIn("period_record.period_code", assignment)
+
     def test_soft_close_exception_requires_database_role_membership(self) -> None:
         """A caller-controlled GUC cannot be the sole soft-close authorization signal."""
         migration = PERIOD_GUARD_MIGRATION.read_text(encoding="utf-8")
