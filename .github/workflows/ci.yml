@@ -184,10 +184,12 @@ jobs:
       - name: Verify typing marker is packaged
         run: python -c "import zipfile, glob; wheel=glob.glob('dist/*.whl')[0]; names=zipfile.ZipFile(wheel).namelist(); assert 'accounting_information_platform/py.typed' in names"
       - name: Attest wheel provenance
+        if: github.event_name == 'push'
         uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d
         with:
           subject-path: ${{ github.workspace }}/dist/*.whl
       - name: Attest wheel SBOM
+        if: github.event_name == 'push'
         uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d
         with:
           subject-path: ${{ github.workspace }}/dist/*.whl
