@@ -18,7 +18,7 @@ Every behavior change follows RED → GREEN: reproduce the defect with the small
 8. **Read models** — trial balance, journals, ledgers, balances, rollforwards, aging, statements, close package, VAT register and audit/outbox views tie to the authoritative population.
 9. **Integration contracts** — Billing proposal GET/pull envelopes, idempotent retry, origin allowlist and fail-closed remote errors.
 10. **Security / abuse** — cross-tenant references, malformed origins, oversized bodies, hostile parser inputs, privilege escalation and replay storms.
-11. **Packaging / release** — clean install, wheel install, typing marker, migration install / upgrade, SBOM / provenance and recovery rehearsals.
+11. **Packaging / release** — clean install, wheel install, typing marker, migration install / upgrade, deterministic exact-source provenance, SBOM, protected-head attestations and recovery rehearsals.
 
 ## PostgreSQL accounting regressions
 
@@ -82,6 +82,12 @@ Tests must prove:
 
 Request-body and header parsing must fail deterministically before accounting work. Cover missing / duplicate / malformed content-length, non-ASCII numeric forms, oversized bodies, malformed JSON, tenant mismatch and unsupported methods. Error responses identify the caller's next corrective action without leaking credentials or other-tenant existence.
 
+## Supply-chain evidence tests
+
+Pull-request builds must prove the artifact-to-source relationship without accepting GitHub's synthetic PR merge identity as the PR head. The reproducible-build step creates `source-provenance.json` from the verified `EXPECTED_SHA`, source-derived `SOURCE_DATE_EPOCH`, wheel SHA-256 and deterministic SPDX SBOM SHA-256. `SHA256SUMS` covers the wheel, SBOM and source-provenance manifest, and all three remain in the uploaded exact-head evidence bundle.
+
+GitHub OIDC-backed `actions/attest` provenance and SBOM attestations are intentionally applicable only to `push` builds on `develop` or `main`. A `pull_request` event can carry a synthetic merge ref/commit in the attestation signing context even when the checked-out build tree is the exact PR head, so that signed statement is not accepted as exact PR-head provenance. After integration, the protected-branch push must rebuild the artifact and the signed attestations must pass on that integrated commit before release. This is evidence readiness; it does not claim a SLSA level or certification.
+
 ## Merge gates
 
 One unchanged exact PR head must pass all applicable gates together:
@@ -93,12 +99,12 @@ One unchanged exact PR head must pass all applicable gates together:
 - repository contracts and compile checks;
 - hash-locked package build and installed-public-API smoke test;
 - SAST and security scans;
-- dependency / package policy, SBOM and provenance checks where configured;
+- reproducible wheel, deterministic exact-source provenance manifest, SPDX SBOM and package checksums;
 - migration clean-install / upgrade rehearsal;
 - qualifying independent approval and zero still-valid unresolved review findings.
 
-Queued, pending, skipped, cancelled, absent, neutral, failed, stale, predecessor-head, synthetic merge-ref, status-only or model-only evidence is non-passing.
+Queued, pending, cancelled, absent, neutral, failed, stale, predecessor-head, synthetic merge-ref, status-only or model-only evidence is non-passing. A conditionally scoped gate is evaluated only on the event for which it is applicable; once applicable, a skipped result is non-passing. In particular, signed GitHub artifact attestations are a protected-branch push/release gate, not a substitute for exact PR-head provenance.
 
 ## Release / recovery acceptance
 
-Before a release tag, run backup / restore and rollback-strategy rehearsal with production-like PostgreSQL state and the restricted runtime identity. Verify that restored journal, receipt, close and outbox hashes correspond to the exact release source and artifacts. A successful CI helper workflow is not itself release evidence if generated changes were not normalized into the canonical source branch.
+Before a release tag, run backup / restore and rollback-strategy rehearsal with production-like PostgreSQL state and the restricted runtime identity. Verify that restored journal, receipt, close and outbox hashes correspond to the exact release source and artifacts. The integrated protected-head push must also reproduce the package and pass OIDC-backed provenance/SBOM attestations for that same integrated commit. A successful CI helper workflow is not itself release evidence if generated changes were not normalized into the canonical source branch.
