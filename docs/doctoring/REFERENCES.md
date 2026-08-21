@@ -8,6 +8,10 @@ Financial Accounting Standards Board. (2024). *Accounting Standards Codification
 
 GitHub. (2026). *Artifact attestations*. https://docs.github.com/en/actions/concepts/security/artifact-attestations
 
+GitHub. (2026). *OpenID Connect reference*. https://docs.github.com/en/actions/reference/security/oidc
+
+GitHub. (2026). *Workflow syntax for GitHub Actions*. https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax
+
 IFRS Foundation. (2022). *IAS 1 presentation of financial statements*. https://www.ifrs.org/issued-standards/list-of-standards/ias-1-presentation-of-financial-statements/
 
 IFRS Foundation. (2022). *IAS 7 statement of cash flows*. https://www.ifrs.org/issued-standards/list-of-standards/ias-7-statement-of-cash-flows/
