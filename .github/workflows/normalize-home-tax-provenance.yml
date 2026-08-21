@@ -77,6 +77,21 @@ jobs:
           cat /tmp/home-tax-red.log
           test "$status" -ne 0
           grep -q "source_payload_hash" /tmp/home-tax-red.log
+      - name: Prove durable HomeTax source validation RED on triggering head
+        shell: bash
+        env:
+          PYTHONPATH: src:.
+        run: |
+          set -euo pipefail
+          set +e
+          python -m unittest \
+            tests.test_home_tax_persistence_provenance_validation \
+            -v > /tmp/home-tax-validation-red.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/home-tax-validation-red.log
+          test "$status" -ne 0
+          grep -q "source_payload_hash" /tmp/home-tax-validation-red.log
       - name: Prove multi-target append-only DDL RED on triggering head
         shell: bash
         env:
@@ -102,6 +117,7 @@ jobs:
         run: >-
           python -m unittest
           tests.test_home_tax_idempotency_contract.HomeTaxIdempotencyContractTests.test_home_tax_storage_preserves_command_source_provenance
+          tests.test_home_tax_persistence_provenance_validation
           tests.test_append_only_sql_lexer_contract.AppendOnlySqlLexerContractTests.test_multi_target_destructive_ddl_cannot_hide_journal_tables
           tests.test_append_only_sql_lexer_contract.AppendOnlySqlLexerContractTests.test_multi_target_unrelated_ddl_remains_valid
           tests.test_temporary_repair_provenance_contract.TemporaryRepairProvenanceContractTests.test_repair_workflow_does_not_claim_provenance_for_uncommitted_repairs
