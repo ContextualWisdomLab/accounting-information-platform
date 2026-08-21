@@ -34,6 +34,16 @@ CREATE TABLE accounting_integration.home_tax_submission (
     UNIQUE (tenant_account_id, home_tax_submission_id)
 );
 
+CREATE INDEX home_tax_submission_scope_order_index
+    ON accounting_integration.home_tax_submission (
+        tenant_account_id,
+        legal_entity_id,
+        accounting_book_id,
+        fiscal_period_id,
+        created_at,
+        home_tax_submission_id
+    );
+
 ALTER TABLE accounting_integration.home_tax_submission ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY home_tax_submission_isolation ON accounting_integration.home_tax_submission
