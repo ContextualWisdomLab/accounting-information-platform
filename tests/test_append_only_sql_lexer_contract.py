@@ -28,6 +28,31 @@ class AppendOnlySqlLexerContractTests(unittest.TestCase):
                     (APPEND_ONLY_JOURNAL_MUTATION_ERROR,),
                 )
 
+    def test_multi_target_destructive_ddl_cannot_hide_journal_tables(self) -> None:
+        """Every TRUNCATE/DROP target is checked, not only the first table name."""
+        statements = (
+            "TRUNCATE staging_table, accounting_core.general_journal;",
+            "TRUNCATE TABLE ONLY staging_table, ONLY accounting_core.journal_entry_line RESTART IDENTITY;",
+            "DROP TABLE staging_table, accounting_core.journal_entry_line;",
+            'DROP TABLE IF EXISTS staging_table, accounting_core."general_journal" CASCADE;',
+        )
+        for statement in statements:
+            with self.subTest(statement=statement):
+                self.assertEqual(
+                    validate_append_only_journal_sql(statement),
+                    (APPEND_ONLY_JOURNAL_MUTATION_ERROR,),
+                )
+
+    def test_multi_target_unrelated_ddl_remains_valid(self) -> None:
+        """Unrelated multi-table cleanup is not rejected by the append-only journal gate."""
+        statements = (
+            "TRUNCATE staging_one, staging_two;",
+            "DROP TABLE IF EXISTS staging_one, staging_two CASCADE;",
+        )
+        for statement in statements:
+            with self.subTest(statement=statement):
+                self.assertEqual(validate_append_only_journal_sql(statement), ())
+
     def test_comments_and_string_literals_do_not_create_false_positive(self) -> None:
         """Non-executable journal-mutation text must remain valid migration prose/data."""
         statements = (
