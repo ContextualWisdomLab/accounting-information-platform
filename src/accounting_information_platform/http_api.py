@@ -1330,6 +1330,12 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             document = accept_journal_reversal(
                 payload, self.server.database_url, tenant_header
             )
+        except IdempotencyConflictError as error:
+            self._write_error(
+                409,
+                f"{error}. Supply a new reversal command identity, then retry.",
+            )
+            return
         except AccountingValidationError as error:
             self._write_error(422, str(error))
             return
