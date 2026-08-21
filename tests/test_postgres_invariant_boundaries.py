@@ -37,6 +37,7 @@ class PostgresInvariantBoundaryTests(unittest.TestCase):
             autocommit=True,
             cursor_factory=psycopg.ClientCursor,
         ) as connection:
+            self.addCleanup(self._restore_closing_writer_nologin)
             connection.execute("ALTER ROLE accounting_closing_writer LOGIN")
             connection.execute(migration)
             role_can_login = connection.execute(
@@ -355,6 +356,12 @@ class PostgresInvariantBoundaryTests(unittest.TestCase):
                 proposal_record_id,
             ),
         )
+
+    @staticmethod
+    def _restore_closing_writer_nologin() -> None:
+        """Restore the closing capability to NOLOGIN even if migration replay fails."""
+        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as admin:
+            admin.execute("ALTER ROLE accounting_closing_writer NOLOGIN")
 
     @staticmethod
     def _drop_test_roles(plain_role: str, closer_role: str) -> None:
