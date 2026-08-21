@@ -1,9 +1,13 @@
 name: Normalize observed PR 2 RED boundaries
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/accounting-posting-foundation
+      - develop
+    types:
+      - opened
+      - synchronize
+      - reopened
 
 permissions:
   contents: read
@@ -14,14 +18,17 @@ concurrency:
 
 jobs:
   normalize:
-    if: github.actor != 'github-actions[bot]'
+    if: >-
+      github.actor != 'github-actions[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       contents: write
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
       ACCOUNTING_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/accounting_test
-      EXPECTED_PARENT_SHA: 41de86d444ee02d3851ff13f28e4ef70135d89b2
+      EXPECTED_RED_SHA: 41de86d444ee02d3851ff13f28e4ef70135d89b2
+      EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     services:
       postgres:
         image: postgres:18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
@@ -37,17 +44,20 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - name: Check out exact machinery head
+      - name: Check out exact PR head
         uses: actions/checkout@631c942040754b6e095e929c1677c07e10ed4f87
         with:
-          ref: ${{ github.sha }}
-          fetch-depth: 2
+          ref: ${{ env.EXPECTED_HEAD_SHA }}
+          fetch-depth: 0
           persist-credentials: false
-      - name: Verify machinery is exactly one commit above observed RED head
+      - name: Verify exact head and unchanged observed RED source
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^)" = "$EXPECTED_PARENT_SHA"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD_SHA"
+          git cat-file -e "${EXPECTED_RED_SHA}^{commit}"
+          git diff --exit-code "$EXPECTED_RED_SHA" "$EXPECTED_HEAD_SHA" -- . \
+            ':(exclude).github/workflows/normalize-observed-pr2-red-boundaries.yml'
       - name: Install pinned Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
@@ -114,7 +124,7 @@ jobs:
         run: |
           set -euo pipefail
           remote_head="$(git ls-remote "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" refs/heads/agent/accounting-posting-foundation | cut -f1)"
-          test "$remote_head" = "$GITHUB_SHA"
+          test "$remote_head" = "$EXPECTED_HEAD_SHA"
           rm .github/workflows/normalize-observed-pr2-red-boundaries.yml
           rm scripts/normalize_observed_pr2_red_boundaries.py
           git config user.name "github-actions[bot]"
