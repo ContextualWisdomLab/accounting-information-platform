@@ -52,7 +52,7 @@ class AccountingCiContractTests(unittest.TestCase):
             workflow,
         )
         sast_job = workflow.split("  exact-head-sast:", 1)[1].split(
-            "  accounting-foundation:", 1
+            "  exact-head-security:", 1
         )[0]
         self.assertIn(
             "ref: ${{ github.event.pull_request.head.sha || github.sha }}",
@@ -68,6 +68,34 @@ class AccountingCiContractTests(unittest.TestCase):
         self.assertIn("--severity=ERROR", sast_job)
         self.assertIn("--error", sast_job)
         self.assertIn("--metrics=off", sast_job)
+
+    def test_ci_runs_trivy_security_gate_on_the_verified_exact_head(self) -> None:
+        """Repository-owned vulnerability/secret/misconfig scanning must use the exact head."""
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("exact-head-security:", workflow)
+        self.assertIn("name: Exact-head security", workflow)
+        security_job = workflow.split("  exact-head-security:", 1)[1].split(
+            "  accounting-foundation:", 1
+        )[0]
+        self.assertIn(
+            "ref: ${{ github.event.pull_request.head.sha || github.sha }}",
+            security_job,
+        )
+        self.assertIn(
+            "EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}",
+            security_job,
+        )
+        self.assertIn('test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"', security_job)
+        self.assertIn(
+            "aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8",
+            security_job,
+        )
+        self.assertIn("version: v0.70.0", security_job)
+        self.assertIn("scanners: vuln,secret,misconfig", security_job)
+        self.assertIn("severity: CRITICAL,HIGH,MEDIUM", security_job)
+        self.assertIn("exit-code: '1'", security_job)
 
     def test_ci_reproducible_timestamp_uses_exact_head_and_fails_closed(self) -> None:
         """The verified exact head supplies a mandatory non-empty SOURCE_DATE_EPOCH."""
