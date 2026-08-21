@@ -37,6 +37,21 @@ class TemporaryRepairProvenanceContractTests(unittest.TestCase):
             workflow,
         )
 
+    def test_repair_workflow_removes_temporary_machinery_before_production_coverage(self) -> None:
+        """The 100% production gate evaluates the publishable tree, not one-shot helpers."""
+        if not NORMALIZATION_WORKFLOW.exists():
+            return
+        workflow = NORMALIZATION_WORKFLOW.read_text(encoding="utf-8")
+        cleanup_marker = "Remove temporary normalization machinery before final validation"
+        coverage_marker = "Run complete production branch coverage"
+        self.assertIn(cleanup_marker, workflow)
+        self.assertIn(coverage_marker, workflow)
+        self.assertLess(workflow.index(cleanup_marker), workflow.index(coverage_marker))
+        cleanup_section = workflow.split(cleanup_marker, 1)[1].split("- name:", 1)[0]
+        self.assertIn("rm .github/workflows/normalize-home-tax-provenance.yml", cleanup_section)
+        self.assertIn("rm scripts/repair_home_tax_provenance.py", cleanup_section)
+        self.assertIn("rm scripts/repair_append_only_ddl.py", cleanup_section)
+
 
 if __name__ == "__main__":
     unittest.main()
