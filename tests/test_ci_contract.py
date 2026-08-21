@@ -142,6 +142,7 @@ class AccountingCiContractTests(unittest.TestCase):
         self.assertIn("generate_supply_chain_evidence.py", workflow)
         self.assertIn("(cd dist && sha256sum -c SHA256SUMS)", workflow)
         self.assertIn("sbom-path: ${{ github.workspace }}/dist/sbom.spdx.json", workflow)
+        self.assertIn("dist/source-provenance.json", workflow)
         self.assertIn(
             "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
             workflow,
