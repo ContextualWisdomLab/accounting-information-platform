@@ -86,9 +86,6 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
-      id-token: write
-      attestations: write
-      artifact-metadata: write
     env:
       ACCOUNTING_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/accounting_test
     services:
@@ -183,17 +180,6 @@ jobs:
           python -c "import accounting_information_platform as aip; assert aip.PostingLedger.__name__ == 'PostingLedger'"
       - name: Verify typing marker is packaged
         run: python -c "import zipfile, glob; wheel=glob.glob('dist/*.whl')[0]; names=zipfile.ZipFile(wheel).namelist(); assert 'accounting_information_platform/py.typed' in names"
-      - name: Attest wheel provenance
-        if: github.event_name == 'push'
-        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d
-        with:
-          subject-path: ${{ github.workspace }}/dist/*.whl
-      - name: Attest wheel SBOM
-        if: github.event_name == 'push'
-        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d
-        with:
-          subject-path: ${{ github.workspace }}/dist/*.whl
-          sbom-path: ${{ github.workspace }}/dist/sbom.spdx.json
       - name: Upload package evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -205,3 +191,46 @@ jobs:
             dist/source-provenance.json
           if-no-files-found: error
           retention-days: 14
+
+  integrated-attestations:
+    name: Integrated-head attestations
+    if: github.event_name == 'push'
+    needs: accounting-foundation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Download exact-head package evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: accounting-information-platform-${{ github.sha }}
+          path: dist
+      - name: Verify integrated-head evidence identity
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd dist && sha256sum -c SHA256SUMS)
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          provenance = json.loads(Path("dist/source-provenance.json").read_text(encoding="utf-8"))
+          if provenance.get("source_sha") != os.environ["EXPECTED_SHA"]:
+              raise SystemExit("downloaded package evidence does not belong to the integrated head")
+          PY
+      - name: Attest wheel provenance
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d
+        with:
+          subject-path: ${{ github.workspace }}/dist/*.whl
+      - name: Attest wheel SBOM
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d
+        with:
+          subject-path: ${{ github.workspace }}/dist/*.whl
+          sbom-path: ${{ github.workspace }}/dist/sbom.spdx.json
