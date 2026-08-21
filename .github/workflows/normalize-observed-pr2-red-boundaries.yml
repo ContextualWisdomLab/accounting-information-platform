@@ -27,7 +27,7 @@ jobs:
     timeout-minutes: 30
     env:
       ACCOUNTING_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/accounting_test
-      EXPECTED_RED_SHA: 41de86d444ee02d3851ff13f28e4ef70135d89b2
+      EXPECTED_RED_SHA: b42ea7eb00a4056ef64928c4f28d414ed2bfc1f6
       EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     services:
       postgres:
@@ -104,6 +104,12 @@ jobs:
         env:
           PYTHONPATH: src:.
         run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Remove observed RED normalization machinery before final validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/normalize-observed-pr2-red-boundaries.yml
+          rm scripts/normalize_observed_pr2_red_boundaries.py
       - name: Enforce complete owned statement and branch coverage
         env:
           PYTHONPATH: src:.
@@ -125,8 +131,6 @@ jobs:
           set -euo pipefail
           remote_head="$(git ls-remote "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" refs/heads/agent/accounting-posting-foundation | cut -f1)"
           test "$remote_head" = "$EXPECTED_HEAD_SHA"
-          rm .github/workflows/normalize-observed-pr2-red-boundaries.yml
-          rm scripts/normalize_observed_pr2_red_boundaries.py
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
