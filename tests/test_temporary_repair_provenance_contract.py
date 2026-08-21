@@ -75,6 +75,13 @@ class TemporaryRepairProvenanceContractTests(unittest.TestCase):
             cleanup_section,
         )
 
+    def test_observed_red_normalization_cancels_stale_predecessor_runs(self) -> None:
+        """A queued predecessor repair must not block validation of the newest exact PR head."""
+        if not OBSERVED_RED_NORMALIZATION_WORKFLOW.exists():
+            return
+        workflow = OBSERVED_RED_NORMALIZATION_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("cancel-in-progress: true", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
