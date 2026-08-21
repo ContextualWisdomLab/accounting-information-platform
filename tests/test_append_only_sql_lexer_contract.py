@@ -73,6 +73,24 @@ class AppendOnlySqlLexerContractTests(unittest.TestCase):
             with self.subTest(statement=statement):
                 self.assertEqual(validate_append_only_journal_sql(statement), expected)
 
+    def test_malformed_dollar_quote_syntax_remains_fail_closed_and_deterministic(self) -> None:
+        """Bare dollars and unterminated tags cannot crash or bypass later executable SQL."""
+        cases = (
+            ("SELECT $1;", ()),
+            ("SELECT $tag$unterminated", ()),
+            (
+                "SELECT $1; DELETE FROM accounting_core.general_journal;",
+                (APPEND_ONLY_JOURNAL_MUTATION_ERROR,),
+            ),
+            (
+                "SELECT $tag$unterminated; DELETE FROM accounting_core.general_journal;",
+                (APPEND_ONLY_JOURNAL_MUTATION_ERROR,),
+            ),
+        )
+        for statement, expected in cases:
+            with self.subTest(statement=statement):
+                self.assertEqual(validate_append_only_journal_sql(statement), expected)
+
     def test_comments_and_string_literals_do_not_create_false_positive(self) -> None:
         """Non-executable journal-mutation text must remain valid migration prose/data."""
         statements = (
