@@ -53,6 +53,26 @@ class AppendOnlySqlLexerContractTests(unittest.TestCase):
             with self.subTest(statement=statement):
                 self.assertEqual(validate_append_only_journal_sql(statement), ())
 
+    def test_postgresql_quoted_boundaries_preserve_executable_sql_only(self) -> None:
+        """PL/pgSQL bodies stay inspectable while data literals cannot create or hide mutations."""
+        cases = (
+            (
+                "DO $$ BEGIN DELETE FROM accounting_core.general_journal; END $$;",
+                (APPEND_ONLY_JOURNAL_MUTATION_ERROR,),
+            ),
+            (
+                "SELECT $tag$DELETE FROM accounting_core.general_journal;$tag$;",
+                (),
+            ),
+            (
+                "SELECT E'it\\'s text'; DELETE FROM accounting_core.general_journal;",
+                (APPEND_ONLY_JOURNAL_MUTATION_ERROR,),
+            ),
+        )
+        for statement, expected in cases:
+            with self.subTest(statement=statement):
+                self.assertEqual(validate_append_only_journal_sql(statement), expected)
+
     def test_comments_and_string_literals_do_not_create_false_positive(self) -> None:
         """Non-executable journal-mutation text must remain valid migration prose/data."""
         statements = (
