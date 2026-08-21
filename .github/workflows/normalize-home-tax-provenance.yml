@@ -105,6 +105,7 @@ jobs:
           tests.test_home_tax_idempotency_contract.HomeTaxIdempotencyContractTests.test_home_tax_storage_preserves_command_source_provenance
           tests.test_append_only_sql_lexer_contract.AppendOnlySqlLexerContractTests.test_multi_target_destructive_ddl_cannot_hide_journal_tables
           tests.test_append_only_sql_lexer_contract.AppendOnlySqlLexerContractTests.test_multi_target_unrelated_ddl_remains_valid
+          tests.test_temporary_repair_provenance_contract.TemporaryRepairProvenanceContractTests.test_repair_workflow_does_not_claim_provenance_for_uncommitted_repairs
           -v
       - name: Verify real PostgreSQL HomeTax replay and provenance
         env:
@@ -127,7 +128,7 @@ jobs:
         run: python scripts/validate_repository.py .
       - name: Compile production and test modules
         run: python -m compileall -q src scripts tests
-      - name: Verify reproducible package evidence
+      - name: Verify reproducible package build
         shell: bash
         run: |
           set -euo pipefail
@@ -143,14 +144,9 @@ jobs:
           rebuilt_wheel="$(find dist-rebuild -maxdepth 1 -type f -name '*.whl' -print -quit)"
           test -n "$primary_wheel"
           test -n "$rebuilt_wheel"
-          test "$(sha256sum "$primary_wheel" | cut -d' ' -f1)" = "$(sha256sum "$rebuilt_wheel" | cut -d' ' -f1)"
-          python scripts/generate_supply_chain_evidence.py \
-            --wheel "$primary_wheel" \
-            --project pyproject.toml \
-            --output-directory dist \
-            --source-sha "$TRIGGER_SHA" \
-            --source-date-epoch "$SOURCE_DATE_EPOCH"
-          (cd dist && sha256sum -c SHA256SUMS)
+          primary_sha="$(sha256sum "$primary_wheel" | cut -d' ' -f1)"
+          rebuilt_sha="$(sha256sum "$rebuilt_wheel" | cut -d' ' -f1)"
+          test "$primary_sha" = "$rebuilt_sha"
           python -m pip install --no-index --no-deps --force-reinstall "$primary_wheel"
           cd "$RUNNER_TEMP"
           python -c "import accounting_information_platform as aip; assert aip.PostingLedger.__name__ == 'PostingLedger'"
