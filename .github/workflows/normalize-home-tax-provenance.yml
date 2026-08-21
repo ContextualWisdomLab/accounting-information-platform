@@ -106,6 +106,7 @@ jobs:
           tests.test_append_only_sql_lexer_contract.AppendOnlySqlLexerContractTests.test_multi_target_unrelated_ddl_remains_valid
           tests.test_temporary_repair_provenance_contract.TemporaryRepairProvenanceContractTests.test_repair_workflow_does_not_claim_provenance_for_uncommitted_repairs
           tests.test_temporary_repair_provenance_contract.TemporaryRepairProvenanceContractTests.test_repair_workflow_uses_the_pr_exact_head_not_a_synthetic_merge_ref
+          tests.test_temporary_repair_provenance_contract.TemporaryRepairProvenanceContractTests.test_repair_workflow_removes_temporary_machinery_before_production_coverage
           -v
       - name: Verify real PostgreSQL HomeTax replay and provenance
         env:
@@ -114,6 +115,11 @@ jobs:
           python -m unittest
           tests.test_postgres_posting.PostgresPostingTests.test_home_tax_submission_replays_and_conflicts_on_changed_evidence
           -v
+      - name: Remove temporary normalization machinery before final validation
+        run: |
+          rm .github/workflows/normalize-home-tax-provenance.yml
+          rm scripts/repair_home_tax_provenance.py
+          rm scripts/repair_append_only_ddl.py
       - name: Run full behavior and repository tests
         env:
           PYTHONPATH: src:.
@@ -159,9 +165,9 @@ jobs:
           git fetch --no-tags origin "$TARGET_BRANCH"
           remote_sha="$(git rev-parse "origin/$TARGET_BRANCH")"
           test "$remote_sha" = "$TRIGGER_SHA"
-          rm .github/workflows/normalize-home-tax-provenance.yml
-          rm scripts/repair_home_tax_provenance.py
-          rm scripts/repair_append_only_ddl.py
+          test ! -e .github/workflows/normalize-home-tax-provenance.yml
+          test ! -e scripts/repair_home_tax_provenance.py
+          test ! -e scripts/repair_append_only_ddl.py
           rm -rf dist dist-rebuild build src/*.egg-info .coverage
           git add -A
           git diff --cached --check
