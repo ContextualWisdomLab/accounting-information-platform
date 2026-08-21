@@ -72,6 +72,18 @@ jobs:
           printf '%s\n' "$output"
           test "$status" -ne 0
           grep -F "unexpected keyword argument 'reversal_idempotency_key'" <<<"$output"
+      - name: Prove HomeTax sentinel-date defect is RED
+        env:
+          PYTHONPATH: src:.
+        shell: bash
+        run: |
+          set +e
+          output="$(python -m unittest -v tests.test_home_tax_idempotency_contract.HomeTaxIdempotencyContractTests.test_home_tax_persistence_never_uses_a_sentinel_accounting_date 2>&1)"
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          test "$status" -ne 0
+          grep -F "date.min" <<<"$output"
       - name: Apply narrow foundation repairs
         run: |
           python scripts/normalize_reversal_command_idempotency.py
@@ -84,6 +96,7 @@ jobs:
         run: >-
           python -m unittest -v
           tests.test_ci_contract
+          tests.test_home_tax_idempotency_contract
           tests.test_reversal_command_idempotency_contract
           tests.test_reversal_command_idempotency_postgres
           tests.test_reversal_temporal_database_guard
