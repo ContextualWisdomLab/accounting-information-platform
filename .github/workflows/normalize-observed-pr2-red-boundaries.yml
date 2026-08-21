@@ -14,7 +14,7 @@ permissions:
 
 concurrency:
   group: normalize-observed-pr2-red-boundaries-pr
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   normalize:
@@ -27,7 +27,7 @@ jobs:
     timeout-minutes: 30
     env:
       ACCOUNTING_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/accounting_test
-      EXPECTED_RED_SHA: b42ea7eb00a4056ef64928c4f28d414ed2bfc1f6
+      EXPECTED_RED_SHA: 4f2e74639355710b089e8adbf614562152e42197
       EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     services:
       postgres:
