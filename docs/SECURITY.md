@@ -94,6 +94,14 @@ Posting, reversal and close commands atomically persist authoritative evidence a
 
 SOC 2 and CSAP are evidence-readiness design targets only. Do not claim certification or compliance without the corresponding external and operational evidence.
 
+## CI signing-authority boundary
+
+Pull-request-controlled source, tests, build hooks and validation scripts execute in the `accounting-foundation` job with `contents: read` only. They do not receive `id-token: write`, `attestations: write`, or `artifact-metadata: write`. A conditional attestation step inside that same PR-capable job would not be sufficient isolation because GitHub permissions apply to all actions and commands in the job.
+
+Signed provenance and SBOM attestations are isolated in the `integrated-attestations` job. That job is push-only, depends on a successful exact-head foundation build, downloads the immutable SHA-named evidence artifact, verifies its checksums and embedded `source_sha` against the integrated `github.sha`, and only then receives OIDC/attestation write permissions. Pull-request events cannot execute that job.
+
+This is a least-privilege trust boundary, not evidence that branch governance itself is correctly configured. Protected-branch/ruleset enforcement must still be verified independently before release.
+
 ## Release security gate
 
 Security is passing only when one unchanged protected source head has applicable SAST / security checks, PostgreSQL restricted-runtime tests, 100% owned production statement / branch coverage, package / SBOM / provenance evidence and qualifying independent review all passing. Queued, stale, predecessor, skipped or model-only evidence is non-passing.
