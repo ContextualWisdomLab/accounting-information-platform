@@ -12,10 +12,11 @@ success.
 - The protected default branch is `develop`; the repository was bootstrapped
   from an empty tree and the accounting foundation is currently developed on
   PR #2 (`feat: establish accounting posting foundation`).
-- PR #2 is open and Ready for review at exact remote head
-  `a8fb3a61a3045b7d9fc6f9a35156c530ffe0a0f1`, based on `develop` head
-  `66800a2f4e849ec8a0b060f9603f6667803284b4`; GitHub reports it
-  `MERGEABLE`, with no qualifying approval and no protected merge SHA.
+- PR #2 is open and Ready for review. The production implementation candidate
+  is exact commit `a8fb3a61a3045b7d9fc6f9a35156c530ffe0a0f1`; later branch
+  commits only refresh this gap baseline. It is based on `develop` head
+  `66800a2f4e849ec8a0b060f9603f6667803284b4`; GitHub reports it `MERGEABLE`,
+  with no qualifying approval and no protected merge SHA.
   Accounting Foundation CI, security/SAST, scheduler, Noema/OpenCode, and
   Strix checks are currently queued or pending on this exact head. CodeRabbit
   and Devin review are also pending after the Ready transition. Review threads
@@ -84,8 +85,10 @@ success.
 
 ## Ordered development loop
 
-1. Wait for required Checks and independent review on exact PR #2 head
-   `a8fb3a6`; do not rerun unchanged checks or treat queued status as success.
+1. Wait for required Checks and independent review on the current exact PR #2
+   head; the production candidate is `a8fb3a6` and later branch commits are
+   docs-only baseline refreshes. Do not rerun unchanged checks or treat queued
+   status as success.
    The organization’s central hourly review scheduler is configured for
    `27 * * * *`; it is not duplicated in this repository.
 2. Merge #2 through the protected path only after two qualifying approvals,
