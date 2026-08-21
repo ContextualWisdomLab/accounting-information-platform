@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: normalize-observed-pr2-red-boundaries
+  group: normalize-observed-pr2-red-boundaries-pr
   cancel-in-progress: false
 
 jobs:
