@@ -1,24 +1,23 @@
 name: Normalize foundation review repairs
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/accounting-posting-foundation
-    paths:
-      - .github/workflows/normalize-home-tax-provenance.yml
-      - scripts/repair_home_tax_provenance.py
-      - scripts/repair_append_only_ddl.py
+      - develop
 
 permissions:
   contents: read
 
 concurrency:
-  group: normalize-foundation-review-${{ github.sha }}
+  group: normalize-foundation-review-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
   cancel-in-progress: false
 
 jobs:
   normalize:
     name: RED, repair, verify, normalize
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'agent/accounting-posting-foundation'
     runs-on: ubuntu-latest
     timeout-minutes: 35
     permissions:
@@ -26,7 +25,7 @@ jobs:
     env:
       ACCOUNTING_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/accounting_test
       TARGET_BRANCH: agent/accounting-posting-foundation
-      TRIGGER_SHA: ${{ github.sha }}
+      TRIGGER_SHA: ${{ github.event.pull_request.head.sha }}
     services:
       postgres:
         image: postgres:18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
@@ -42,10 +41,10 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - name: Check out exact triggering head
+      - name: Check out exact triggering PR head
         uses: actions/checkout@631c942040754b6e095e929c1677c07e10ed4f87
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Verify exact checkout
@@ -106,6 +105,7 @@ jobs:
           tests.test_append_only_sql_lexer_contract.AppendOnlySqlLexerContractTests.test_multi_target_destructive_ddl_cannot_hide_journal_tables
           tests.test_append_only_sql_lexer_contract.AppendOnlySqlLexerContractTests.test_multi_target_unrelated_ddl_remains_valid
           tests.test_temporary_repair_provenance_contract.TemporaryRepairProvenanceContractTests.test_repair_workflow_does_not_claim_provenance_for_uncommitted_repairs
+          tests.test_temporary_repair_provenance_contract.TemporaryRepairProvenanceContractTests.test_repair_workflow_uses_the_pr_exact_head_not_a_synthetic_merge_ref
           -v
       - name: Verify real PostgreSQL HomeTax replay and provenance
         env:
