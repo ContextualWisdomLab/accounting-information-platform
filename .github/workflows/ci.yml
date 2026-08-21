@@ -202,5 +202,6 @@ jobs:
             dist/*.whl
             dist/SHA256SUMS
             dist/sbom.spdx.json
+            dist/source-provenance.json
           if-no-files-found: error
           retention-days: 14
