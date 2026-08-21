@@ -23,6 +23,20 @@ class TemporaryRepairProvenanceContractTests(unittest.TestCase):
         self.assertIn("pip wheel --no-deps --no-build-isolation", workflow)
         self.assertIn("sha256sum", workflow)
 
+    def test_repair_workflow_uses_the_pr_exact_head_not_a_synthetic_merge_ref(self) -> None:
+        """Temporary normalization is observable on the same PR head it is allowed to publish."""
+        if not NORMALIZATION_WORKFLOW.exists():
+            return
+        workflow = NORMALIZATION_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("pull_request:", workflow)
+        self.assertNotIn("\n  push:\n", workflow)
+        self.assertIn("github.event.pull_request.head.sha", workflow)
+        self.assertNotIn("TRIGGER_SHA: ${{ github.sha }}", workflow)
+        self.assertIn(
+            "github.event.pull_request.head.repo.full_name == github.repository",
+            workflow,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
