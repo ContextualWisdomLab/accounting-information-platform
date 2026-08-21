@@ -8,6 +8,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 NORMALIZATION_WORKFLOW = ROOT / ".github/workflows/normalize-home-tax-provenance.yml"
+OBSERVED_RED_NORMALIZATION_WORKFLOW = (
+    ROOT / ".github/workflows/normalize-observed-pr2-red-boundaries.yml"
+)
 
 
 class TemporaryRepairProvenanceContractTests(unittest.TestCase):
@@ -51,6 +54,26 @@ class TemporaryRepairProvenanceContractTests(unittest.TestCase):
         self.assertIn("rm .github/workflows/normalize-home-tax-provenance.yml", cleanup_section)
         self.assertIn("rm scripts/repair_home_tax_provenance.py", cleanup_section)
         self.assertIn("rm scripts/repair_append_only_ddl.py", cleanup_section)
+
+    def test_observed_red_normalization_removes_itself_before_coverage(self) -> None:
+        """The PR #2 repair lane must not make one-shot helper code part of the 100% product gate."""
+        if not OBSERVED_RED_NORMALIZATION_WORKFLOW.exists():
+            return
+        workflow = OBSERVED_RED_NORMALIZATION_WORKFLOW.read_text(encoding="utf-8")
+        cleanup_marker = "Remove observed RED normalization machinery before final validation"
+        coverage_marker = "Enforce complete owned statement and branch coverage"
+        self.assertIn(cleanup_marker, workflow)
+        self.assertIn(coverage_marker, workflow)
+        self.assertLess(workflow.index(cleanup_marker), workflow.index(coverage_marker))
+        cleanup_section = workflow.split(cleanup_marker, 1)[1].split("- name:", 1)[0]
+        self.assertIn(
+            "rm .github/workflows/normalize-observed-pr2-red-boundaries.yml",
+            cleanup_section,
+        )
+        self.assertIn(
+            "rm scripts/normalize_observed_pr2_red_boundaries.py",
+            cleanup_section,
+        )
 
 
 if __name__ == "__main__":
