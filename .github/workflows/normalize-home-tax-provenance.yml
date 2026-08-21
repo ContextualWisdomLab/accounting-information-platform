@@ -1,4 +1,4 @@
-name: Normalize HomeTax provenance repair
+name: Normalize foundation review repairs
 
 on:
   push:
@@ -7,12 +7,13 @@ on:
     paths:
       - .github/workflows/normalize-home-tax-provenance.yml
       - scripts/repair_home_tax_provenance.py
+      - scripts/repair_append_only_ddl.py
 
 permissions:
   contents: read
 
 concurrency:
-  group: normalize-home-tax-provenance-${{ github.sha }}
+  group: normalize-foundation-review-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -77,14 +78,33 @@ jobs:
           cat /tmp/home-tax-red.log
           test "$status" -ne 0
           grep -q "source_payload_hash" /tmp/home-tax-red.log
-      - name: Apply narrow provenance repair
+      - name: Prove multi-target append-only DDL RED on triggering head
+        shell: bash
+        env:
+          PYTHONPATH: src:.
+        run: |
+          set -euo pipefail
+          set +e
+          python -m unittest \
+            tests.test_append_only_sql_lexer_contract.AppendOnlySqlLexerContractTests.test_multi_target_destructive_ddl_cannot_hide_journal_tables \
+            -v > /tmp/append-only-red.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/append-only-red.log
+          test "$status" -ne 0
+          grep -q "accounting migrations must not" /tmp/append-only-red.log
+      - name: Apply narrow HomeTax provenance repair
         run: python scripts/repair_home_tax_provenance.py
-      - name: Verify focused contract GREEN
+      - name: Apply narrow append-only DDL repair
+        run: python scripts/repair_append_only_ddl.py
+      - name: Verify focused contracts GREEN
         env:
           PYTHONPATH: src:.
         run: >-
           python -m unittest
           tests.test_home_tax_idempotency_contract.HomeTaxIdempotencyContractTests.test_home_tax_storage_preserves_command_source_provenance
+          tests.test_append_only_sql_lexer_contract.AppendOnlySqlLexerContractTests.test_multi_target_destructive_ddl_cannot_hide_journal_tables
+          tests.test_append_only_sql_lexer_contract.AppendOnlySqlLexerContractTests.test_multi_target_unrelated_ddl_remains_valid
           -v
       - name: Verify real PostgreSQL HomeTax replay and provenance
         env:
@@ -145,10 +165,11 @@ jobs:
           test "$remote_sha" = "$TRIGGER_SHA"
           rm .github/workflows/normalize-home-tax-provenance.yml
           rm scripts/repair_home_tax_provenance.py
+          rm scripts/repair_append_only_ddl.py
           rm -rf dist dist-rebuild build src/*.egg-info .coverage
           git add -A
           git diff --cached --check
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "fix: retain HomeTax command source provenance"
+          git commit -m "fix: normalize foundation review invariants"
           git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:"$TARGET_BRANCH"
