@@ -87,7 +87,6 @@ class ReversalTemporalDatabaseGuardTests(unittest.TestCase):
                         journal_ids[earlier_candidate.journal_reference],
                     ),
                 )
-                connection.commit()
 
         self.assertEqual(
             self.case._count_table("accounting_core.journal_reversal"),
