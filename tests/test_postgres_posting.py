@@ -305,6 +305,25 @@ class PostgresPostingTests(unittest.TestCase):
         """Reversal is append-only and the selected population nets to zero."""
         receipt = self.ledger.post(self._two_line_proposal(), self.policy)
 
+        with self.assertRaisesRegex(AccountingValidationError, "must not be empty"):
+            self.ledger.reverse(
+                receipt.journal_reference,
+                date(2026, 8, 31),
+                "billing_correction",
+                self.policy,
+                reversal_idempotency_key=" ",
+            )
+        with self.assertRaisesRegex(
+            IdempotencyConflictError,
+            "already used by another accounting command",
+        ):
+            self.ledger.reverse(
+                receipt.journal_reference,
+                date(2026, 8, 31),
+                "billing_correction",
+                self.policy,
+                reversal_idempotency_key="invoice-two-line-v1",
+            )
         reversal = self.ledger.reverse(
             receipt.journal_reference,
             date(2026, 8, 31),
@@ -317,6 +336,20 @@ class PostgresPostingTests(unittest.TestCase):
             "billing_correction",
             self.policy,
         )
+        with self.assertRaises(IdempotencyConflictError):
+            self.ledger.reverse(
+                receipt.journal_reference,
+                date(2026, 8, 31),
+                "operator_correction",
+                self.policy,
+            )
+        with self.assertRaises(IdempotencyConflictError):
+            self.ledger.reverse(
+                receipt.journal_reference,
+                date(2026, 9, 1),
+                "billing_correction",
+                self.policy,
+            )
         balances = self.ledger.trial_balance(
             self.policy.tenant_reference,
             self.policy.legal_entity_reference,
@@ -335,6 +368,25 @@ class PostgresPostingTests(unittest.TestCase):
             self.assertEqual(balance.net_balance, Decimal("0"))
             self.assertEqual(balance.debit_total, population[account_code][0])
             self.assertEqual(balance.credit_total, population[account_code][1])
+
+    def test_reverse_rejects_date_before_original_accounting_date(self) -> None:
+        """A reversal cannot create an accounting fact before its original journal."""
+        receipt = self.ledger.post(self._two_line_proposal(), self.policy)
+        journals_before = self._count_table("accounting_core.general_journal")
+
+        with self.assertRaisesRegex(AccountingValidationError, "cannot precede"):
+            self.ledger.reverse(
+                receipt.journal_reference,
+                date(2026, 8, 30),
+                "billing_correction",
+                self.policy,
+            )
+
+        self.assertEqual(
+            self._count_table("accounting_core.general_journal"),
+            journals_before,
+        )
+        self.assertEqual(self._count_table("accounting_core.journal_reversal"), 0)
 
     def test_closed_period_posts_zero_rows(self) -> None:
         """A hard-closed fiscal period rejects posting before any durable write."""
@@ -3952,12 +4004,18 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(status, 422)
         self.assertEqual(document["submission_status_code"], "rejected")
         self.assertEqual(document["rejection_reason_code"], "register_unavailable")
+        self.assertEqual(document["vat_period_register"]["as_of_date"], "2026-08-31")
+        self.assertNotEqual(document["vat_period_register"]["as_of_date"], "0001-01-01")
         self.assertNotEqual(document["submission_status_code"], "transmitted")
         self.assertEqual(listed_status, 200)
         self.assertEqual(len(listed["home_tax_submissions"]), 1)
         self.assertEqual(
             listed["home_tax_submissions"][0]["rejection_reason_code"],
             "register_unavailable",
+        )
+        self.assertEqual(
+            listed["home_tax_submissions"][0]["vat_period_register"]["as_of_date"],
+            "2026-08-31",
         )
         server.shutdown()
 
@@ -10741,6 +10799,16 @@ class PostgresPostingTests(unittest.TestCase):
 
         status, reversing = self._http_json("POST", "/journal-reversals", reverse_body)
         replay_status, replayed = self._http_json("POST", "/journal-reversals", reverse_body)
+        changed_reason_status, _changed_reason = self._http_json(
+            "POST",
+            "/journal-reversals",
+            {**reverse_body, "reversal_reason_code": "operator_correction"},
+        )
+        changed_date_status, _changed_date = self._http_json(
+            "POST",
+            "/journal-reversals",
+            {**reverse_body, "reversal_date": "2026-08-30"},
+        )
         key_status, key_reversing = self._http_json(
             "POST",
             "/journal-reversals",
@@ -10772,6 +10840,8 @@ class PostgresPostingTests(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertEqual(replay_status, 200)
+        self.assertEqual(changed_reason_status, 409)
+        self.assertEqual(changed_date_status, 409)
         self.assertEqual(key_status, 200)
         self.assertEqual(both_status, 200)
         self.assertEqual(reversing, replayed)

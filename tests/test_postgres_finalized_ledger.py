@@ -155,6 +155,51 @@ class PostgresFinalizedLedgerTests(unittest.TestCase):
             ),
         )
 
+    def test_finalized_reversal_journal_rejects_late_lineage_insert(self) -> None:
+        """A finalized journal cannot be repurposed later as another journal's reversal."""
+        original = self.case.ledger.post(self.case._two_line_proposal(), self.case.policy)
+        candidate = self.case.ledger.post(
+            self.case._two_line_proposal(
+                proposal_id="11111111-1111-4111-8111-111111111111",
+                idempotency_key="invoice-two-line-late-reversal-candidate-v1",
+                source_payload_hash="sha256:" + "b" * 64,
+                source_event_references=("urn:cwl:billing:invoice:late_reversal_candidate",),
+            ),
+            self.case.policy,
+        )
+        tenant_id = self.case.tenant_id
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            connection.execute(
+                "SELECT set_config('app.tenant_account_id', %s, false)",
+                (tenant_id,),
+            )
+            journal_ids = dict(
+                connection.execute(
+                    """
+                    SELECT journal_reference, general_journal_id
+                    FROM accounting_core.general_journal
+                    WHERE tenant_account_id = %s
+                      AND journal_reference IN (%s, %s)
+                    """,
+                    (tenant_id, original.journal_reference, candidate.journal_reference),
+                ).fetchall()
+            )
+
+        self._assert_check_violation(
+            """
+            INSERT INTO accounting_core.journal_reversal (
+                tenant_account_id, original_journal_id, reversal_journal_id,
+                reversal_reason_code
+            ) VALUES (%s, %s, %s, 'late_lineage')
+            """,
+            (
+                tenant_id,
+                journal_ids[original.journal_reference],
+                journal_ids[candidate.journal_reference],
+            ),
+        )
+        self.assertEqual(self.case._count_table("accounting_core.journal_reversal"), 0)
+
     def _finalized_fact_ids(self, journal_reference: str) -> tuple[object, ...]:
         """Return durable identifiers for one posted-and-reversed journal population."""
         with psycopg.connect(posting.DATABASE_URL) as connection:

@@ -24,6 +24,7 @@ from .core import (
     PostedJournalLine,
     PostingLedger,
     PostingReceipt,
+    _reversal_command_hash,
     _require_code,
     _require_currency,
     _require_proposal_id,
@@ -1798,7 +1799,7 @@ class PostgresPostingLedger:
             ).encode("utf-8")
         ).hexdigest()
         raw_as_of_date = str(register_document.get("as_of_date") or "")
-        as_of_date = date.fromisoformat(raw_as_of_date) if raw_as_of_date else date.min
+        as_of_date = date.fromisoformat(raw_as_of_date) if raw_as_of_date else None
         closing_amount = Decimal(str(register_document.get("closing_amount") or "0"))
         with self._session() as connection:
             tenant_id = self._require_tenant(connection)
@@ -1815,12 +1816,14 @@ class PostgresPostingLedger:
                 accounting_book_reference,
                 next_action="the home-tax-submission",
             )[0]
-            period_id, _period_status, _period_end_date = self._require_fiscal_period(
+            period_id, _period_status, period_end_date = self._require_fiscal_period(
                 connection,
                 tenant_id,
                 period_code,
                 next_action="the home-tax-submission",
             )
+            if as_of_date is None:
+                as_of_date = period_end_date
             row = connection.execute(
                 """
                 INSERT INTO accounting_integration.home_tax_submission (
@@ -1891,13 +1894,16 @@ class PostgresPostingLedger:
                         "HomeTax idempotency key was already used with different evidence or scope. "
                         "Use a new command key for the changed submission."
                     )
+        receipt_register = _home_tax_register_view(register_document)
+        if not receipt_register.get("as_of_date"):
+            receipt_register["as_of_date"] = row[3].isoformat()
         return _home_tax_submission_document(
             home_tax_submission_id=str(row[0]),
             tenant_reference=self._tenant_reference,
             legal_entity_reference=legal_entity_reference,
             book_reference=accounting_book_reference,
             period_code=period_code,
-            vat_period_register=_home_tax_register_view(register_document),
+            vat_period_register=receipt_register,
             rejection_reason_code=str(row[2]),
             submission_status_code=str(row[1]),
         )
@@ -2556,14 +2562,38 @@ class PostgresPostingLedger:
         reversal_date: date,
         reversal_reason_code: str,
         policy: AccountingPolicy,
+        *,
+        reversal_idempotency_key: str | None = None,
     ) -> PostingReceipt:
         """Append the exact opposite of one original journal and preserve lineage."""
         _require_code(reversal_reason_code, "reversal reason code")
+        command_key = (
+            f"reversal:{journal_reference}"
+            if reversal_idempotency_key is None
+            else reversal_idempotency_key.strip()
+        )
+        if not command_key:
+            raise AccountingValidationError(
+                "reversal idempotency key must not be empty. "
+                "Supply the reversal command identity, then retry reversal."
+            )
+        command_hash = _reversal_command_hash(
+            tenant_reference=self._tenant_reference,
+            reversal_idempotency_key=command_key,
+            original_journal_reference=journal_reference,
+            reversal_date=reversal_date,
+            reversal_reason_code=reversal_reason_code,
+        )
         with self._session() as connection:
             tenant_id = self._require_tenant(connection)
             existing = connection.execute(
                 """
-                SELECT reversal_journal.journal_reference
+                SELECT reversal_journal.journal_reference,
+                       reversal_record.idempotency_key,
+                       reversal_record.source_payload_hash,
+                       original_journal.journal_reference,
+                       journal_reversal.reversal_reason_code,
+                       reversal_journal.accounting_date
                 FROM accounting_core.journal_reversal
                 JOIN accounting_core.general_journal AS original_journal
                   ON original_journal.tenant_account_id = journal_reversal.tenant_account_id
@@ -2571,18 +2601,44 @@ class PostgresPostingLedger:
                 JOIN accounting_core.general_journal AS reversal_journal
                   ON reversal_journal.tenant_account_id = journal_reversal.tenant_account_id
                  AND reversal_journal.general_journal_id = journal_reversal.reversal_journal_id
+                JOIN accounting_integration.journal_proposal_record AS reversal_record
+                  ON reversal_record.tenant_account_id = reversal_journal.tenant_account_id
+                 AND reversal_record.proposal_record_id = reversal_journal.source_proposal_record_id
                 WHERE journal_reversal.tenant_account_id = %s
                   AND original_journal.journal_reference = %s
                 """,
                 (tenant_id, journal_reference),
             ).fetchone()
             if existing is not None:
+                if (
+                    str(existing[1]) != command_key
+                    or str(existing[2]) != command_hash
+                    or str(existing[3]) != journal_reference
+                    or str(existing[4]) != reversal_reason_code
+                    or existing[5] != reversal_date
+                ):
+                    raise IdempotencyConflictError(
+                        "reversal idempotency key was already used with different command evidence. "
+                        "Use a new reversal command identity, then retry."
+                    )
                 return self._receipt_for_journal(connection, tenant_id, existing[0])
+            prior_command = connection.execute(
+                """
+                SELECT source_payload_hash
+                FROM accounting_integration.journal_proposal_record
+                WHERE tenant_account_id = %s AND idempotency_key = %s
+                """,
+                (tenant_id, command_key),
+            ).fetchone()
+            if prior_command is not None:
+                raise IdempotencyConflictError(
+                    "reversal idempotency key was already used by another accounting command"
+                )
             original = connection.execute(
                 """
                 SELECT general_journal_id, legal_entity_id, accounting_book_id,
                        transaction_currency_code, functional_currency_code,
-                       source_proposal_record_id, transaction_date
+                       source_proposal_record_id, transaction_date, accounting_date
                 FROM accounting_core.general_journal
                 WHERE tenant_account_id = %s AND journal_reference = %s
                 """,
@@ -2603,6 +2659,10 @@ class PostgresPostingLedger:
             if already_reversal is not None:
                 raise AccountingValidationError(
                     "a reversal journal cannot itself be reversed. Reverse the original journal, or post a replacement."
+                )
+            if reversal_date < original[7]:
+                raise AccountingValidationError(
+                    "reversal date cannot precede original journal accounting date"
                 )
             if not policy.permits(reversal_date):
                 raise AccountingValidationError("reversal date belongs to a closed fiscal period")
@@ -2642,7 +2702,7 @@ class PostgresPostingLedger:
                     "posted journal is immutable. Reverse the existing journal, "
                     "then post a replacement."
                 )
-            source_hash, source_proposal_id = self._proposal_identity(
+            _original_source_hash, source_proposal_id = self._proposal_identity(
                 connection, tenant_id, original[5]
             )
             receipt = PostingReceipt(
@@ -2650,7 +2710,7 @@ class PostgresPostingLedger:
                 journal_reference=reversal_reference,
                 posting_status_code="posted",
                 source_proposal_id=source_proposal_id,
-                source_payload_hash=source_hash,
+                source_payload_hash=command_hash,
                 tenant_reference=policy.tenant_reference,
                 legal_entity_reference=policy.legal_entity_reference,
                 accounting_book_reference=policy.accounting_book_reference,
@@ -2668,7 +2728,7 @@ class PostgresPostingLedger:
                 VALUES (%s, uuidv7(), 1, %s, %s, 'posted', clock_timestamp())
                 RETURNING proposal_record_id
                 """,
-                (tenant_id, f"reversal:{journal_reference}", source_hash),
+                (tenant_id, command_key, command_hash),
             ).fetchone()[0]
             reversal_journal_id = self._insert_journal(
                 connection,
@@ -2678,7 +2738,7 @@ class PostgresPostingLedger:
                 period_id=period_id,
                 journal_reference=reversal_reference,
                 proposal=_ReversalProposal(
-                    source_payload_hash=source_hash,
+                    source_payload_hash=command_hash,
                     transaction_currency=original[3],
                     transaction_date=original[6],
                     accounting_date=reversal_date,

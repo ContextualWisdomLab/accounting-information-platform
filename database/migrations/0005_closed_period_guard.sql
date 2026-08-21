@@ -136,6 +136,94 @@ CREATE CONSTRAINT TRIGGER journal_entry_balance_guard
     FOR EACH ROW
     EXECUTE FUNCTION accounting_core.assert_journal_balance();
 
+CREATE OR REPLACE FUNCTION accounting_core.guard_reversal_temporal_order()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    original_accounting_date_value date;
+    reversal_accounting_date_value date;
+BEGIN
+    SELECT original_journal.accounting_date,
+           reversal_journal.accounting_date
+      INTO original_accounting_date_value,
+           reversal_accounting_date_value
+      FROM accounting_core.general_journal AS original_journal
+      JOIN accounting_core.general_journal AS reversal_journal
+        ON reversal_journal.tenant_account_id = original_journal.tenant_account_id
+       AND reversal_journal.general_journal_id = NEW.reversal_journal_id
+     WHERE original_journal.tenant_account_id = NEW.tenant_account_id
+       AND original_journal.general_journal_id = NEW.original_journal_id;
+
+    IF original_accounting_date_value IS NULL
+       OR reversal_accounting_date_value IS NULL
+    THEN
+        RAISE EXCEPTION
+            'reversal journals must resolve inside the same tenant before lineage is recorded'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    IF reversal_accounting_date_value < original_accounting_date_value THEN
+        RAISE EXCEPTION
+            'reversal accounting date cannot precede original accounting date (reversal_temporal_order)'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS journal_reversal_temporal_guard
+    ON accounting_core.journal_reversal;
+DROP TRIGGER IF EXISTS journal_reversal_first_temporal_guard
+    ON accounting_core.journal_reversal;
+CREATE TRIGGER journal_reversal_first_temporal_guard
+    BEFORE INSERT ON accounting_core.journal_reversal
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.guard_reversal_temporal_order();
+
+CREATE OR REPLACE FUNCTION accounting_core.guard_reversal_lineage_insert()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+          FROM accounting_integration.posting_receipt
+         WHERE posting_receipt.tenant_account_id = NEW.tenant_account_id
+           AND posting_receipt.general_journal_id = NEW.original_journal_id
+    )
+    THEN
+        RAISE EXCEPTION
+            'reversal lineage requires a finalized original journal (ledger_immutable)'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+          FROM accounting_integration.posting_receipt
+         WHERE posting_receipt.tenant_account_id = NEW.tenant_account_id
+           AND posting_receipt.general_journal_id = NEW.reversal_journal_id
+    )
+    THEN
+        RAISE EXCEPTION
+            'a finalized journal cannot later acquire reversal lineage (ledger_immutable)'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS journal_reversal_finalization_guard
+    ON accounting_core.journal_reversal;
+DROP TRIGGER IF EXISTS journal_reversal_second_finalization_guard
+    ON accounting_core.journal_reversal;
+CREATE TRIGGER journal_reversal_second_finalization_guard
+    BEFORE INSERT ON accounting_core.journal_reversal
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.guard_reversal_lineage_insert();
+
 CREATE OR REPLACE FUNCTION accounting_core.reject_finalized_fact_mutation()
 RETURNS trigger
 LANGUAGE plpgsql

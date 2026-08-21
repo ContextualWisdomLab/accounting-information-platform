@@ -10,7 +10,7 @@ A reversal is a new accounting fact, not a mutation of the original journal. Tre
 
 AIS exposes `accept_journal_reversal` and `POST /journal-reversals` on the same stdlib HTTP surface as proposal accept. The request identifies the original journal by `journal_reference`, the Billing `idempotency_key` that produced the original receipt, or both. When both are supplied they must resolve to the same original journal; otherwise the command fails closed. `reversal_date` and `reversal_reason_code` are material command evidence.
 
-The reversal command has a tenant-scoped deterministic retry identity `reversal:{journal_reference}` unless an internal caller supplies an explicit reversal command idempotency key. Its immutable command hash binds all of the following together:
+Public reversal commands accept a tenant-scoped `reversal_idempotency_key`; when it is omitted, AIS derives the reserved command identity `reversal:{journal_reference}` after resolving the original journal. The optional Billing `idempotency_key` remains only an original-journal locator and is never reused as the reversal command identity. Direct persistence callers use the same explicit-or-reserved command-key rule. Its immutable command hash binds all of the following together:
 
 - `tenant_reference`;
 - reversal command idempotency identity;

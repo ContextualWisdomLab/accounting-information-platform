@@ -6,7 +6,7 @@ Use PostgreSQL 18 and keep the migration owner, application runtime login and ad
 
 Required environment values are deployment-specific. At minimum, configure the accounting database URL and bind this AIS process to exactly one tenant reference. Secrets belong in an approved secret store; do not place database passwords, NTS credentials, bearer tokens or provider secrets in journal payloads, logs or outbox events.
 
-`X-CWL-Tenant-Reference` is a tenant-binding header, **not** caller authentication. Do not expose the HTTP listener directly to untrusted networks. Place a trusted authentication / authorization boundary in front of it and require the validated caller tenant to match the AIS tenant binding.
+`X-CWL-Tenant-Reference` is a tenant-binding header, **not** caller authentication. The standalone runner binds to `127.0.0.1` when no host is explicitly supplied. Do not expose the HTTP listener directly to untrusted networks. A non-loopback bind must be an explicit deployment decision behind a trusted authentication / authorization boundary, and the validated caller tenant must match the AIS tenant binding.
 
 ## Database installation
 

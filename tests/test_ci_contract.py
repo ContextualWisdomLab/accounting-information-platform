@@ -40,6 +40,19 @@ class AccountingCiContractTests(unittest.TestCase):
         )
         self.assertIn('test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"', workflow)
 
+    def test_ci_reproducible_timestamp_uses_exact_head_and_fails_closed(self) -> None:
+        """The verified exact head supplies a mandatory non-empty SOURCE_DATE_EPOCH."""
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            'source_date_epoch="$(git show -s --format=%ct "$EXPECTED_SHA")"',
+            workflow,
+        )
+        self.assertIn('test -n "$source_date_epoch"', workflow)
+        self.assertIn("printf 'SOURCE_DATE_EPOCH=%s\\n'", workflow)
+        self.assertNotIn('\\"$EXPECTED_SHA\\"', workflow)
+
     def test_ci_requires_reproducible_wheel_sbom_and_signed_attestations(self) -> None:
         """Package acceptance must bind reproducibility, SPDX SBOM, and provenance to the head."""
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(

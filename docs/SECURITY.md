@@ -20,7 +20,7 @@ Database administration is not business posting authority. Migration owners and 
 
 ## HTTP caller boundary
 
-`X-CWL-Tenant-Reference` binds the request to the configured AIS tenant. It is not a bearer credential or general authorization decision. The HTTP listener therefore must sit behind a trusted caller-authentication boundary in production. That host / gateway validates the caller before traffic reaches AIS and must fail closed when validated tenant identity and AIS tenant binding differ.
+`X-CWL-Tenant-Reference` binds the request to the configured AIS tenant. It is not a bearer credential or general authorization decision. The standalone runner defaults to the loopback address `127.0.0.1`; an operator must explicitly request any non-loopback bind. A non-loopback listener must sit behind a trusted caller-authentication boundary. That host / gateway validates the caller before traffic reaches AIS and must fail closed when validated tenant identity and AIS tenant binding differ.
 
 Purpose-bound application authorization is a separate control from PostgreSQL privileges. Request-body fields, model text, headers supplied by an untrusted client and database GUC values cannot grant posting, reversal, close or tax authority.
 
