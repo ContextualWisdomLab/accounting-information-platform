@@ -5,7 +5,15 @@ ALTER TABLE accounting_reporting.trial_balance_snapshot
 
 UPDATE accounting_reporting.trial_balance_snapshot AS snapshot_record
 SET close_idempotency_key =
-    tenant_record.tenant_account_code || ':period_close:' || period_record.period_code
+    tenant_record.tenant_account_code
+    || ':period_close:'
+    || period_record.period_code
+    || ':'
+    || snapshot_record.legal_entity_id::text
+    || ':'
+    || snapshot_record.accounting_book_id::text
+    || ':'
+    || snapshot_record.fiscal_period_id::text
 FROM accounting_core.tenant_account AS tenant_record,
      accounting_core.fiscal_period AS period_record
 WHERE tenant_record.tenant_account_id = snapshot_record.tenant_account_id
