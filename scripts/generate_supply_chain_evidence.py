@@ -1,4 +1,4 @@
-"""Generate deterministic checksum and SPDX 2.3 evidence for one built wheel."""
+"""Generate deterministic checksum, provenance, and SPDX 2.3 evidence for one wheel."""
 
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 _SOURCE_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+_SOURCE_REPOSITORY = "https://github.com/ContextualWisdomLab/accounting-information-platform"
+_BUILD_DEFINITION = ".github/workflows/ci.yml"
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +23,7 @@ class SupplyChainEvidence:
     wheel_sha256: str
     checksums_path: Path
     sbom_path: Path
+    provenance_path: Path
 
 
 def _sha256(path: Path) -> str:
@@ -72,7 +75,7 @@ def generate_supply_chain_evidence(
     source_sha: str,
     source_date_epoch: int,
 ) -> SupplyChainEvidence:
-    """Generate deterministic SHA256SUMS and SPDX 2.3 JSON for one exact wheel."""
+    """Generate deterministic checksums, source provenance, and SPDX 2.3 evidence."""
     if _SOURCE_SHA_PATTERN.fullmatch(source_sha) is None:
         raise ValueError("source_sha must be a lowercase 40-character Git commit SHA")
     if not wheel_path.is_file():
@@ -85,11 +88,8 @@ def generate_supply_chain_evidence(
     output_directory.mkdir(parents=True, exist_ok=True)
     checksums_path = output_directory / "SHA256SUMS"
     sbom_path = output_directory / "sbom.spdx.json"
+    provenance_path = output_directory / "source-provenance.json"
 
-    checksums_path.write_text(
-        f"{wheel_sha256}  {wheel_path.name}\n",
-        encoding="utf-8",
-    )
     package_spdx_id = "SPDXRef-Package"
     sbom = {
         "SPDXID": "SPDXRef-DOCUMENT",
@@ -143,10 +143,37 @@ def generate_supply_chain_evidence(
         json.dumps(sbom, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+    source_provenance = {
+        "artifact_file_name": wheel_path.name,
+        "artifact_sha256": wheel_sha256,
+        "build_definition": _BUILD_DEFINITION,
+        "sbom_file_name": sbom_path.name,
+        "sbom_sha256": _sha256(sbom_path),
+        "schema_version": 1,
+        "source_date_epoch": source_date_epoch,
+        "source_repository": _SOURCE_REPOSITORY,
+        "source_sha": source_sha,
+    }
+    provenance_path.write_text(
+        json.dumps(source_provenance, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    evidence_digests = (
+        (wheel_path.name, wheel_sha256),
+        (sbom_path.name, _sha256(sbom_path)),
+        (provenance_path.name, _sha256(provenance_path)),
+    )
+    checksums_path.write_text(
+        "".join(f"{digest}  {name}\n" for name, digest in evidence_digests),
+        encoding="utf-8",
+    )
     return SupplyChainEvidence(
         wheel_sha256=wheel_sha256,
         checksums_path=checksums_path,
         sbom_path=sbom_path,
+        provenance_path=provenance_path,
     )
 
 
