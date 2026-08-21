@@ -7,7 +7,7 @@ import unittest
 
 from accounting_information_platform import IdempotencyConflictError
 
-import test_postgres_posting as postgres_posting
+import tests.test_postgres_posting as postgres_posting
 
 
 class DurableReversalIdempotencyTests(unittest.TestCase):

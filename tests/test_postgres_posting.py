@@ -305,6 +305,25 @@ class PostgresPostingTests(unittest.TestCase):
         """Reversal is append-only and the selected population nets to zero."""
         receipt = self.ledger.post(self._two_line_proposal(), self.policy)
 
+        with self.assertRaisesRegex(AccountingValidationError, "must not be empty"):
+            self.ledger.reverse(
+                receipt.journal_reference,
+                date(2026, 8, 31),
+                "billing_correction",
+                self.policy,
+                reversal_idempotency_key=" ",
+            )
+        with self.assertRaisesRegex(
+            IdempotencyConflictError,
+            "already used by another accounting command",
+        ):
+            self.ledger.reverse(
+                receipt.journal_reference,
+                date(2026, 8, 31),
+                "billing_correction",
+                self.policy,
+                reversal_idempotency_key="invoice-two-line-v1",
+            )
         reversal = self.ledger.reverse(
             receipt.journal_reference,
             date(2026, 8, 31),

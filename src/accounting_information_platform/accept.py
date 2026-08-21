@@ -145,6 +145,9 @@ def accept_journal_reversal(
         )
     journal_reference = str(payload.get("journal_reference") or "")
     idempotency_key = str(payload.get("idempotency_key") or "")
+    reversal_idempotency_key = str(
+        payload.get("reversal_idempotency_key") or ""
+    ).strip()
     reversal_reason_code = str(payload.get("reversal_reason_code") or "")
     if not journal_reference and not idempotency_key:
         raise AccountingValidationError(
@@ -167,9 +170,16 @@ def accept_journal_reversal(
                 "Supply one identity, then retry the reverse."
             )
         journal_reference = resolved_reference
+    reversal_command_key = reversal_idempotency_key or f"reversal:{journal_reference}"
     policy = ledger.load_reversal_policy(journal_reference, reversal_date)
-    ledger.reverse(journal_reference, reversal_date, reversal_reason_code, policy)
-    return ledger.load_published_receipt_by_key(f"reversal:{journal_reference}")
+    ledger.reverse(
+        journal_reference,
+        reversal_date,
+        reversal_reason_code,
+        policy,
+        reversal_idempotency_key=reversal_command_key,
+    )
+    return ledger.load_published_receipt_by_key(reversal_command_key)
 
 
 def accept_period_close(

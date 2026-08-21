@@ -2562,10 +2562,21 @@ class PostgresPostingLedger:
         reversal_date: date,
         reversal_reason_code: str,
         policy: AccountingPolicy,
+        *,
+        reversal_idempotency_key: str | None = None,
     ) -> PostingReceipt:
         """Append the exact opposite of one original journal and preserve lineage."""
         _require_code(reversal_reason_code, "reversal reason code")
-        command_key = f"reversal:{journal_reference}"
+        command_key = (
+            f"reversal:{journal_reference}"
+            if reversal_idempotency_key is None
+            else reversal_idempotency_key.strip()
+        )
+        if not command_key:
+            raise AccountingValidationError(
+                "reversal idempotency key must not be empty. "
+                "Supply the reversal command identity, then retry reversal."
+            )
         command_hash = _reversal_command_hash(
             tenant_reference=self._tenant_reference,
             reversal_idempotency_key=command_key,
@@ -2579,7 +2590,10 @@ class PostgresPostingLedger:
                 """
                 SELECT reversal_journal.journal_reference,
                        reversal_record.idempotency_key,
-                       reversal_record.source_payload_hash
+                       reversal_record.source_payload_hash,
+                       original_journal.journal_reference,
+                       journal_reversal.reversal_reason_code,
+                       reversal_journal.accounting_date
                 FROM accounting_core.journal_reversal
                 JOIN accounting_core.general_journal AS original_journal
                   ON original_journal.tenant_account_id = journal_reversal.tenant_account_id
@@ -2596,12 +2610,30 @@ class PostgresPostingLedger:
                 (tenant_id, journal_reference),
             ).fetchone()
             if existing is not None:
-                if str(existing[1]) != command_key or str(existing[2]) != command_hash:
+                if (
+                    str(existing[1]) != command_key
+                    or str(existing[2]) != command_hash
+                    or str(existing[3]) != journal_reference
+                    or str(existing[4]) != reversal_reason_code
+                    or existing[5] != reversal_date
+                ):
                     raise IdempotencyConflictError(
                         "reversal idempotency key was already used with different command evidence. "
                         "Use a new reversal command identity, then retry."
                     )
                 return self._receipt_for_journal(connection, tenant_id, existing[0])
+            prior_command = connection.execute(
+                """
+                SELECT source_payload_hash
+                FROM accounting_integration.journal_proposal_record
+                WHERE tenant_account_id = %s AND idempotency_key = %s
+                """,
+                (tenant_id, command_key),
+            ).fetchone()
+            if prior_command is not None:
+                raise IdempotencyConflictError(
+                    "reversal idempotency key was already used by another accounting command"
+                )
             original = connection.execute(
                 """
                 SELECT general_journal_id, legal_entity_id, accounting_book_id,
