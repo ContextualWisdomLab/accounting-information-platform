@@ -1,0 +1,154 @@
+name: Normalize HomeTax provenance repair
+
+on:
+  push:
+    branches:
+      - agent/accounting-posting-foundation
+    paths:
+      - .github/workflows/normalize-home-tax-provenance.yml
+      - scripts/repair_home_tax_provenance.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: normalize-home-tax-provenance-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  normalize:
+    name: RED, repair, verify, normalize
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: write
+    env:
+      ACCOUNTING_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/accounting_test
+      TARGET_BRANCH: agent/accounting-posting-foundation
+      TRIGGER_SHA: ${{ github.sha }}
+    services:
+      postgres:
+        image: postgres:18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: accounting_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d accounting_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Check out exact triggering head
+        uses: actions/checkout@631c942040754b6e095e929c1677c07e10ed4f87
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify exact checkout
+        run: test "$(git rev-parse HEAD)" = "$TRIGGER_SHA"
+      - name: Install pinned Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-quality.txt
+      - name: Install hash-locked quality dependencies
+        run: >-
+          python -m pip install
+          --disable-pip-version-check
+          --only-binary=:all:
+          --require-hashes
+          -r requirements-quality.txt
+      - name: Prove HomeTax provenance RED on triggering head
+        shell: bash
+        env:
+          PYTHONPATH: src:.
+        run: |
+          set -euo pipefail
+          set +e
+          python -m unittest \
+            tests.test_home_tax_idempotency_contract.HomeTaxIdempotencyContractTests.test_home_tax_storage_preserves_command_source_provenance \
+            -v > /tmp/home-tax-red.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/home-tax-red.log
+          test "$status" -ne 0
+          grep -q "source_payload_hash" /tmp/home-tax-red.log
+      - name: Apply narrow provenance repair
+        run: python scripts/repair_home_tax_provenance.py
+      - name: Verify focused contract GREEN
+        env:
+          PYTHONPATH: src:.
+        run: >-
+          python -m unittest
+          tests.test_home_tax_idempotency_contract.HomeTaxIdempotencyContractTests.test_home_tax_storage_preserves_command_source_provenance
+          -v
+      - name: Verify real PostgreSQL HomeTax replay and provenance
+        env:
+          PYTHONPATH: src:.
+        run: >-
+          python -m unittest
+          tests.test_postgres_posting.PostgresPostingTests.test_home_tax_submission_replays_and_conflicts_on_changed_evidence
+          -v
+      - name: Run full behavior and repository tests
+        env:
+          PYTHONPATH: src:.
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Run complete production branch coverage
+        env:
+          PYTHONPATH: src:.
+        run: python -m coverage run --branch -m unittest discover -s tests -p 'test_*.py'
+      - name: Enforce complete statement and branch coverage
+        run: python -m coverage report --fail-under=100 --show-missing
+      - name: Validate repository contracts
+        run: python scripts/validate_repository.py .
+      - name: Compile production and test modules
+        run: python -m compileall -q src scripts tests
+      - name: Verify reproducible package evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_date_epoch="$(git show -s --format=%ct "$TRIGGER_SHA")"
+          test -n "$source_date_epoch"
+          export SOURCE_DATE_EPOCH="$source_date_epoch"
+          rm -rf dist dist-rebuild build src/*.egg-info
+          mkdir -p dist dist-rebuild
+          python -m pip wheel --no-deps --no-build-isolation -w dist .
+          rm -rf build src/*.egg-info
+          python -m pip wheel --no-deps --no-build-isolation -w dist-rebuild .
+          primary_wheel="$(find dist -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          rebuilt_wheel="$(find dist-rebuild -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          test -n "$primary_wheel"
+          test -n "$rebuilt_wheel"
+          test "$(sha256sum "$primary_wheel" | cut -d' ' -f1)" = "$(sha256sum "$rebuilt_wheel" | cut -d' ' -f1)"
+          python scripts/generate_supply_chain_evidence.py \
+            --wheel "$primary_wheel" \
+            --project pyproject.toml \
+            --output-directory dist \
+            --source-sha "$TRIGGER_SHA" \
+            --source-date-epoch "$SOURCE_DATE_EPOCH"
+          (cd dist && sha256sum -c SHA256SUMS)
+          python -m pip install --no-index --no-deps --force-reinstall "$primary_wheel"
+          cd "$RUNNER_TEMP"
+          python -c "import accounting_information_platform as aip; assert aip.PostingLedger.__name__ == 'PostingLedger'"
+      - name: Publish only to unchanged canonical branch
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$TARGET_BRANCH"
+          remote_sha="$(git rev-parse "origin/$TARGET_BRANCH")"
+          test "$remote_sha" = "$TRIGGER_SHA"
+          rm .github/workflows/normalize-home-tax-provenance.yml
+          rm scripts/repair_home_tax_provenance.py
+          rm -rf dist dist-rebuild build src/*.egg-info .coverage
+          git add -A
+          git diff --cached --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "fix: retain HomeTax command source provenance"
+          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:"$TARGET_BRANCH"
