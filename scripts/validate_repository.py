@@ -156,6 +156,7 @@ APPEND_ONLY_JOURNAL_MUTATION_PATTERN = re.compile(
     rf"(?=\s|;|$)",
     re.IGNORECASE,
 )
+_DOLLAR_QUOTE_PATTERN = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$")
 
 
 def find_mutable_action_references(text: str) -> tuple[str, ...]:
@@ -173,8 +174,21 @@ def find_placeholder_tokens(text: str) -> tuple[str, ...]:
     return tuple(sorted({match.group(1) for match in PLACEHOLDER_PATTERN.finditer(text)}))
 
 
+def _dollar_body_is_executable(prefix: str) -> bool:
+    """Return whether a dollar-quoted body is executable migration code rather than data."""
+    stripped = prefix.rstrip()
+    return bool(
+        re.search(r"\bAS\s*$", stripped, re.IGNORECASE)
+        or re.search(
+            r"\bDO(?:\s+LANGUAGE\s+[A-Za-z_][A-Za-z0-9_]*)?\s*$",
+            stripped,
+            re.IGNORECASE,
+        )
+    )
+
+
 def _lex_executable_sql(sql_text: str) -> str:
-    """Mask SQL comments and single-quoted literals while preserving executable tokens."""
+    """Mask SQL comments and data literals while preserving executable migration code."""
     output: list[str] = []
     index = 0
     length = len(sql_text)
@@ -202,10 +216,43 @@ def _lex_executable_sql(sql_text: str) -> str:
                     output.append(sql_text[index])
                 index += 1
             continue
+        if sql_text[index] == "$":
+            delimiter_match = _DOLLAR_QUOTE_PATTERN.match(sql_text, index)
+            if delimiter_match is not None:
+                delimiter = delimiter_match.group(0)
+                body_start = delimiter_match.end()
+                body_end = sql_text.find(delimiter, body_start)
+                if body_end < 0:
+                    output.append(sql_text[index])
+                    index += 1
+                    continue
+                body = sql_text[body_start:body_end]
+                if _dollar_body_is_executable("".join(output)):
+                    output.append(" ")
+                    output.append(_lex_executable_sql(body))
+                    output.append(" ")
+                else:
+                    output.append(" ")
+                    output.extend(character for character in body if character in "\r\n")
+                index = body_end + len(delimiter)
+                continue
         if sql_text[index] == "'":
+            escape_backslash = bool(
+                index > 0
+                and sql_text[index - 1] in "Ee"
+                and (
+                    index < 2
+                    or not (
+                        sql_text[index - 2].isalnum() or sql_text[index - 2] == "_"
+                    )
+                )
+            )
             output.append(" ")
             index += 1
             while index < length:
+                if escape_backslash and sql_text[index] == "\\" and index + 1 < length:
+                    index += 2
+                    continue
                 if sql_text[index] == "'":
                     if index + 1 < length and sql_text[index + 1] == "'":
                         index += 2
