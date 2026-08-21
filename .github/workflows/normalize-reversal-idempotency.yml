@@ -1,0 +1,141 @@
+name: Normalize reversal command idempotency
+
+# One-shot exact-head normalization; the successful job deletes this workflow before publish.
+on:
+  pull_request:
+    branches:
+      - develop
+
+permissions:
+  contents: read
+
+concurrency:
+  group: normalize-reversal-command-idempotency
+  cancel-in-progress: true
+
+jobs:
+  normalize:
+    if: github.actor != 'github-actions[bot]'
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ACCOUNTING_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/accounting_test
+    services:
+      postgres:
+        image: postgres:18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: accounting_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d accounting_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Check out exact triggering head
+        uses: actions/checkout@631c942040754b6e095e929c1677c07e10ed4f87
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify exact checkout
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Install pinned Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-quality.txt
+      - name: Install hash-locked dependencies
+        run: >-
+          python -m pip install
+          --disable-pip-version-check
+          --only-binary=:all:
+          --require-hashes
+          -r requirements-quality.txt
+      - name: Prove durable reversal command defect is RED
+        env:
+          PYTHONPATH: src:.
+        shell: bash
+        run: |
+          set +e
+          output="$(python -m unittest discover -s tests -p 'test_postgres_reversal_idempotency.py' -v 2>&1)"
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          test "$status" -ne 0
+          grep -F "unexpected keyword argument 'reversal_idempotency_key'" <<<"$output"
+      - name: Prove HomeTax sentinel-date defect is RED
+        env:
+          PYTHONPATH: src:.
+        shell: bash
+        run: |
+          set +e
+          output="$(python -m unittest -v tests.test_home_tax_idempotency_contract.HomeTaxIdempotencyContractTests.test_home_tax_persistence_never_uses_a_sentinel_accounting_date 2>&1)"
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          test "$status" -ne 0
+          grep -F "date.min" <<<"$output"
+      - name: Apply narrow foundation repairs
+        run: |
+          python scripts/normalize_reversal_command_idempotency.py
+          python scripts/normalize_reversal_internal_compat.py
+          python scripts/normalize_hometax_period_end.py
+          python scripts/normalize_pr2_ci_temporal.py
+      - name: Verify focused PostgreSQL and contract boundaries
+        env:
+          PYTHONPATH: src:.
+        run: >-
+          python -m unittest -v
+          tests.test_ci_contract
+          tests.test_home_tax_idempotency_contract
+          tests.test_reversal_command_idempotency_contract
+          tests.test_reversal_command_idempotency_postgres
+          tests.test_reversal_temporal_database_guard
+          tests.test_home_tax_incomplete_register_period_end
+          tests.test_postgres_reversal_idempotency
+      - name: Run full behavior suite
+        env:
+          PYTHONPATH: src:.
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Enforce complete production branch coverage
+        env:
+          PYTHONPATH: src:.
+        run: |
+          python -m coverage run --branch -m unittest discover -s tests -p 'test_*.py'
+          python -m coverage report --fail-under=100 --show-missing
+      - name: Validate repository and package boundaries
+        run: |
+          python scripts/validate_repository.py .
+          python -m compileall -q src scripts tests
+          python -m pip install --no-deps --no-build-isolation -e .
+          rm -rf dist build src/*.egg-info
+          python -m pip wheel --no-deps --no-build-isolation -w dist .
+          python -c "import zipfile, glob; wheel=glob.glob('dist/*.whl')[0]; names=zipfile.ZipFile(wheel).namelist(); assert 'accounting_information_platform/py.typed' in names"
+      - name: Publish normalized canonical branch
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin agent/accounting-posting-foundation
+          test "$(git rev-parse origin/agent/accounting-posting-foundation)" = "$EXPECTED_SHA"
+          rm .github/workflows/normalize-reversal-idempotency.yml
+          rm scripts/normalize_reversal_command_idempotency.py
+          rm scripts/normalize_reversal_internal_compat.py
+          rm scripts/normalize_hometax_period_end.py
+          rm scripts/normalize_pr2_ci_temporal.py
+          rm -rf dist build src/*.egg-info
+          git add -A
+          git diff --cached --check
+          git commit -m "fix: bind accounting commands to durable evidence"
+          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:agent/accounting-posting-foundation

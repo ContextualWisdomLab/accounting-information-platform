@@ -83,6 +83,16 @@ class HomeTaxIdempotencyContractTests(unittest.TestCase):
         )
         self.assertIn("IdempotencyConflictError", method)
 
+    def test_home_tax_persistence_never_uses_a_sentinel_accounting_date(self) -> None:
+        """Incomplete register evidence uses the resolved fiscal-period end, never date.min."""
+        persistence_source = PERSISTENCE_SOURCE.read_text(encoding="utf-8")
+        method = persistence_source.split("    def persist_home_tax_submission(", 1)[1].split(
+            "\n    def load_home_tax_submissions(", 1
+        )[0]
+        self.assertNotIn("else date.min", method)
+        self.assertIn("if as_of_date is None:", method)
+        self.assertIn("as_of_date = period_end_date", method)
+
 
 if __name__ == "__main__":
     unittest.main()
