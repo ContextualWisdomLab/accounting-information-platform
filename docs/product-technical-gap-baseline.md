@@ -12,17 +12,19 @@ success.
 - The protected default branch is `develop`; the repository was bootstrapped
   from an empty tree and the accounting foundation is currently developed on
   PR #2 (`feat: establish accounting posting foundation`).
-- PR #2 is open but currently Draft at exact remote head
-  `18fc6287a6a967b6ca27c4f57fde30ac957b7a8b`; it is `MERGEABLE`, has no
-  qualifying approval, and has zero unresolved review threads. The local
-  candidate `4a366d4` contains the durable HomeTax/reversal fixes, the
-  PostgreSQL authority regressions, and removal of the self-mutating repair
-  lane; it is not product evidence until pushed and re-fetched as the exact PR
-  head. Required Checks and protected approval remain outstanding.
+- PR #2 is open and Ready for review at exact remote head
+  `6099d426e843a0c73afcd35c34646555eb2a44b7`, based on `develop` head
+  `66800a2f4e849ec8a0b060f9603f6667803284b4`; GitHub reports it
+  `MERGEABLE`, with no qualifying approval and no protected merge SHA.
+  Accounting Foundation CI, security/SAST, scheduler, Noema/OpenCode, and
+  Strix checks are currently queued or pending on this exact head. CodeRabbit
+  and Devin review are also pending after the Ready transition. Review threads
+  still require the formal GitHub resolution/approval gate.
 - PR #4 is open and Draft at exact head
-  `a3dd42b8a01b76ddc4cabd3d8ce88697c11ea57f`, based on stale foundation head
-  `9636e7c11ac27725897e71a5acdc69b0d25468f6`; GitHub reports it not mergeable.
-  Synchronize it to the final foundation head only after PR #2 is integrated.
+  `4a38cdc4b4044d105ec17c5f97ef1e8ba17a1b7c`, based on stale foundation head
+  `d82c2e9b9a265ea8ea424da8e29b2a409e2d6e42`; GitHub reports mergeability
+  `UNKNOWN` and `REVIEW_REQUIRED`. Re-sync it to the integrated foundation
+  and retarget it to `develop` only after PR #2 is protected-merged.
   PR #5 is merged documentation for the buyer/operator README.
 - Open product issues are #1 (foundation), #6 (book-to-bank reconciliation),
   #7 (immutable ISO 20022 statement evidence), #8 (deterministic matching and
@@ -51,31 +53,45 @@ success.
 
 - Local Python 3.13.14 with hash-locked quality dependencies was used; no
   system-runtime dependency was added.
-- At local candidate `4a366d4`, real PostgreSQL 18.4 on `127.0.0.1` was used
-  with a local test role and database. The full suite passed: 239 tests,
+- At exact candidate `6099d426`, real PostgreSQL 18.4 on `127.0.0.1` was used
+  with the local `seonghobae` test role and `accounting_test` database. The
+  full suite passed: 248 tests,
   including deferred-balance, finalized-ledger immutability, forced runtime
   RLS, HTTP, HomeTax period-end fallback, explicit reversal-command replay,
-  temporal ordering, and PostgreSQL integration coverage.
-- Branch and statement coverage passed at 100% after the final focused
-  regression: 3,647 statements, 1,346 branches, zero misses or partial
-  branches. This is local evidence, not remote Checks evidence.
+  source-provenance rejection, temporal ordering, PostgreSQL concurrency
+  locks, and PostgreSQL integration coverage.
+- Branch and statement coverage passed at 100%: 3,683 statements, 1,362
+  branches, zero misses or partial branches. This is local evidence, not
+  remote Checks evidence.
 - `scripts/validate_repository.py`, `compileall`, and `git diff --check`
-  passed locally. The candidate removes the temporary self-mutating repair
-  workflow after its source-fix purpose was implemented in normal code.
+  passed locally. Migration `0006_concurrency_hot_partition.sql` was applied
+  by the real PostgreSQL test setup and the temporary self-mutating repair
+  workflow remains removed.
+- The runtime uses `ThreadingHTTPServer`, bounded `lock_timeout` and idle
+  transaction timeout, tenant/command and shared-period advisory locks, close
+  period row locking, and tenant-leading hot-write indexes. Physical
+  hash-by-tenant/time partitioning is intentionally not implemented; ADR 0050
+  records it as a measured follow-up because partitioned unique/foreign-key
+  identity must be redesigned together.
 - The local supply-chain evidence run produced two reproducible wheels with
   identical SHA-256 digests, an SPDX 2.3 SBOM, and verified `SHA256SUMS`
   output. This does not replace the remote attestation and artifact checks.
-- Remote PR #2 required Checks remain a separate gate, and no qualifying
-  approval or protected merge SHA has been observed yet.
+- The normal branch push was accepted, but GitHub reported that branch-update
+  rule violations were bypassed because this working branch is governed by
+  PR-only and required-workflow rules. No merge, approval, admin, or force-push
+  bypass was used. Remote PR #2 required Checks, qualifying approvals, and a
+  protected merge SHA remain outstanding.
 
 ## Ordered development loop
 
-1. Push `4a366d4` only after re-fetching the remote foundation head, mark PR #2
-   Ready for review, and wait for required Checks/review without treating the
-   wait as a blocker. The organization’s central hourly review scheduler is
-   configured for `27 * * * *`; it is not duplicated in this repository.
-2. Merge #2 through the protected path, verify the merge SHA, then synchronize
-   and stack #7.
+1. Wait for required Checks and independent review on exact PR #2 head
+   `6099d426`; do not rerun unchanged checks or treat queued status as success.
+   The organization’s central hourly review scheduler is configured for
+   `27 * * * *`; it is not duplicated in this repository.
+2. Merge #2 through the protected path only after two qualifying approvals,
+   last-push approval, resolved threads, and terminal required Checks; verify
+   the merge SHA. Then re-sync PR #4 normally to the integrated `develop`
+   foundation and process its protected gate before stacking #7.
 3. Deliver #7's immutable statement registry, then #8's deterministic match
    and bridge, then close the parent #6 product slice.
 4. Deliver #9 as a separate authorization boundary so tenant identity and
