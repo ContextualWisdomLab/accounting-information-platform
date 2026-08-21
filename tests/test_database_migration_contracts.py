@@ -8,6 +8,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+HOME_TAX_MIGRATION = ROOT / "database/migrations/0003_home_tax_submission.sql"
 CLOSE_IDEMPOTENCY_MIGRATION = ROOT / "database/migrations/0004_close_idempotency_key.sql"
 PERIOD_GUARD_MIGRATION = ROOT / "database/migrations/0005_closed_period_guard.sql"
 CONCURRENCY_MIGRATION = ROOT / "database/migrations/0006_concurrency_hot_partition.sql"
@@ -15,6 +16,21 @@ CONCURRENCY_MIGRATION = ROOT / "database/migrations/0006_concurrency_hot_partiti
 
 class DatabaseInvariantMigrationContracts(unittest.TestCase):
     """Keep authorization and journal-balance controls in PostgreSQL migrations."""
+
+    def test_home_tax_history_index_matches_scope_and_stable_order(self) -> None:
+        """HomeTax history can use one tenant-scoped index for its filter and stable ordering."""
+        migration = HOME_TAX_MIGRATION.read_text(encoding="utf-8")
+        self.assertRegex(
+            migration,
+            re.compile(
+                r"CREATE\s+INDEX\s+home_tax_submission_scope_order_index\s+"
+                r"ON\s+accounting_integration\.home_tax_submission\s*\(\s*"
+                r"tenant_account_id\s*,\s*legal_entity_id\s*,\s*"
+                r"accounting_book_id\s*,\s*fiscal_period_id\s*,\s*"
+                r"created_at\s*,\s*home_tax_submission_id\s*\)",
+                re.IGNORECASE | re.MULTILINE,
+            ),
+        )
 
     def test_close_idempotency_key_is_unique_inside_tenant_scope(self) -> None:
         """One tenant command key cannot identify multiple close outcomes."""
