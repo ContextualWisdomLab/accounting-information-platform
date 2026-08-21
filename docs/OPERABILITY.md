@@ -2,7 +2,7 @@
 
 ## Deployment preconditions
 
-Use PostgreSQL 18 and keep the migration owner, application runtime login and administrative / break-glass identities separate. Apply migrations in numeric order through `0005_closed_period_guard.sql` before starting the service. Do not run the application with a table-owner, superuser or `BYPASSRLS` login.
+Use PostgreSQL 18 and keep the migration owner, application runtime login and administrative / break-glass identities separate. Apply migrations in numeric order through `0006_concurrency_hot_partition.sql` before starting the service. Do not run the application with a table-owner, superuser or `BYPASSRLS` login.
 
 Required environment values are deployment-specific. At minimum, configure the accounting database URL and bind this AIS process to exactly one tenant reference. Secrets belong in an approved secret store; do not place database passwords, NTS credentials, bearer tokens or provider secrets in journal payloads, logs or outbox events.
 
@@ -18,9 +18,29 @@ database/migrations/0002_chart_account_class.sql
 database/migrations/0003_home_tax_submission.sql
 database/migrations/0004_close_idempotency_key.sql
 database/migrations/0005_closed_period_guard.sql
+database/migrations/0006_concurrency_hot_partition.sql
 ```
 
 After installation, prove with the actual runtime login that supported reads and writes work for its tenant, another tenant is inaccessible, the login is not a migration owner / superuser / `BYPASSRLS`, and direct SQL cannot bypass journal immutability or period controls.
+
+## Concurrency and hot-write operations
+
+The multithreaded HTTP server gives each request an independent PostgreSQL
+transaction. Each new session bounds lock waits to five seconds and idle
+transactions to sixty seconds. State-changing proposal, adjusting, reversal,
+HomeTax, period-open, and period-close commands acquire tenant-scoped
+transaction advisory locks. Posting/reversal re-read their selected period
+after acquiring the shared period lock; close selects the period row with
+`FOR UPDATE` before evaluating its package. A lock timeout rolls back the
+transaction and must be retried after the operator resolves the competing
+command.
+
+Migration `0006_concurrency_hot_partition.sql` adds tenant-leading indexes to
+the high-write proposal, journal, line, reversal, receipt, HomeTax, and outbox
+populations. Monitor `pg_stat_activity`, `pg_locks`, lock-wait duration, and
+index usage before introducing physical hash-by-tenant/time partitions. A
+partition migration must preserve every tenant-scoped primary/unique key,
+foreign key, RLS policy, idempotency decision, and outbox ordering invariant.
 
 ## Purpose-limited soft-close authorization
 

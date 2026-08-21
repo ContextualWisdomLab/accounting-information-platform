@@ -10,6 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CLOSE_IDEMPOTENCY_MIGRATION = ROOT / "database/migrations/0004_close_idempotency_key.sql"
 PERIOD_GUARD_MIGRATION = ROOT / "database/migrations/0005_closed_period_guard.sql"
+CONCURRENCY_MIGRATION = ROOT / "database/migrations/0006_concurrency_hot_partition.sql"
 
 
 class DatabaseInvariantMigrationContracts(unittest.TestCase):
@@ -63,6 +64,39 @@ class DatabaseInvariantMigrationContracts(unittest.TestCase):
                     ),
                 )
         self.assertGreaterEqual(migration.count("DEFERRABLE INITIALLY DEFERRED"), 2)
+
+    def test_hot_write_tables_have_tenant_leading_indexes(self) -> None:
+        """High-write tenant scans stay bounded before physical partitioning is introduced."""
+        migration = CONCURRENCY_MIGRATION.read_text(encoding="utf-8")
+        for index_name, table_name in (
+            (
+                "journal_proposal_tenant_received_index",
+                "accounting_integration.journal_proposal_record",
+            ),
+            (
+                "general_journal_tenant_period_date_index",
+                "accounting_core.general_journal",
+            ),
+            (
+                "outbox_event_pending_created_index",
+                "accounting_integration.outbox_event",
+            ),
+        ):
+            with self.subTest(index_name=index_name):
+                self.assertRegex(
+                    migration,
+                    re.compile(
+                        rf"CREATE INDEX {index_name}\s+ON {re.escape(table_name)}",
+                        re.IGNORECASE | re.MULTILINE,
+                    ),
+                )
+        self.assertIn("WHERE published_at IS NULL", migration)
+
+    def test_concurrency_migration_documents_partition_ready_contract(self) -> None:
+        """The schema records why tenant-leading indexes precede a partition migration."""
+        migration = CONCURRENCY_MIGRATION.read_text(encoding="utf-8")
+        self.assertIn("tenant-leading", migration)
+        self.assertIn("partition", migration.lower())
 
 
 if __name__ == "__main__":

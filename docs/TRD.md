@@ -21,6 +21,15 @@ proposal receipt
 
 No consumer receives a `posted` receipt unless that transaction commits.
 
+Each multithreaded HTTP request uses an independent PostgreSQL transaction.
+New sessions set bounded lock and idle-transaction timeouts. State-changing
+commands acquire transaction-level advisory locks keyed by tenant and command
+scope; posting/reversal re-read the selected period under a shared period lock,
+while close selection uses a row lock.
+Migration 0006 adds tenant-leading indexes to high-write evidence tables and
+records the primary/foreign-key constraints that a future hash-by-tenant/time
+partition migration must preserve.
+
 ## Precision
 
 - API and event amounts use canonical decimal strings.

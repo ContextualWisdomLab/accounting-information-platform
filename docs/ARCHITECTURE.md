@@ -44,6 +44,7 @@ The PostgreSQL 18 foundation is installed in order:
 3. `database/migrations/0003_home_tax_submission.sql` — tenant-scoped HomeTax command evidence and idempotency identity.
 4. `database/migrations/0004_close_idempotency_key.sql` — deterministic close-command replay identity for hard-close snapshots.
 5. `database/migrations/0005_closed_period_guard.sql` — database-owned closed-period authorization and deferred journal-balance enforcement.
+6. `database/migrations/0006_concurrency_hot_partition.sql` — transaction lock safety limits and tenant-leading high-write indexes.
 
 `0005_closed_period_guard.sql` makes `accounting_closing_writer` a `NOLOGIN` capability role. A soft-closed insert is admitted only when the session login is a member of that role **and** the transaction-local journal classification is `period_closing`, `adjusting`, or `reversal`. The GUC alone is not authority. Hard-closed periods reject every later journal insert.
 
@@ -63,6 +64,7 @@ A proposal follows one authoritative transaction boundary:
 validate published proposal
  -> bind tenant / entity / book / open period
  -> resolve semantic roles to chart accounts
+ -> acquire tenant/command transaction lock and shared fiscal-period advisory lock
  -> persist immutable proposal evidence
  -> persist balanced journal header and lines
  -> persist authoritative posting receipt
@@ -74,7 +76,7 @@ Exact replay returns the original receipt. Reuse of an idempotency key with chan
 
 ## Reversal boundary
 
-A reversal never updates or deletes the original journal. It posts an equal-and-opposite journal linked to the original and subject to period policy. The release contract requires replay to be bound to tenant, reversal command idempotency identity, original journal reference and immutable reversal-command evidence hash. Any changed command under the same identity must fail closed. PR #2 remains Draft until exact-current-head tests and PostgreSQL persistence prove that contract together.
+A reversal never updates or deletes the original journal. It posts an equal-and-opposite journal linked to the original and subject to period policy. The release contract requires replay to be bound to tenant, reversal command idempotency identity, original journal reference and immutable reversal-command evidence hash. Any changed command under the same identity must fail closed. PR #2 remains non-release-ready until exact-current-head tests and PostgreSQL persistence prove that contract together.
 
 A reversal accounting date may not precede the original accounting date. Soft-closed periods may admit an authorized reversal through the purpose-limited closing-writer capability. Hard-closed periods reject a new reversal into the locked period.
 

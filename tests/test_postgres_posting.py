@@ -289,6 +289,52 @@ class PostgresPostingTests(unittest.TestCase):
             sum(balance.credit_total for balance in balances.values()),
         )
 
+    def test_database_session_sets_lock_safety_limits(self) -> None:
+        """Every application transaction bounds lock waits and idle transaction time."""
+        with self.ledger._session() as connection:
+            self.assertEqual(connection.execute("SHOW lock_timeout").fetchone()[0], "5s")
+            self.assertEqual(
+                connection.execute("SHOW idle_in_transaction_session_timeout").fetchone()[0],
+                "1min",
+            )
+
+    def test_command_advisory_lock_serializes_same_tenant_scope(self) -> None:
+        """A second transaction cannot enter one tenant command scope while it is held."""
+        command_scope = f"lock-test:{uuid.uuid4().hex}"
+        with self.ledger._session() as first_connection:
+            self.ledger._require_tenant(first_connection)
+            self.ledger._acquire_command_lock(first_connection, command_scope)
+            with psycopg.connect(DATABASE_URL) as second_connection:
+                second_connection.execute("SET lock_timeout = '100ms'")
+                with self.assertRaises(psycopg.errors.LockNotAvailable):
+                    second_connection.execute(
+                        "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+                        (self.policy.tenant_reference, command_scope),
+                    )
+
+    def test_period_recheck_fails_closed_if_period_row_disappears(self) -> None:
+        """A period that vanishes after lock acquisition cannot admit a journal."""
+        connection = mock.MagicMock()
+        initial_cursor = mock.MagicMock()
+        initial_cursor.fetchone.return_value = (
+            uuid.uuid4(),
+            "2026-08",
+            "open",
+            date(2026, 8, 1),
+            date(2026, 8, 31),
+        )
+        missing_cursor = mock.MagicMock()
+        missing_cursor.fetchone.return_value = None
+        connection.execute.side_effect = [initial_cursor, mock.MagicMock(), missing_cursor]
+        with self.assertRaisesRegex(AccountingValidationError, "No fiscal period covers"):
+            self.ledger._require_period_bounds(
+                connection,
+                uuid.uuid4(),
+                date(2026, 8, 31),
+                allowed_status_codes=frozenset({"open"}),
+                next_action="post",
+            )
+
     def test_replay_of_same_idempotency_key_does_not_duplicate_rows(self) -> None:
         """Exact replay returns the original receipt and writes no second journal."""
         proposal = self._two_line_proposal()
@@ -635,6 +681,27 @@ class PostgresPostingTests(unittest.TestCase):
             foundation.write_text(
                 MIGRATION_PATH.read_text(encoding="utf-8"), encoding="utf-8"
             )
+            for migration_name in (
+                "0002_chart_account_class.sql",
+                "0003_home_tax_submission.sql",
+                "0004_close_idempotency_key.sql",
+            ):
+                (temporary_root / migration_name).write_text(
+                    (ROOT / "database/migrations" / migration_name).read_text(
+                        encoding="utf-8"
+                    ),
+                    encoding="utf-8",
+                )
+            with self.assertRaisesRegex(
+                AccountingValidationError, "0005_closed_period_guard"
+            ):
+                apply_foundation_migration(DATABASE_URL, foundation)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            foundation = temporary_root / "0001_accounting_foundation.sql"
+            foundation.write_text(
+                MIGRATION_PATH.read_text(encoding="utf-8"), encoding="utf-8"
+            )
             (temporary_root / "0002_chart_account_class.sql").write_text(
                 (ROOT / "database/migrations/0002_chart_account_class.sql").read_text(
                     encoding="utf-8"
@@ -653,8 +720,14 @@ class PostgresPostingTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            (temporary_root / "0005_closed_period_guard.sql").write_text(
+                (ROOT / "database/migrations/0005_closed_period_guard.sql").read_text(
+                    encoding="utf-8"
+                ),
+                encoding="utf-8",
+            )
             with self.assertRaisesRegex(
-                AccountingValidationError, "0005_closed_period_guard"
+                AccountingValidationError, "0006_concurrency_hot_partition"
             ):
                 apply_foundation_migration(DATABASE_URL, foundation)
         with self.assertRaisesRegex(AccountingValidationError, "restore a clean database"):
@@ -3959,7 +4032,7 @@ class PostgresPostingTests(unittest.TestCase):
         connection = mock.MagicMock()
         empty_cursor = mock.MagicMock()
         empty_cursor.fetchone.return_value = None
-        connection.execute.side_effect = [empty_cursor, empty_cursor]
+        connection.execute.side_effect = [empty_cursor, empty_cursor, empty_cursor]
         session = mock.MagicMock()
         session.__enter__.return_value = connection
         session.__exit__.return_value = False

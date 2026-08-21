@@ -34,6 +34,14 @@ Korea Legislation Research Institute. (2024a). *Value-Added Tax Act* [Unofficial
 
 PostgreSQL Global Development Group. (2026). *PostgreSQL 18.4 release notes*. https://www.postgresql.org/docs/release/18.4/
 
+PostgreSQL Global Development Group. (2026a). *PostgreSQL 18 documentation: Advisory locks*. https://www.postgresql.org/docs/18/functions-admin.html
+
+PostgreSQL Global Development Group. (2026b). *PostgreSQL 18 documentation: Explicit locking*. https://www.postgresql.org/docs/18/explicit-locking.html
+
+PostgreSQL Global Development Group. (2026c). *PostgreSQL 18 documentation: Table partitioning*. https://www.postgresql.org/docs/18/ddl-partitioning.html
+
+PostgreSQL Global Development Group. (2026d). *PostgreSQL 18 documentation: Multicolumn indexes*. https://www.postgresql.org/docs/18/indexes-multicolumn.html
+
 SPDX Workgroup. (n.d.). *SPDX specifications*. https://spdx.dev/use/specifications/
 
 Supply-chain Levels for Software Artifacts. (2026). *SLSA specification, version 1.2*. https://slsa.dev/spec/v1.2/

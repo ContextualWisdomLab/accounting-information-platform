@@ -91,6 +91,7 @@ class PostgresPostingLedger:
         proposal_uuid = _require_proposal_uuid(proposal_id)
         with self._session() as connection:
             tenant_id = self._require_tenant(connection)
+            self._acquire_command_lock(connection, f"adjusting:{idempotency_key}")
             prior = connection.execute(
                 """
                 SELECT source_payload_hash
@@ -931,6 +932,9 @@ class PostgresPostingLedger:
         proposal_uuid = _require_proposal_uuid(proposal.proposal_id)
         with self._session() as connection:
             tenant_id = self._require_tenant(connection)
+            self._acquire_command_lock(
+                connection, f"proposal:{proposal.idempotency_key}"
+            )
             prior = connection.execute(
                 """
                 SELECT source_payload_hash
@@ -1062,6 +1066,9 @@ class PostgresPostingLedger:
             self._active_connection = connection
             try:
                 tenant_id = self._require_tenant(connection)
+                self._acquire_command_lock(
+                    connection, f"period:{period_code}"
+                )
                 legal_entity_id = self._require_legal_entity(
                     connection,
                     tenant_id,
@@ -1077,7 +1084,7 @@ class PostgresPostingLedger:
                         f"currency {reporting_currency_code}. Supply the book reporting currency, "
                         "then retry the close."
                     )
-                period_id, current_status, period_end_date = self._require_fiscal_period(
+                period_id, current_status, period_end_date = self._lock_fiscal_period(
                     connection, tenant_id, period_code
                 )
                 if current_status == "hard_closed":
@@ -1164,6 +1171,7 @@ class PostgresPostingLedger:
             )
         with self._session() as connection:
             tenant_id = self._require_tenant(connection)
+            self._acquire_command_lock(connection, f"period:{period_code}")
             self._require_legal_entity(
                 connection, tenant_id, legal_entity_reference, "the period open"
             )
@@ -1808,6 +1816,9 @@ class PostgresPostingLedger:
                 tenant_id,
                 legal_entity_reference,
                 next_action="the home-tax-submission",
+            )
+            self._acquire_command_lock(
+                connection, f"home-tax:{submission_idempotency_key}"
             )
             book_id = self._require_book_for_close(
                 connection,
@@ -2586,6 +2597,9 @@ class PostgresPostingLedger:
         )
         with self._session() as connection:
             tenant_id = self._require_tenant(connection)
+            self._acquire_command_lock(
+                connection, f"reversal:{journal_reference}:{command_key}"
+            )
             existing = connection.execute(
                 """
                 SELECT reversal_journal.journal_reference,
@@ -4068,6 +4082,8 @@ class PostgresPostingLedger:
                 "to that server, then retry posting."
             ) from error
         try:
+            connection.execute("SET lock_timeout = '5s'")
+            connection.execute("SET idle_in_transaction_session_timeout = '60s'")
             yield connection
         except Exception:
             connection.rollback()
@@ -4076,6 +4092,13 @@ class PostgresPostingLedger:
             connection.commit()
         finally:
             connection.close()
+
+    def _acquire_command_lock(self, connection: object, command_scope: str) -> None:
+        """Serialize one tenant command scope until the current transaction ends."""
+        connection.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+            (self._tenant_reference, command_scope),
+        )
 
     def _require_tenant(self, connection: object) -> UUID:
         row = connection.execute(
@@ -4204,6 +4227,23 @@ class PostgresPostingLedger:
               AND period_end_date >= %s
             """,
             (tenant_id, accounting_date, accounting_date),
+        ).fetchone()
+        if row is None:
+            raise AccountingValidationError(
+                f"No fiscal period covers accounting date {accounting_date.isoformat()}. "
+                "Create an open fiscal period on the tenant calendar, then retry posting."
+            )
+        period_id, period_code = row[0], row[1]
+        self._acquire_command_lock(connection, f"period:{period_code}")
+        row = connection.execute(
+            """
+            SELECT fiscal_period_id, period_code, period_status_code,
+                   period_start_date, period_end_date
+            FROM accounting_core.fiscal_period
+            WHERE tenant_account_id = %s
+              AND fiscal_period_id = %s
+            """,
+            (tenant_id, period_id),
         ).fetchone()
         if row is None:
             raise AccountingValidationError(
@@ -4389,6 +4429,29 @@ class PostgresPostingLedger:
             raise AccountingValidationError(
                 f"Fiscal period {period_code} is not recorded for this tenant. "
                 f"Create the fiscal_period row, then retry {next_action}."
+            )
+        return row[0], row[1], row[2]
+
+    def _lock_fiscal_period(
+        self,
+        connection: object,
+        tenant_id: UUID,
+        period_code: str,
+    ) -> tuple[UUID, str, date]:
+        """Lock one fiscal period row while its close command evaluates and writes."""
+        row = connection.execute(
+            """
+            SELECT fiscal_period_id, period_status_code, period_end_date
+            FROM accounting_core.fiscal_period
+            WHERE tenant_account_id = %s AND period_code = %s
+            FOR UPDATE
+            """,
+            (tenant_id, period_code),
+        ).fetchone()
+        if row is None:
+            raise AccountingValidationError(
+                f"Fiscal period {period_code} is not recorded for this tenant. "
+                "Create the fiscal_period row, then retry the close."
             )
         return row[0], row[1], row[2]
 
@@ -5676,7 +5739,7 @@ def _journal_write_role(
 
 
 def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
-    """Apply the checked-in PostgreSQL 18 foundation through the closed-period guard."""
+    """Apply the checked-in PostgreSQL 18 foundation through concurrency indexes."""
     if not migration_path.is_file():
         raise AccountingValidationError(
             f"Foundation migration is missing at {migration_path}. "
@@ -5706,6 +5769,12 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             f"Closed-period guard migration is missing at {period_guard_migration_path}. "
             "Restore database/migrations/0005_closed_period_guard.sql, then retry."
         )
+    concurrency_migration_path = migration_path.parent / "0006_concurrency_hot_partition.sql"
+    if not concurrency_migration_path.is_file():
+        raise AccountingValidationError(
+            f"Concurrency and hot-partition migration is missing at {concurrency_migration_path}. "
+            "Restore database/migrations/0006_concurrency_hot_partition.sql, then retry."
+        )
     psycopg = _import_psycopg()
     try:
         with psycopg.connect(
@@ -5716,6 +5785,7 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             connection.execute(submission_migration_path.read_text(encoding="utf-8"))
             connection.execute(close_key_migration_path.read_text(encoding="utf-8"))
             connection.execute(period_guard_migration_path.read_text(encoding="utf-8"))
+            connection.execute(concurrency_migration_path.read_text(encoding="utf-8"))
     except Exception as error:
         raise AccountingValidationError(
             "Foundation migration failed. Inspect the PostgreSQL error, restore a clean "
