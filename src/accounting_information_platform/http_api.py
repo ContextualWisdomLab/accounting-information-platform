@@ -10,6 +10,7 @@ from typing import Callable
 from urllib.parse import parse_qs, urlparse
 
 from .accept import (
+    HomeTaxRequestValidationError,
     accept_adjusting_journal,
     accept_home_tax_submission,
     accept_journal_proposal,
@@ -1387,6 +1388,9 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
                 409,
                 f"{error}. Supply a new HomeTax idempotency key, then retry.",
             )
+            return
+        except HomeTaxRequestValidationError as error:
+            self._write_error(422, str(error))
             return
         except AccountingValidationError as error:
             self._write_error(404, str(error))

@@ -1,5 +1,8 @@
 BEGIN;
 
+ALTER TABLE accounting_integration.outbox_event
+    ALTER COLUMN tenant_account_id SET NOT NULL;
+
 -- tenant-leading indexes keep high-write scans bounded while the normalized
 -- tables remain ready for a future hash-by-tenant and time partition layout.
 CREATE INDEX journal_proposal_tenant_received_index

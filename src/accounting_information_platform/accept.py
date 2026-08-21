@@ -30,6 +30,10 @@ _ALLOWED_OUTBOX_EVENT_TYPE_CODES = frozenset(
 )
 
 
+class HomeTaxRequestValidationError(AccountingValidationError):
+    """Raised when a HomeTax command is malformed before catalog lookup."""
+
+
 def accept_journal_proposal(
     payload: object, database_url: str, tenant_reference: str
 ) -> dict[str, object]:
@@ -408,17 +412,17 @@ def accept_home_tax_submission(
         )
     submission_idempotency_key = payload.get("idempotency_key")
     if not submission_idempotency_key:
-        raise AccountingValidationError(
+        raise HomeTaxRequestValidationError(
             "home tax submission idempotency_key is required. "
             "Supply a tenant-scoped command key, then retry the home-tax-submission."
         )
     if not isinstance(submission_idempotency_key, str):
-        raise AccountingValidationError(
+        raise HomeTaxRequestValidationError(
             "home tax submission idempotency_key is required. "
             "Supply a tenant-scoped command key, then retry the home-tax-submission."
         )
     if not submission_idempotency_key.strip():
-        raise AccountingValidationError(
+        raise HomeTaxRequestValidationError(
             "home tax submission idempotency_key is required. "
             "Supply a tenant-scoped command key, then retry the home-tax-submission."
         )
@@ -427,13 +431,13 @@ def accept_home_tax_submission(
         not isinstance(source_payload_hash, str)
         or _HASH_PATTERN.fullmatch(source_payload_hash) is None
     ):
-        raise AccountingValidationError(
+        raise HomeTaxRequestValidationError(
             "home tax submission source_payload_hash is required and must be a sha256 digest. "
             "Supply immutable source evidence, then retry the home-tax-submission."
         )
     source_payload_reference = payload.get("source_payload_reference")
     if not isinstance(source_payload_reference, str) or not source_payload_reference.strip():
-        raise AccountingValidationError(
+        raise HomeTaxRequestValidationError(
             "home tax submission source_payload_reference is required. "
             "Supply the immutable source locator, then retry the home-tax-submission."
         )
@@ -936,60 +940,16 @@ def lookup_financial_statement_package(
             "statement_scope_code must be period or year_to_date. "
             "Supply a known statement scope, then retry the financial-statement-package read."
         )
-    income_statement = lookup_financial_statement(
-        database_url,
-        tenant_reference,
+    ledger = PostgresPostingLedger(database_url, tenant_reference)
+    return ledger.load_financial_statement_package(
         legal_entity_reference,
         book_reference,
-        fiscal_period_reference,
-        "income_statement",
-        comparison_fiscal_period_reference,
-        statement_scope_code,
+        _period_code_from_reference(fiscal_period_reference),
+        comparison_period_code=_period_code_from_reference(
+            comparison_fiscal_period_reference
+        ),
+        statement_scope_code=statement_scope_code,
     )
-    balance_sheet = lookup_financial_statement(
-        database_url,
-        tenant_reference,
-        legal_entity_reference,
-        book_reference,
-        fiscal_period_reference,
-        "balance_sheet",
-        comparison_fiscal_period_reference,
-        statement_scope_code,
-    )
-    changes_in_equity = lookup_financial_statement(
-        database_url,
-        tenant_reference,
-        legal_entity_reference,
-        book_reference,
-        fiscal_period_reference,
-        "changes_in_equity",
-        comparison_fiscal_period_reference,
-        statement_scope_code,
-    )
-    cash_flow = lookup_financial_statement(
-        database_url,
-        tenant_reference,
-        legal_entity_reference,
-        book_reference,
-        fiscal_period_reference,
-        "cash_flow",
-        comparison_fiscal_period_reference,
-        statement_scope_code,
-    )
-    document: dict[str, object] = {
-        "tenant_reference": income_statement["tenant_reference"],
-        "legal_entity_reference": income_statement["legal_entity_reference"],
-        "accounting_book_reference": income_statement["accounting_book_reference"],
-        "book_reference": income_statement["book_reference"],
-        "fiscal_period_reference": income_statement["fiscal_period_reference"],
-        "income_statement": income_statement,
-        "balance_sheet": balance_sheet,
-        "changes_in_equity": changes_in_equity,
-        "cash_flow": cash_flow,
-    }
-    if statement_scope_code == "year_to_date":
-        document["statement_scope_code"] = "year_to_date"
-    return document
 
 
 def lookup_period_close_package(
@@ -1089,6 +1049,11 @@ def _parse_adjusting_journal_lines(
             )
         transaction_currency = currency_code
         amount = _parse_amount(str(raw_line.get("amount") or ""))
+        if amount <= 0:
+            raise AccountingValidationError(
+                "amount must be greater than zero. "
+                "Supply a positive exact decimal amount, then retry the journal post."
+            )
         debit_amount = amount if debit_credit_code == "debit" else Decimal("0")
         credit_amount = amount if debit_credit_code == "credit" else Decimal("0")
         debit_total += debit_amount

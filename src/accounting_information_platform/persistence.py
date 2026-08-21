@@ -3375,6 +3375,79 @@ class PostgresPostingLedger:
             document["comparison_net_income_amount"] = compared["net_income_amount"]
         return document
 
+    def load_financial_statement_package(
+        self,
+        legal_entity_reference: str,
+        accounting_book_reference: str,
+        period_code: str,
+        comparison_period_code: str = "",
+        statement_scope_code: str = "",
+    ) -> dict[str, object]:
+        """Return all four financial statements from one REPEATABLE READ snapshot."""
+        with self._consistent_read_session():
+            return self._assemble_financial_statement_package(
+                legal_entity_reference,
+                accounting_book_reference,
+                period_code,
+                comparison_period_code=comparison_period_code,
+                statement_scope_code=statement_scope_code,
+            )
+
+    def _assemble_financial_statement_package(
+        self,
+        legal_entity_reference: str,
+        accounting_book_reference: str,
+        period_code: str,
+        comparison_period_code: str = "",
+        statement_scope_code: str = "",
+    ) -> dict[str, object]:
+        income_statement = self.load_financial_statement(
+            legal_entity_reference,
+            accounting_book_reference,
+            period_code,
+            "income_statement",
+            comparison_period_code,
+            statement_scope_code,
+        )
+        balance_sheet = self.load_financial_statement(
+            legal_entity_reference,
+            accounting_book_reference,
+            period_code,
+            "balance_sheet",
+            comparison_period_code,
+            statement_scope_code,
+        )
+        changes_in_equity = self.load_financial_statement(
+            legal_entity_reference,
+            accounting_book_reference,
+            period_code,
+            "changes_in_equity",
+            comparison_period_code,
+            statement_scope_code,
+        )
+        cash_flow = self.load_financial_statement(
+            legal_entity_reference,
+            accounting_book_reference,
+            period_code,
+            "cash_flow",
+            comparison_period_code,
+            statement_scope_code,
+        )
+        document: dict[str, object] = {
+            "tenant_reference": income_statement["tenant_reference"],
+            "legal_entity_reference": income_statement["legal_entity_reference"],
+            "accounting_book_reference": income_statement["accounting_book_reference"],
+            "book_reference": income_statement["book_reference"],
+            "fiscal_period_reference": income_statement["fiscal_period_reference"],
+            "income_statement": income_statement,
+            "balance_sheet": balance_sheet,
+            "changes_in_equity": changes_in_equity,
+            "cash_flow": cash_flow,
+        }
+        if statement_scope_code == "year_to_date":
+            document["statement_scope_code"] = "year_to_date"
+        return document
+
     def load_period_close_package(
         self,
         legal_entity_reference: str,

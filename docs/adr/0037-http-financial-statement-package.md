@@ -8,7 +8,7 @@ AIS exposes `lookup_financial_statement_package` and `GET /financial-statement-p
 
 Required query keys are the same as `GET /financial-statements` minus `statement_type_code`: `legal_entity_reference`, `book_reference`, and `fiscal_period_reference`. Optional `statement_scope_code` (`period` | `year_to_date`) and `comparison_fiscal_period_reference` keep the ADR 0025 / ADR 0028 meaning. The package includes `statement_scope_code` only for `year_to_date`. When comparison is supplied, every inner statement includes the existing `comparison_*` keys.
 
-The document envelope repeats the tenant, legal entity, book, and period identity. Nested objects `income_statement`, `balance_sheet`, `changes_in_equity`, and `cash_flow` are the exact documents already returned by `lookup_financial_statement` / `GET /financial-statements` for those types and the same scope. The package calls that existing lookup; it does not reimplement statement math.
+The document envelope repeats the tenant, legal entity, book, and period identity. Nested objects `income_statement`, `balance_sheet`, `changes_in_equity`, and `cash_flow` use the same `PostgresPostingLedger.load_financial_statement` projection for those types and the same scope; the package does not reimplement statement math. All four projections execute inside one PostgreSQL `REPEATABLE READ` snapshot so a concurrent posting cannot tear one statutory package across pre- and post-commit book states.
 
 Empty books return four zero-amount statements rather than 404. Unknown legal entity, book, or period is 404. An unknown scope is 400. A tenant-header mismatch is rejected before the read and writes zero rows. `POST /financial-statement-packages` is 405. `GET /financial-statements` stays the single-statement route.
 
