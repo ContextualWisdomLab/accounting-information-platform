@@ -44,8 +44,6 @@ def main() -> None:
         for raw_target in targets_text.split(","):
             target = re.sub(r"^\\s*ONLY\\s+", "", raw_target, flags=re.IGNORECASE)
             target = target.strip().removesuffix("*").strip()
-            if not target:
-                continue
             identifier = target.rsplit(".", 1)[-1].strip()
             if identifier.startswith('"') and identifier.endswith('"'):
                 identifier = identifier[1:-1].replace('""', '"')
