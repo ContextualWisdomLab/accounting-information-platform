@@ -97,6 +97,8 @@ class ReversalCommandIdempotencyPostgresTests(unittest.TestCase):
                 (self.case.tenant_id,),
             ).fetchone()
 
+        self.assertIsNotNone(stored)
+        assert stored is not None
         self.assertEqual(str(stored[0]), command_key)
         self.assertRegex(str(stored[1]), r"^sha256:[0-9a-f]{64}$")
         self.assertEqual(str(stored[2]), "billing_correction")
