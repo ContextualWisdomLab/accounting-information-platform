@@ -13,7 +13,7 @@ success.
   from an empty tree and the accounting foundation is currently developed on
   PR #2 (`feat: establish accounting posting foundation`).
 - PR #2 is open and Ready for review at exact remote head
-  `6099d426e843a0c73afcd35c34646555eb2a44b7`, based on `develop` head
+  `a8fb3a61a3045b7d9fc6f9a35156c530ffe0a0f1`, based on `develop` head
   `66800a2f4e849ec8a0b060f9603f6667803284b4`; GitHub reports it
   `MERGEABLE`, with no qualifying approval and no protected merge SHA.
   Accounting Foundation CI, security/SAST, scheduler, Noema/OpenCode, and
@@ -53,7 +53,7 @@ success.
 
 - Local Python 3.13.14 with hash-locked quality dependencies was used; no
   system-runtime dependency was added.
-- At exact candidate `6099d426`, real PostgreSQL 18.4 on `127.0.0.1` was used
+- At exact candidate `a8fb3a6`, real PostgreSQL 18.4 on `127.0.0.1` was used
   with the local `seonghobae` test role and `accounting_test` database. The
   full suite passed: 248 tests,
   including deferred-balance, finalized-ledger immutability, forced runtime
@@ -85,7 +85,7 @@ success.
 ## Ordered development loop
 
 1. Wait for required Checks and independent review on exact PR #2 head
-   `6099d426`; do not rerun unchanged checks or treat queued status as success.
+   `a8fb3a6`; do not rerun unchanged checks or treat queued status as success.
    The organization’s central hourly review scheduler is configured for
    `27 * * * *`; it is not duplicated in this repository.
 2. Merge #2 through the protected path only after two qualifying approvals,
