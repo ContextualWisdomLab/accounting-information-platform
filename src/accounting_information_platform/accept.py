@@ -15,6 +15,7 @@ from .core import (
     AccountingValidationError,
     PeriodCloseReceipt,
     PostedJournalLine,
+    _HASH_PATTERN,
     _parse_amount,
     _require_currency,
 )
@@ -420,6 +421,21 @@ def accept_home_tax_submission(
         raise AccountingValidationError(
             "home tax submission idempotency_key is required. "
             "Supply a tenant-scoped command key, then retry the home-tax-submission."
+        )
+    source_payload_hash = payload.get("source_payload_hash")
+    if (
+        not isinstance(source_payload_hash, str)
+        or _HASH_PATTERN.fullmatch(source_payload_hash) is None
+    ):
+        raise AccountingValidationError(
+            "home tax submission source_payload_hash is required and must be a sha256 digest. "
+            "Supply immutable source evidence, then retry the home-tax-submission."
+        )
+    source_payload_reference = payload.get("source_payload_reference")
+    if not isinstance(source_payload_reference, str) or not source_payload_reference.strip():
+        raise AccountingValidationError(
+            "home tax submission source_payload_reference is required. "
+            "Supply the immutable source locator, then retry the home-tax-submission."
         )
     legal_entity_reference = str(payload.get("legal_entity_reference") or "")
     book_reference = str(

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date
 import unittest
 
-from accounting_information_platform import IdempotencyConflictError
+from accounting_information_platform import AccountingValidationError, IdempotencyConflictError
 
 import tests.test_postgres_posting as postgres_posting
 
@@ -65,7 +65,7 @@ class DurableReversalIdempotencyTests(unittest.TestCase):
                 self.case.policy,
                 reversal_idempotency_key=command_key,
             )
-        with self.assertRaises(IdempotencyConflictError):
+        with self.assertRaisesRegex(AccountingValidationError, "already reversed"):
             self.case.ledger.reverse(
                 original.journal_reference,
                 date(2026, 8, 31),

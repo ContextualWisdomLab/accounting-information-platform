@@ -13452,6 +13452,8 @@ class PostgresPostingTests(unittest.TestCase):
                 else fiscal_period_reference
             ),
             "idempotency_key": idempotency_key or f"urn:cwl:home_tax_submission:test:{uuid.uuid4().hex}:v1",
+            "source_payload_hash": "sha256:" + "a" * 64,
+            "source_payload_reference": "urn:cwl:evidence:home_tax_submission_test_v1",
         }
         return self._http_json(
             "POST",

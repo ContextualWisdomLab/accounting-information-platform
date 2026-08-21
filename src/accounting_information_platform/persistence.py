@@ -2624,9 +2624,12 @@ class PostgresPostingLedger:
                 (tenant_id, journal_reference),
             ).fetchone()
             if existing is not None:
+                if str(existing[1]) != command_key:
+                    raise AccountingValidationError(
+                        "journal is already reversed. Use the existing reversal receipt, then retry."
+                    )
                 if (
-                    str(existing[1]) != command_key
-                    or str(existing[2]) != command_hash
+                    str(existing[2]) != command_hash
                     or str(existing[3]) != journal_reference
                     or str(existing[4]) != reversal_reason_code
                     or existing[5] != reversal_date

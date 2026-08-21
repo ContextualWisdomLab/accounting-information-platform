@@ -435,10 +435,11 @@ class PostingLedger:
                 raise AccountingValidationError(
                     "posted journal is immutable. Reverse the existing journal, then post a replacement."
                 )
-            if (
-                occupant.reversal_idempotency_key != command_key
-                or occupant.source_payload_hash != command_hash
-            ):
+            if occupant.reversal_idempotency_key != command_key:
+                raise AccountingValidationError(
+                    "journal is already reversed. Use the existing reversal receipt, then retry."
+                )
+            if occupant.source_payload_hash != command_hash:
                 raise IdempotencyConflictError(
                     "reversal idempotency key was already used with a different payload"
                 )
@@ -574,11 +575,9 @@ class PostingLedger:
         if evidence is None:
             return None
         prior_key, prior_original_reference, prior_hash = evidence
-        if (
-            prior_key != reversal_idempotency_key
-            or prior_original_reference != journal_reference
-            or prior_hash != command_hash
-        ):
+        if prior_key != reversal_idempotency_key or prior_original_reference != journal_reference:
+            return None
+        if prior_hash != command_hash:
             raise IdempotencyConflictError(
                 "reversal idempotency key was already used with a different payload"
             )
