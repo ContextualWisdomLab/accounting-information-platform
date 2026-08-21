@@ -21,7 +21,7 @@ jobs:
     timeout-minutes: 30
     env:
       ACCOUNTING_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/accounting_test
-      EXPECTED_PARENT_SHA: 766a16fe07be89495cb88090af4203bf449e6754
+      EXPECTED_PARENT_SHA: 41de86d444ee02d3851ff13f28e4ef70135d89b2
     services:
       postgres:
         image: postgres:18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
