@@ -110,6 +110,20 @@ class AccountingCiContractTests(unittest.TestCase):
         self.assertIn("printf 'SOURCE_DATE_EPOCH=%s\\n'", workflow)
         self.assertNotIn('\\"$EXPECTED_SHA\\"', workflow)
 
+    def test_signed_attestations_run_only_for_integrated_branch_pushes(self) -> None:
+        """PR OIDC merge refs cannot become signed provenance for an exact PR head artifact."""
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        provenance_step = workflow.split("      - name: Attest wheel provenance", 1)[1].split(
+            "      - name: Attest wheel SBOM", 1
+        )[0]
+        sbom_step = workflow.split("      - name: Attest wheel SBOM", 1)[1].split(
+            "      - name: Upload package evidence", 1
+        )[0]
+        for step in (provenance_step, sbom_step):
+            self.assertIn("if: github.event_name == 'push'", step)
+
     def test_ci_requires_reproducible_wheel_sbom_and_signed_attestations(self) -> None:
         """Package acceptance must bind reproducibility, SPDX SBOM, and provenance to the head."""
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
