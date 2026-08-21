@@ -1792,14 +1792,27 @@ class PostgresPostingLedger:
         accounting_book_reference: str,
         period_code: str,
         submission_idempotency_key: str,
+        source_payload_hash: str,
+        source_payload_reference: str,
         register_document: dict[str, object],
         rejection_reason_code: str,
     ) -> dict[str, object]:
-        """Persist one rejected HomeTax receipt for a resolved entity, book, and period."""
+        """Persist or replay one rejected HomeTax receipt with immutable command provenance."""
         if not submission_idempotency_key:
             raise AccountingValidationError(
                 "submission_idempotency_key is required. "
                 "Supply the original HomeTax command key, then retry the home-tax-submission."
+            )
+        if re.fullmatch(r"sha256:[0-9a-f]{64}", source_payload_hash) is None:
+            raise AccountingValidationError(
+                "source_payload_hash must be a sha256 digest. "
+                "Supply immutable HomeTax source evidence, then retry the home-tax-submission."
+            )
+        normalized_source_reference = source_payload_reference.strip()
+        if not normalized_source_reference:
+            raise AccountingValidationError(
+                "source_payload_reference is required. "
+                "Supply the immutable HomeTax source locator, then retry the home-tax-submission."
             )
         register_payload_hash = "sha256:" + hashlib.sha256(
             json.dumps(
@@ -1843,12 +1856,14 @@ class PostgresPostingLedger:
                     accounting_book_id,
                     fiscal_period_id,
                     submission_idempotency_key,
+                    source_payload_hash,
+                    source_payload_reference,
                     submission_status_code,
                     rejection_reason_code,
                     as_of_date,
                     closing_amount,
                     register_payload_hash
-                ) VALUES (%s, %s, %s, %s, %s, 'rejected', %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'rejected', %s, %s, %s, %s)
                 ON CONFLICT (tenant_account_id, submission_idempotency_key) DO NOTHING
                 RETURNING home_tax_submission_id,
                           submission_status_code,
@@ -1856,6 +1871,8 @@ class PostgresPostingLedger:
                           as_of_date,
                           closing_amount,
                           register_payload_hash,
+                          source_payload_hash,
+                          source_payload_reference,
                           legal_entity_id,
                           accounting_book_id,
                           fiscal_period_id
@@ -1866,6 +1883,8 @@ class PostgresPostingLedger:
                     book_id,
                     period_id,
                     submission_idempotency_key,
+                    source_payload_hash,
+                    normalized_source_reference,
                     rejection_reason_code,
                     as_of_date,
                     closing_amount,
@@ -1881,6 +1900,8 @@ class PostgresPostingLedger:
                            as_of_date,
                            closing_amount,
                            register_payload_hash,
+                           source_payload_hash,
+                           source_payload_reference,
                            legal_entity_id,
                            accounting_book_id,
                            fiscal_period_id
@@ -1897,9 +1918,11 @@ class PostgresPostingLedger:
                     )
                 if (
                     row[5] != register_payload_hash
-                    or row[6] != legal_entity_id
-                    or row[7] != book_id
-                    or row[8] != period_id
+                    or row[6] != source_payload_hash
+                    or row[7] != normalized_source_reference
+                    or row[8] != legal_entity_id
+                    or row[9] != book_id
+                    or row[10] != period_id
                 ):
                     raise IdempotencyConflictError(
                         "HomeTax idempotency key was already used with different evidence or scope. "

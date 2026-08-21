@@ -224,9 +224,30 @@ def _lex_executable_sql(sql_text: str) -> str:
 def validate_append_only_journal_sql(sql_text: str) -> tuple[str, ...]:
     """Reject executable destructive mutation of posted journal tables in migrations."""
     executable_sql = _lex_executable_sql(sql_text)
-    if APPEND_ONLY_JOURNAL_MUTATION_PATTERN.search(executable_sql) is None:
-        return ()
-    return (APPEND_ONLY_JOURNAL_MUTATION_ERROR,)
+    if APPEND_ONLY_JOURNAL_MUTATION_PATTERN.search(executable_sql) is not None:
+        return (APPEND_ONLY_JOURNAL_MUTATION_ERROR,)
+
+    table_list_pattern = re.compile(
+        r"\b(?:TRUNCATE(?:\s+TABLE)?|DROP\s+TABLE(?:\s+IF\s+EXISTS)?)\s+([^;]+)",
+        re.IGNORECASE,
+    )
+    protected_tables = {"general_journal", "journal_entry_line"}
+    for command_match in table_list_pattern.finditer(executable_sql):
+        targets_text = re.split(
+            r"\b(?:RESTART\s+IDENTITY|CONTINUE\s+IDENTITY|CASCADE|RESTRICT)\b",
+            command_match.group(1),
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0]
+        for raw_target in targets_text.split(","):
+            target = re.sub(r"^\s*ONLY\s+", "", raw_target, flags=re.IGNORECASE)
+            target = target.strip().removesuffix("*").strip()
+            identifier = target.rsplit(".", 1)[-1].strip()
+            if identifier.startswith('"') and identifier.endswith('"'):
+                identifier = identifier[1:-1].replace('""', '"')
+            if identifier.lower() in protected_tables:
+                return (APPEND_ONLY_JOURNAL_MUTATION_ERROR,)
+    return ()
 
 
 def validate_sql_object_names(sql_text: str) -> tuple[str, ...]:

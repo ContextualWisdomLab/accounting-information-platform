@@ -469,6 +469,8 @@ def accept_home_tax_submission(
         accounting_book_reference=book_reference,
         period_code=period_code,
         submission_idempotency_key=submission_idempotency_key,
+        source_payload_hash=source_payload_hash,
+        source_payload_reference=source_payload_reference,
         register_document=register_document,
         rejection_reason_code=rejection_reason_code,
     )

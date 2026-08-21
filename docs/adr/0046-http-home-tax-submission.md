@@ -16,6 +16,8 @@ Always-present command keys are two-word (or longer) `snake_case`: `tenant_refer
 
 IAS 1 requires presentation that helps users assess financial position, including current liabilities, accompanied by information that explains those statements (IFRS Foundation, 2022). Output VAT payable is that current liability. A filing command that transmits without the period VAT register would assert a liability the books cannot show. Processing integrity also requires fail-closed handling when the purpose-limited HomeTax credential is absent (American Institute of Certified Public Accountants, 2017).
 
+Each HomeTax write command carries a tenant-scoped idempotency key, a canonical `source_payload_hash`, and an immutable `source_payload_reference`. The durable `home_tax_submission` row stores both source fields separately from the derived VAT-register hash. An exact retry replays the stored receipt; reuse of the same command key with a changed source hash, source reference, register hash, or accounting scope fails closed.
+
 ## Consequences
 
 Controllers can attempt a HomeTax filing from AIS and receive a durable rejected receipt instead of a fake NTS success. Transmission remains blocked until a later slice adds a real HomeTax transport. `GET /vat-period-registers` is unchanged. Catalog roles stay `tax_payable` → 210100. Billing remains the commercial tax assessor and does not grow a tax endpoint.

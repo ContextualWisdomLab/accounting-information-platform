@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- HomeTax rejected-command receipts now retain immutable command source hash and source reference separately from the derived VAT-register hash, and exact replay fails closed on changed provenance.
+
 ### Changed
 
 - PostgreSQL command transactions now set bounded lock and idle-transaction timeouts, serialize tenant-scoped state changes with transaction-level advisory locks, serialize posting/reversal against period transitions with a shared period lock, lock the close period row during close evaluation, and add tenant-leading indexes for high-write proposal, journal, receipt, tax-evidence, reversal, and pending-outbox scans. ADR 0050 records the partition-ready contract; physical partitioning remains a measured follow-up because PostgreSQL partitioned unique keys must include the partition key.

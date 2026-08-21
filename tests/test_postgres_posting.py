@@ -3983,6 +3983,8 @@ class PostgresPostingTests(unittest.TestCase):
                 accounting_book_reference=self.policy.accounting_book_reference,
                 period_code="2026-08",
                 submission_idempotency_key="",
+                source_payload_hash="sha256:" + "a" * 64,
+                source_payload_reference="urn:cwl:evidence:home_tax_test:v1",
                 register_document={},
                 rejection_reason_code="register_unavailable",
             )
@@ -3997,6 +3999,8 @@ class PostgresPostingTests(unittest.TestCase):
             accounting_book_reference=self.policy.accounting_book_reference,
             period_code="2026-08",
             submission_idempotency_key=command_key,
+            source_payload_hash="sha256:" + "a" * 64,
+            source_payload_reference="urn:cwl:evidence:home_tax_test:v1",
             register_document=register,
             rejection_reason_code="hometax_transport_unavailable",
         )
@@ -4005,9 +4009,34 @@ class PostgresPostingTests(unittest.TestCase):
             accounting_book_reference=self.policy.accounting_book_reference,
             period_code="2026-08",
             submission_idempotency_key=command_key,
+            source_payload_hash="sha256:" + "a" * 64,
+            source_payload_reference="urn:cwl:evidence:home_tax_test:v1",
             register_document=register,
             rejection_reason_code="register_unavailable",
         )
+        with self.assertRaises(IdempotencyConflictError):
+            self.ledger.persist_home_tax_submission(
+                legal_entity_reference=self.policy.legal_entity_reference,
+                accounting_book_reference=self.policy.accounting_book_reference,
+                period_code="2026-08",
+                submission_idempotency_key=command_key,
+                source_payload_hash="sha256:" + "b" * 64,
+                source_payload_reference="urn:cwl:evidence:home_tax_test:v1",
+                register_document=register,
+                rejection_reason_code="hometax_transport_unavailable",
+            )
+        with self.assertRaises(IdempotencyConflictError):
+            self.ledger.persist_home_tax_submission(
+                legal_entity_reference=self.policy.legal_entity_reference,
+                accounting_book_reference=self.policy.accounting_book_reference,
+                period_code="2026-08",
+                submission_idempotency_key=command_key,
+                source_payload_hash="sha256:" + "a" * 64,
+                source_payload_reference="urn:cwl:evidence:home_tax_test:changed:v1",
+                register_document=register,
+                rejection_reason_code="hometax_transport_unavailable",
+            )
+
         changed_register = dict(register)
         changed_register["closing_amount"] = "2501"
         with self.assertRaises(IdempotencyConflictError):
@@ -4016,6 +4045,8 @@ class PostgresPostingTests(unittest.TestCase):
                 accounting_book_reference=self.policy.accounting_book_reference,
                 period_code="2026-08",
                 submission_idempotency_key=command_key,
+                source_payload_hash="sha256:" + "a" * 64,
+                source_payload_reference="urn:cwl:evidence:home_tax_test:v1",
                 register_document=changed_register,
                 rejection_reason_code="hometax_transport_unavailable",
             )
@@ -4059,6 +4090,8 @@ class PostgresPostingTests(unittest.TestCase):
                 accounting_book_reference=self.policy.accounting_book_reference,
                 period_code="2026-08",
                 submission_idempotency_key="urn:cwl:home_tax_submission:missing:v1",
+                source_payload_hash="sha256:" + "a" * 64,
+                source_payload_reference="urn:cwl:evidence:home_tax_test:v1",
                 register_document={"as_of_date": "2026-08-31", "closing_amount": "0"},
                 rejection_reason_code="register_unavailable",
             )
