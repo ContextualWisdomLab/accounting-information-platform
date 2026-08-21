@@ -146,6 +146,12 @@ Before release, rehearse clean install, forward migration, rollback strategy, ba
 
 Recovery from an accounting error is not database row editing. Restore infrastructure only for infrastructure loss; correct economic facts with reversal / reposting according to accounting policy.
 
+## Package provenance and attestations
+
+Every pull-request package build first verifies the exact PR head checkout, derives `SOURCE_DATE_EPOCH` from that commit, builds the wheel twice, and requires byte-identical SHA-256 digests. `scripts/generate_supply_chain_evidence.py` then emits a deterministic `source-provenance.json` that binds the verified source SHA, source timestamp, wheel file/digest and SPDX SBOM digest. `SHA256SUMS` covers the wheel, SBOM and source-provenance manifest, and the uploaded artifact keeps all four files together.
+
+Do not accept a GitHub OIDC attestation created by a `pull_request` event as exact PR-head provenance merely because the build checked out the PR head. The attestation signing context can identify GitHub's synthetic pull-request merge ref and merge commit. Repository CI therefore creates GitHub-signed provenance and SBOM attestations only on `push` builds for `develop` or `main`, where the attested triggering commit is the integrated branch head. The protected-head push must reproduce the package and those signed attestations must succeed before release. This control is evidence readiness only; it does not claim a SLSA level or certification.
+
 ## Release acceptance
 
-Release only from one unchanged protected head after all applicable evidence passes together: PostgreSQL integration, exact 100% owned production statement and branch coverage, public API docstrings, repository contracts, SAST / security, package build and install, SBOM / provenance, migration rehearsal, recovery evidence and qualifying independent review. Queued, skipped, cancelled, stale, predecessor or status-only evidence is non-passing.
+Release only from one unchanged protected head after all applicable evidence passes together: PostgreSQL integration, exact 100% owned production statement and branch coverage, public API docstrings, repository contracts, SAST / security, reproducible package build and install, deterministic exact-source provenance, SPDX SBOM, protected-head OIDC provenance/SBOM attestations, migration rehearsal, recovery evidence and qualifying independent review. Queued, cancelled, stale, predecessor or status-only evidence is non-passing. An applicable gate that is skipped is non-passing; the protected-head attestation steps are intentionally not applicable to a pull-request event and become mandatory on the integrated `develop`/`main` push.
