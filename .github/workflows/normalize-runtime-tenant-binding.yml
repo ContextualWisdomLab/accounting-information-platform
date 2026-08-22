@@ -1,0 +1,120 @@
+name: Normalize runtime tenant binding
+
+on:
+  push:
+    branches:
+      - agent/accounting-posting-foundation
+
+permissions:
+  contents: read
+
+concurrency:
+  group: normalize-runtime-tenant-binding
+  cancel-in-progress: true
+
+jobs:
+  normalize:
+    if: github.actor != 'github-actions[bot]'
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      ACCOUNTING_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/accounting_test
+      EXPECTED_SHA: ${{ github.sha }}
+    services:
+      postgres:
+        image: postgres:18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: accounting_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d accounting_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Check out exact triggering head
+        uses: actions/checkout@631c942040754b6e095e929c1677c07e10ed4f87
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify exact triggering head
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${EXPECTED_SHA}"
+      - name: Install pinned Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-quality.txt
+      - name: Install hash-locked quality dependencies
+        run: >-
+          python -m pip install
+          --disable-pip-version-check
+          --only-binary=:all:
+          --require-hashes
+          -r requirements-quality.txt
+      - name: Prove runtime tenant rebind regression is RED
+        shell: bash
+        env:
+          PYTHONPATH: src:.
+        run: |
+          set -euo pipefail
+          set +e
+          python -m unittest \
+            tests.test_postgres_runtime_rls.PostgresRuntimeRlsTests.test_restricted_runtime_login_posts_same_tenant_and_cannot_rebind_other_tenant \
+            -v > /tmp/runtime-tenant-red.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/runtime-tenant-red.log
+          test "${status}" -ne 0
+          grep -F "AssertionError: 1 != 0" /tmp/runtime-tenant-red.log
+      - name: Apply narrow database-controlled tenant binding repair
+        run: python scripts/repair_runtime_tenant_binding.py
+      - name: Remove temporary normalization machinery
+        run: |
+          rm .github/workflows/normalize-runtime-tenant-binding.yml
+          rm scripts/repair_runtime_tenant_binding.py
+      - name: Run focused runtime tenant integration tests
+        env:
+          PYTHONPATH: src:.
+        run: >-
+          python -m unittest
+          tests.test_postgres_runtime_rls
+          tests.test_runtime_tenant_binding_contract
+          -v
+      - name: Run complete behavior and PostgreSQL integration suite
+        env:
+          PYTHONPATH: src:.
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Run complete owned branch coverage
+        env:
+          PYTHONPATH: src:.
+        run: python -m coverage run --branch -m unittest discover -s tests -p 'test_*.py'
+      - name: Enforce exact coverage and repository contracts
+        run: |
+          python -m coverage report --fail-under=100 --show-missing
+          python scripts/validate_repository.py .
+          python -m compileall -q src scripts tests
+      - name: Publish normalized canonical branch
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "fix: bind runtime database identity to tenant"
+          git fetch --no-tags origin agent/accounting-posting-foundation
+          test "$(git rev-parse origin/agent/accounting-posting-foundation)" = "${EXPECTED_SHA}"
+          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:agent/accounting-posting-foundation
