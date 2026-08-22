@@ -115,3 +115,7 @@ Queued, pending, cancelled, absent, neutral, failed, stale, predecessor-head, sy
 ## Release / recovery acceptance
 
 Before a release tag, run backup / restore and rollback-strategy rehearsal with production-like PostgreSQL state and the restricted runtime identity. Verify that restored journal, receipt, close and outbox hashes correspond to the exact release source and artifacts. The integrated protected-head push must also reproduce the package and pass OIDC-backed provenance/SBOM attestations for that same integrated commit. A successful CI helper workflow is not itself release evidence if generated changes were not normalized into the canonical source branch.
+
+## Runtime tenant credential isolation
+
+Real PostgreSQL tests create non-owner, non-superuser, non-`BYPASSRLS` runtime logins. A provisioned login must post and read its own tenant, must fail when the application requests a different tenant, and must remain unable to see another tenant even after rewriting the legacy `app.tenant_account_id` custom GUC. A separate unbound runtime login must fail closed. Static migration tests require the session-user/OID binding, locked search path, and migration-loader presence.

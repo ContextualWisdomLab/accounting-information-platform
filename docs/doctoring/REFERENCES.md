@@ -50,6 +50,12 @@ PostgreSQL Global Development Group. (2026c). *PostgreSQL 18 documentation: Tabl
 
 PostgreSQL Global Development Group. (2026d). *PostgreSQL 18 documentation: Multicolumn indexes*. https://www.postgresql.org/docs/18/indexes-multicolumn.html
 
+PostgreSQL Global Development Group. (2026e). *PostgreSQL 18 documentation: System information functions and operators*. https://www.postgresql.org/docs/18/functions-info.html
+
+PostgreSQL Global Development Group. (2026f). *PostgreSQL 18 documentation: Function security*. https://www.postgresql.org/docs/18/perm-functions.html
+
+PostgreSQL Global Development Group. (2026g). *PostgreSQL 18 documentation: CREATE POLICY*. https://www.postgresql.org/docs/18/sql-createpolicy.html
+
 SPDX Workgroup. (n.d.). *SPDX specifications*. https://spdx.dev/use/specifications/
 
 Supply-chain Levels for Software Artifacts. (2026). *SLSA specification, version 1.2*. https://slsa.dev/spec/v1.2/

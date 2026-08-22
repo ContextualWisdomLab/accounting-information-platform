@@ -50,3 +50,7 @@ erDiagram
 ## Temporal and tenant scope
 
 Master-data mappings use validity intervals where policy or assignment can change. Fiscal-period status controls ordinary posting and the approved soft-close exceptions. Tenant-scoped composite references prevent cross-tenant joins from becoming valid accounting relationships even when UUID values are otherwise well formed.
+
+## Runtime tenant identity
+
+`tenant_account` is referenced by `runtime_tenant_binding`, which also records the authenticated PostgreSQL role OID/name and effective interval. This control-plane relation is not a business subledger; it supplies the trusted tenant key consumed by forced RLS for authoritative accounting tables.

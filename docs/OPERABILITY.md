@@ -157,3 +157,7 @@ Do not accept a GitHub OIDC attestation created by a `pull_request` event as exa
 ## Release acceptance
 
 Release only from one unchanged protected head after all applicable evidence passes together: PostgreSQL integration, exact 100% owned production statement and branch coverage, public API docstrings, repository contracts, SAST / security, reproducible package build and install, deterministic exact-source provenance, SPDX SBOM, protected-head OIDC provenance/SBOM attestations, migration rehearsal, recovery evidence and qualifying independent review. Queued, cancelled, stale, predecessor or status-only evidence is non-passing. An applicable gate that is skipped is non-passing; the protected-head attestation job is intentionally not applicable to a pull-request event and becomes mandatory on the integrated `develop`/`main` push.
+
+## Runtime database tenant provisioning
+
+Before routing accounting traffic to a new database login, an owner-controlled operator records that login's current PostgreSQL role OID, role name, and tenant in `accounting_core.runtime_tenant_binding`. The runtime login itself must have no direct privilege on the binding table. Recreating a role, restoring into a new cluster, or intentionally reassigning a tenant requires a fresh binding because the role OID is part of the identity. An unbound runtime or a requested tenant that disagrees with the binding fails closed; do not restore service by setting `app.tenant_account_id`.

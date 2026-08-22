@@ -393,10 +393,14 @@ def _open_billing_connection(parsed: ParseResult) -> http.client.HTTPConnection:
         port = 443
     connection = http.client.HTTPConnection(parsed.hostname, port, timeout=5)
     if parsed.scheme == "https":
-        connection.connect()
-        connection.sock = ssl.create_default_context().wrap_socket(
-            connection.sock, server_hostname=parsed.hostname
-        )
+        try:
+            connection.connect()
+            connection.sock = ssl.create_default_context().wrap_socket(
+                connection.sock, server_hostname=parsed.hostname
+            )
+        except OSError:
+            connection.close()
+            raise
     return connection
 
 

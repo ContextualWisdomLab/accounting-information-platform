@@ -42,3 +42,7 @@ Financial-statement, cash-flow, changes-in-equity, aging, account-balance, ledge
 ## Future extensions
 
 Revenue contracts and performance obligations, durable receivable/payable subledgers, cash-application evidence, bank-statement reconciliation, foreign-exchange rates and remeasurement, fixed assets, intercompany balances and eliminations, consolidation, and reporting-taxonomy mappings are later normalized modules. They will reference, not duplicate, the journal authority and will not let external statement or model output post accounting facts automatically.
+
+## Runtime tenant binding
+
+`accounting_core.runtime_tenant_binding` is a normalized control-plane relation from PostgreSQL runtime role OID/name to `tenant_account`. `valid_from`, `valid_to`, and `recorded_at` preserve assignment history; one partial unique index permits only one active binding per role OID. Runtime roles cannot directly read or mutate this relation. Its active row is resolved through the no-argument `current_tenant_account_id()` security-definer function.

@@ -4212,11 +4212,30 @@ class PostgresPostingLedger:
             raise AccountingValidationError(
                 f"Tenant {self._tenant_reference} is not recorded. Create the tenant_account row, then retry posting."
             )
-        connection.execute(
-            "SELECT set_config('app.tenant_account_id', %s, true)",
-            (str(row[0]),),
+        requested_tenant_id = row[0]
+        bound_tenant_id = connection.execute(
+            "SELECT accounting_core.current_tenant_account_id()"
+        ).fetchone()[0]
+        if bound_tenant_id is not None:
+            if bound_tenant_id != requested_tenant_id:
+                raise AccountingValidationError(
+                    "database runtime tenant binding does not match the requested tenant. "
+                    "Use the database credential provisioned for this tenant, then retry."
+                )
+            return requested_tenant_id
+        rolsuper, rolbypassrls = connection.execute(
+            """
+            SELECT rolsuper, rolbypassrls
+            FROM pg_catalog.pg_roles
+            WHERE rolname = session_user
+            """
+        ).fetchone()
+        if rolsuper or rolbypassrls:
+            return requested_tenant_id
+        raise AccountingValidationError(
+            "database runtime identity is not bound to a tenant. "
+            "Provision accounting_core.runtime_tenant_binding for this login, then retry."
         )
-        return row[0]
 
     def _require_legal_entity(
         self,
@@ -5838,7 +5857,7 @@ def _journal_write_role(
 
 
 def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
-    """Apply the checked-in PostgreSQL 18 foundation through concurrency indexes."""
+    """Apply the checked-in PostgreSQL 18 foundation through runtime tenant binding."""
     if not migration_path.is_file():
         raise AccountingValidationError(
             f"Foundation migration is missing at {migration_path}. "
@@ -5874,6 +5893,12 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             f"Concurrency and hot-partition migration is missing at {concurrency_migration_path}. "
             "Restore database/migrations/0006_concurrency_hot_partition.sql, then retry."
         )
+    runtime_binding_migration_path = migration_path.parent / "0007_runtime_tenant_binding.sql"
+    if not runtime_binding_migration_path.is_file():
+        raise AccountingValidationError(
+            f"Runtime-tenant binding migration is missing at {runtime_binding_migration_path}. "
+            "Restore database/migrations/0007_runtime_tenant_binding.sql, then retry."
+        )
     psycopg = _import_psycopg()
     try:
         with psycopg.connect(
@@ -5885,6 +5910,7 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             connection.execute(close_key_migration_path.read_text(encoding="utf-8"))
             connection.execute(period_guard_migration_path.read_text(encoding="utf-8"))
             connection.execute(concurrency_migration_path.read_text(encoding="utf-8"))
+            connection.execute(runtime_binding_migration_path.read_text(encoding="utf-8"))
     except Exception as error:
         raise AccountingValidationError(
             "Foundation migration failed. Inspect the PostgreSQL error, restore a clean "

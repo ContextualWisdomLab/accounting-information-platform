@@ -1388,6 +1388,12 @@ def _period_status_from_close_payload(payload: Mapping[str, object]) -> str:
             "Omit the field to hard-close, or supply soft_closed or hard_closed, "
             "then retry the close."
         )
+    if period_status_code not in {"soft_closed", "hard_closed"}:
+        raise AccountingValidationError(
+            "period_status_code must be soft_closed or hard_closed. "
+            "Omit the field to hard-close, or supply soft_closed or hard_closed, "
+            "then retry the close."
+        )
     return period_status_code
 
 

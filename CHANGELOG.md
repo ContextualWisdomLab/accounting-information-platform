@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Security
+
+- Bound ordinary PostgreSQL runtime logins to one admin-owned tenant identity for forced RLS; caller-controlled custom GUCs can no longer rebind accounting tenant scope.
+
 - HomeTax rejected-command receipts now retain immutable command source hash and source reference separately from the derived VAT-register hash, and exact replay fails closed on changed provenance.
 
 ### Changed
@@ -24,6 +28,7 @@
 
 ### Fixed
 
+- Period-close commands now reject unknown non-empty status codes at the command boundary, and failed Billing HTTPS connect/TLS setup closes the partially opened connection before returning the existing fail-closed pull error.
 - AIS adjusting-journal commands now require each `amount` to arrive as a quoted exact-decimal string; JSON integer and binary floating-point numbers fail closed before PostgreSQL work, matching the Billing proposal exact-decimal boundary.
 - Foundation invariants now reject tenantless transactional-outbox rows at the PostgreSQL column boundary, reject zero-valued AIS adjusting-journal lines before persistence, return HTTP 422 for malformed HomeTax command provenance while preserving 404 for missing accounting catalog scope, and assemble the four-statement financial package from one PostgreSQL `REPEATABLE READ` snapshot.
 - The standalone `run_journal_proposal_server` now defaults to the loopback address `127.0.0.1` instead of `0.0.0.0`; a non-loopback bind must be an explicit deployment decision behind the documented trusted caller-authentication boundary. A dedicated regression proves the omitted-host path cannot expose accounting commands on all interfaces. The temporary self-mutating accounting repair workflow was removed after its generated fixes were normalized into the canonical PR branch, eliminating workflow-token writes back into the product branch.

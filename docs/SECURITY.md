@@ -113,3 +113,7 @@ This is a least-privilege trust boundary, not evidence that branch governance it
 ## Release security gate
 
 Security is passing only when one unchanged protected source head has applicable exact-head SAST / security checks, an executed exact-head dependency-difference gate against an independently resolved live base, PostgreSQL restricted-runtime tests, 100% owned production statement / branch coverage, package / SBOM / provenance evidence and qualifying independent review all passing. Queued, stale, predecessor, skipped or model-only evidence is non-passing.
+
+## Database tenant binding
+
+Forced RLS derives the active tenant from the authenticated PostgreSQL `session_user` through admin-owned `accounting_core.runtime_tenant_binding` (ADR 0049), not from request payloads or a caller-writable custom GUC. Ordinary runtime credentials receive no direct privilege on that binding table. The application tenant reference must equal the database credential's active binding or the operation fails closed. Migration/superuser and `BYPASSRLS` identities remain separate administrative/break-glass paths and are not normal service credentials.

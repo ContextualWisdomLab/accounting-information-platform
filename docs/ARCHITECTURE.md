@@ -112,3 +112,7 @@ Billing pagination is page-progressive rather than one distributed transaction. 
 ## Evidence and release boundary
 
 No workflow, model output, stale predecessor check or synthetic merge-ref result is accounting evidence. Release evidence must come from one unchanged protected source head with applicable PostgreSQL integration, 100% owned production statement and branch coverage, public API docstrings, repository contracts, security scans, package / SBOM / provenance checks and qualifying independent review all passing together.
+
+## Database tenant trust boundary
+
+The HTTP/authentication adapter supplies a tenant reference, but PostgreSQL independently binds each ordinary runtime login to one tenant using `runtime_tenant_binding` and `session_user` (ADR 0049). Forced-RLS policies consume only that database-controlled identity. Request fields, model output, Billing proposals, and custom session GUCs cannot select another accounting tenant.
