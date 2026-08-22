@@ -1,9 +1,11 @@
 name: Normalize adjusting-journal exact-decimal boundary
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/accounting-posting-foundation
+      - develop
+    types:
+      - synchronize
 
 permissions:
   contents: read
@@ -21,6 +23,7 @@ jobs:
     timeout-minutes: 30
     env:
       EXPECTED_RED_SHA: 2be01770699fcb49ae46c2b8ce3b2c76bbfb8b78
+      EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       ACCOUNTING_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/accounting_test
     services:
       postgres:
@@ -37,17 +40,17 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - name: Check out exact triggering head
+      - name: Check out exact PR head
         uses: actions/checkout@631c942040754b6e095e929c1677c07e10ed4f87
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ env.EXPECTED_HEAD_SHA }}
           fetch-depth: 0
           persist-credentials: false
       - name: Verify observed RED ancestry and unchanged product source
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          test "$(git rev-parse HEAD)" = "${EXPECTED_HEAD_SHA}"
           git cat-file -e "${EXPECTED_RED_SHA}^{commit}"
           git merge-base --is-ancestor "${EXPECTED_RED_SHA}" HEAD
           git diff --quiet "${EXPECTED_RED_SHA}" HEAD -- . \
@@ -130,7 +133,7 @@ jobs:
         run: |
           set -euo pipefail
           git fetch --no-tags origin agent/accounting-posting-foundation
-          test "$(git rev-parse origin/agent/accounting-posting-foundation)" = "${GITHUB_SHA}"
+          test "$(git rev-parse origin/agent/accounting-posting-foundation)" = "${EXPECTED_HEAD_SHA}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
