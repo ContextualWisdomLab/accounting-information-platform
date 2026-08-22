@@ -69,15 +69,15 @@ class AccountingCiContractTests(unittest.TestCase):
         self.assertIn("--error", sast_job)
         self.assertIn("--metrics=off", sast_job)
 
-    def test_ci_runs_trivy_security_gate_on_the_verified_exact_head(self) -> None:
-        """Repository-owned vulnerability/secret/misconfig scanning must use the exact head."""
+    def test_ci_runs_non_vacuous_trivy_secret_gate_on_the_verified_exact_head(self) -> None:
+        """Trivy must prove its applicable secret-scan boundary without unsupported-scan claims."""
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
             encoding="utf-8"
         )
         self.assertIn("exact-head-security:", workflow)
         self.assertIn("name: Exact-head security", workflow)
         security_job = workflow.split("  exact-head-security:", 1)[1].split(
-            "  accounting-foundation:", 1
+            "  exact-head-dependency-diff:", 1
         )[0]
         self.assertIn(
             "ref: ${{ github.event.pull_request.head.sha || github.sha }}",
@@ -93,9 +93,11 @@ class AccountingCiContractTests(unittest.TestCase):
             security_job,
         )
         self.assertIn("version: v0.70.0", security_job)
-        self.assertIn("scanners: vuln,secret,misconfig", security_job)
-        self.assertIn("severity: CRITICAL,HIGH,MEDIUM", security_job)
+        self.assertIn("scanners: secret", security_job)
+        self.assertNotIn("scanners: vuln,secret,misconfig", security_job)
         self.assertIn("exit-code: '1'", security_job)
+        self.assertIn("Exact-head dependency diff", workflow)
+        self.assertIn("Scan exact-head locked Python dependencies with OSV", workflow)
 
     def test_ci_reproducible_timestamp_uses_exact_head_and_fails_closed(self) -> None:
         """The verified exact head supplies a mandatory non-empty SOURCE_DATE_EPOCH."""
