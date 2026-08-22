@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 from datetime import date
+from unittest import mock
 
 from accounting_information_platform import (
     AccountingPolicy,
@@ -12,6 +13,7 @@ from accounting_information_platform import (
     JournalLineProposal,
     JournalProposal,
     PostingLedger,
+    accept_adjusting_journal,
     accept_home_tax_submission,
 )
 
@@ -130,6 +132,52 @@ class HomeTaxCommandProvenanceBoundaryTests(unittest.TestCase):
                 "postgresql://unused.example.invalid/accounting",
                 tenant_reference,
             )
+
+
+class AdjustingJournalExactDecimalBoundaryTests(unittest.TestCase):
+    """Reject JSON numeric coercion before an adjusting journal can reach storage."""
+
+    def test_json_numeric_amounts_fail_before_database_work(self) -> None:
+        """Integers and binary floats are not canonical exact-decimal command values."""
+        tenant_reference = "urn:cwl:tenant_adjusting_decimal"
+        for raw_amount in (25000, 25000.5):
+            with self.subTest(raw_amount=raw_amount):
+                payload = {
+                    "tenant_reference": tenant_reference,
+                    "legal_entity_reference": "urn:cwl:legal_entity:ADJ",
+                    "accounting_book_reference": "urn:cwl:accounting_book:ADJ",
+                    "fiscal_period_reference": "urn:cwl:accounting:fiscal_period:2026-08",
+                    "journal_date": "2026-08-22",
+                    "idempotency_key": f"adjusting-decimal-{type(raw_amount).__name__}",
+                    "journal_description": "Exact-decimal boundary regression",
+                    "journal_lines": [
+                        {
+                            "chart_account_code": "110100",
+                            "debit_credit_code": "debit",
+                            "currency_code": "KRW",
+                            "amount": raw_amount,
+                        },
+                        {
+                            "chart_account_code": "410100",
+                            "debit_credit_code": "credit",
+                            "currency_code": "KRW",
+                            "amount": str(raw_amount),
+                        },
+                    ],
+                }
+                with mock.patch(
+                    "accounting_information_platform.accept.PostgresPostingLedger"
+                ) as ledger_type:
+                    with self.assertRaisesRegex(
+                        AccountingValidationError,
+                        "amount.*exact decimal string|exact decimal.*amount",
+                    ):
+                        accept_adjusting_journal(
+                            payload,
+                            "postgresql://unused.example.invalid/accounting",
+                            tenant_reference,
+                        )
+                    ledger_type.assert_not_called()
 
 
 if __name__ == "__main__":
