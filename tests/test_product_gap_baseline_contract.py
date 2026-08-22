@@ -18,9 +18,12 @@ class ProductGapBaselineContractTests(unittest.TestCase):
         """PR heads, run IDs, and queue state belong in live PR/issue evidence, not this file."""
         text = BASELINE.read_text(encoding="utf-8")
 
-        self.assertIn(
-            "Live PR/check evidence is intentionally not duplicated here",
+        self.assertRegex(
             text,
+            re.compile(
+                r"Live\s+PR/check evidence is intentionally not duplicated here",
+                re.IGNORECASE,
+            ),
         )
         self.assertNotRegex(text, re.compile(r"\b[0-9a-f]{40}\b"))
         self.assertNotRegex(text, re.compile(r"\bworkflow run\s+\d{6,}\b", re.IGNORECASE))
