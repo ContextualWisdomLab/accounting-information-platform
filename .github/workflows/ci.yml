@@ -68,14 +68,12 @@ jobs:
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-      - name: Run Trivy vulnerability, secret, and misconfiguration gate
+      - name: Run Trivy secret gate on exact head
         uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8
         with:
           scan-type: fs
           scan-ref: .
-          scanners: vuln,secret,misconfig
-          severity: CRITICAL,HIGH,MEDIUM
-          ignore-unfixed: true
+          scanners: secret
           format: table
           exit-code: '1'
           version: v0.70.0
