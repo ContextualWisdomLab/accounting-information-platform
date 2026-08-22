@@ -1048,7 +1048,13 @@ def _parse_adjusting_journal_lines(
                 "Supply one book currency, then retry the journal post."
             )
         transaction_currency = currency_code
-        amount = _parse_amount(str(raw_line.get("amount") or ""))
+        raw_amount = raw_line.get("amount")
+        if not isinstance(raw_amount, str):
+            raise AccountingValidationError(
+                "amount must be an exact decimal string. "
+                "Supply each adjusting-journal amount as a quoted decimal string, then retry the journal post."
+            )
+        amount = _parse_amount(raw_amount)
         if amount <= 0:
             raise AccountingValidationError(
                 "amount must be greater than zero. "
