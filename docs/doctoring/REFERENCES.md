@@ -12,6 +12,10 @@ GitHub. (2026). *OpenID Connect reference*. https://docs.github.com/en/actions/r
 
 GitHub. (2026). *Workflow syntax for GitHub Actions*. https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax
 
+Google Open Source Security Team. (2026a). *OSV-Scanner: Project source scanning*. https://google.github.io/osv-scanner/usage/scan-source/
+
+Google Open Source Security Team. (2026b). *OSV-Scanner: Supported artifacts and manifests*. https://google.github.io/osv-scanner/supported-languages-and-lockfiles/
+
 IFRS Foundation. (2022). *IAS 1 presentation of financial statements*. https://www.ifrs.org/issued-standards/list-of-standards/ias-1-presentation-of-financial-statements/
 
 IFRS Foundation. (2022). *IAS 7 statement of cash flows*. https://www.ifrs.org/issued-standards/list-of-standards/ias-7-statement-of-cash-flows/
