@@ -65,8 +65,8 @@ class PostgresRuntimeRlsTests(unittest.TestCase):
                     assert row is not None
                     self.assertEqual(row, (True, True))
 
-    def test_restricted_runtime_login_posts_same_tenant_and_cannot_read_other_tenant(self) -> None:
-        """A least-privilege runtime can post its tenant but RLS hides another tenant."""
+    def test_restricted_runtime_login_posts_same_tenant_and_cannot_rebind_other_tenant(self) -> None:
+        """A least-privilege runtime posts its tenant and cannot self-authorize another tenant."""
         other = posting.PostgresPostingTests("setUp")
         other.setUp()
         self.addCleanup(other.doCleanups)
@@ -100,8 +100,26 @@ class PostgresRuntimeRlsTests(unittest.TestCase):
                 """,
                 (other.tenant_id,),
             ).fetchone()[0]
+
+            # A compromised ordinary runtime connection must not gain another
+            # tenant merely by rewriting the caller-controlled custom GUC used
+            # by legacy session binding. Tenant authority must be anchored in a
+            # database-controlled binding to the authenticated session login.
+            connection.execute(
+                "SELECT set_config('app.tenant_account_id', %s, false)",
+                (other.tenant_id,),
+            )
+            rebound_other_count = connection.execute(
+                """
+                SELECT count(*)
+                FROM accounting_core.general_journal
+                WHERE tenant_account_id = %s
+                """,
+                (other.tenant_id,),
+            ).fetchone()[0]
         self.assertEqual(own_count, 1)
         self.assertEqual(other_count, 0)
+        self.assertEqual(rebound_other_count, 0)
 
         with psycopg.connect(posting.DATABASE_URL) as admin:
             role_row = admin.execute(
@@ -115,7 +133,7 @@ class PostgresRuntimeRlsTests(unittest.TestCase):
                 JOIN pg_namespace ON pg_namespace.oid = pg_class.relnamespace
                 WHERE pg_namespace.nspname = 'accounting_core'
                   AND pg_class.relname = 'general_journal'
-                """
+                """,
             ).fetchone()[0]
         self.assertEqual(role_row, (False, False))
         self.assertNotEqual(owner_name, role_name)
