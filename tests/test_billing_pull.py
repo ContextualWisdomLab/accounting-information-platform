@@ -6,10 +6,14 @@ import os
 import unittest
 from unittest import mock
 
-from accounting_information_platform import AccountingValidationError
+from accounting_information_platform import (
+    AccountingValidationError,
+    IdempotencyConflictError,
+)
 from accounting_information_platform.billing_pull import (
     JournalProposalPage,
     accept_billing_proposal_pull,
+    accept_pulled_proposals,
     _rejected_proposal,
     _rejection_reason_code,
 )
@@ -101,6 +105,44 @@ class BillingPullRejectionReasonTests(unittest.TestCase):
         )
         self.assertEqual(missing_identity["proposal_id"], "")
         self.assertEqual(missing_identity["idempotency_key"], "")
+
+    def test_pull_preserves_idempotency_conflict_as_distinct_rejection(self) -> None:
+        """A page-progressive pull must not hide immutable-key conflicts as generic rejects."""
+        proposal = {
+            "proposal_id": "019d7b92-6ff5-7a7f-b61c-962c0f4bf619",
+            "idempotency_key": "urn:cwl:tenant_001:invoice_draft:x",
+            "proposal_status": "validated",
+        }
+        conflict = IdempotencyConflictError(
+            "idempotency key was already used with a different payload. "
+            "Use the original Billing payload or investigate the conflicting source evidence."
+        )
+        with mock.patch(
+            "accounting_information_platform.billing_pull.pull_validated_journal_proposals",
+            return_value=JournalProposalPage((proposal,), None),
+        ):
+            with mock.patch(
+                "accounting_information_platform.billing_pull.accept_journal_proposal",
+                side_effect=conflict,
+            ):
+                result = accept_pulled_proposals(
+                    _BILLING_ORIGIN,
+                    "postgresql://unused",
+                    _TENANT,
+                )
+
+        self.assertEqual(result["posting_receipts"], [])
+        self.assertEqual(
+            result["rejected_proposals"],
+            [
+                {
+                    "proposal_id": proposal["proposal_id"],
+                    "idempotency_key": proposal["idempotency_key"],
+                    "rejection_reason_code": "idempotency_conflict",
+                    "rejection_message": str(conflict),
+                }
+            ],
+        )
 
 
 class BillingPullOriginAllowlistTests(unittest.TestCase):
@@ -214,7 +256,6 @@ class BillingPullOriginAllowlistTests(unittest.TestCase):
                 "http://[2001:4860:4860::8888]:18765",
             ],
         )
-
 
     def test_configured_loopback_and_link_local_origins_fail_closed(self) -> None:
         """Primary and additional configured origins reject local networks."""
