@@ -80,6 +80,78 @@ jobs:
           exit-code: '1'
           version: v0.70.0
 
+  exact-head-dependency-diff:
+    name: Exact-head dependency diff
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      BASE_REF: ${{ github.event.pull_request.base.ref }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      OSV_SCANNER_IMAGE: ghcr.io/google/osv-scanner@sha256:5116601dedc01c1c580eb92371883ec052fc4c13c3fbc109d621a63ac416d475
+    steps:
+      - name: Check out exact head for dependency review
+        uses: actions/checkout@631c942040754b6e095e929c1677c07e10ed4f87
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Resolve live base and record dependency diff identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$HEAD_SHA"
+          git fetch --no-tags origin "refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+          LIVE_BASE_SHA="$(git rev-parse "refs/remotes/origin/${BASE_REF}")"
+          test -n "$LIVE_BASE_SHA"
+          git merge-base --is-ancestor "$LIVE_BASE_SHA" "$HEAD_SHA"
+          evidence_dir="${RUNNER_TEMP}/dependency-review"
+          mkdir -p "$evidence_dir"
+          {
+            printf 'live_base_ref=%s\n' "$BASE_REF"
+            printf 'live_base_sha=%s\n' "$LIVE_BASE_SHA"
+            printf 'head_sha=%s\n' "$HEAD_SHA"
+            printf '\n[dependency_manifest_name_status]\n'
+            git diff --name-status "$LIVE_BASE_SHA" "$HEAD_SHA" -- requirements-quality.txt pyproject.toml
+            printf '\n[head_manifest_sha256]\n'
+            sha256sum requirements-quality.txt pyproject.toml
+            printf '\n[live_base_manifest_sha256]\n'
+            for dependency_path in requirements-quality.txt pyproject.toml; do
+              if git cat-file -e "${LIVE_BASE_SHA}:${dependency_path}" 2>/dev/null; then
+                git show "${LIVE_BASE_SHA}:${dependency_path}" | sha256sum | awk -v path="$dependency_path" '{print path " " $1}'
+              else
+                printf '%s ABSENT\n' "$dependency_path"
+              fi
+            done
+          } > "$evidence_dir/dependency-diff-evidence.txt"
+          cat "$evidence_dir/dependency-diff-evidence.txt"
+      - name: Scan exact-head locked Python dependencies with OSV
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_dir="${RUNNER_TEMP}/dependency-review"
+          mkdir -p "$evidence_dir"
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}:/workspace:ro" \
+            -w /workspace \
+            "$OSV_SCANNER_IMAGE" \
+            scan source \
+            --lockfile=requirements.txt:requirements-quality.txt \
+            --format=json \
+            > "$evidence_dir/osv-head.json"
+          test -s "$evidence_dir/osv-head.json"
+      - name: Upload dependency-diff evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: accounting-dependency-diff-${{ github.event.pull_request.head.sha }}
+          path: |
+            ${{ runner.temp }}/dependency-review/dependency-diff-evidence.txt
+            ${{ runner.temp }}/dependency-review/osv-head.json
+          if-no-files-found: error
+          retention-days: 14
+
   accounting-foundation:
     name: Accounting foundation
     runs-on: ubuntu-latest
