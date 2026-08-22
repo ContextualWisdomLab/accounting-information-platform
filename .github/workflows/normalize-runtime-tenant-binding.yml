@@ -76,19 +76,43 @@ jobs:
           cat /tmp/runtime-tenant-red.log
           test "${status}" -ne 0
           grep -F "AssertionError: 1 != 0" /tmp/runtime-tenant-red.log
+      - name: Prove current review regressions are RED
+        shell: bash
+        env:
+          PYTHONPATH: src:.
+        run: |
+          set -euo pipefail
+          for test_name in \
+            tests.test_current_review_boundary_regressions.PeriodCloseStatusBoundaryTests.test_unknown_period_status_fails_closed_at_command_boundary \
+            tests.test_current_review_boundary_regressions.BillingConnectionCleanupTests.test_https_connect_failure_closes_partial_connection \
+            tests.test_current_review_boundary_regressions.BillingConnectionCleanupTests.test_https_tls_wrap_failure_closes_connected_socket
+          do
+            log_name="/tmp/$(printf '%s' "${test_name}" | tr '.:' '__').log"
+            set +e
+            python -m unittest "${test_name}" -v > "${log_name}" 2>&1
+            status=$?
+            set -e
+            cat "${log_name}"
+            test "${status}" -ne 0
+            grep -F "FAIL" "${log_name}"
+          done
       - name: Apply narrow database-controlled tenant binding repair
         run: python scripts/repair_runtime_tenant_binding.py
+      - name: Apply current review boundary repairs
+        run: python scripts/repair_current_review_edges.py
       - name: Remove temporary normalization machinery
         run: |
           rm .github/workflows/normalize-runtime-tenant-binding.yml
           rm scripts/repair_runtime_tenant_binding.py
-      - name: Run focused runtime tenant integration tests
+          rm scripts/repair_current_review_edges.py
+      - name: Run focused repaired-boundary tests
         env:
           PYTHONPATH: src:.
         run: >-
           python -m unittest
           tests.test_postgres_runtime_rls
           tests.test_runtime_tenant_binding_contract
+          tests.test_current_review_boundary_regressions
           -v
       - name: Run complete behavior and PostgreSQL integration suite
         env:
