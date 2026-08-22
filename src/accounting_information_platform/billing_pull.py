@@ -12,7 +12,7 @@ from typing import Mapping
 from urllib.parse import ParseResult, urlencode, urlparse
 
 from .accept import accept_journal_proposal
-from .core import AccountingValidationError, _require_reference
+from .core import AccountingValidationError, IdempotencyConflictError, _require_reference
 
 
 TENANT_HEADER = "X-CWL-Tenant-Reference"
@@ -220,6 +220,8 @@ def accept_billing_proposal_pull(
 
 
 def _rejection_reason_code(error: BaseException) -> str:
+    if isinstance(error, IdempotencyConflictError):
+        return "idempotency_conflict"
     message = str(error)
     for needles, reason_code in _REJECTION_REASON_RULES:
         if any(needle in message for needle in needles):
