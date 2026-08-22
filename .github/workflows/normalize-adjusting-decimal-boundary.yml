@@ -1,0 +1,139 @@
+name: Normalize adjusting-journal exact-decimal boundary
+
+on:
+  push:
+    branches:
+      - agent/accounting-posting-foundation
+
+permissions:
+  contents: read
+
+concurrency:
+  group: normalize-adjusting-decimal-boundary
+  cancel-in-progress: true
+
+jobs:
+  normalize:
+    if: github.actor != 'github-actions[bot]'
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      EXPECTED_RED_SHA: 2be01770699fcb49ae46c2b8ce3b2c76bbfb8b78
+      ACCOUNTING_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/accounting_test
+    services:
+      postgres:
+        image: postgres:18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: accounting_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d accounting_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Check out exact triggering head
+        uses: actions/checkout@631c942040754b6e095e929c1677c07e10ed4f87
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify observed RED ancestry and unchanged product source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          git cat-file -e "${EXPECTED_RED_SHA}^{commit}"
+          git merge-base --is-ancestor "${EXPECTED_RED_SHA}" HEAD
+          git diff --quiet "${EXPECTED_RED_SHA}" HEAD -- . \
+            ':(exclude).github/workflows/normalize-adjusting-decimal-boundary.yml'
+      - name: Apply narrow exact-decimal boundary fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/accounting_information_platform/accept.py")
+          text = path.read_text(encoding="utf-8")
+          old = '        amount = _parse_amount(str(raw_line.get("amount") or ""))\n'
+          new = '''        raw_amount = raw_line.get("amount")
+          if not isinstance(raw_amount, str):
+              raise AccountingValidationError(
+                  "amount must be an exact decimal string. "
+                  "Supply each adjusting-journal amount as a quoted decimal string, then retry the journal post."
+              )
+          amount = _parse_amount(raw_amount)
+          '''
+          if text.count(old) != 1:
+              raise SystemExit("adjusting-journal amount parser anchor drifted")
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          changelog = Path("CHANGELOG.md")
+          change_text = changelog.read_text(encoding="utf-8")
+          marker = "### Fixed\n\n"
+          bullet = (
+              "- AIS adjusting-journal commands now require each `amount` to arrive as a quoted "
+              "exact-decimal string; JSON integer and binary floating-point numbers fail closed "
+              "before PostgreSQL work, matching the Billing proposal exact-decimal boundary.\n"
+          )
+          if bullet not in change_text:
+              if marker not in change_text:
+                  raise SystemExit("CHANGELOG Fixed anchor drifted")
+              change_text = change_text.replace(marker, marker + bullet, 1)
+              changelog.write_text(change_text, encoding="utf-8")
+          PY
+          rm .github/workflows/normalize-adjusting-decimal-boundary.yml
+      - name: Install pinned Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-quality.txt
+      - name: Install hash-locked quality dependencies
+        run: >-
+          python -m pip install
+          --disable-pip-version-check
+          --only-binary=:all:
+          --require-hashes
+          -r requirements-quality.txt
+      - name: Run focused GREEN regression
+        env:
+          PYTHONPATH: src:.
+        run: >-
+          python -m unittest
+          tests.test_current_review_regressions.AdjustingJournalExactDecimalBoundaryTests -v
+      - name: Run full PostgreSQL-backed behavior suite
+        env:
+          PYTHONPATH: src:.
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Enforce full owned statement and branch coverage
+        env:
+          PYTHONPATH: src:.
+        run: |
+          python -m coverage run --branch -m unittest discover -s tests -p 'test_*.py'
+          python -m coverage report --fail-under=100 --show-missing
+      - name: Validate canonical repository tree
+        run: |
+          python scripts/validate_repository.py .
+          python -m compileall -q src scripts tests
+          git diff --check
+      - name: Publish normalized canonical fix
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin agent/accounting-posting-foundation
+          test "$(git rev-parse origin/agent/accounting-posting-foundation)" = "${GITHUB_SHA}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "fix: require exact-decimal adjusting amounts"
+          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:agent/accounting-posting-foundation
