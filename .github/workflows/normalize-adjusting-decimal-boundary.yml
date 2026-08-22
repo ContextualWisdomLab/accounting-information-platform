@@ -65,14 +65,15 @@ jobs:
           path = Path("src/accounting_information_platform/accept.py")
           text = path.read_text(encoding="utf-8")
           old = '        amount = _parse_amount(str(raw_line.get("amount") or ""))\n'
-          new = '''        raw_amount = raw_line.get("amount")
-          if not isinstance(raw_amount, str):
-              raise AccountingValidationError(
-                  "amount must be an exact decimal string. "
-                  "Supply each adjusting-journal amount as a quoted decimal string, then retry the journal post."
-              )
-          amount = _parse_amount(raw_amount)
-          '''
+          new = (
+              '        raw_amount = raw_line.get("amount")\n'
+              '        if not isinstance(raw_amount, str):\n'
+              '            raise AccountingValidationError(\n'
+              '                "amount must be an exact decimal string. "\n'
+              '                "Supply each adjusting-journal amount as a quoted decimal string, then retry the journal post."\n'
+              '            )\n'
+              '        amount = _parse_amount(raw_amount)\n'
+          )
           if text.count(old) != 1:
               raise SystemExit("adjusting-journal amount parser anchor drifted")
           path.write_text(text.replace(old, new, 1), encoding="utf-8")
