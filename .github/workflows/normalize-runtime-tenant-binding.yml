@@ -2,15 +2,19 @@
 name: Normalize runtime tenant binding
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/accounting-posting-foundation
+      - develop
+    types:
+      - opened
+      - reopened
+      - synchronize
 
 permissions:
   contents: read
 
 concurrency:
-  group: normalize-runtime-tenant-binding
+  group: normalize-runtime-tenant-binding-pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
@@ -22,7 +26,7 @@ jobs:
     timeout-minutes: 35
     env:
       ACCOUNTING_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/accounting_test
-      EXPECTED_SHA: ${{ github.sha }}
+      EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
     services:
       postgres:
         image: postgres:18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
@@ -38,10 +42,10 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - name: Check out exact triggering head
+      - name: Check out exact triggering PR head
         uses: actions/checkout@631c942040754b6e095e929c1677c07e10ed4f87
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ env.EXPECTED_SHA }}
           fetch-depth: 0
           persist-credentials: false
       - name: Verify exact triggering head
