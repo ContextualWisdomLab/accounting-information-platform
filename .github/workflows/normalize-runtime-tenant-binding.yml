@@ -1,4 +1,5 @@
 # Exact-head RED confirmed in Accounting Foundation CI run 32573267256.
+# First GREEN attempt exposed a soft-close fixture that still relied on the legacy tenant GUC.
 name: Normalize runtime tenant binding
 
 on:
@@ -118,7 +119,7 @@ jobs:
                   sql.Identifier(closer_role)
               )
           )
-'''
+          '''
           new_setup = '''            admin.execute(
               sql.SQL("GRANT accounting_closing_writer TO {}").format(
                   sql.Identifier(closer_role)
@@ -139,17 +140,17 @@ jobs:
                   """,
                   (role_oid, role_name, self.case.tenant_id),
               )
-'''
+          '''
           if text.count(old_setup) != 1:
               raise SystemExit("soft-close role setup anchor drifted")
           text = text.replace(old_setup, new_setup, 1)
 
           old_doc = '''    def _bind_soft_close_session(self, connection: psycopg.Connection) -> None:
         """Bind tenant and the caller-controlled classification GUC."""
-'''
+          '''
           new_doc = '''    def _bind_soft_close_session(self, connection: psycopg.Connection) -> None:
         """Set legacy tenant and classification GUCs; database login binding remains authoritative."""
-'''
+          '''
           if text.count(old_doc) != 1:
               raise SystemExit("soft-close session helper anchor drifted")
           text = text.replace(old_doc, new_doc, 1)
@@ -160,7 +161,7 @@ jobs:
                     sql.Identifier(closer_role)
                 )
             )
-'''
+          '''
           new_cleanup = '''        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as admin:
             admin.execute(
                 "DELETE FROM accounting_core.runtime_tenant_binding "
@@ -172,7 +173,7 @@ jobs:
                     sql.Identifier(closer_role)
                 )
             )
-'''
+          '''
           if text.count(old_cleanup) != 1:
               raise SystemExit("soft-close cleanup anchor drifted")
           path.write_text(text.replace(old_cleanup, new_cleanup, 1), encoding="utf-8")
