@@ -88,6 +88,10 @@ Pull-request builds must prove the artifact-to-source relationship without accep
 
 The PR-capable `accounting-foundation` job must have `contents: read` only. Contract tests reject `id-token: write`, `attestations: write`, or `artifact-metadata: write` in that job because those permissions would be available to repository-controlled tests, build hooks, validation scripts and actions even when individual signing steps are conditionally skipped.
 
+The PR-only `exact-head-dependency-diff` job is a separate fail-closed dependency-security hard gate. It checks out `pull_request.head.sha`, independently fetches the live base branch tip, records the live base SHA, exact head SHA, dependency-manifest name/status diff and manifest SHA-256 values, and rejects a stale/non-ancestor base relationship. The complete hash-locked `requirements-quality.txt` is scanned with a digest-pinned OSV-Scanner container. A known vulnerable dependency, scanner failure, unavailable scanner/evidence path or missing expected evidence is non-passing. Because the current bootstrap base contains no dependency manifests, the foundation PR records both manifests as additions and requires the complete exact-head dependency set to be vulnerability-free instead of manufacturing an empty-base result. The SHA-named artifact retains both the live-base/head evidence record and OSV JSON result.
+
+Organization-level security workflows are supplemental. If an organization dependency-review support probe is forbidden or unsupported and the actual review step is skipped, aggregate workflow success is not accepted as dependency-review evidence; the repository-owned exact-head dependency-diff gate must itself execute and pass.
+
 GitHub OIDC-backed `actions/attest` provenance and SBOM attestations are applicable only to the separate `integrated-attestations` job on `push` builds for `develop` or `main`. That job must be job-level push-only, depend on `accounting-foundation`, download the immutable SHA-named artifact with a full-SHA-pinned action, verify `SHA256SUMS`, verify `source-provenance.json.source_sha == github.sha`, and only then exercise OIDC/attestation write authority. A `pull_request` event can carry a synthetic merge ref/commit in the attestation signing context even when the checked-out build tree is the exact PR head, so that signed statement is not accepted as exact PR-head provenance. After integration, the protected-branch push must rebuild the artifact and the signed attestations must pass on that integrated commit before release. This is evidence readiness; it does not claim a SLSA level or certification.
 
 ## Merge gates
@@ -100,7 +104,8 @@ One unchanged exact PR head must pass all applicable gates together:
 - all behavior and real PostgreSQL integration tests;
 - repository contracts and compile checks;
 - hash-locked package build and installed-public-API smoke test;
-- SAST and security scans;
+- exact-head SAST and security scans;
+- executed exact-head dependency-diff security gate against an independently resolved live base tip;
 - reproducible wheel, deterministic exact-source provenance manifest, SPDX SBOM and package checksums;
 - migration clean-install / upgrade rehearsal;
 - qualifying independent approval and zero still-valid unresolved review findings.
