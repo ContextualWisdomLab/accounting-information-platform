@@ -317,6 +317,20 @@ def _configured_billing_bases() -> tuple[tuple[str, str], ...]:
             continue
         fetch_base = _require_billing_base_url(raw)
         origin = _canonical_billing_origin(fetch_base)
+        configured_url = urlparse(fetch_base)
+        if (
+            configured_url.username is not None
+            or configured_url.password is not None
+            or configured_url.path
+            or configured_url.params
+            or configured_url.query
+            or configured_url.fragment
+        ):
+            raise AccountingValidationError(
+                "Billing configured origins must not include a path, query, fragment, or userinfo. "
+                "Set BILLING_BASE_URL and BILLING_ALLOWED_ORIGINS to scheme://host[:port] origins, "
+                "then retry the pull."
+            )
         _require_safe_configured_billing_origin(origin)
         if origin in seen:
             continue
