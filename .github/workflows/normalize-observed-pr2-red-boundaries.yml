@@ -1,0 +1,191 @@
+name: Normalize observed PR2 RED boundaries
+
+on:
+  pull_request:
+    branches:
+      - develop
+
+permissions:
+  contents: read
+
+concurrency:
+  group: normalize-observed-pr2-red-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  prove-red:
+    name: Prove soft-close command RED
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'agent/accounting-posting-foundation'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      ACCOUNTING_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/accounting_test
+      TRIGGER_SHA: ${{ github.event.pull_request.head.sha }}
+    services:
+      postgres:
+        image: postgres:18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: accounting_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d accounting_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Check out exact PR head without write credentials
+        uses: actions/checkout@631c942040754b6e095e929c1677c07e10ed4f87
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify exact RED checkout
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$TRIGGER_SHA"
+      - name: Install pinned Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-quality.txt
+      - name: Install hash-locked test dependencies
+        run: >-
+          python -m pip install
+          --disable-pip-version-check
+          --only-binary=:all:
+          --require-hashes
+          -r requirements-quality.txt
+      - name: Require observed soft-close replay RED
+        env:
+          PYTHONPATH: src:.
+        shell: bash
+        run: |
+          set +e
+          python -m unittest -v \
+            tests.test_period_close_book_scope.PostgresBookPeriodIsolationTests.test_soft_close_replay_rejects_a_different_command_key
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "expected the reviewed soft-close command-idempotency regression to be RED before repair" >&2
+            exit 1
+          fi
+
+  normalize:
+    name: Normalize soft-close command evidence
+    needs: prove-red
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      ACCOUNTING_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/accounting_test
+      TRIGGER_SHA: ${{ github.event.pull_request.head.sha }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+    services:
+      postgres:
+        image: postgres:18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: accounting_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d accounting_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Check out unchanged exact PR head without persisted credentials
+        uses: actions/checkout@631c942040754b6e095e929c1677c07e10ed4f87
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify exact normalization checkout and live branch identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TRIGGER_SHA"
+          git fetch --no-tags origin "refs/heads/${HEAD_REF}:refs/remotes/origin/${HEAD_REF}"
+          test "$(git rev-parse "refs/remotes/origin/${HEAD_REF}")" = "$TRIGGER_SHA"
+      - name: Install pinned Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-quality.txt
+      - name: Install hash-locked validation dependencies
+        run: >-
+          python -m pip install
+          --disable-pip-version-check
+          --only-binary=:all:
+          --require-hashes
+          -r requirements-quality.txt
+      - name: Apply reviewed root-cause repair
+        run: python scripts/normalize_observed_pr2_red_boundaries.py
+      - name: Remove observed RED normalization machinery before final validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/normalize-observed-pr2-red-boundaries.yml
+          rm scripts/normalize_observed_pr2_red_boundaries.py
+          test ! -e .github/workflows/normalize-observed-pr2-red-boundaries.yml
+          test ! -e scripts/normalize_observed_pr2_red_boundaries.py
+      - name: Verify focused PostgreSQL GREEN
+        env:
+          PYTHONPATH: src:.
+        run: >-
+          python -m unittest -v
+          tests.test_period_close_book_scope.PostgresBookPeriodIsolationTests.test_soft_close_replay_rejects_a_different_command_key
+          tests.test_period_close_book_scope.PostgresBookPeriodIsolationTests.test_legacy_soft_close_without_command_evidence_fails_closed
+      - name: Run complete behavior and repository tests
+        env:
+          PYTHONPATH: src:.
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Enforce complete owned statement and branch coverage
+        env:
+          PYTHONPATH: src:.
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m coverage erase
+          python -m coverage run --branch -m unittest discover -s tests -p 'test_*.py'
+          python -m coverage report --fail-under=100 --show-missing
+      - name: Validate repository contracts and compilation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/validate_repository.py .
+          python -m compileall -q src scripts tests
+      - name: Verify publishable tree has no temporary machinery
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e .github/workflows/normalize-observed-pr2-red-boundaries.yml
+          test ! -e scripts/normalize_observed_pr2_red_boundaries.py
+          git diff --check
+          git status --short
+      - name: Commit canonical GREEN only if branch is still unchanged
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "refs/heads/${HEAD_REF}:refs/remotes/origin/${HEAD_REF}"
+          test "$(git rev-parse "refs/remotes/origin/${HEAD_REF}")" = "$TRIGGER_SHA"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && { echo "repair produced no canonical changes" >&2; exit 1; }
+          git commit -m "fix: persist exact soft-close command evidence"
+          auth_header="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth_header}" \
+            push origin "HEAD:refs/heads/${HEAD_REF}"
