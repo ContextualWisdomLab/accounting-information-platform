@@ -34,6 +34,8 @@ International Organization for Standardization. (2026). *ISO 20022-1:2026 financ
 
 International Organization for Standardization. (2022). *ISO/IEC/IEEE 42010:2022 software, systems and enterprise—Architecture description*. https://www.iso.org/standard/74393.html
 
+Internet Engineering Task Force. (2022). *HTTP/1.1* (RFC 9112). https://www.rfc-editor.org/rfc/rfc9112
+
 Internet Engineering Task Force. (2024). *Universally unique IDentifiers (UUIDs)* (RFC 9562). https://www.rfc-editor.org/rfc/rfc9562
 
 Korea Legislation Research Institute. (2024b). *Income Tax Act* [Unofficial translation]. https://elaw.klri.re.kr/eng_service/lawView.do?hseq=51753&lang=ENG
