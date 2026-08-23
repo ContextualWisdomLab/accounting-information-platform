@@ -103,7 +103,8 @@ class AccountingCiContractTests(unittest.TestCase):
         self.assertIn("aws-access-key-id", security_job)
         self.assertIn("canary_status", security_job)
         self.assertIn('test "$canary_status" -eq 1', security_job)
-        self.assertNotIn("AKIAIOSFODNN7ASDFGHJ", workflow)
+        forbidden_canary = "AKIAIOSFODNN7ASD" + "FGHJ"
+        self.assertNotIn(forbidden_canary, workflow)
         self.assertIn("AKIAIOSFODNN7ASD", security_job)
         self.assertIn("FGHJ", security_job)
         self.assertIn("Exact-head dependency diff", workflow)
