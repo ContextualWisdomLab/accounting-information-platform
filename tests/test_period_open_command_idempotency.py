@@ -89,9 +89,12 @@ class PostgresPeriodOpenCommandIdempotencyTests(unittest.TestCase):
             self.case.policy.tenant_reference,
         )
 
-        self.assertEqual(first, replay)
         self.assertFalse(bool(first["replayed"]))
         self.assertTrue(bool(replay["replayed"]))
+        self.assertEqual(
+            {key: value for key, value in first.items() if key != "replayed"},
+            {key: value for key, value in replay.items() if key != "replayed"},
+        )
 
         with self.assertRaisesRegex(IdempotencyConflictError, "different payload"):
             accept_period_open(
