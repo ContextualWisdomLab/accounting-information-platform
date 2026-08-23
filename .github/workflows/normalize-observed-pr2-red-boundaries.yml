@@ -130,15 +130,19 @@ jobs:
           --require-hashes
           -r requirements-quality.txt
       - name: Apply reviewed root-cause repair
-        run: python scripts/normalize_observed_pr2_red_boundaries.py
+        run: |
+          python scripts/normalize_observed_pr2_red_boundaries.py
+          python scripts/fix_legacy_soft_close_fixture.py
       - name: Remove observed RED normalization machinery before final validation
         shell: bash
         run: |
           set -euo pipefail
           rm .github/workflows/normalize-observed-pr2-red-boundaries.yml
           rm scripts/normalize_observed_pr2_red_boundaries.py
+          rm scripts/fix_legacy_soft_close_fixture.py
           test ! -e .github/workflows/normalize-observed-pr2-red-boundaries.yml
           test ! -e scripts/normalize_observed_pr2_red_boundaries.py
+          test ! -e scripts/fix_legacy_soft_close_fixture.py
       - name: Verify focused PostgreSQL GREEN
         env:
           PYTHONPATH: src:.
@@ -171,6 +175,7 @@ jobs:
           set -euo pipefail
           test ! -e .github/workflows/normalize-observed-pr2-red-boundaries.yml
           test ! -e scripts/normalize_observed_pr2_red_boundaries.py
+          test ! -e scripts/fix_legacy_soft_close_fixture.py
           git diff --check
           git status --short
       - name: Commit canonical GREEN only if branch is still unchanged
