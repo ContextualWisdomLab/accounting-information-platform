@@ -18,13 +18,14 @@ class _BodyHarness:
         self.headers = headers
         self.rfile = io.BytesIO(body)
         self.errors: list[tuple[int, str]] = []
+        self.close_connection = False
 
     def _write_error(self, status_code: int, error_message: str) -> None:
         self.errors.append((status_code, error_message))
 
 
 class HttpBodyFramingContractTests(unittest.TestCase):
-    """Reject missing, duplicated, or malformed Content-Length before body parsing."""
+    """Reject ambiguous or unsupported request-body framing before body parsing."""
 
     def _read(self, values: tuple[str, ...], body: bytes = b"{}") -> tuple[bytes | None, list[tuple[int, str]]]:
         headers = Message()
@@ -47,6 +48,20 @@ class HttpBodyFramingContractTests(unittest.TestCase):
         self.assertIsNone(body)
         self.assertEqual(errors[0][0], 400)
         self.assertIn("Content-Length", errors[0][1])
+
+    def test_transfer_encoding_is_rejected_and_connection_is_closed(self) -> None:
+        """Unsupported transfer coding cannot coexist with the server's length framing."""
+        for transfer_encoding in ("chunked", "gzip, chunked"):
+            with self.subTest(transfer_encoding=transfer_encoding):
+                headers = Message()
+                headers.add_header("Content-Length", "2")
+                headers.add_header("Transfer-Encoding", transfer_encoding)
+                harness = _BodyHarness(headers, b"{}0\r\n\r\n")
+                body = JournalProposalHandler._read_body(harness)  # type: ignore[arg-type]
+                self.assertIsNone(body)
+                self.assertEqual(harness.errors[0][0], 400)
+                self.assertIn("Transfer-Encoding", harness.errors[0][1])
+                self.assertTrue(harness.close_connection)
 
     def test_non_ascii_decimal_content_length_is_400(self) -> None:
         """Signs, whitespace, underscores, and non-ASCII digits never become a length."""
