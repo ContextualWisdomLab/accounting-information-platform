@@ -16,6 +16,7 @@ import subprocess
 SCRIPT_PATH = Path(__file__).resolve()
 ROOT = SCRIPT_PATH.parents[1]
 PERSISTENCE_PATH = ROOT / "src/accounting_information_platform/persistence.py"
+POSTGRES_TEST_PATH = ROOT / "tests/test_postgres_posting.py"
 REPAIR_SOURCE_SHA = "fc4a9e60de914a62cc75c572cc424d99adb79aa9"
 previous = subprocess.run(
     [
@@ -45,6 +46,14 @@ def replace_known_source_form(
     return text.replace(old, new)
 
 
+def replace_exact(text: str, old: str, new: str, expected: int, label: str) -> str:
+    """Replace an exact normalized boundary with an explicit expected count."""
+    count = text.count(old)
+    if count != expected:
+        raise SystemExit(f"{label}: expected {expected} exact boundaries, found {count}")
+    return text.replace(old, new)
+
+
 previous = replace_known_source_form(
     previous,
     (
@@ -71,7 +80,7 @@ previous = replace_known_source_form(
 )
 
 # close_fiscal_period gained a try/finally wrapper after the reviewed repair was
-# written. Shift only the two exact repair boundaries that live inside that try.
+# written. Shift only the exact repair boundaries that live inside that try.
 previous = replace_known_source_form(
     previous,
     (
@@ -133,7 +142,51 @@ exec(compile(previous, str(SCRIPT_PATH), "exec"), namespace)
 normalized = PERSISTENCE_PATH.read_text(encoding="utf-8")
 if normalized.count(shimmed_session_import) != 1:
     raise SystemExit("session import compatibility: temporary marker was not preserved exactly")
-PERSISTENCE_PATH.write_text(
-    normalized.replace(shimmed_session_import, session_import, 1),
+normalized = normalized.replace(shimmed_session_import, session_import, 1)
+
+# Book-scoped close identity is externally stable and meaningful: use the
+# published accounting-book reference, not an implementation UUID. Preserve the
+# established next-action phrase while qualifying it to the selected book.
+normalized = replace_exact(
+    normalized,
+    '            f"{period_code}:{book_id}"\n',
+    '            f"{period_code}:{accounting_book_reference}"\n',
+    1,
+    "closing journal public identity",
+)
+normalized = replace_exact(
+    normalized,
+    '                f"{self._tenant_reference}:period_closing:{period_code}:{book_id}",\n',
+    '                f"{self._tenant_reference}:period_closing:{period_code}:"\n'
+    '                f"{accounting_book_reference}",\n',
+    1,
+    "closing proposal public identity",
+)
+normalized = replace_exact(
+    normalized,
+    '                "Open that book period or post into an open book period; "\n',
+    '                "Open that period or post into an open period for this accounting book; "\n',
+    1,
+    "book-period operator next action",
+)
+PERSISTENCE_PATH.write_text(normalized, encoding="utf-8")
+
+# Existing tests that address the AIS-owned closing proposal by its durable
+# idempotency key must include the newly explicit book scope. This is a contract
+# update, not a relaxation: the same tenant can close sibling books independently.
+postgres_tests = POSTGRES_TEST_PATH.read_text(encoding="utf-8")
+old_closing_key = 'f"{self.policy.tenant_reference}:period_closing:2026-08"'
+new_closing_key = (
+    'f"{self.policy.tenant_reference}:period_closing:2026-08:'
+    '{self.policy.accounting_book_reference}"'
+)
+closing_key_count = postgres_tests.count(old_closing_key)
+if closing_key_count < 4:
+    raise SystemExit(
+        "closing proposal test identity: expected at least four established references, "
+        f"found {closing_key_count}"
+    )
+POSTGRES_TEST_PATH.write_text(
+    postgres_tests.replace(old_closing_key, new_closing_key),
     encoding="utf-8",
 )
