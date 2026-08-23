@@ -115,37 +115,40 @@ jobs:
           )
           if tests.count(migration_marker) != 1:
               raise SystemExit("generated adjusting-period coverage marker drifted")
-          adjusting_missing_test = '''    def test_adjusting_period_bounds_rejects_missing_calendar_period(self) -> None:
-              connection = _ScriptedConnection([None])
-              with self.assertRaisesRegex(AccountingValidationError, "No fiscal period covers"):
-                  self.ledger._require_adjusting_period_bounds(
-                      connection, self.tenant_id, self.accounting_date
-                  )
-
-'''
+          adjusting_missing_test = (
+              "    def test_adjusting_period_bounds_rejects_missing_calendar_period(self) -> None:\n"
+              "        connection = _ScriptedConnection([None])\n"
+              "        with self.assertRaisesRegex(AccountingValidationError, \"No fiscal period covers\"):\n"
+              "            self.ledger._require_adjusting_period_bounds(\n"
+              "                connection, self.tenant_id, self.accounting_date\n"
+              "            )\n"
+              "\n"
+          )
           tests = tests.replace(migration_marker, adjusting_missing_test + migration_marker, 1)
           test_path.write_text(tests, encoding="utf-8")
 
           persistence_path = Path("src/accounting_information_platform/persistence.py")
           persistence = persistence_path.read_text(encoding="utf-8")
-          obsolete_open_wrapper = '''    def _require_open_period(
-              self, connection: object, tenant_id: UUID, accounting_date: date
-          ) -> UUID:
-              return self._require_open_period_bounds(connection, tenant_id, accounting_date)[0]
-
-'''
-          obsolete_open_bounds = '''    def _require_open_period_bounds(
-              self, connection: object, tenant_id: UUID, accounting_date: date
-          ) -> tuple[UUID, date, date]:
-              return self._require_period_bounds(
-                  connection,
-                  tenant_id,
-                  accounting_date,
-                  allowed_status_codes=frozenset({"open"}),
-                  next_action="Open that period or post into an open period",
-              )
-
-'''
+          obsolete_open_wrapper = (
+              "    def _require_open_period(\n"
+              "        self, connection: object, tenant_id: UUID, accounting_date: date\n"
+              "    ) -> UUID:\n"
+              "        return self._require_open_period_bounds(connection, tenant_id, accounting_date)[0]\n"
+              "\n"
+          )
+          obsolete_open_bounds = (
+              "    def _require_open_period_bounds(\n"
+              "        self, connection: object, tenant_id: UUID, accounting_date: date\n"
+              "    ) -> tuple[UUID, date, date]:\n"
+              "        return self._require_period_bounds(\n"
+              "            connection,\n"
+              "            tenant_id,\n"
+              "            accounting_date,\n"
+              "            allowed_status_codes=frozenset({\"open\"}),\n"
+              "            next_action=\"Open that period or post into an open period\",\n"
+              "        )\n"
+              "\n"
+          )
           for label, block in (
               ("calendar-wide open wrapper", obsolete_open_wrapper),
               ("calendar-wide open bounds", obsolete_open_bounds),
