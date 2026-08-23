@@ -83,6 +83,22 @@ jobs:
           grep -F "Fiscal period 2026-08 is soft_closed" "${RUNNER_TEMP}/book-period-red.log"
       - name: Apply narrow accounting-book period repair
         run: python scripts/repair_accounting_book_period_scope.py
+      - name: Normalize generated coverage-test string literal
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("tests/test_book_period_helper_boundaries.py")
+          text = path.read_text(encoding="utf-8")
+          broken = 'write_text("-- test fixture\n", encoding="utf-8")'
+          fixed = 'write_text("-- test fixture\\n", encoding="utf-8")'
+          count = text.count(broken)
+          if count != 1:
+              raise SystemExit(f"generated fixture literal: expected 1 broken boundary, found {count}")
+          path.write_text(text.replace(broken, fixed, 1), encoding="utf-8")
+          PY
       - name: Remove one-shot repair machinery before product validation
         run: |
           rm scripts/repair_accounting_book_period_scope.py
