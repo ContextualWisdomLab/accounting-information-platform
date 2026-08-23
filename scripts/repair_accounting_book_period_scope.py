@@ -104,6 +104,12 @@ previous = replace_known_source_form(
     '"""                period_id, current_status, period_end_date = self._lock_book_period(\\n                    connection, tenant_id, book_id, period_code\\n                )\\n""",',
     "close-period replacement indentation",
 )
+previous = replace_known_source_form(
+    previous,
+    ('marker = "## Unreleased\\n"',),
+    'marker = "## [Unreleased]\\n"',
+    "changelog unreleased marker",
+)
 
 # The reviewed loader matcher predates a second _import_psycopg() in _session.
 # Hide only that non-loader occurrence while the exact repair executes, then
