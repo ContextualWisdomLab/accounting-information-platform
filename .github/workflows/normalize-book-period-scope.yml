@@ -83,21 +83,82 @@ jobs:
           grep -F "Fiscal period 2026-08 is soft_closed" "${RUNNER_TEMP}/book-period-red.log"
       - name: Apply narrow accounting-book period repair
         run: python scripts/repair_accounting_book_period_scope.py
-      - name: Normalize generated coverage-test string literal
+      - name: Normalize generated coverage boundaries
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
 
-          path = Path("tests/test_book_period_helper_boundaries.py")
-          text = path.read_text(encoding="utf-8")
-          broken = 'write_text("-- test fixture\n", encoding="utf-8")'
-          fixed = 'write_text("-- test fixture\\n", encoding="utf-8")'
-          count = text.count(broken)
-          if count != 1:
-              raise SystemExit(f"generated fixture literal: expected 1 broken boundary, found {count}")
-          path.write_text(text.replace(broken, fixed, 1), encoding="utf-8")
+          test_path = Path("tests/test_book_period_helper_boundaries.py")
+          tests = test_path.read_text(encoding="utf-8")
+          broken_fixture = 'write_text("-- test fixture\n", encoding="utf-8")'
+          fixed_fixture = 'write_text("-- test fixture\\n", encoding="utf-8")'
+          fixture_count = tests.count(broken_fixture)
+          if fixture_count != 1:
+              raise SystemExit(
+                  f"generated fixture literal: expected 1 broken boundary, found {fixture_count}"
+              )
+          tests = tests.replace(broken_fixture, fixed_fixture, 1)
+
+          warning_pattern = '("hard_closed", "hard_closed \\(period_closed\\)"),'
+          warning_replacement = '("hard_closed", r"hard_closed \\(period_closed\\)"),'
+          warning_count = tests.count(warning_pattern)
+          if warning_count != 1:
+              raise SystemExit(
+                  f"generated hard-close regex: expected 1 warning boundary, found {warning_count}"
+              )
+          tests = tests.replace(warning_pattern, warning_replacement, 1)
+
+          migration_marker = (
+              "    def test_migration_loader_fails_closed_when_book_period_migration_is_missing(self) -> None:\n"
+          )
+          if tests.count(migration_marker) != 1:
+              raise SystemExit("generated adjusting-period coverage marker drifted")
+          adjusting_missing_test = '''    def test_adjusting_period_bounds_rejects_missing_calendar_period(self) -> None:
+              connection = _ScriptedConnection([None])
+              with self.assertRaisesRegex(AccountingValidationError, "No fiscal period covers"):
+                  self.ledger._require_adjusting_period_bounds(
+                      connection, self.tenant_id, self.accounting_date
+                  )
+
+'''
+          tests = tests.replace(migration_marker, adjusting_missing_test + migration_marker, 1)
+          test_path.write_text(tests, encoding="utf-8")
+
+          persistence_path = Path("src/accounting_information_platform/persistence.py")
+          persistence = persistence_path.read_text(encoding="utf-8")
+          obsolete_open_wrapper = '''    def _require_open_period(
+              self, connection: object, tenant_id: UUID, accounting_date: date
+          ) -> UUID:
+              return self._require_open_period_bounds(connection, tenant_id, accounting_date)[0]
+
+'''
+          obsolete_open_bounds = '''    def _require_open_period_bounds(
+              self, connection: object, tenant_id: UUID, accounting_date: date
+          ) -> tuple[UUID, date, date]:
+              return self._require_period_bounds(
+                  connection,
+                  tenant_id,
+                  accounting_date,
+                  allowed_status_codes=frozenset({"open"}),
+                  next_action="Open that period or post into an open period",
+              )
+
+'''
+          for label, block in (
+              ("calendar-wide open wrapper", obsolete_open_wrapper),
+              ("calendar-wide open bounds", obsolete_open_bounds),
+          ):
+              count = persistence.count(block)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected one obsolete product boundary, found {count}")
+              persistence = persistence.replace(block, "", 1)
+          if "self._require_open_period(" in persistence:
+              raise SystemExit("calendar-wide open admission still has a product caller")
+          if "self._require_open_period_bounds(" in persistence:
+              raise SystemExit("calendar-wide open bounds still has a product caller")
+          persistence_path.write_text(persistence, encoding="utf-8")
           PY
       - name: Remove one-shot repair machinery before product validation
         run: |
