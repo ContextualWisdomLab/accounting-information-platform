@@ -13,8 +13,6 @@ import subprocess
 
 
 SCRIPT_PATH = Path(__file__).resolve()
-ROOT = SCRIPT_PATH.parents[1]
-PERSISTENCE_PATH = ROOT / "src/accounting_information_platform/persistence.py"
 REPAIR_SOURCE_SHA = "fc4a9e60de914a62cc75c572cc424d99adb79aa9"
 previous = subprocess.run(
     [
@@ -68,25 +66,13 @@ previous = replace_known_source_form(
     "close_idempotency_key = idempotency_key.strip() or (",
     "close-idempotency matcher",
 )
-
-# The reviewed repair predates Black's multiline rendering of this exact close
-# lock. Normalize only that one current product spelling to the reviewed RED
-# matcher; the repair immediately replaces it with the book-scoped lock.
-persistence = PERSISTENCE_PATH.read_text(encoding="utf-8")
-multiline_close_lock = '''            self._acquire_command_lock(
-                connection, f"period:{period_code}"
-            )
-'''
-one_line_close_lock = (
-    '            self._acquire_command_lock(connection, f"period:{period_code}")\n'
-)
-if persistence.count(multiline_close_lock) != 1:
-    raise SystemExit(
-        "close-lock compatibility: expected one current multiline close lock"
-    )
-PERSISTENCE_PATH.write_text(
-    persistence.replace(multiline_close_lock, one_line_close_lock, 1),
-    encoding="utf-8",
+previous = replace_known_source_form(
+    previous,
+    (
+        '"""            self._acquire_command_lock(connection, f"period:{period_code}")\\n""",',
+    ),
+    '"""            self._acquire_command_lock(\\n                connection, f"period:{period_code}"\\n            )\\n""",',
+    "close-lock repair-source matcher",
 )
 
 namespace = {
