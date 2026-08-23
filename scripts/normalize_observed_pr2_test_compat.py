@@ -108,6 +108,14 @@ def main() -> None:
         '            )\n\n'
         '        self.assertEqual(august_close[0], 200)\n',
     )
+    text = _replace_once(
+        text,
+        '        self.assertEqual(soft_reopen[0], 422)\n'
+        '        self.assertIn("soft_closed", str(soft_reopen[1]))\n',
+        '        self.assertEqual(soft_reopen[0], 200)\n'
+        '        self.assertTrue(soft_reopen[1]["replayed"])\n'
+        '        self.assertEqual(self._period_status("2026-10"), "soft_closed")\n',
+    )
     PATH.write_text(text, encoding="utf-8")
 
 
