@@ -118,3 +118,9 @@
 
 - Rejected card data, PAT plaintext, provider secrets, prompt text, and response text from accounting contracts.
 - Required immutable source-payload hashes and fail-closed idempotency conflicts.
+
+### Durable soft-close command evidence
+
+- Persist exact soft-close idempotency identity and source hash/count per accounting book-period.
+- Replay soft-close from immutable stored evidence and reject a different command key.
+- Fail closed for legacy soft-close rows without provable command evidence instead of reconstructing historical evidence from later ledger state.

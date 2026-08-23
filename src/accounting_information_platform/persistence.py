@@ -1128,6 +1128,7 @@ class PostgresPostingLedger:
                         snapshot_currency_code=snapshot_currency_code,
                         legal_entity_reference=legal_entity_reference,
                         accounting_book_reference=accounting_book_reference,
+                        idempotency_key=close_idempotency_key,
                     )
                 if period_status_code == "soft_closed":
                     return self._persist_soft_close(
@@ -1141,6 +1142,7 @@ class PostgresPostingLedger:
                         snapshot_currency_code=snapshot_currency_code,
                         legal_entity_reference=legal_entity_reference,
                         accounting_book_reference=accounting_book_reference,
+                        idempotency_key=close_idempotency_key,
                     )
                 package = self._assemble_period_close_package(
                     legal_entity_reference,
@@ -5083,28 +5085,42 @@ class PostgresPostingLedger:
         snapshot_currency_code: str,
         legal_entity_reference: str,
         accounting_book_reference: str,
+        idempotency_key: str,
     ) -> PeriodCloseReceipt:
-        period_closed_at = connection.execute(
+        (
+            period_closed_at,
+            stored_idempotency_key,
+            source_journal_count,
+            source_payload_hash,
+            evidence_complete,
+        ) = connection.execute(
             """
-            SELECT COALESCE(period_closed_at, clock_timestamp())
+            SELECT COALESCE(period_closed_at, clock_timestamp()),
+                   soft_close_idempotency_key,
+                   soft_close_source_journal_count,
+                   soft_close_source_payload_hash,
+                   (
+                       soft_close_idempotency_key IS NOT NULL
+                       AND soft_close_source_journal_count IS NOT NULL
+                       AND soft_close_source_payload_hash IS NOT NULL
+                   )
             FROM accounting_core.accounting_book_period_control
             WHERE tenant_account_id = %s
               AND accounting_book_id = %s
               AND fiscal_period_id = %s
             """,
             (tenant_id, book_id, period_id),
-        ).fetchone()[0]
-        _lines, source_journal_count, source_payload_hash = self._live_close_source(
-            connection,
-            tenant_id=tenant_id,
-            legal_entity_id=legal_entity_id,
-            book_id=book_id,
-            period_end_date=period_end_date,
-            period_code=period_code,
-            snapshot_currency_code=snapshot_currency_code,
-            legal_entity_reference=legal_entity_reference,
-            accounting_book_reference=accounting_book_reference,
-        )
+        ).fetchone()
+        if not evidence_complete:
+            raise AccountingValidationError(
+                f"Fiscal period {period_code} is soft_closed without durable close-command evidence. "
+                "Restore the original evidence through an audited migration, then retry; "
+                "do not reconstruct it from later ledger state."
+            )
+        if stored_idempotency_key != idempotency_key:
+            raise IdempotencyConflictError(
+                "period-close idempotency key was already used by the soft-close command"
+            )
         return PeriodCloseReceipt(
             tenant_reference=self._tenant_reference,
             legal_entity_reference=legal_entity_reference,
@@ -5131,6 +5147,7 @@ class PostgresPostingLedger:
         snapshot_currency_code: str,
         legal_entity_reference: str,
         accounting_book_reference: str,
+        idempotency_key: str,
     ) -> PeriodCloseReceipt:
         _lines, source_journal_count, source_payload_hash = self._live_close_source(
             connection,
@@ -5145,6 +5162,25 @@ class PostgresPostingLedger:
         )
         period_closed_at = self._set_book_period_closed(
             connection, tenant_id, book_id, period_id, "soft_closed"
+        )
+        connection.execute(
+            """
+            UPDATE accounting_core.accounting_book_period_control
+            SET soft_close_idempotency_key = %s,
+                soft_close_source_payload_hash = %s,
+                soft_close_source_journal_count = %s
+            WHERE tenant_account_id = %s
+              AND accounting_book_id = %s
+              AND fiscal_period_id = %s
+            """,
+            (
+                idempotency_key,
+                source_payload_hash,
+                source_journal_count,
+                tenant_id,
+                book_id,
+                period_id,
+            ),
         )
         self._insert_period_close_event(
             connection,
@@ -6157,7 +6193,7 @@ def _journal_write_role(
 
 
 def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
-    """Apply the checked-in PostgreSQL 18 foundation through runtime tenant binding."""
+    """Apply the checked-in PostgreSQL 18 accounting foundation in migration order."""
     if not migration_path.is_file():
         raise AccountingValidationError(
             f"Foundation migration is missing at {migration_path}. "
@@ -6215,6 +6251,14 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             f"Accounting-book-period control migration is missing at {book_period_control_migration_path}. "
             "Restore database/migrations/0009_accounting_book_period_control.sql, then retry."
         )
+    soft_close_evidence_migration_path = (
+        migration_path.parent / "0010_soft_close_command_evidence.sql"
+    )
+    if not soft_close_evidence_migration_path.is_file():
+        raise AccountingValidationError(
+            f"Soft-close command-evidence migration is missing at {soft_close_evidence_migration_path}. "
+            "Restore database/migrations/0010_soft_close_command_evidence.sql, then retry."
+        )
     psycopg = _import_psycopg()
     try:
         with psycopg.connect(
@@ -6229,6 +6273,7 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             connection.execute(runtime_binding_migration_path.read_text(encoding="utf-8"))
             connection.execute(period_open_command_migration_path.read_text(encoding="utf-8"))
             connection.execute(book_period_control_migration_path.read_text(encoding="utf-8"))
+            connection.execute(soft_close_evidence_migration_path.read_text(encoding="utf-8"))
     except Exception as error:
         raise AccountingValidationError(
             "Foundation migration failed. Inspect the PostgreSQL error, restore a clean "

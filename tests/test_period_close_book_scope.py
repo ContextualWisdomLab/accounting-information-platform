@@ -13,6 +13,7 @@ import psycopg
 
 from accounting_information_platform import (
     AccountingPolicy,
+    AccountingValidationError,
     IdempotencyConflictError,
     JournalLineProposal,
     JournalProposal,
@@ -293,6 +294,64 @@ class PostgresBookPeriodIsolationTests(unittest.TestCase):
                 "KRW",
                 period_status_code="soft_closed",
                 idempotency_key=f"{original_key}:different",
+            )
+
+        with psycopg.connect(DATABASE_URL) as connection:
+            with self.assertRaises(psycopg.errors.CheckViolation):
+                connection.execute(
+                    """
+                    UPDATE accounting_core.accounting_book_period_control AS period_control
+                    SET soft_close_idempotency_key = %s
+                    FROM accounting_core.accounting_book AS accounting_book,
+                         accounting_core.fiscal_period AS fiscal_period,
+                         accounting_core.tenant_account AS tenant_account
+                    WHERE period_control.tenant_account_id = tenant_account.tenant_account_id
+                      AND period_control.accounting_book_id = accounting_book.accounting_book_id
+                      AND period_control.fiscal_period_id = fiscal_period.fiscal_period_id
+                      AND tenant_account.tenant_account_code = %s
+                      AND accounting_book.book_name = %s
+                      AND fiscal_period.period_code = '2026-08'
+                    """,
+                    (f"{original_key}:tampered", self.tenant_reference, self.stat_book_reference),
+                )
+            connection.rollback()
+
+    def test_legacy_soft_close_without_command_evidence_fails_closed(self) -> None:
+        """Do not manufacture replay evidence for a migrated legacy soft-close row."""
+        with psycopg.connect(DATABASE_URL) as connection:
+            connection.execute(
+                """
+                INSERT INTO accounting_core.accounting_book_period_control (
+                    tenant_account_id,
+                    accounting_book_id,
+                    fiscal_period_id,
+                    period_status_code,
+                    period_closed_at
+                )
+                SELECT tenant_account.tenant_account_id,
+                       accounting_book.accounting_book_id,
+                       fiscal_period.fiscal_period_id,
+                       'soft_closed',
+                       clock_timestamp()
+                FROM accounting_core.tenant_account AS tenant_account
+                JOIN accounting_core.accounting_book AS accounting_book
+                  ON accounting_book.tenant_account_id = tenant_account.tenant_account_id
+                JOIN accounting_core.fiscal_period AS fiscal_period
+                  ON fiscal_period.tenant_account_id = tenant_account.tenant_account_id
+                WHERE tenant_account.tenant_account_code = %s
+                  AND accounting_book.book_name = %s
+                  AND fiscal_period.period_code = '2026-08'
+                """,
+                (self.tenant_reference, self.stat_book_reference),
+            )
+        with self.assertRaises(AccountingValidationError):
+            self.ledger.close_fiscal_period(
+                self.legal_entity_reference,
+                self.stat_book_reference,
+                "2026-08",
+                "KRW",
+                period_status_code="soft_closed",
+                idempotency_key=f"{self.tenant_reference}:legacy-soft-close",
             )
 
 

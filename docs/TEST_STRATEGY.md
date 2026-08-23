@@ -130,3 +130,7 @@ Before a release tag, run backup / restore and rollback-strategy rehearsal with 
 ## Runtime tenant credential isolation
 
 Real PostgreSQL tests create non-owner, non-superuser, non-`BYPASSRLS` runtime logins. A provisioned login must post and read its own tenant, must fail when the application requests a different tenant, and must remain unable to see another tenant even after rewriting the legacy `app.tenant_account_id` custom GUC. A separate unbound runtime login must fail closed. Static migration tests require the session-user/OID binding, locked search path, and migration-loader presence.
+
+## Soft-close command replay regression
+
+Real PostgreSQL tests prove that first soft-close and same-key replay return the same durable source hash/count, a different key conflicts, privileged direct SQL cannot mutate recorded soft-close evidence, and a legacy soft-close with absent evidence fails closed rather than manufacturing a receipt from current ledger state.

@@ -51,3 +51,7 @@ Revenue contracts and performance obligations, durable receivable/payable subled
 ## Accounting-book period control
 
 `accounting_book_period_control` is the authoritative close-state intersection of one tenant accounting book and one fiscal period. `fiscal_period` retains shared calendar dates; its status is an aggregate compatibility projection and must not be used to infer that every sibling book has the same close state. Trial-balance snapshots and journals already carry `accounting_book_id`, so close admission now uses the same scope.
+
+## Soft-close command evidence fields
+
+`accounting_book_period_control` carries nullable `soft_close_idempotency_key`, `soft_close_source_payload_hash` and `soft_close_source_journal_count` for migration compatibility. PostgreSQL requires them to be all absent or complete, makes non-null keys unique per tenant and prevents changes after a key is recorded. New application soft-closes always populate the complete set atomically; all-null values represent legacy rows whose original command evidence was not recoverable during migration.

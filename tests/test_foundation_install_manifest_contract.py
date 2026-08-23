@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from accounting_information_platform import AccountingValidationError, apply_foundation_migration
 from scripts.validate_repository import REQUIRED_FILES
 
 
@@ -36,6 +38,34 @@ class FoundationInstallManifestContractTests(unittest.TestCase):
                 self.assertIn(migration_six, text)
                 self.assertIn(migration_seven, text)
                 self.assertLess(text.index(migration_six), text.index(migration_seven))
+
+    def test_required_files_and_install_docs_include_soft_close_command_evidence(self) -> None:
+        """Soft-close evidence migration follows book-period control in operator docs."""
+        migration_nine = "database/migrations/0009_accounting_book_period_control.sql"
+        migration_ten = "database/migrations/0010_soft_close_command_evidence.sql"
+        self.assertIn(migration_ten, set(REQUIRED_FILES))
+        for relative_path in ("docs/OPERABILITY.md", "docs/ARCHITECTURE.md"):
+            with self.subTest(relative_path=relative_path):
+                text = (ROOT / relative_path).read_text(encoding="utf-8")
+                self.assertIn(migration_nine, text)
+                self.assertIn(migration_ten, text)
+                self.assertLess(text.index(migration_nine), text.index(migration_ten))
+
+    def test_install_fails_closed_when_soft_close_evidence_migration_is_missing(self) -> None:
+        """The foundation loader may not silently omit migration 0010."""
+        original_is_file = Path.is_file
+
+        def is_file(path: Path) -> bool:
+            if path.name == "0010_soft_close_command_evidence.sql":
+                return False
+            return original_is_file(path)
+
+        with patch.object(Path, "is_file", is_file):
+            with self.assertRaises(AccountingValidationError):
+                apply_foundation_migration(
+                    "postgresql://unused",
+                    ROOT / "database/migrations/0001_accounting_foundation.sql",
+                )
 
 
 if __name__ == "__main__":

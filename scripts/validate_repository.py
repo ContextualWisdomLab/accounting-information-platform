@@ -41,6 +41,7 @@ REQUIRED_FILES = (
     "database/migrations/0007_runtime_tenant_binding.sql",
     "database/migrations/0008_fiscal_period_open_command.sql",
     "database/migrations/0009_accounting_book_period_control.sql",
+    "database/migrations/0010_soft_close_command_evidence.sql",
     "docs/PRD.md",
     "docs/TRD.md",
     "docs/ARCHITECTURE.md",
