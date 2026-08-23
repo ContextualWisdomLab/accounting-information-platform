@@ -2,8 +2,9 @@
 
 The one-shot repair is deliberately exact-match based. Its reviewed source lives
 at the immutable RED-repair head below; this shim patches only matcher vocabulary
-that drifted before the RED defect itself changed. The normalization workflow
-still removes this temporary file before product validation and publication.
+and indentation that drifted before the RED defect itself changed. The
+normalization workflow still removes this temporary file before product
+validation and publication.
 """
 
 from __future__ import annotations
@@ -66,13 +67,40 @@ previous = replace_known_source_form(
     "close_idempotency_key = idempotency_key.strip() or (",
     "close-idempotency matcher",
 )
+
+# close_fiscal_period gained a try/finally wrapper after the reviewed repair was
+# written. Shift only the two exact repair boundaries that live inside that try.
 previous = replace_known_source_form(
     previous,
     (
         '"""            self._acquire_command_lock(connection, f"period:{period_code}")\\n""",',
     ),
-    '"""            self._acquire_command_lock(\\n                connection, f"period:{period_code}"\\n            )\\n""",',
-    "close-lock repair-source matcher",
+    '"""                self._acquire_command_lock(\\n                    connection, f"period:{period_code}"\\n                )\\n""",',
+    "close-lock old matcher",
+)
+previous = replace_known_source_form(
+    previous,
+    (
+        '"""            self._acquire_command_lock(\\n                connection, f"period:{accounting_book_reference}:{period_code}"\\n            )\\n""",',
+    ),
+    '"""                self._acquire_command_lock(\\n                    connection, f"period:{accounting_book_reference}:{period_code}"\\n                )\\n""",',
+    "close-lock replacement indentation",
+)
+previous = replace_known_source_form(
+    previous,
+    (
+        '"""            period_id, current_status, period_end_date = self._lock_fiscal_period(\\n                connection, tenant_id, period_code\\n            )\\n""",',
+    ),
+    '"""                period_id, current_status, period_end_date = self._lock_fiscal_period(\\n                    connection, tenant_id, period_code\\n                )\\n""",',
+    "close-period old matcher indentation",
+)
+previous = replace_known_source_form(
+    previous,
+    (
+        '"""            period_id, current_status, period_end_date = self._lock_book_period(\\n                connection, tenant_id, book_id, period_code\\n            )\\n""",',
+    ),
+    '"""                period_id, current_status, period_end_date = self._lock_book_period(\\n                    connection, tenant_id, book_id, period_code\\n                )\\n""",',
+    "close-period replacement indentation",
 )
 
 namespace = {
