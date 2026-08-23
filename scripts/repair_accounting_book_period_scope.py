@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 import subprocess
+import sys
+import tempfile
 
 
 SCRIPT_PATH = Path(__file__).resolve()
@@ -120,6 +122,12 @@ previous = replace_known_source_form(
     'marker = "## [Unreleased]\\n"',
     "changelog unreleased marker",
 )
+previous = replace_known_source_form(
+    previous,
+    ("ROOT = Path(__file__).resolve().parents[1]",),
+    "ROOT = Path.cwd()",
+    "repair-program repository root",
+)
 
 # The reviewed loader matcher predates a second _import_psycopg() in _session.
 # Hide only that non-loader occurrence while the exact repair executes, then
@@ -134,11 +142,13 @@ PERSISTENCE_PATH.write_text(
     encoding="utf-8",
 )
 
-namespace = {
-    "__name__": "__main__",
-    "__file__": str(SCRIPT_PATH),
-}
-exec(compile(previous, str(SCRIPT_PATH), "exec"), namespace)
+# Execute only the immutable reviewed repair program, rewritten to use this
+# verified repository root. A subprocess avoids evaluating dynamic code in the
+# long-lived normalization process while preserving the exact-match repair.
+with tempfile.TemporaryDirectory(prefix="accounting-book-period-repair-") as directory:
+    repair_program = Path(directory) / "repair_accounting_book_period_scope.py"
+    repair_program.write_text(previous, encoding="utf-8")
+    subprocess.run([sys.executable, str(repair_program)], cwd=ROOT, check=True)
 
 normalized = PERSISTENCE_PATH.read_text(encoding="utf-8")
 if normalized.count(shimmed_session_import) != 1:
@@ -404,7 +414,7 @@ class BookPeriodHelperBoundaryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             migration_root = Path(directory)
             for migration_name in migration_names:
-                (migration_root / migration_name).write_text("-- test fixture\\n", encoding="utf-8")
+                (migration_root / migration_name).write_text("-- test fixture\n", encoding="utf-8")
             with self.assertRaisesRegex(AccountingValidationError, "0009_accounting_book_period_control.sql"):
                 apply_foundation_migration(
                     "postgresql://unused",
