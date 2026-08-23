@@ -6,7 +6,7 @@ Use PostgreSQL 18 and keep the migration owner, application runtime login and ad
 
 Required environment values are deployment-specific. At minimum, configure the accounting database URL and bind this AIS process to exactly one tenant reference. Secrets belong in an approved secret store; do not place database passwords, NTS credentials, bearer tokens or provider secrets in journal payloads, logs or outbox events.
 
-`X-CWL-Tenant-Reference` is a tenant-binding header, **not** caller authentication. The standalone runner binds to `127.0.0.1` when no host is explicitly supplied. Do not expose the HTTP listener directly to untrusted networks. A non-loopback bind must be an explicit deployment decision behind a trusted authentication / authorization boundary, and the validated caller tenant must match the AIS tenant binding.
+`X-CWL-Tenant-Reference` is a tenant-binding header, **not** caller authentication. The standalone runner defaults to the loopback address `127.0.0.1`; an operator must explicitly request any non-loopback bind. A non-loopback listener must sit behind a trusted caller-authentication boundary. That host / gateway validates the caller before traffic reaches AIS and must fail closed when validated tenant identity and AIS tenant binding differ.
 
 ## Database installation
 
@@ -79,7 +79,7 @@ A reversal identifies a posted original journal and posts equal-and-opposite lin
 
 Soft-closed periods can admit an approved reversal only through the purpose-limited closing-writer database capability. Hard-closed periods reject a new reversal into the locked period.
 
-Release acceptance requires exact replay to be bound to tenant, reversal command idempotency identity, original journal reference and immutable reversal-command evidence hash. If any of those differ, fail closed rather than returning an earlier receipt. Treat PR #2 as non-release-ready until that contract passes on the same exact head as the remaining gates.
+Current PostgreSQL integration tests prove exact reversal replay is bound to tenant, reversal command idempotency identity, original journal reference, reversal date/reason and immutable reversal-command evidence hash. The same command replays the original receipt; changed immutable command evidence fails closed instead of returning an earlier receipt. Treat this behavior as current foundation capability, while release readiness still requires the unchanged exact head to pass every applicable CI/security/package/review/governance gate together.
 
 ## Close operations
 
@@ -155,7 +155,9 @@ Every pull-request package build first verifies the exact PR head checkout, deri
 
 The PR-capable `accounting-foundation` job has `contents: read` only. It does not receive OIDC, attestation, or artifact-metadata write authority while executing repository-controlled tests and build code. Do not move those permissions back into that job merely because individual attestation steps are conditional; GitHub permissions apply to the whole job.
 
-Do not accept a GitHub OIDC attestation created by a `pull_request` event as exact PR-head provenance merely because the build checked out the PR head. The attestation signing context can identify GitHub's synthetic pull-request merge ref and merge commit. Repository CI therefore reserves signed provenance and SBOM attestations for the separate `integrated-attestations` job. That job is job-level push-only for `develop` or `main`, depends on a successful `accounting-foundation` build, downloads the SHA-named evidence bundle, verifies `SHA256SUMS` and `source-provenance.json.source_sha == github.sha`, and only then receives `id-token: write`, `attestations: write`, and `artifact-metadata: write`. The protected-head push must reproduce the package and those signed attestations must succeed before release. This control is evidence readiness only; it does not claim a SLSA level or certification.
+Do not accept a GitHub OIDC attestation created by a `pull_request` event as exact PR-head provenance merely because the build checked out the PR head. The attestation signing context can identify GitHub's synthetic pull-request merge ref and merge commit. Repository CI therefore reserves signed provenance and SBOM attestations for the separate `integrated-attestations` job. That job is job-level push-only for `develop` or `main`, depends on a successful `accounting-foundation` build, downloads the immutable SHA-named evidence artifact, verifies its checksums and embedded `source_sha` against the integrated `github.sha`, and only then receives OIDC/attestation write permissions. Pull-request events cannot execute that job.
+
+This is a least-privilege trust boundary, not evidence that branch governance itself is correctly configured. Protected-branch/ruleset enforcement must still be verified independently before release.
 
 ## Release acceptance
 
