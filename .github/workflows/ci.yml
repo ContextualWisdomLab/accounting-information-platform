@@ -84,7 +84,7 @@ jobs:
           canary_file="${RUNNER_TEMP}/trivy-secret-canary.txt"
           canary_output="${RUNNER_TEMP}/trivy-secret-canary.out"
           trap 'rm -f "$canary_file" "$canary_output"' EXIT
-          printf '%s\n' 'AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7ASDFGHJ"' > "$canary_file"
+          printf '%s%s%s\n' 'AWS_ACCESS_KEY_ID = "' 'AKIAIOSFODNN7ASD' 'FGHJ"' > "$canary_file"
           set +e
           trivy fs --scanners secret --format table --exit-code 1 "$canary_file" >"$canary_output" 2>&1
           canary_status=$?
