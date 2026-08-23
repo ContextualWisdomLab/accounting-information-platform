@@ -1,37 +1,39 @@
 name: Normalize HTTP request framing
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/accounting-posting-foundation
+      - develop
 
 permissions:
   contents: write
 
 concurrency:
   group: normalize-http-request-framing
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   normalize:
     name: Normalize verified HTTP framing RED
-    if: github.repository == 'ContextualWisdomLab/accounting-information-platform'
+    if: github.repository == 'ContextualWisdomLab/accounting-information-platform' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+      BRANCH_NAME: ${{ github.event.pull_request.head.ref }}
+      EXPECTED_PARENT: 9b31a8f4ccf8271096dd8f88ef89a628487fb273
     steps:
-      - name: Check out exact trigger head
+      - name: Check out exact PR head
         uses: actions/checkout@631c942040754b6e095e929c1677c07e10ed4f87
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ env.EXPECTED_SHA }}
           fetch-depth: 2
           persist-credentials: true
-      - name: Verify exact trigger and observed RED parent
-        env:
-          EXPECTED_PARENT: 4067565bbe78e6ca9036caf6bbc62d7a9350b1a4
+      - name: Verify exact trigger and observed RED lineage
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           test "$(git rev-parse HEAD^)" = "$EXPECTED_PARENT"
       - name: Install pinned Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
@@ -144,8 +146,6 @@ jobs:
       - name: Remove temporary normalization machinery
         run: rm .github/workflows/normalize-http-request-framing.yml
       - name: Commit normalized product source only
-        env:
-          BRANCH_NAME: agent/accounting-posting-foundation
         shell: bash
         run: |
           set -euo pipefail
@@ -158,5 +158,5 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -m 'fix: fail closed on ambiguous HTTP framing'
           git fetch origin "$BRANCH_NAME"
-          test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_SHA"
           git push origin "HEAD:$BRANCH_NAME"
