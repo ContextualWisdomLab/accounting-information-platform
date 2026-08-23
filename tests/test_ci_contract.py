@@ -70,7 +70,7 @@ class AccountingCiContractTests(unittest.TestCase):
         self.assertIn("--metrics=off", sast_job)
 
     def test_ci_runs_non_vacuous_trivy_secret_gate_on_the_verified_exact_head(self) -> None:
-        """Trivy must prove its applicable secret-scan boundary without poisoning the scanned tree."""
+        """Trivy must prove the repository-root traversal used by the clean secret scan."""
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
             encoding="utf-8"
         )
@@ -97,12 +97,21 @@ class AccountingCiContractTests(unittest.TestCase):
         self.assertNotIn("scanners: vuln,secret,misconfig", security_job)
         self.assertIn("exit-code: '1'", security_job)
         self.assertIn(
-            "Prove Trivy secret scanner detects a deterministic canary",
+            "Prove Trivy secret scanner traverses the exact-head workspace",
+            security_job,
+        )
+        self.assertIn(
+            'canary_file="${GITHUB_WORKSPACE}/.trivy-secret-canary.txt"',
             security_job,
         )
         self.assertIn("aws-access-key-id", security_job)
         self.assertIn("canary_status", security_job)
         self.assertIn('test "$canary_status" -eq 1', security_job)
+        self.assertIn(
+            'trivy fs --scanners secret --format table --exit-code 1 "${GITHUB_WORKSPACE}"',
+            security_job,
+        )
+        self.assertIn('grep -Fq ".trivy-secret-canary.txt" "$canary_output"', security_job)
         forbidden_canary = "AKIAIOSFODNN7ASD" + "FGHJ"
         self.assertNotIn(forbidden_canary, workflow)
         self.assertIn("AKIAIOSFODNN7ASD", security_job)
