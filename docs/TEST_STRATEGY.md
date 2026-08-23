@@ -38,6 +38,17 @@ Required regressions include:
 - every tenant-scoped authoritative table both enables and forces RLS;
 - a non-owner, non-superuser, non-`BYPASSRLS` runtime login can execute an ordinary supported posting/read path for its bound tenant but cannot read another tenant or acquire owner / administrative authority.
 
+## Fiscal-period-open command tests
+
+Opening a fiscal period is an authoritative state-changing command, so its durable replay evidence is tested independently from period-close state tests. Required coverage proves:
+
+- missing, blank or noncanonical `idempotency_key` and malformed `source_payload_hash` fail before PostgreSQL work;
+- an exact retry with the same tenant, command key, immutable source hash, legal entity, period identity and requested dates replays the original open-command result without creating a second evidence row;
+- that exact replay remains a replay if the already-opened period has subsequently become `soft_closed` or `hard_closed`; replay must not reopen or otherwise mutate the current period state;
+- the same tenant-scoped command key with changed legal-entity scope, period identity, requested dates or source hash fails as an idempotency conflict and writes no second command-evidence row;
+- a different command key may acknowledge a matching period only while it is already `open`; it cannot reopen a `soft_closed` or `hard_closed` period;
+- migration `0008_fiscal_period_open_command.sql` creates append-only, forced-RLS command evidence, and the foundation migration loader fails closed before connecting when that required migration is absent.
+
 ## Reversal state matrix
 
 Reversal tests distinguish fiscal-period state explicitly:
