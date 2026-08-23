@@ -135,7 +135,9 @@ class PostgresPostingLedger:
                     f"currency {reporting_currency_code}. Supply the book reporting currency, "
                     "then retry the journal post."
                 )
-            period_state = self._load_period_state(connection, tenant_id, period_code)
+            period_state = self._load_book_period_state(
+                connection, tenant_id, book_id, period_code
+            )
             if period_state is None:
                 raise AccountingValidationError(
                     f"Fiscal period {period_code} is not recorded for this tenant. "
@@ -639,7 +641,7 @@ class PostgresPostingLedger:
                        trial_balance_snapshot.source_journal_count,
                        trial_balance_snapshot.source_payload_hash,
                        fiscal_period.period_code,
-                       fiscal_period.period_status_code,
+                       accounting_book_period_control.period_status_code,
                        accounting_book.book_name,
                        legal_entity_record.legal_entity_code
                 FROM accounting_reporting.trial_balance_snapshot
@@ -649,13 +651,20 @@ class PostgresPostingLedger:
                 JOIN accounting_core.accounting_book
                   ON accounting_book.tenant_account_id = trial_balance_snapshot.tenant_account_id
                  AND accounting_book.accounting_book_id = trial_balance_snapshot.accounting_book_id
+                JOIN accounting_core.accounting_book_period_control
+                  ON accounting_book_period_control.tenant_account_id
+                     = trial_balance_snapshot.tenant_account_id
+                 AND accounting_book_period_control.accounting_book_id
+                     = trial_balance_snapshot.accounting_book_id
+                 AND accounting_book_period_control.fiscal_period_id
+                     = trial_balance_snapshot.fiscal_period_id
                 JOIN accounting_core.legal_entity_record
                   ON legal_entity_record.tenant_account_id = trial_balance_snapshot.tenant_account_id
                  AND legal_entity_record.legal_entity_id = trial_balance_snapshot.legal_entity_id
                 WHERE trial_balance_snapshot.tenant_account_id = %s
                   AND trial_balance_snapshot.legal_entity_id = %s
                   AND (%s OR trial_balance_snapshot.fiscal_period_id = %s)
-                  AND (%s OR fiscal_period.period_status_code = %s)
+                  AND (%s OR accounting_book_period_control.period_status_code = %s)
                   AND (
                         %s
                         OR (
@@ -961,9 +970,6 @@ class PostgresPostingLedger:
             resolved_lines = tuple(
                 PostingLedger._resolve_line(line, policy) for line in proposal.lines
             )
-            period_id = self._require_open_period(
-                connection, tenant_id, proposal.accounting_date
-            )
             legal_entity_id = self._require_legal_entity(
                 connection, tenant_id, proposal.legal_entity_reference
             )
@@ -973,6 +979,9 @@ class PostgresPostingLedger:
                 legal_entity_id,
                 policy.intended_book_role_code,
                 policy.accounting_book_reference,
+            )
+            period_id = self._require_open_book_period(
+                connection, tenant_id, book_id, proposal.accounting_date
             )
             journal_reference = f"urn:cwl:accounting:general_journal:{proposal.proposal_id}"
             receipt = PostingReceipt(
@@ -1047,7 +1056,7 @@ class PostgresPostingLedger:
                 "period_code is required. Supply the fiscal period code, then retry the close."
             )
         close_idempotency_key = idempotency_key.strip() or (
-            f"{self._tenant_reference}:period_close:{period_code}"
+            f"{self._tenant_reference}:period_close:{accounting_book_reference}:{period_code}"
         )
         try:
             _require_currency(snapshot_currency_code)
@@ -1067,7 +1076,7 @@ class PostgresPostingLedger:
             try:
                 tenant_id = self._require_tenant(connection)
                 self._acquire_command_lock(
-                    connection, f"period:{period_code}"
+                    connection, f"period:{accounting_book_reference}:{period_code}"
                 )
                 legal_entity_id = self._require_legal_entity(
                     connection,
@@ -1084,8 +1093,8 @@ class PostgresPostingLedger:
                         f"currency {reporting_currency_code}. Supply the book reporting currency, "
                         "then retry the close."
                     )
-                period_id, current_status, period_end_date = self._lock_fiscal_period(
-                    connection, tenant_id, period_code
+                period_id, current_status, period_end_date = self._lock_book_period(
+                    connection, tenant_id, book_id, period_code
                 )
                 if current_status == "hard_closed":
                     if period_status_code == "soft_closed":
@@ -4390,26 +4399,96 @@ class PostgresPostingLedger:
             )
         return row[0]
 
-    def _require_open_period(
-        self, connection: object, tenant_id: UUID, accounting_date: date
+    def _require_open_book_period(
+        self,
+        connection: object,
+        tenant_id: UUID,
+        book_id: UUID,
+        accounting_date: date,
     ) -> UUID:
-        return self._require_open_period_bounds(connection, tenant_id, accounting_date)[0]
+        """Require an open fiscal period for the selected accounting book."""
+        return self._require_open_book_period_bounds(
+            connection, tenant_id, book_id, accounting_date
+        )[0]
+
+    def _require_open_book_period_bounds(
+        self,
+        connection: object,
+        tenant_id: UUID,
+        book_id: UUID,
+        accounting_date: date,
+    ) -> tuple[UUID, date, date]:
+        """Return period identity and bounds when this accounting book is open."""
+        row = connection.execute(
+            """
+            SELECT fiscal_period.fiscal_period_id,
+                   fiscal_period.period_code,
+                   COALESCE(
+                       accounting_book_period_control.period_status_code,
+                       fiscal_period.period_status_code
+                   ),
+                   fiscal_period.period_start_date,
+                   fiscal_period.period_end_date
+            FROM accounting_core.fiscal_period
+            LEFT JOIN accounting_core.accounting_book_period_control
+              ON accounting_book_period_control.tenant_account_id
+                 = fiscal_period.tenant_account_id
+             AND accounting_book_period_control.fiscal_period_id
+                 = fiscal_period.fiscal_period_id
+             AND accounting_book_period_control.accounting_book_id = %s
+            WHERE fiscal_period.tenant_account_id = %s
+              AND fiscal_period.period_start_date <= %s
+              AND fiscal_period.period_end_date >= %s
+            """,
+            (book_id, tenant_id, accounting_date, accounting_date),
+        ).fetchone()
+        if row is None:
+            raise AccountingValidationError(
+                f"No fiscal period covers accounting date {accounting_date.isoformat()}. "
+                "Create an open fiscal period on the tenant calendar, then retry posting."
+            )
+        period_id, period_code = row[0], row[1]
+        self._acquire_command_lock(connection, f"period:{book_id}:{period_code}")
+        row = connection.execute(
+            """
+            SELECT fiscal_period.fiscal_period_id,
+                   fiscal_period.period_code,
+                   COALESCE(
+                       accounting_book_period_control.period_status_code,
+                       fiscal_period.period_status_code
+                   ),
+                   fiscal_period.period_start_date,
+                   fiscal_period.period_end_date
+            FROM accounting_core.fiscal_period
+            LEFT JOIN accounting_core.accounting_book_period_control
+              ON accounting_book_period_control.tenant_account_id
+                 = fiscal_period.tenant_account_id
+             AND accounting_book_period_control.fiscal_period_id
+                 = fiscal_period.fiscal_period_id
+             AND accounting_book_period_control.accounting_book_id = %s
+            WHERE fiscal_period.tenant_account_id = %s
+              AND fiscal_period.fiscal_period_id = %s
+            """,
+            (book_id, tenant_id, period_id),
+        ).fetchone()
+        if row is None:
+            raise AccountingValidationError(
+                f"No fiscal period covers accounting date {accounting_date.isoformat()}. "
+                "Create an open fiscal period on the tenant calendar, then retry posting."
+            )
+        if row[2] != "open":
+            locked_marker = " (period_closed)" if row[2] == "hard_closed" else ""
+            raise AccountingValidationError(
+                f"Fiscal period {row[1]} is {row[2]}{locked_marker}. "
+                "Open that period or post into an open period for this accounting book; "
+                "no journal was written."
+            )
+        return row[0], row[3], row[4]
 
     def _require_adjusting_period(
         self, connection: object, tenant_id: UUID, accounting_date: date
     ) -> UUID:
         return self._require_adjusting_period_bounds(connection, tenant_id, accounting_date)[0]
-
-    def _require_open_period_bounds(
-        self, connection: object, tenant_id: UUID, accounting_date: date
-    ) -> tuple[UUID, date, date]:
-        return self._require_period_bounds(
-            connection,
-            tenant_id,
-            accounting_date,
-            allowed_status_codes=frozenset({"open"}),
-            next_action="Open that period or post into an open period",
-        )
 
     def _require_adjusting_period_bounds(
         self, connection: object, tenant_id: UUID, accounting_date: date
@@ -4489,8 +4568,8 @@ class PostgresPostingLedger:
             legal_entity_id,
             proposal.intended_book_role_code,
         )
-        _period_id, period_start, period_end = self._require_open_period_bounds(
-            connection, tenant_id, proposal.accounting_date
+        _period_id, period_start, period_end = self._require_open_book_period_bounds(
+            connection, tenant_id, book_id, proposal.accounting_date
         )
         mapping, policy_version, rule_version = self._load_role_mapping(
             connection, tenant_id, book_id, proposal
@@ -4646,28 +4725,107 @@ class PostgresPostingLedger:
             )
         return row[0], row[1], row[2]
 
-    def _lock_fiscal_period(
+    def _lock_book_period(
         self,
         connection: object,
         tenant_id: UUID,
+        book_id: UUID,
         period_code: str,
     ) -> tuple[UUID, str, date]:
-        """Lock one fiscal period row while its close command evaluates and writes."""
-        row = connection.execute(
+        """Materialize and lock close state independently for one accounting book."""
+        period_row = connection.execute(
             """
-            SELECT fiscal_period_id, period_status_code, period_end_date
+            SELECT fiscal_period_id, period_status_code, period_closed_at
             FROM accounting_core.fiscal_period
             WHERE tenant_account_id = %s AND period_code = %s
-            FOR UPDATE
             """,
             (tenant_id, period_code),
         ).fetchone()
-        if row is None:
+        if period_row is None:
             raise AccountingValidationError(
                 f"Fiscal period {period_code} is not recorded for this tenant. "
                 "Create the fiscal_period row, then retry the close."
             )
+        period_id = period_row[0]
+        connection.execute(
+            """
+            INSERT INTO accounting_core.accounting_book_period_control (
+                tenant_account_id, accounting_book_id, fiscal_period_id,
+                period_status_code, period_closed_at
+            )
+            SELECT accounting_book.tenant_account_id,
+                   accounting_book.accounting_book_id,
+                   fiscal_period.fiscal_period_id,
+                   fiscal_period.period_status_code,
+                   fiscal_period.period_closed_at
+            FROM accounting_core.accounting_book
+            JOIN accounting_core.fiscal_period
+              ON fiscal_period.tenant_account_id = accounting_book.tenant_account_id
+            WHERE accounting_book.tenant_account_id = %s
+              AND accounting_book.valid_to IS NULL
+              AND fiscal_period.fiscal_period_id = %s
+            ON CONFLICT (tenant_account_id, accounting_book_id, fiscal_period_id)
+            DO NOTHING
+            """,
+            (tenant_id, period_id),
+        )
+        row = connection.execute(
+            """
+            SELECT fiscal_period.fiscal_period_id,
+                   accounting_book_period_control.period_status_code,
+                   fiscal_period.period_end_date
+            FROM accounting_core.fiscal_period
+            JOIN accounting_core.accounting_book_period_control
+              ON accounting_book_period_control.tenant_account_id
+                 = fiscal_period.tenant_account_id
+             AND accounting_book_period_control.fiscal_period_id
+                 = fiscal_period.fiscal_period_id
+             AND accounting_book_period_control.accounting_book_id = %s
+            WHERE fiscal_period.tenant_account_id = %s
+              AND fiscal_period.fiscal_period_id = %s
+            FOR UPDATE OF accounting_book_period_control
+            """,
+            (book_id, tenant_id, period_id),
+        ).fetchone()
+        if row is None:
+            raise AccountingValidationError(
+                f"Fiscal period {period_code} has no control row for this accounting book. "
+                "Repair accounting_book_period_control, then retry the close."
+            )
         return row[0], row[1], row[2]
+
+    def _load_book_period_state(
+        self,
+        connection: object,
+        tenant_id: UUID,
+        book_id: UUID,
+        period_code: str,
+    ) -> tuple[UUID, str, date, date] | None:
+        """Return the selected book's period state, falling back to legacy calendar state."""
+        row = connection.execute(
+            """
+            SELECT fiscal_period.fiscal_period_id,
+                   COALESCE(
+                       accounting_book_period_control.period_status_code,
+                       fiscal_period.period_status_code
+                   ),
+                   fiscal_period.period_start_date,
+                   fiscal_period.period_end_date
+            FROM accounting_core.fiscal_period
+            LEFT JOIN accounting_core.accounting_book_period_control
+              ON accounting_book_period_control.tenant_account_id
+                 = fiscal_period.tenant_account_id
+             AND accounting_book_period_control.fiscal_period_id
+                 = fiscal_period.fiscal_period_id
+             AND accounting_book_period_control.accounting_book_id = %s
+            WHERE fiscal_period.tenant_account_id = %s
+              AND fiscal_period.period_code = %s
+            """,
+            (book_id, tenant_id, period_code),
+        ).fetchone()
+        if row is None:
+            return None
+        return row[0], row[1], row[2], row[3]
 
     def _load_period_state(
         self, connection: object, tenant_id: UUID, period_code: str
@@ -4929,10 +5087,12 @@ class PostgresPostingLedger:
         period_closed_at = connection.execute(
             """
             SELECT COALESCE(period_closed_at, clock_timestamp())
-            FROM accounting_core.fiscal_period
-            WHERE tenant_account_id = %s AND fiscal_period_id = %s
+            FROM accounting_core.accounting_book_period_control
+            WHERE tenant_account_id = %s
+              AND accounting_book_id = %s
+              AND fiscal_period_id = %s
             """,
-            (tenant_id, period_id),
+            (tenant_id, book_id, period_id),
         ).fetchone()[0]
         _lines, source_journal_count, source_payload_hash = self._live_close_source(
             connection,
@@ -4983,8 +5143,8 @@ class PostgresPostingLedger:
             legal_entity_reference=legal_entity_reference,
             accounting_book_reference=accounting_book_reference,
         )
-        period_closed_at = self._set_period_closed(
-            connection, tenant_id, period_id, "soft_closed"
+        period_closed_at = self._set_book_period_closed(
+            connection, tenant_id, book_id, period_id, "soft_closed"
         )
         self._insert_period_close_event(
             connection,
@@ -5115,7 +5275,9 @@ class PostgresPostingLedger:
                     debit_total - credit_total,
                 ),
             )
-        self._set_period_closed(connection, tenant_id, period_id, period_status_code)
+        self._set_book_period_closed(
+            connection, tenant_id, book_id, period_id, period_status_code
+        )
         self._insert_period_close_event(
             connection,
             tenant_id,
@@ -5152,7 +5314,8 @@ class PostgresPostingLedger:
         accounting_book_reference: str,
     ) -> None:
         closing_reference = (
-            f"urn:cwl:accounting:general_journal:period_closing:{period_code}"
+            "urn:cwl:accounting:general_journal:period_closing:"
+            f"{period_code}:{accounting_book_reference}"
         )
         income_rows = connection.execute(
             """
@@ -5254,7 +5417,8 @@ class PostgresPostingLedger:
             """,
             (
                 tenant_id,
-                f"{self._tenant_reference}:period_closing:{period_code}",
+                f"{self._tenant_reference}:period_closing:{period_code}:"
+                f"{accounting_book_reference}",
                 source_payload_hash,
             ),
         ).fetchone()[0]
@@ -5332,23 +5496,63 @@ class PostgresPostingLedger:
             ).fetchone()[0]
         )
 
-    def _set_period_closed(
+    def _set_book_period_closed(
         self,
         connection: object,
         tenant_id: UUID,
+        book_id: UUID,
         period_id: UUID,
         period_status_code: str,
     ) -> datetime:
-        return connection.execute(
+        """Close one book and retain aggregate calendar status only for compatibility."""
+        period_closed_at = connection.execute(
+            """
+            UPDATE accounting_core.accounting_book_period_control
+            SET period_status_code = %s,
+                period_closed_at = clock_timestamp()
+            WHERE tenant_account_id = %s
+              AND accounting_book_id = %s
+              AND fiscal_period_id = %s
+            RETURNING period_closed_at
+            """,
+            (period_status_code, tenant_id, book_id, period_id),
+        ).fetchone()[0]
+        aggregate_row = connection.execute(
+            """
+            SELECT CASE
+                       WHEN bool_and(
+                           accounting_book_period_control.period_status_code = 'hard_closed'
+                       ) THEN 'hard_closed'
+                       WHEN bool_and(
+                           accounting_book_period_control.period_status_code <> 'open'
+                       ) THEN 'soft_closed'
+                       ELSE 'open'
+                   END,
+                   max(accounting_book_period_control.period_closed_at)
+            FROM accounting_core.accounting_book_period_control
+            JOIN accounting_core.accounting_book
+              ON accounting_book.tenant_account_id
+                 = accounting_book_period_control.tenant_account_id
+             AND accounting_book.accounting_book_id
+                 = accounting_book_period_control.accounting_book_id
+            WHERE accounting_book_period_control.tenant_account_id = %s
+              AND accounting_book_period_control.fiscal_period_id = %s
+              AND accounting_book.valid_to IS NULL
+            """,
+            (tenant_id, period_id),
+        ).fetchone()
+        aggregate_status = aggregate_row[0] or "open"
+        aggregate_closed_at = None if aggregate_status == "open" else aggregate_row[1]
+        connection.execute(
             """
             UPDATE accounting_core.fiscal_period
             SET period_status_code = %s,
-                period_closed_at = clock_timestamp()
+                period_closed_at = %s
             WHERE tenant_account_id = %s AND fiscal_period_id = %s
-            RETURNING period_closed_at
             """,
-            (period_status_code, tenant_id, period_id),
-        ).fetchone()[0]
+            (aggregate_status, aggregate_closed_at, tenant_id, period_id),
+        )
+        return period_closed_at
 
     def _insert_period_close_event(
         self,
@@ -6003,6 +6207,14 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             f"Fiscal-period-open command migration is missing at {period_open_command_migration_path}. "
             "Restore database/migrations/0008_fiscal_period_open_command.sql, then retry."
         )
+    book_period_control_migration_path = (
+        migration_path.parent / "0009_accounting_book_period_control.sql"
+    )
+    if not book_period_control_migration_path.is_file():
+        raise AccountingValidationError(
+            f"Accounting-book-period control migration is missing at {book_period_control_migration_path}. "
+            "Restore database/migrations/0009_accounting_book_period_control.sql, then retry."
+        )
     psycopg = _import_psycopg()
     try:
         with psycopg.connect(
@@ -6016,6 +6228,7 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             connection.execute(concurrency_migration_path.read_text(encoding="utf-8"))
             connection.execute(runtime_binding_migration_path.read_text(encoding="utf-8"))
             connection.execute(period_open_command_migration_path.read_text(encoding="utf-8"))
+            connection.execute(book_period_control_migration_path.read_text(encoding="utf-8"))
     except Exception as error:
         raise AccountingValidationError(
             "Foundation migration failed. Inspect the PostgreSQL error, restore a clean "

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Scope fiscal-period close authority, close identity, and PostgreSQL journal admission by accounting book so sibling statutory/management books can close independently.
+
 ### Security
 
 - Bound ordinary PostgreSQL runtime logins to one admin-owned tenant identity for forced RLS; caller-controlled custom GUCs can no longer rebind accounting tenant scope.

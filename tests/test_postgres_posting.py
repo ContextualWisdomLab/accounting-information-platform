@@ -1172,7 +1172,7 @@ class PostgresPostingTests(unittest.TestCase):
             "urn:cwl:accounting:fiscal_period:2026-08",
         )
         closing = self.ledger.load_posted_journal(
-            f"{self.policy.tenant_reference}:period_closing:2026-08"
+            f"{self.policy.tenant_reference}:period_closing:2026-08:{self.policy.accounting_book_reference}"
         )
         package = lookup_period_close_package(
             DATABASE_URL,
@@ -4942,7 +4942,7 @@ class PostgresPostingTests(unittest.TestCase):
             },
         )
         closing_status, closing = self._http_journal(
-            idempotency_key=f"{self.policy.tenant_reference}:period_closing:2026-08"
+            idempotency_key=f"{self.policy.tenant_reference}:period_closing:2026-08:{self.policy.accounting_book_reference}"
         )
         leftover_status, leftover = self._http_unapplied_cash_rollforward()
         package_status, package = self._http_period_close_package()
@@ -7931,7 +7931,7 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(len(closing_list["journals"]), 1)
         self.assertEqual(
             closing_keys,
-            {f"{self.policy.tenant_reference}:period_closing:2026-08"},
+            {f"{self.policy.tenant_reference}:period_closing:2026-08:{self.policy.accounting_book_reference}"},
         )
         self.assertTrue(
             str(closing_list["journals"][0]["journal_reference"]).startswith(
@@ -7949,7 +7949,7 @@ class PostgresPostingTests(unittest.TestCase):
             {str(invoice["idempotency_key"]), str(cash["idempotency_key"])},
         )
         self.assertNotIn(
-            f"{self.policy.tenant_reference}:period_closing:2026-08",
+            f"{self.policy.tenant_reference}:period_closing:2026-08:{self.policy.accounting_book_reference}",
             billing_close_keys,
         )
         self.assertEqual(omit_after_close_status, 200)
