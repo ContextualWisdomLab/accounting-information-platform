@@ -2,7 +2,7 @@
 
 The one-shot repair is deliberately exact-match based. Its reviewed source lives
 at the immutable RED-repair head below; this shim patches only matcher vocabulary
-and indentation that drifted before the RED defect itself changed. The
+and formatting that drifted before the RED defect itself changed. The
 normalization workflow still removes this temporary file before product
 validation and publication.
 """
@@ -14,6 +14,8 @@ import subprocess
 
 
 SCRIPT_PATH = Path(__file__).resolve()
+ROOT = SCRIPT_PATH.parents[1]
+PERSISTENCE_PATH = ROOT / "src/accounting_information_platform/persistence.py"
 REPAIR_SOURCE_SHA = "fc4a9e60de914a62cc75c572cc424d99adb79aa9"
 previous = subprocess.run(
     [
@@ -103,8 +105,29 @@ previous = replace_known_source_form(
     "close-period replacement indentation",
 )
 
+# The reviewed loader matcher predates a second _import_psycopg() in _session.
+# Hide only that non-loader occurrence while the exact repair executes, then
+# restore it so no compatibility-only product diff survives normalization.
+persistence = PERSISTENCE_PATH.read_text(encoding="utf-8")
+session_import = "        psycopg = _import_psycopg()\n        try:\n            connection = psycopg.connect(self._database_url)\n"
+shimmed_session_import = "        psycopg = _import_psycopg()  # repair-shim-session\n        try:\n            connection = psycopg.connect(self._database_url)\n"
+if persistence.count(session_import) != 1:
+    raise SystemExit("session import compatibility: expected one exact _session boundary")
+PERSISTENCE_PATH.write_text(
+    persistence.replace(session_import, shimmed_session_import, 1),
+    encoding="utf-8",
+)
+
 namespace = {
     "__name__": "__main__",
     "__file__": str(SCRIPT_PATH),
 }
 exec(compile(previous, str(SCRIPT_PATH), "exec"), namespace)
+
+normalized = PERSISTENCE_PATH.read_text(encoding="utf-8")
+if normalized.count(shimmed_session_import) != 1:
+    raise SystemExit("session import compatibility: temporary marker was not preserved exactly")
+PERSISTENCE_PATH.write_text(
+    normalized.replace(shimmed_session_import, session_import, 1),
+    encoding="utf-8",
+)
