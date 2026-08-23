@@ -96,6 +96,13 @@ class AccountingCiContractTests(unittest.TestCase):
         self.assertIn("scanners: secret", security_job)
         self.assertNotIn("scanners: vuln,secret,misconfig", security_job)
         self.assertIn("exit-code: '1'", security_job)
+        self.assertIn(
+            "Prove Trivy secret scanner detects a deterministic canary",
+            security_job,
+        )
+        self.assertIn("aws-access-key-id", security_job)
+        self.assertIn("canary_status", security_job)
+        self.assertIn('test "$canary_status" -eq 1', security_job)
         self.assertIn("Exact-head dependency diff", workflow)
         self.assertIn("Scan exact-head locked Python dependencies with OSV", workflow)
 
