@@ -77,21 +77,22 @@ jobs:
           format: table
           exit-code: '1'
           version: v0.70.0
-      - name: Prove Trivy secret scanner detects a deterministic canary
+      - name: Prove Trivy secret scanner traverses the exact-head workspace
         shell: bash
         run: |
           set -euo pipefail
-          canary_file="${RUNNER_TEMP}/trivy-secret-canary.txt"
+          canary_file="${GITHUB_WORKSPACE}/.trivy-secret-canary.txt"
           canary_output="${RUNNER_TEMP}/trivy-secret-canary.out"
           trap 'rm -f "$canary_file" "$canary_output"' EXIT
           printf '%s%s%s\n' 'AWS_ACCESS_KEY_ID = "' 'AKIAIOSFODNN7ASD' 'FGHJ"' > "$canary_file"
           set +e
-          trivy fs --scanners secret --format table --exit-code 1 "$canary_file" >"$canary_output" 2>&1
+          trivy fs --scanners secret --format table --exit-code 1 "${GITHUB_WORKSPACE}" >"$canary_output" 2>&1
           canary_status=$?
           set -e
           cat "$canary_output"
           test "$canary_status" -eq 1
           grep -Fq "aws-access-key-id" "$canary_output"
+          grep -Fq ".trivy-secret-canary.txt" "$canary_output"
 
   exact-head-dependency-diff:
     name: Exact-head dependency diff
