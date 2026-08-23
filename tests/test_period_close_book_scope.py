@@ -13,6 +13,7 @@ import psycopg
 
 from accounting_information_platform import (
     AccountingPolicy,
+    IdempotencyConflictError,
     JournalLineProposal,
     JournalProposal,
     PostgresPostingLedger,
@@ -260,6 +261,39 @@ class PostgresBookPeriodIsolationTests(unittest.TestCase):
             posting_receipt.accounting_book_reference,
             self.mgmt_book_reference,
         )
+
+    def test_soft_close_replay_rejects_a_different_command_key(self) -> None:
+        """A soft-close replay is exact and cannot accept a different command identity."""
+        original_key = f"{self.tenant_reference}:statutory:2026-08:soft-close"
+        first = self.ledger.close_fiscal_period(
+            self.legal_entity_reference,
+            self.stat_book_reference,
+            "2026-08",
+            "KRW",
+            period_status_code="soft_closed",
+            idempotency_key=original_key,
+        )
+        replay = self.ledger.close_fiscal_period(
+            self.legal_entity_reference,
+            self.stat_book_reference,
+            "2026-08",
+            "KRW",
+            period_status_code="soft_closed",
+            idempotency_key=original_key,
+        )
+
+        self.assertTrue(replay.replayed)
+        self.assertEqual(replay.source_payload_hash, first.source_payload_hash)
+        self.assertEqual(replay.source_journal_count, first.source_journal_count)
+        with self.assertRaises(IdempotencyConflictError):
+            self.ledger.close_fiscal_period(
+                self.legal_entity_reference,
+                self.stat_book_reference,
+                "2026-08",
+                "KRW",
+                period_status_code="soft_closed",
+                idempotency_key=f"{original_key}:different",
+            )
 
 
 if __name__ == "__main__":
