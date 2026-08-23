@@ -25,7 +25,7 @@ class _BodyHarness:
 
 
 class HttpBodyFramingContractTests(unittest.TestCase):
-    """Reject ambiguous or unsupported request-body framing before body parsing."""
+    """Reject ambiguous, unsupported, or incomplete request-body framing."""
 
     def _read(self, values: tuple[str, ...], body: bytes = b"{}") -> tuple[bytes | None, list[tuple[int, str]]]:
         headers = Message()
@@ -62,6 +62,17 @@ class HttpBodyFramingContractTests(unittest.TestCase):
                 self.assertEqual(harness.errors[0][0], 400)
                 self.assertIn("Transfer-Encoding", harness.errors[0][1])
                 self.assertTrue(harness.close_connection)
+
+    def test_incomplete_content_length_body_is_400_and_connection_is_closed(self) -> None:
+        """A valid JSON prefix cannot be accepted when fewer octets than declared arrive."""
+        headers = Message()
+        headers.add_header("Content-Length", "3")
+        harness = _BodyHarness(headers, b"{}")
+        body = JournalProposalHandler._read_body(harness)  # type: ignore[arg-type]
+        self.assertIsNone(body)
+        self.assertEqual(harness.errors[0][0], 400)
+        self.assertIn("incomplete", harness.errors[0][1])
+        self.assertTrue(harness.close_connection)
 
     def test_non_ascii_decimal_content_length_is_400(self) -> None:
         """Signs, whitespace, underscores, and non-ASCII digits never become a length."""
