@@ -70,7 +70,7 @@ class AccountingCiContractTests(unittest.TestCase):
         self.assertIn("--metrics=off", sast_job)
 
     def test_ci_runs_non_vacuous_trivy_secret_gate_on_the_verified_exact_head(self) -> None:
-        """Trivy must prove its applicable secret-scan boundary without unsupported-scan claims."""
+        """Trivy must prove its applicable secret-scan boundary without poisoning the scanned tree."""
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
             encoding="utf-8"
         )
@@ -103,6 +103,9 @@ class AccountingCiContractTests(unittest.TestCase):
         self.assertIn("aws-access-key-id", security_job)
         self.assertIn("canary_status", security_job)
         self.assertIn('test "$canary_status" -eq 1', security_job)
+        self.assertNotIn("AKIAIOSFODNN7ASDFGHJ", workflow)
+        self.assertIn("AKIAIOSFODNN7ASD", security_job)
+        self.assertIn("FGHJ", security_job)
         self.assertIn("Exact-head dependency diff", workflow)
         self.assertIn("Scan exact-head locked Python dependencies with OSV", workflow)
 
