@@ -1162,58 +1162,154 @@ class PostgresPostingLedger:
         period_code: str,
         period_start_date: date | None = None,
         period_end_date: date | None = None,
+        *,
+        idempotency_key: str,
+        source_payload_hash: str,
     ) -> dict[str, object]:
-        """Insert or replay an open fiscal_period row on the tenant calendar."""
+        """Insert or replay one fiscal-period-open command from durable evidence."""
         if not legal_entity_reference or not period_code:
             raise AccountingValidationError(
                 "legal_entity_reference and fiscal_period_reference are required. "
                 "Supply those period-open fields, then retry the period open."
             )
+        command_key = idempotency_key.strip()
+        if not command_key or command_key != idempotency_key:
+            raise AccountingValidationError(
+                "period-open idempotency_key must be a canonical non-empty string. "
+                "Supply the original command key, then retry the period open."
+            )
+        if re.fullmatch(r"sha256:[0-9a-f]{64}", source_payload_hash) is None:
+            raise AccountingValidationError(
+                "period-open source_payload_hash must be a canonical sha256 digest. "
+                "Supply the immutable command hash, then retry the period open."
+            )
         with self._session() as connection:
             tenant_id = self._require_tenant(connection)
+            self._acquire_command_lock(connection, f"period-open:{command_key}")
             self._acquire_command_lock(connection, f"period:{period_code}")
-            self._require_legal_entity(
-                connection, tenant_id, legal_entity_reference, "the period open"
+            legal_entity_id, _functional_currency = self._load_legal_entity(
+                connection,
+                tenant_id,
+                legal_entity_reference,
+                next_action="the period open",
             )
+            prior = connection.execute(
+                """
+                SELECT period_open_command.legal_entity_id,
+                       fiscal_period.period_code,
+                       period_open_command.requested_period_start_date,
+                       period_open_command.requested_period_end_date,
+                       fiscal_period.period_start_date,
+                       fiscal_period.period_end_date,
+                       period_open_command.source_payload_hash
+                FROM accounting_integration.fiscal_period_open_command AS period_open_command
+                JOIN accounting_core.fiscal_period AS fiscal_period
+                  ON fiscal_period.tenant_account_id = period_open_command.tenant_account_id
+                 AND fiscal_period.fiscal_period_id = period_open_command.fiscal_period_id
+                WHERE period_open_command.tenant_account_id = %s
+                  AND period_open_command.period_open_idempotency_key = %s
+                """,
+                (tenant_id, command_key),
+            ).fetchone()
+            if prior is not None:
+                (
+                    prior_legal_entity_id,
+                    prior_period_code,
+                    prior_requested_start,
+                    prior_requested_end,
+                    stored_start_date,
+                    stored_end_date,
+                    prior_source_hash,
+                ) = prior
+                if (
+                    prior_legal_entity_id != legal_entity_id
+                    or prior_period_code != period_code
+                    or prior_requested_start != period_start_date
+                    or prior_requested_end != period_end_date
+                    or prior_source_hash != source_payload_hash
+                ):
+                    raise IdempotencyConflictError(
+                        "period-open idempotency key was already used with a different payload"
+                    )
+                return self._period_open_document(
+                    legal_entity_reference,
+                    period_code,
+                    stored_start_date,
+                    stored_end_date,
+                    replayed=True,
+                )
+
             existing = self._load_period_state(connection, tenant_id, period_code)
+            replayed = existing is not None
             if existing is not None:
-                _period_id, current_status, start_date, end_date = existing
+                period_id, current_status, stored_start_date, stored_end_date = existing
                 if current_status != "open":
                     raise AccountingValidationError(
                         f"Fiscal period {period_code} is {current_status}. "
                         "Closed periods cannot be reopened. Open a later period, "
                         "then retry the period open."
                     )
-                return self._period_open_document(
-                    legal_entity_reference,
-                    period_code,
-                    start_date,
-                    end_date,
-                    replayed=True,
-                )
-            if period_start_date is None or period_end_date is None:
-                raise AccountingValidationError(
-                    "period_start_date and period_end_date are required. "
-                    "Supply those fiscal_period dates, then retry the period open."
-                )
-            if period_end_date < period_start_date:
-                raise AccountingValidationError(
-                    "period_end_date must be on or after period_start_date. "
-                    "Supply a valid date range, then retry the period open."
-                )
-            calendar_id = self._require_tenant_calendar(connection, tenant_id)
+                if (
+                    period_start_date is not None
+                    and period_start_date != stored_start_date
+                ) or (
+                    period_end_date is not None and period_end_date != stored_end_date
+                ):
+                    raise AccountingValidationError(
+                        "period-open dates do not match the already-open fiscal period. "
+                        "Supply its existing dates or omit both dates, then retry."
+                    )
+            else:
+                if period_start_date is None or period_end_date is None:
+                    raise AccountingValidationError(
+                        "period_start_date and period_end_date are required. "
+                        "Supply those fiscal_period dates, then retry the period open."
+                    )
+                if period_end_date < period_start_date:
+                    raise AccountingValidationError(
+                        "period_end_date must be on or after period_start_date. "
+                        "Supply a valid date range, then retry the period open."
+                    )
+                calendar_id = self._require_tenant_calendar(connection, tenant_id)
+                period_id = connection.execute(
+                    """
+                    INSERT INTO accounting_core.fiscal_period (
+                        tenant_account_id, fiscal_calendar_id, period_code,
+                        period_start_date, period_end_date, period_status_code
+                    )
+                    VALUES (%s, %s, %s, %s, %s, 'open')
+                    RETURNING fiscal_period_id
+                    """,
+                    (
+                        tenant_id,
+                        calendar_id,
+                        period_code,
+                        period_start_date,
+                        period_end_date,
+                    ),
+                ).fetchone()[0]
+                stored_start_date = period_start_date
+                stored_end_date = period_end_date
+
             connection.execute(
                 """
-                INSERT INTO accounting_core.fiscal_period (
-                    tenant_account_id, fiscal_calendar_id, period_code,
-                    period_start_date, period_end_date, period_status_code
+                INSERT INTO accounting_integration.fiscal_period_open_command (
+                    tenant_account_id,
+                    legal_entity_id,
+                    fiscal_period_id,
+                    period_open_idempotency_key,
+                    source_payload_hash,
+                    requested_period_start_date,
+                    requested_period_end_date
                 )
-                VALUES (%s, %s, %s, %s, %s, 'open')
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     tenant_id,
-                    calendar_id,
-                    period_code,
+                    legal_entity_id,
+                    period_id,
+                    command_key,
+                    source_payload_hash,
                     period_start_date,
                     period_end_date,
                 ),
@@ -1221,9 +1317,9 @@ class PostgresPostingLedger:
             return self._period_open_document(
                 legal_entity_reference,
                 period_code,
-                period_start_date,
-                period_end_date,
-                replayed=False,
+                stored_start_date,
+                stored_end_date,
+                replayed=replayed,
             )
 
     def load_fiscal_period(
@@ -5899,6 +5995,14 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             f"Runtime-tenant binding migration is missing at {runtime_binding_migration_path}. "
             "Restore database/migrations/0007_runtime_tenant_binding.sql, then retry."
         )
+    period_open_command_migration_path = (
+        migration_path.parent / "0008_fiscal_period_open_command.sql"
+    )
+    if not period_open_command_migration_path.is_file():
+        raise AccountingValidationError(
+            f"Fiscal-period-open command migration is missing at {period_open_command_migration_path}. "
+            "Restore database/migrations/0008_fiscal_period_open_command.sql, then retry."
+        )
     psycopg = _import_psycopg()
     try:
         with psycopg.connect(
@@ -5911,6 +6015,7 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             connection.execute(period_guard_migration_path.read_text(encoding="utf-8"))
             connection.execute(concurrency_migration_path.read_text(encoding="utf-8"))
             connection.execute(runtime_binding_migration_path.read_text(encoding="utf-8"))
+            connection.execute(period_open_command_migration_path.read_text(encoding="utf-8"))
     except Exception as error:
         raise AccountingValidationError(
             "Foundation migration failed. Inspect the PostgreSQL error, restore a clean "

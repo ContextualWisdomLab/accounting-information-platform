@@ -9609,6 +9609,8 @@ class PostgresPostingTests(unittest.TestCase):
                 "tenant_reference": self.policy.tenant_reference,
                 "legal_entity_reference": self.policy.legal_entity_reference,
                 "fiscal_period_reference": "urn:cwl:accounting:fiscal_period:2026-11",
+                    "idempotency_key": "period-open-invalid-v1",
+                    "source_payload_hash": "sha256:" + "e" * 64,
             },
         )
         with self.assertRaisesRegex(AccountingValidationError, "JSON object"):
@@ -9631,6 +9633,8 @@ class PostgresPostingTests(unittest.TestCase):
                     "tenant_reference": self.policy.tenant_reference,
                     "legal_entity_reference": self.policy.legal_entity_reference,
                     "fiscal_period_reference": "urn:cwl:accounting:fiscal_period:2026-11",
+                    "idempotency_key": "period-open-invalid-v1",
+                    "source_payload_hash": "sha256:" + "e" * 64,
                     "period_start_date": "01-11-2026",
                     "period_end_date": "2026-11-30",
                 },
@@ -9645,6 +9649,8 @@ class PostgresPostingTests(unittest.TestCase):
                 "2026-11",
                 date(2026, 11, 30),
                 date(2026, 11, 1),
+                idempotency_key="period-open-invalid-range-v1",
+                source_payload_hash="sha256:" + "f" * 64,
             )
         with self.assertRaisesRegex(AccountingValidationError, "fiscal_period_reference"):
             lookup_fiscal_period(DATABASE_URL, self.policy.tenant_reference, "", "")
@@ -9654,6 +9660,8 @@ class PostgresPostingTests(unittest.TestCase):
                     "tenant_reference": self.policy.tenant_reference,
                     "legal_entity_reference": self.policy.legal_entity_reference,
                     "fiscal_period_reference": "urn:cwl:accounting:fiscal_period:2026-11",
+                    "idempotency_key": "period-open-invalid-v1",
+                    "source_payload_hash": "sha256:" + "e" * 64,
                     "period_start_date": "2026-11-01",
                     "period_end_date": "30-11-2026",
                 },
@@ -9666,6 +9674,8 @@ class PostgresPostingTests(unittest.TestCase):
                     "tenant_reference": self.policy.tenant_reference,
                     "legal_entity_reference": self.policy.legal_entity_reference,
                     "period_code": "2026-11",
+                    "idempotency_key": "period-open-invalid-v1",
+                    "source_payload_hash": "sha256:" + "e" * 64,
                     "period_end_date": "2026-11-30",
                 },
                 DATABASE_URL,
@@ -9685,7 +9695,12 @@ class PostgresPostingTests(unittest.TestCase):
         with self.assertRaisesRegex(AccountingValidationError, "fiscal_period_reference"):
             PostgresPostingLedger(
                 DATABASE_URL, self.policy.tenant_reference
-            ).open_fiscal_period("", "")
+            ).open_fiscal_period(
+                "",
+                "",
+                idempotency_key="period-open-invalid-scope-v1",
+                source_payload_hash="sha256:" + "a" * 64,
+            )
         with self.assertRaisesRegex(AccountingValidationError, "legal_entity"):
             PostgresPostingLedger(
                 DATABASE_URL, self.policy.tenant_reference
@@ -9694,6 +9709,8 @@ class PostgresPostingTests(unittest.TestCase):
                 "2026-12",
                 date(2026, 12, 1),
                 date(2026, 12, 31),
+                idempotency_key="period-open-missing-entity-v1",
+                source_payload_hash="sha256:" + "b" * 64,
             )
         bare_tenant, bare_entity = self._seed_tenant_without_calendar()
         with self.assertRaisesRegex(AccountingValidationError, "fiscal_calendar"):
@@ -9702,6 +9719,8 @@ class PostgresPostingTests(unittest.TestCase):
                 "2026-12",
                 date(2026, 12, 1),
                 date(2026, 12, 31),
+                idempotency_key="period-open-missing-calendar-v1",
+                source_payload_hash="sha256:" + "c" * 64,
             )
 
         self.assertEqual(august_close[0], 200)
@@ -9709,8 +9728,9 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertIn("hard_closed", str(hard_open[1]))
         self.assertEqual(soft_open[0], 200)
         self.assertEqual(soft_close["period_status_code"], "soft_closed")
-        self.assertEqual(soft_reopen[0], 422)
-        self.assertIn("soft_closed", str(soft_reopen[1]))
+        self.assertEqual(soft_reopen[0], 200)
+        self.assertTrue(soft_reopen[1]["replayed"])
+        self.assertEqual(self._period_status("2026-10"), "soft_closed")
         self.assertEqual(missing_header[0], 400)
         self.assertEqual(missing_get_header[0], 400)
         self.assertEqual(bad_json[0], 400)
@@ -13372,6 +13392,13 @@ class PostgresPostingTests(unittest.TestCase):
             "period_end_date": "2026-09-30",
         }
         values.update(overrides)
+        period_reference = str(values["fiscal_period_reference"])
+        period_token = period_reference.rsplit(":", 1)[-1].replace("-", "")
+        values.setdefault("idempotency_key", f"period-open:{period_reference}")
+        values.setdefault(
+            "source_payload_hash",
+            "sha256:" + (period_token * 64)[:64],
+        )
         return values
 
     def _september_invoice_payload(self) -> dict[str, object]:

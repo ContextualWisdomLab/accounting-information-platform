@@ -39,6 +39,7 @@ REQUIRED_FILES = (
     "database/migrations/0005_closed_period_guard.sql",
     "database/migrations/0006_concurrency_hot_partition.sql",
     "database/migrations/0007_runtime_tenant_binding.sql",
+    "database/migrations/0008_fiscal_period_open_command.sql",
     "docs/PRD.md",
     "docs/TRD.md",
     "docs/ARCHITECTURE.md",

@@ -14,6 +14,7 @@ The foundation ERD is maintained in [ERD.md](ERD.md). PostgreSQL migrations are 
 ## Journal and evidence data
 
 - `journal_proposal_record`: immutable external proposal identity, contract version, tenant-scoped idempotency key, and source-payload hash.
+- `fiscal_period_open_command`: append-only period-open command evidence binding tenant, legal entity, fiscal period, tenant-scoped idempotency key, canonical source-payload hash, and requested dates. Exact retries replay this evidence; changed payload under the same key conflicts.
 - `general_journal`: authoritative posted or reversed header.
 - `journal_entry_line`: one-sided exact debit or credit mapped to a chart account.
 - `journal_source_reference`: evidence references and hashes attached to a journal.

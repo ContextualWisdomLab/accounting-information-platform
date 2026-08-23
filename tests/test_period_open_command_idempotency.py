@@ -6,6 +6,7 @@ import unittest
 from unittest import mock
 
 from accounting_information_platform import AccountingValidationError, IdempotencyConflictError
+from accounting_information_platform.persistence import PostgresPostingLedger
 from accounting_information_platform.accept import accept_period_open
 from tests import test_postgres_posting as posting
 
@@ -58,6 +59,42 @@ class PeriodOpenCommandBoundaryTests(unittest.TestCase):
             ledger_type.assert_not_called()
 
 
+class PeriodOpenPersistenceBoundaryTests(unittest.TestCase):
+    """Keep direct adapter calls on the same immutable command boundary."""
+
+    def test_direct_adapter_rejects_empty_command_key_before_database_work(self) -> None:
+        """The durable adapter rejects an empty period-open command key before sessions."""
+        ledger = PostgresPostingLedger(
+            "postgresql://unused.example.invalid/accounting",
+            "urn:cwl:tenant_period_open_command",
+        )
+        with mock.patch.object(ledger, "_session") as session:
+            with self.assertRaisesRegex(AccountingValidationError, "idempotency_key"):
+                ledger.open_fiscal_period(
+                    "urn:cwl:legal_entity:period_open_command",
+                    "2026-09",
+                    idempotency_key=" ",
+                    source_payload_hash="sha256:" + "a" * 64,
+                )
+            session.assert_not_called()
+
+    def test_direct_adapter_rejects_invalid_source_hash_before_database_work(self) -> None:
+        """The durable adapter rejects malformed source evidence before sessions."""
+        ledger = PostgresPostingLedger(
+            "postgresql://unused.example.invalid/accounting",
+            "urn:cwl:tenant_period_open_command",
+        )
+        with mock.patch.object(ledger, "_session") as session:
+            with self.assertRaisesRegex(AccountingValidationError, "source_payload_hash"):
+                ledger.open_fiscal_period(
+                    "urn:cwl:legal_entity:period_open_command",
+                    "2026-09",
+                    idempotency_key="period-open-command-v1",
+                    source_payload_hash="sha256:not-a-digest",
+                )
+            session.assert_not_called()
+
+
 class PostgresPeriodOpenCommandIdempotencyTests(unittest.TestCase):
     """Prove period-open replay and conflict semantics on real PostgreSQL state."""
 
@@ -99,6 +136,32 @@ class PostgresPeriodOpenCommandIdempotencyTests(unittest.TestCase):
         with self.assertRaisesRegex(IdempotencyConflictError, "different payload"):
             accept_period_open(
                 {**payload, "source_payload_hash": "sha256:" + "c" * 64},
+                posting.DATABASE_URL,
+                self.case.policy.tenant_reference,
+            )
+
+        with self.assertRaisesRegex(IdempotencyConflictError, "different payload"):
+            accept_period_open(
+                {**payload, "period_end_date": "2026-10-01"},
+                posting.DATABASE_URL,
+                self.case.policy.tenant_reference,
+            )
+
+        second_key = accept_period_open(
+            {**payload, "idempotency_key": "period-open-command-v2"},
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+        )
+        self.assertTrue(bool(second_key["replayed"]))
+
+        with self.assertRaisesRegex(AccountingValidationError, "dates do not match"):
+            accept_period_open(
+                {
+                    **payload,
+                    "idempotency_key": "period-open-command-v3",
+                    "period_end_date": "2026-10-01",
+                    "source_payload_hash": "sha256:" + "d" * 64,
+                },
                 posting.DATABASE_URL,
                 self.case.policy.tenant_reference,
             )

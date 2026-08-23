@@ -2,7 +2,7 @@
 
 ## Deployment preconditions
 
-Use PostgreSQL 18 and keep the migration owner, application runtime login and administrative / break-glass identities separate. Apply migrations in numeric order through `0007_runtime_tenant_binding.sql` before starting the service. Do not run the application with a table-owner, superuser or `BYPASSRLS` login.
+Use PostgreSQL 18 and keep the migration owner, application runtime login and administrative / break-glass identities separate. Apply migrations in numeric order through `0008_fiscal_period_open_command.sql` before starting the service. Do not run the application with a table-owner, superuser or `BYPASSRLS` login.
 
 Required environment values are deployment-specific. At minimum, configure the accounting database URL and bind this AIS process to exactly one tenant reference. Secrets belong in an approved secret store; do not place database passwords, NTS credentials, bearer tokens or provider secrets in journal payloads, logs or outbox events.
 
@@ -20,9 +20,10 @@ database/migrations/0004_close_idempotency_key.sql
 database/migrations/0005_closed_period_guard.sql
 database/migrations/0006_concurrency_hot_partition.sql
 database/migrations/0007_runtime_tenant_binding.sql
+database/migrations/0008_fiscal_period_open_command.sql
 ```
 
-Migration `0007_runtime_tenant_binding.sql` replaces caller-selected tenant authority with owner-controlled runtime-login binding and must be installed before runtime database privileges are treated as production-ready.
+Migration `0007_runtime_tenant_binding.sql` replaces caller-selected tenant authority with owner-controlled runtime-login binding. Migration `0008_fiscal_period_open_command.sql` adds forced-RLS, append-only command evidence so fiscal-period-open retries are bound to the original tenant key and source hash. Both must be installed before runtime database privileges are treated as production-ready.
 
 After installation, prove with the actual runtime login that supported reads and writes work for its tenant, another tenant is inaccessible, the login is not a migration owner / superuser / `BYPASSRLS`, and direct SQL cannot bypass journal immutability or period controls.
 
@@ -70,6 +71,8 @@ Record the grant / revoke as operational evidence. Do not grant `accounting_clos
 Every monetary command uses exact decimal strings. Do not send JSON floating-point numbers for journal amounts. A successful proposal posts proposal evidence, journal header / lines, posting receipt and transactional outbox evidence atomically.
 
 For a normal proposal retry, reuse the original tenant-scoped idempotency key only when the immutable payload evidence is identical. Changed evidence under the same key is a conflict and requires correction at the source, not a new journal under the old key.
+
+For a fiscal-period-open retry, reuse the original `idempotency_key` and `source_payload_hash`. Exact replay returns the recorded open result even if that period has subsequently closed; changed scope, dates, or source hash under the same key is an idempotency conflict. A different command key may acknowledge an already-open matching period, but it cannot reopen a soft- or hard-closed period.
 
 Posted journal facts are append-only. Never repair a posted journal with SQL `UPDATE`, `DELETE`, `TRUNCATE` or destructive migration logic. Use explicit reversal and, when appropriate, a separately posted replacement.
 

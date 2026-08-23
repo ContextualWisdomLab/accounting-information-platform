@@ -415,12 +415,6 @@ class PostingLedger:
             raise AccountingValidationError("journal does not exist")
         if original.reversal_of_journal_reference is not None:
             raise AccountingValidationError("a reversal journal cannot itself be reversed")
-        if reversal_date < original.accounting_date:
-            raise AccountingValidationError(
-                "reversal date must not precede the original journal accounting date"
-            )
-        if not policy.permits(reversal_date):
-            raise AccountingValidationError("reversal date belongs to a closed fiscal period")
         if (
             original.legal_entity_reference != policy.legal_entity_reference
             or original.accounting_book_reference != policy.accounting_book_reference
@@ -451,6 +445,12 @@ class PostingLedger:
                 command_hash,
             )
             return receipt
+        if reversal_date < original.accounting_date:
+            raise AccountingValidationError(
+                "reversal date must not precede the original journal accounting date"
+            )
+        if not policy.permits(reversal_date):
+            raise AccountingValidationError("reversal date belongs to a closed fiscal period")
         reversal_lines = tuple(
             PostedJournalLine(
                 line_number=line.line_number,

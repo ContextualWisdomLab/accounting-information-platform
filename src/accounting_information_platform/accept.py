@@ -241,7 +241,7 @@ def accept_period_close(
 def accept_period_open(
     payload: object, database_url: str, tenant_reference: str
 ) -> dict[str, object]:
-    """Open one fiscal period for *tenant_reference* and return the open receipt."""
+    """Open one fiscal period for *tenant_reference* with immutable command identity."""
     if not isinstance(payload, Mapping):
         raise AccountingValidationError(
             "period open payload must be a JSON object. "
@@ -261,6 +261,24 @@ def accept_period_open(
             "legal_entity_reference and fiscal_period_reference are required. "
             "Supply those period-open fields, then retry the period open."
         )
+    idempotency_key = payload.get("idempotency_key")
+    if (
+        not isinstance(idempotency_key, str)
+        or not idempotency_key
+        or idempotency_key != idempotency_key.strip()
+    ):
+        raise AccountingValidationError(
+            "idempotency_key is required and must be a canonical non-empty string. "
+            "Supply the period-open command key, then retry the period open."
+        )
+    source_payload_hash = payload.get("source_payload_hash")
+    if not isinstance(source_payload_hash, str) or not _HASH_PATTERN.fullmatch(
+        source_payload_hash
+    ):
+        raise AccountingValidationError(
+            "source_payload_hash must be a canonical sha256 digest. "
+            "Supply the immutable period-open command hash, then retry the period open."
+        )
     start_text = str(payload.get("period_start_date") or "")
     end_text = str(payload.get("period_end_date") or "")
     period_start_date = (
@@ -273,6 +291,8 @@ def accept_period_open(
         period_code,
         period_start_date,
         period_end_date,
+        idempotency_key=idempotency_key,
+        source_payload_hash=source_payload_hash,
     )
 
 

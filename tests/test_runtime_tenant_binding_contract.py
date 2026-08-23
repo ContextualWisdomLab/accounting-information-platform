@@ -49,5 +49,23 @@ class RuntimeTenantBindingContractTests(unittest.TestCase):
                 )
 
 
+    def test_foundation_loader_requires_period_open_command_migration(self) -> None:
+        """The loader fails before connecting when durable period-open command evidence is absent."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            for migration_number in range(1, 8):
+                source = next(MIGRATIONS.glob(f"{migration_number:04d}_*.sql"))
+                (temporary_root / source.name).write_text(
+                    source.read_text(encoding="utf-8"), encoding="utf-8"
+                )
+            with self.assertRaisesRegex(
+                AccountingValidationError, "0008_fiscal_period_open_command"
+            ):
+                apply_foundation_migration(
+                    "postgresql://unused:unused@127.0.0.1:1/unused",
+                    temporary_root / "0001_accounting_foundation.sql",
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

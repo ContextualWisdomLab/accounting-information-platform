@@ -12,6 +12,9 @@ erDiagram
 
     tenant_account ||--o{ fiscal_calendar : scopes
     fiscal_calendar ||--o{ fiscal_period : contains
+    tenant_account ||--o{ fiscal_period_open_command : scopes
+    legal_entity_record ||--o{ fiscal_period_open_command : authorizes
+    fiscal_period ||--o{ fiscal_period_open_command : opens
 
     tenant_account ||--o{ journal_proposal_record : receives
     journal_proposal_record ||--o| general_journal : posts
@@ -43,7 +46,7 @@ erDiagram
 
 `general_journal` and `journal_entry_line` are authoritative posted facts. Deferred database triggers require every committed journal to be non-empty and exactly balanced, and finalized journal populations are immutable; correction is reversal and, when needed, a separately posted replacement.
 
-`journal_proposal_record` preserves the command-side idempotency and immutable source-payload hash that precede posting. `journal_source_reference` preserves source lineage attached to a journal. `posting_receipt` is the authoritative source-facing outcome, and `outbox_event` is committed transactionally with the accounting state it publishes.
+`journal_proposal_record` preserves the command-side idempotency and immutable source-payload hash that precede posting. `fiscal_period_open_command` separately preserves period-open command identity, source hash, requested dates, and the period/legal-entity foreign keys so status changes do not erase replay evidence. `journal_source_reference` preserves source lineage attached to a journal. `posting_receipt` is the authoritative source-facing outcome, and `outbox_event` is committed transactionally with the accounting state it publishes.
 
 `home_tax_submission` is a fail-closed tax-command evidence row, not a transmitted-filing claim. Its tenant-scoped `submission_idempotency_key`, canonical `source_payload_hash`, immutable `source_payload_reference`, and derived `register_payload_hash` preserve command identity and register provenance without storing the raw VAT register or credentials.
 
