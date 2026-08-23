@@ -102,6 +102,16 @@ jobs:
         env:
           PYTHONPATH: src:.
         run: python -m coverage run --branch -m unittest discover -s tests -p 'test_*.py'
+      - name: Show repaired persistence coverage boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          for range in 4450,4520 4521,4570 4730,4785 4800,4850 5575,5620 6240,6290; do
+            start="${range%,*}"
+            end="${range#*,}"
+            printf '\n--- persistence.py:%s-%s ---\n' "$start" "$end"
+            nl -ba src/accounting_information_platform/persistence.py | sed -n "${start},${end}p"
+          done
       - name: Enforce 100 percent statement and branch coverage
         run: python -m coverage report --fail-under=100 --show-missing
       - name: Validate repository contracts and compilation
