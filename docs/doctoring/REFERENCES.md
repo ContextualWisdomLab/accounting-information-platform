@@ -58,6 +58,10 @@ PostgreSQL Global Development Group. (2026f). *PostgreSQL 18 documentation: Func
 
 PostgreSQL Global Development Group. (2026g). *PostgreSQL 18 documentation: CREATE POLICY*. https://www.postgresql.org/docs/18/sql-createpolicy.html
 
+PostgreSQL Global Development Group. (2026h). *PostgreSQL 18 documentation: Constraints*. https://www.postgresql.org/docs/18/ddl-constraints.html
+
+PostgreSQL Global Development Group. (2026i). *PostgreSQL 18 documentation: Errors and messages*. https://www.postgresql.org/docs/18/plpgsql-errors-and-messages.html
+
 SPDX Workgroup. (n.d.). *SPDX specifications*. https://spdx.dev/use/specifications/
 
 Supply-chain Levels for Software Artifacts. (2026). *SLSA specification, version 1.2*. https://slsa.dev/spec/v1.2/
