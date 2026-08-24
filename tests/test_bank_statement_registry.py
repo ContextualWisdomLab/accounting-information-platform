@@ -390,6 +390,14 @@ class BankStatementRegistryTests(unittest.TestCase):
             )
         payload = load_canonical_statement_fixture()
         command = self._command(payload, key="hash-mismatch")
+        command["source_artifact_hash"] = "not-a-digest"
+        with self.assertRaisesRegex(AccountingValidationError, "sha256"):
+            accept_bank_statement_evidence(
+                command,
+                posting.DATABASE_URL,
+                self.case.policy.tenant_reference,
+                artifact_store=self.store,
+            )
         command["source_artifact_hash"] = "sha256:" + "ab" * 32
         with self.assertRaisesRegex(AccountingValidationError, "does not match"):
             accept_bank_statement_evidence(

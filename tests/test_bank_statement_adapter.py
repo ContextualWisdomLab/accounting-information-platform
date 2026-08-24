@@ -22,6 +22,13 @@ from accounting_information_platform.bank_statement import (
     MAX_ENTRY_COUNT,
     MAX_TEXT_BYTES,
     MAX_XML_DEPTH,
+    _account_identifier_hash,
+    _entry_cursor,
+    _is_foreign_key_error,
+    _page_limit,
+    _parse_reversal,
+    _require_uuid,
+    _split_expat_name,
 )
 
 
@@ -230,6 +237,63 @@ class BankStatementAdapterTests(unittest.TestCase):
             store.get_artifact("s3://missing")
         with self.assertRaisesRegex(AccountingValidationError, "not retained"):
             store.get_artifact("memory:sha256:" + "0" * 64)
+
+    def test_iban_account_and_reversal_indicator_normalize(self) -> None:
+        """IBAN account identity and RvslInd=true survive the exact normalize path."""
+        xml = FIXTURE.read_text(encoding="utf-8")
+        xml = xml.replace(
+            "<Othr>\n            <Id>acct-opaque-fixture-only</Id>\n          </Othr>",
+            "<IBAN>GB82WEST12345698765432</IBAN>",
+        ).replace("<RvslInd>false</RvslInd>", "<RvslInd>true</RvslInd>")
+        statement = parse_bank_statement_payload(xml.encode("utf-8"), CAMT053_MESSAGE_DEFINITION)
+        self.assertTrue(statement.entries[0].reversal_indicator)
+        self.assertTrue(statement.account_identifier_hash.startswith("sha256:"))
+
+    def test_missing_amount_and_zero_amount_fail_closed(self) -> None:
+        """Entry amounts must be present and greater than zero."""
+        text = FIXTURE.read_text(encoding="utf-8")
+        with self.assertRaisesRegex(AccountingValidationError, "greater than zero"):
+            parse_bank_statement_payload(
+                text.replace("25000.00", "0", 1).encode("utf-8"),
+                CAMT053_MESSAGE_DEFINITION,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "missing"):
+            parse_bank_statement_payload(
+                text.replace("<Amt Ccy=\"KRW\">25000.00</Amt>", "", 1).encode("utf-8"),
+                CAMT053_MESSAGE_DEFINITION,
+            )
+
+    def test_helper_boundaries_fail_closed(self) -> None:
+        """List cursors, hashes, and foreign-key detection stay fail-closed."""
+        self.assertEqual(_page_limit(None), 50)
+        self.assertEqual(_page_limit(10), 10)
+        with self.assertRaisesRegex(AccountingValidationError, "page_limit"):
+            _page_limit(101)
+        self.assertEqual(_entry_cursor(None), 0)
+        self.assertEqual(_entry_cursor("3"), 3)
+        with self.assertRaisesRegex(AccountingValidationError, "cursor"):
+            _entry_cursor("-1")
+        _require_uuid("6ba7b810-9dad-11d1-80b4-00c04fd430c8", "bank_statement_record_id")
+        with self.assertRaisesRegex(AccountingValidationError, "UUID"):
+            _require_uuid("nope", "bank_statement_record_id")
+        self.assertEqual(_split_expat_name("Document"), ("", "Document"))
+        self.assertFalse(_parse_reversal("0"))
+        self.assertTrue(_parse_reversal("1"))
+        digest = _account_identifier_hash(
+            {"account_identifier_hash": "sha256:" + "ab" * 32}
+        )
+        self.assertTrue(digest.startswith("sha256:"))
+        with self.assertRaisesRegex(AccountingValidationError, "account_identifier_hash"):
+            _account_identifier_hash({"account_identifier_hash": "bad"})
+        with self.assertRaisesRegex(AccountingValidationError, "account_identifier_hash is required"):
+            _account_identifier_hash({})
+        error = Exception("fk")
+        error.sqlstate = "23503"
+        self.assertTrue(_is_foreign_key_error(error))
+        wrapped = Exception("wrap")
+        wrapped.__cause__ = error
+        self.assertTrue(_is_foreign_key_error(wrapped))
+        self.assertFalse(_is_foreign_key_error(Exception("other")))
 
 
 if __name__ == "__main__":

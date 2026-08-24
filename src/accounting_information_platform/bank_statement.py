@@ -390,17 +390,19 @@ def accept_bank_statement_evidence(
         )
     raw_bytes = statement_payload.encode("utf-8")
     source_hash = _sha256_digest(raw_bytes)
-    supplied_hash = str(command.get("source_artifact_hash") or source_hash)
-    if supplied_hash != source_hash:
-        raise AccountingValidationError(
-            "source_artifact_hash does not match the supplied statement bytes. "
-            "Send the original artifact and its SHA-256, then retry ingest."
-        )
-    if _HASH_PATTERN.fullmatch(supplied_hash) is None:
-        raise AccountingValidationError(
-            "source_artifact_hash must be sha256: plus 64 lowercase hex characters. "
-            "Supply that digest, then retry ingest."
-        )
+    supplied_hash = command.get("source_artifact_hash")
+    if supplied_hash not in (None, ""):
+        supplied_text = str(supplied_hash)
+        if _HASH_PATTERN.fullmatch(supplied_text) is None:
+            raise AccountingValidationError(
+                "source_artifact_hash must be sha256: plus 64 lowercase hex characters. "
+                "Supply that digest, then retry ingest."
+            )
+        if supplied_text != source_hash:
+            raise AccountingValidationError(
+                "source_artifact_hash does not match the supplied statement bytes. "
+                "Send the original artifact and its SHA-256, then retry ingest."
+            )
     statement = parse_bank_statement_payload(raw_bytes, message_definition_identifier)
     store = artifact_store if artifact_store is not None else MemoryArtifactStore()
     ledger = PostgresPostingLedger(database_url, tenant_reference)
