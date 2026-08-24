@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import unittest
 from decimal import Decimal
 from pathlib import Path
@@ -16,19 +17,29 @@ from accounting_information_platform import (
     load_canonical_statement_fixture,
     parse_bank_statement_payload,
 )
+from accounting_information_platform.http_api import _bank_statement_status
 from accounting_information_platform.bank_statement import (
     MAX_ATTRIBUTE_COUNT,
     MAX_ELEMENT_COUNT,
     MAX_ENTRY_COUNT,
     MAX_TEXT_BYTES,
     MAX_XML_DEPTH,
+    _XmlElement,
     _account_identifier_hash,
+    _decimal_text,
     _entry_cursor,
+    _find_path,
     _is_foreign_key_error,
+    _normalize_detail,
     _page_limit,
+    _parse_bounded_xml,
     _parse_reversal,
+    _parse_timestamp,
     _require_uuid,
+    _required_child,
+    _required_text,
     _split_expat_name,
+    _statement_cursor,
 )
 
 
@@ -294,6 +305,141 @@ class BankStatementAdapterTests(unittest.TestCase):
         wrapped.__cause__ = error
         self.assertTrue(_is_foreign_key_error(wrapped))
         self.assertFalse(_is_foreign_key_error(Exception("other")))
+        self.assertEqual(_decimal_text(Decimal("25000")), "25000")
+        self.assertEqual(_decimal_text(1), "1")
+        parsed_cursor = _statement_cursor(
+            "2026-08-24T00:00:00+00:00|6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+        )
+        self.assertEqual(str(parsed_cursor[1]), "6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+        with self.assertRaisesRegex(AccountingValidationError, "ISO-8601"):
+            _parse_timestamp("not-a-timestamp", "cursor")
+        node = _XmlElement("Document", "", {}, "", [])
+        self.assertIs(_find_path(node, []), node)
+        self.assertIsNone(_find_path(node, ["Document", "Missing"]))
+        amount = _XmlElement("Amt", "", {"Ccy": "KRW"}, "100.00", [])
+        tx_amount = _XmlElement("TxAmt", "", {}, "", [amount])
+        amount_details = _XmlElement("AmtDtls", "", {}, "", [tx_amount])
+        detail = _normalize_detail(amount_details, 1, 1, "CRDT")
+        self.assertEqual(detail.detail_amount, Decimal("100.00"))
+        empty_statement = _XmlElement("Stmt", "", {}, "", [])
+        with self.assertRaisesRegex(AccountingValidationError, "statement account"):
+            _required_child(empty_statement, "Acct", "statement account")
+        with self.assertRaisesRegex(AccountingValidationError, "statement identity"):
+            _required_text(empty_statement, ("Id",), "statement identity")
+
+    def test_manifest_revision_and_parser_reject_handlers_fail_closed(self) -> None:
+        """Wrong adapter identity and unused expat reject handlers fail closed."""
+        real_loads = json.loads
+
+        def _wrong_revision(text: str, *args: object, **kwargs: object) -> object:
+            data = real_loads(text, *args, **kwargs)
+            if isinstance(data, dict) and "artifacts" in data:
+                mutated = dict(data)
+                mutated["message_definition_identifier"] = "camt.053.001.13"
+                return mutated
+            return data
+
+        with mock.patch(
+            "accounting_information_platform.bank_statement.json.loads",
+            _wrong_revision,
+        ):
+            with self.assertRaisesRegex(
+                AccountingValidationError, "message-definition identifier"
+            ):
+                load_adapter_manifest()
+        captured: dict[str, object] = {}
+
+        class _CapturingParser:
+            ordered_attributes = True
+
+            def __setattr__(self, name: str, value: object) -> None:
+                if name.endswith("Handler"):
+                    captured[name] = value
+                object.__setattr__(self, name, value)
+
+            def Parse(self, _payload: bytes, _final: bool) -> None:
+                return None
+
+        with mock.patch(
+            "accounting_information_platform.bank_statement.expat.ParserCreate",
+            return_value=_CapturingParser(),
+        ):
+            with self.assertRaisesRegex(AccountingValidationError, "no document element"):
+                _parse_bounded_xml(b"<Document/>")
+        with self.assertRaisesRegex(AccountingValidationError, "external"):
+            captured["ExternalEntityRefHandler"]()
+        with self.assertRaisesRegex(AccountingValidationError, "entity"):
+            captured["EntityDeclHandler"]()
+        captured["CharacterDataHandler"]("leading")
+        self.assertEqual(
+            _bank_statement_status(AccountingValidationError("bank account is not recorded")),
+            404,
+        )
+        self.assertEqual(
+            _bank_statement_status(AccountingValidationError("page_limit must be an integer")),
+            400,
+        )
+        self.assertEqual(
+            _bank_statement_status(AccountingValidationError("cursor must be recorded_at")),
+            400,
+        )
+        self.assertEqual(
+            _bank_statement_status(AccountingValidationError("bank_statement_record_id must be a UUID")),
+            400,
+        )
+        self.assertEqual(
+            _bank_statement_status(
+                AccountingValidationError(
+                    "assignment valid_from must be an ISO-8601 date or timestamp. "
+                    "Supply a UTC timestamp"
+                )
+            ),
+            422,
+        )
+        self.assertEqual(
+            _bank_statement_status(AccountingValidationError("chart_account_code is required")),
+            422,
+        )
+
+    def test_structural_account_and_indicator_misses_fail_closed(self) -> None:
+        """Required paths, account identity, and CdtDbtInd stay fail-closed."""
+        empty_document = (
+            b'   <Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.14"/>'
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "required camt.053"):
+            parse_bank_statement_payload(empty_document, CAMT053_MESSAGE_DEFINITION)
+        text = FIXTURE.read_text(encoding="utf-8")
+        with self.assertRaisesRegex(AccountingValidationError, "account identifier"):
+            parse_bank_statement_payload(
+                text.replace(
+                    "<Othr>\n            <Id>acct-opaque-fixture-only</Id>\n          </Othr>",
+                    "",
+                ).encode("utf-8"),
+                CAMT053_MESSAGE_DEFINITION,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "CRDT or DBIT"):
+            parse_bank_statement_payload(
+                text.replace(
+                    "<NtryRef>NTRY-1</NtryRef>\n        <Amt Ccy=\"KRW\">25000.00</Amt>\n        <CdtDbtInd>CRDT</CdtDbtInd>",
+                    "<NtryRef>NTRY-1</NtryRef>\n        <Amt Ccy=\"KRW\">25000.00</Amt>\n        <CdtDbtInd>FOOO</CdtDbtInd>",
+                    1,
+                ).encode("utf-8"),
+                CAMT053_MESSAGE_DEFINITION,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "transaction detail"):
+            parse_bank_statement_payload(
+                text.replace(
+                    "<AmtDtls>\n              <TxAmt>\n                <Amt Ccy=\"KRW\">25000.00</Amt>\n              </TxAmt>\n            </AmtDtls>",
+                    "",
+                    1,
+                ).encode("utf-8"),
+                CAMT053_MESSAGE_DEFINITION,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "statement identity"):
+            parse_bank_statement_payload(
+                text.replace("<Id>BANK-STMT-2026-08-24</Id>", "<Id></Id>", 1).encode("utf-8"),
+                CAMT053_MESSAGE_DEFINITION,
+            )
 
 
 if __name__ == "__main__":

@@ -6,6 +6,8 @@ import hashlib
 import unittest
 import uuid
 from datetime import datetime, timezone
+from unittest import mock
+from urllib.parse import quote
 
 import psycopg
 
@@ -368,6 +370,8 @@ class BankStatementRegistryTests(unittest.TestCase):
         self.assertEqual(method_status, 405)
         get_account, _ = self.case._http_json("GET", "/bank-accounts", None)
         self.assertEqual(get_account, 405)
+        get_assignment, _ = self.case._http_json("GET", "/bank-account-assignments", None)
+        self.assertEqual(get_assignment, 405)
 
     def test_command_validation_and_list_cursors(self) -> None:
         """Missing fields, hash mismatch, and bad cursors fail before persistence."""
@@ -390,6 +394,43 @@ class BankStatementRegistryTests(unittest.TestCase):
                     "bank_account_reference": self.account_reference,
                     "message_definition_identifier": CAMT053_MESSAGE_DEFINITION,
                     "statement_payload": "<Document/>",
+                },
+                posting.DATABASE_URL,
+                self.case.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "statement_payload"):
+            accept_bank_statement_evidence(
+                {
+                    "tenant_reference": self.case.policy.tenant_reference,
+                    "bank_account_reference": self.account_reference,
+                    "ingestion_idempotency_key": "urn:cwl:bank_statement:empty-payload",
+                    "message_definition_identifier": CAMT053_MESSAGE_DEFINITION,
+                    "statement_payload": "",
+                },
+                posting.DATABASE_URL,
+                self.case.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "chart_account_code"):
+            accept_bank_account_assignment(
+                {
+                    "tenant_reference": self.case.policy.tenant_reference,
+                    "bank_account_reference": self.account_reference,
+                    "legal_entity_reference": self.case.policy.legal_entity_reference,
+                    "accounting_book_reference": self.case.policy.accounting_book_reference,
+                    "valid_from": "2026-03-01T00:00:00Z",
+                },
+                posting.DATABASE_URL,
+                self.case.policy.tenant_reference,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "not recorded"):
+            accept_bank_account_assignment(
+                {
+                    "tenant_reference": self.case.policy.tenant_reference,
+                    "bank_account_reference": self.account_reference,
+                    "legal_entity_reference": self.case.policy.legal_entity_reference,
+                    "accounting_book_reference": "urn:cwl:accounting_book:missing",
+                    "chart_account_code": "110200",
+                    "valid_from": "2026-03-01T00:00:00Z",
                 },
                 posting.DATABASE_URL,
                 self.case.policy.tenant_reference,
@@ -531,6 +572,246 @@ class BankStatementRegistryTests(unittest.TestCase):
         )
         self.assertEqual(assign_status, 200)
         self.assertEqual(assignment["chart_account_code"], "110200")
+
+    def test_identity_replay_list_cursor_and_assignment_fk(self) -> None:
+        """Same identity with a changed artifact hash replays; list cursors and FK fail closed."""
+        original = load_canonical_statement_fixture()
+        first = self._ingest(original, key="identity-original")
+        mutated = original.replace(b"STMT-2026-08-24-001", b"STMT-2026-08-24-002", 1)
+        without_hash = self._command(mutated, key="identity-mutated")
+        del without_hash["source_artifact_hash"]
+        replayed = accept_bank_statement_evidence(
+            without_hash,
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            artifact_store=self.store,
+        )
+        self.assertTrue(replayed["replayed"])
+        self.assertEqual(replayed["bank_statement_record_id"], first["bank_statement_record_id"])
+        second_identity = original.replace(
+            b"<Id>BANK-STMT-2026-08-24</Id>",
+            b"<Id>BANK-STMT-2026-08-25</Id>",
+            1,
+        )
+        self._ingest(second_identity, key="second-identity")
+        page = lookup_bank_statements(
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            self.account_reference,
+            page_limit=1,
+        )
+        self.assertEqual(len(page["bank_statements"]), 1)
+        self.assertIsNotNone(page["next_cursor"])
+        rest = lookup_bank_statements(
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            self.account_reference,
+            page_limit=1,
+            cursor=str(page["next_cursor"]),
+        )
+        self.assertEqual(len(rest["bank_statements"]), 1)
+        with self.assertRaisesRegex(AccountingValidationError, "not recorded"):
+            lookup_bank_statement_entries(
+                posting.DATABASE_URL,
+                self.case.policy.tenant_reference,
+                str(uuid.uuid4()),
+            )
+        fk = Exception("foreign key")
+        fk.sqlstate = "23503"
+        original_execute = psycopg.Connection.execute
+
+        def _raise_assignment_fk(
+            self_connection: object, query: object, *args: object, **kwargs: object
+        ) -> object:
+            sql = query if isinstance(query, str) else str(query)
+            if "INSERT INTO accounting_core.bank_account_assignment" in sql:
+                raise fk
+            return original_execute(self_connection, query, *args, **kwargs)
+
+        reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
+        accept_bank_account_record(
+            {
+                "tenant_reference": self.case.policy.tenant_reference,
+                "bank_account_reference": reference,
+                "account_currency_code": "KRW",
+                "account_identifier": "acct-fk-path",
+            },
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+        )
+        with mock.patch.object(psycopg.Connection, "execute", _raise_assignment_fk):
+            with self.assertRaisesRegex(AccountingValidationError, "same accounting book"):
+                accept_bank_account_assignment(
+                    {
+                        "tenant_reference": self.case.policy.tenant_reference,
+                        "bank_account_reference": reference,
+                        "legal_entity_reference": self.case.policy.legal_entity_reference,
+                        "accounting_book_reference": self.case.policy.accounting_book_reference,
+                        "chart_account_code": "110200",
+                        "valid_from": "2026-04-01T00:00:00Z",
+                    },
+                    posting.DATABASE_URL,
+                    self.case.policy.tenant_reference,
+                )
+
+    def test_http_bank_statement_error_status_mapping(self) -> None:
+        """Bank-account and statement HTTP surfaces map tenant, JSON, and scope errors."""
+        server = self.case._start_http_server()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        tenant = self.case.policy.tenant_reference
+        missing_header, _ = self.case._http_json(
+            "POST", "/bank-accounts", {"tenant_reference": tenant}, tenant_header=None
+        )
+        self.assertEqual(missing_header, 400)
+        bad_json, _ = self.case._http_raw("POST", "/bank-accounts", b"not-json", tenant)
+        self.assertEqual(bad_json, 400)
+        mismatch = {
+            "tenant_reference": "urn:cwl:tenant_other",
+            "bank_account_reference": f"urn:cwl:bank_account:{uuid.uuid4().hex}",
+            "account_currency_code": "KRW",
+            "account_identifier": "http-mismatch",
+        }
+        forbidden, _ = self.case._http_json("POST", "/bank-accounts", mismatch)
+        self.assertEqual(forbidden, 403)
+        conflict, conflict_body = self.case._http_json(
+            "POST",
+            "/bank-accounts",
+            {
+                "tenant_reference": tenant,
+                "bank_account_reference": self.account_reference,
+                "account_currency_code": "USD",
+                "account_identifier": "acct-opaque-fixture-only",
+            },
+        )
+        self.assertEqual(conflict, 409)
+        self.assertIn("bank_account_reference", str(conflict_body).lower())
+        invalid_account, _ = self.case._http_json(
+            "POST",
+            "/bank-accounts",
+            {"tenant_reference": tenant, "bank_account_reference": "urn:cwl:bank_account:x"},
+        )
+        self.assertEqual(invalid_account, 422)
+        missing_assign_header, _ = self.case._http_json(
+            "POST",
+            "/bank-account-assignments",
+            {"tenant_reference": tenant},
+            tenant_header=None,
+        )
+        self.assertEqual(missing_assign_header, 400)
+        bad_assign_json, _ = self.case._http_raw(
+            "POST", "/bank-account-assignments", b"not-json", tenant
+        )
+        self.assertEqual(bad_assign_json, 400)
+        assign_forbidden, _ = self.case._http_json(
+            "POST",
+            "/bank-account-assignments",
+            {
+                "tenant_reference": "urn:cwl:tenant_other",
+                "bank_account_reference": self.account_reference,
+                "legal_entity_reference": self.case.policy.legal_entity_reference,
+                "accounting_book_reference": self.case.policy.accounting_book_reference,
+                "chart_account_code": "110200",
+                "valid_from": "2026-01-01T00:00:00Z",
+            },
+        )
+        self.assertEqual(assign_forbidden, 403)
+        assign_invalid, assign_body = self.case._http_json(
+            "POST",
+            "/bank-account-assignments",
+            {
+                "tenant_reference": tenant,
+                "bank_account_reference": self.account_reference,
+                "legal_entity_reference": self.case.policy.legal_entity_reference,
+                "accounting_book_reference": self.case.policy.accounting_book_reference,
+                "valid_from": "2026-05-01T00:00:00Z",
+            },
+        )
+        self.assertEqual(assign_invalid, 422)
+        self.assertIn("chart_account_code", str(assign_body))
+        assign_timestamp, assign_timestamp_body = self.case._http_json(
+            "POST",
+            "/bank-account-assignments",
+            {
+                "tenant_reference": tenant,
+                "bank_account_reference": self.account_reference,
+                "legal_entity_reference": self.case.policy.legal_entity_reference,
+                "accounting_book_reference": self.case.policy.accounting_book_reference,
+                "chart_account_code": "110200",
+                "valid_from": "not-a-timestamp",
+            },
+        )
+        self.assertEqual(assign_timestamp, 422)
+        self.assertIn("timestamp", str(assign_timestamp_body).lower())
+        bad_statement_json, _ = self.case._http_raw(
+            "POST", "/bank-statements", b"not-json", tenant
+        )
+        self.assertEqual(bad_statement_json, 400)
+        statement_forbidden, _ = self.case._http_json(
+            "POST",
+            "/bank-statements",
+            {
+                "tenant_reference": "urn:cwl:tenant_other",
+                "bank_account_reference": self.account_reference,
+                "ingestion_idempotency_key": "urn:cwl:bank_statement:http-mismatch",
+                "message_definition_identifier": CAMT053_MESSAGE_DEFINITION,
+                "statement_payload": "<Document/>",
+            },
+        )
+        self.assertEqual(statement_forbidden, 403)
+        statement_invalid, _ = self.case._http_json(
+            "POST",
+            "/bank-statements",
+            {
+                "tenant_reference": tenant,
+                "bank_account_reference": self.account_reference,
+                "ingestion_idempotency_key": "urn:cwl:bank_statement:http-empty",
+                "message_definition_identifier": CAMT053_MESSAGE_DEFINITION,
+                "statement_payload": "",
+            },
+        )
+        self.assertEqual(statement_invalid, 422)
+        missing_get, _ = self.case._http_json(
+            "GET",
+            f"/bank-statements?bank_account_reference={self.account_reference}",
+            None,
+            tenant_header=None,
+        )
+        self.assertEqual(missing_get, 400)
+        unknown, unknown_body = self.case._http_json(
+            "GET",
+            f"/bank-statements?bank_statement_record_id={uuid.uuid4()}",
+            None,
+        )
+        self.assertEqual(unknown, 404)
+        self.assertIn("not recorded", str(unknown_body).lower())
+        bad_cursor, bad_cursor_body = self.case._http_json(
+            "GET",
+            f"/bank-statements?bank_account_reference={self.account_reference}"
+            f"&cursor={quote(f'not-a-time|{uuid.uuid4()}')}",
+            None,
+        )
+        self.assertEqual(bad_cursor, 400)
+        self.assertIn("cursor", str(bad_cursor_body).lower())
+        zero_limit, _ = self.case._http_json(
+            "GET",
+            f"/bank-statements?bank_account_reference={self.account_reference}&page_limit=0",
+            None,
+        )
+        self.assertEqual(zero_limit, 400)
+        missing_entries_header, _ = self.case._http_json(
+            "GET",
+            f"/bank-statement-entries?bank_statement_record_id={uuid.uuid4()}",
+            None,
+            tenant_header=None,
+        )
+        self.assertEqual(missing_entries_header, 400)
+        unknown_entries, _ = self.case._http_json(
+            "GET",
+            f"/bank-statement-entries?bank_statement_record_id={uuid.uuid4()}",
+            None,
+        )
+        self.assertEqual(unknown_entries, 404)
 
     def _ingest(self, payload: bytes, *, key: str = "ingest-key") -> dict[str, object]:
         return accept_bank_statement_evidence(
