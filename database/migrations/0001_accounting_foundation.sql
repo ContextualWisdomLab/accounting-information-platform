@@ -38,6 +38,7 @@ CREATE TABLE accounting_core.accounting_book (
         REFERENCES accounting_core.legal_entity_record (tenant_account_id, legal_entity_id),
     UNIQUE (tenant_account_id, legal_entity_id, book_role_code, valid_from),
     UNIQUE (tenant_account_id, accounting_book_id),
+    UNIQUE (tenant_account_id, legal_entity_id, accounting_book_id),
     CHECK (valid_to IS NULL OR valid_to > valid_from)
 );
 
@@ -146,6 +147,10 @@ CREATE TABLE accounting_core.general_journal (
         REFERENCES accounting_core.legal_entity_record (tenant_account_id, legal_entity_id),
     FOREIGN KEY (tenant_account_id, accounting_book_id)
         REFERENCES accounting_core.accounting_book (tenant_account_id, accounting_book_id),
+    FOREIGN KEY (tenant_account_id, legal_entity_id, accounting_book_id)
+        REFERENCES accounting_core.accounting_book (
+            tenant_account_id, legal_entity_id, accounting_book_id
+        ),
     FOREIGN KEY (tenant_account_id, fiscal_period_id)
         REFERENCES accounting_core.fiscal_period (tenant_account_id, fiscal_period_id),
     FOREIGN KEY (tenant_account_id, source_proposal_record_id)
@@ -263,6 +268,42 @@ CREATE TABLE accounting_integration.outbox_event (
     created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     published_at timestamptz
 );
+
+CREATE OR REPLACE FUNCTION accounting_core.guard_journal_line_book_scope()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    journal_book_id uuid;
+    chart_book_id uuid;
+BEGIN
+    SELECT general_journal.accounting_book_id
+    INTO journal_book_id
+    FROM accounting_core.general_journal
+    WHERE general_journal.tenant_account_id = NEW.tenant_account_id
+      AND general_journal.general_journal_id = NEW.general_journal_id;
+
+    SELECT chart_account.accounting_book_id
+    INTO chart_book_id
+    FROM accounting_core.chart_account
+    WHERE chart_account.tenant_account_id = NEW.tenant_account_id
+      AND chart_account.chart_account_id = NEW.chart_account_id;
+
+    IF journal_book_id IS NOT NULL
+       AND chart_book_id IS NOT NULL
+       AND journal_book_id <> chart_book_id THEN
+        RAISE EXCEPTION
+            'journal entry chart account must belong to the journal accounting book (journal_scope_mismatch)'
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER journal_line_book_scope_guard
+BEFORE INSERT OR UPDATE OF tenant_account_id, general_journal_id, chart_account_id
+ON accounting_core.journal_entry_line
+FOR EACH ROW EXECUTE FUNCTION accounting_core.guard_journal_line_book_scope();
 
 CREATE OR REPLACE FUNCTION accounting_core.current_tenant_account_id()
 RETURNS uuid
