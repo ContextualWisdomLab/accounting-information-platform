@@ -198,9 +198,11 @@ class BankStatementRegistryTests(unittest.TestCase):
                 other.policy.tenant_reference,
                 str(document["bank_statement_record_id"]),
             )
+        foreign = self._command(load_canonical_statement_fixture(), key="other-tenant")
+        foreign["tenant_reference"] = other.policy.tenant_reference
         with self.assertRaisesRegex(AccountingValidationError, "not recorded"):
             accept_bank_statement_evidence(
-                self._command(load_canonical_statement_fixture(), key="other-tenant"),
+                foreign,
                 posting.DATABASE_URL,
                 other.policy.tenant_reference,
                 artifact_store=MemoryArtifactStore(),
@@ -324,7 +326,11 @@ class BankStatementRegistryTests(unittest.TestCase):
         self.assertEqual(replay_status, 200)
         self.assertTrue(replay["replayed"])
         conflict = dict(command)
-        conflict["statement_payload"] = payload.replace("25000.00", "27000.00")
+        changed_payload = payload.replace("25000.00", "27000.00")
+        conflict["statement_payload"] = changed_payload
+        conflict["source_artifact_hash"] = (
+            "sha256:" + hashlib.sha256(changed_payload.encode("utf-8")).hexdigest()
+        )
         conflict_status, conflict_body = self.case._http_json(
             "POST", "/bank-statements", conflict
         )

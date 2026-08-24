@@ -181,6 +181,36 @@ class AccountingCiContractTests(unittest.TestCase):
             workflow,
         )
 
+    def test_ci_pins_every_pip_install_command_by_hash(self) -> None:
+        """Scorecard Pinned-Dependencies requires a hash pin on every pip install line."""
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        pip_install_lines = [
+            line.strip()
+            for line in workflow.splitlines()
+            if re.search(r"\bpip(?:3)? install\b", line)
+        ]
+        self.assertGreaterEqual(len(pip_install_lines), 2)
+        for line in pip_install_lines:
+            self.assertTrue(
+                "--require-hashes" in line or "--hash=sha256:" in line,
+                f"pip install is not hash-pinned: {line}",
+            )
+        self.assertIn(
+            'wheel_hash="$(sha256sum "$primary_wheel" | cut -d\' \' -f1)"',
+            workflow,
+        )
+        self.assertIn(
+            'python -m pip install --no-index --no-deps --force-reinstall '
+            '--require-hashes --hash="sha256:${wheel_hash}" "$primary_wheel"',
+            workflow,
+        )
+        self.assertNotIn(
+            "python -m pip install --no-deps --no-build-isolation -e .",
+            workflow,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

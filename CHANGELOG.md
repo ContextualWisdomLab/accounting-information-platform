@@ -8,6 +8,8 @@
 
 ### Security
 
+- Exact-head CI installs the rebuilt wheel with `--require-hashes` and the measured SHA-256 so Scorecard Pinned-Dependencies does not treat the smoke-test `pip install` as an unpinned command. The intermediate public-API smoke test imports the source tree over `PYTHONPATH` instead of an unhashed editable install.
+
 - Bound ordinary PostgreSQL runtime logins to one admin-owned tenant identity for forced RLS; caller-controlled custom GUCs can no longer rebind accounting tenant scope.
 
 - HomeTax rejected-command receipts now retain immutable command source hash and source reference separately from the derived VAT-register hash, and exact replay fails closed on changed provenance.
