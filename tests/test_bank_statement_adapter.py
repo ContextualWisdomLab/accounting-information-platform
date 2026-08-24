@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import unittest
+import uuid
 from decimal import Decimal
 from pathlib import Path
 from unittest import mock
@@ -24,6 +26,7 @@ from accounting_information_platform.bank_statement import (
     MAX_ENTRY_COUNT,
     MAX_TEXT_BYTES,
     MAX_XML_DEPTH,
+    accept_bank_account_assignment,
     _XmlElement,
     _account_identifier_hash,
     _decimal_text,
@@ -326,6 +329,65 @@ class BankStatementAdapterTests(unittest.TestCase):
             _required_child(empty_statement, "Acct", "statement account")
         with self.assertRaisesRegex(AccountingValidationError, "statement identity"):
             _required_text(empty_statement, ("Id",), "statement identity")
+
+    def test_assignment_reraises_non_foreign_key_insert_errors(self) -> None:
+        """A non-FK assignment INSERT failure is not rewritten as a book-scope miss."""
+
+        class _Result:
+            def fetchone(self) -> tuple[object, ...]:
+                return (uuid.uuid4(), "KRW")
+
+        class _Connection:
+            def execute(self, sql: object, _params: object = None) -> _Result:
+                query = sql if isinstance(sql, str) else str(sql)
+                if "INSERT INTO accounting_core.bank_account_assignment" in query:
+                    raise RuntimeError("disk full")
+                return _Result()
+
+        class _Ledger:
+            def __init__(self, *_args: object, **_kwargs: object) -> None:
+                return None
+
+            def _session(self) -> contextlib.AbstractContextManager[object]:
+                return contextlib.nullcontext(_Connection())
+
+            def _require_tenant(self, _connection: object) -> object:
+                return uuid.uuid4()
+
+            def _acquire_command_lock(self, _connection: object, _scope: str) -> None:
+                return None
+
+            def _load_legal_entity(
+                self,
+                _connection: object,
+                _tenant_id: object,
+                _reference: str,
+                _label: str,
+            ) -> tuple[object, str]:
+                return uuid.uuid4(), "KRW"
+
+        tenant = "urn:cwl:tenant:assignment-reraise"
+        with mock.patch(
+            "accounting_information_platform.bank_statement.PostgresPostingLedger",
+            _Ledger,
+        ):
+            with mock.patch(
+                "accounting_information_platform.bank_statement._load_bank_account",
+                return_value=(uuid.uuid4(), "KRW", "sha256:" + "ab" * 32),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "disk full"):
+                    accept_bank_account_assignment(
+                        {
+                            "tenant_reference": tenant,
+                            "bank_account_reference": "urn:cwl:bank_account:reraise",
+                            "legal_entity_reference": "urn:cwl:legal_entity:reraise",
+                            "accounting_book_reference": "urn:cwl:accounting_book:reraise",
+                            "chart_account_code": "110200",
+                            "valid_from": "2026-01-01T00:00:00Z",
+                        },
+                        "postgresql://unused",
+                        tenant,
+                    )
 
     def test_manifest_revision_and_parser_reject_handlers_fail_closed(self) -> None:
         """Wrong adapter identity and unused expat reject handlers fail closed."""
