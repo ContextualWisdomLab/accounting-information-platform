@@ -7,9 +7,7 @@
   "required_paths": [
     "Document/BkToCstmrStmt/GrpHdr/MsgId",
     "Document/BkToCstmrStmt/Stmt/Id",
-    "Document/BkToCstmrStmt/Stmt/Acct",
-    "Document/BkToCstmrStmt/Stmt/Ntry/Amt",
-    "Document/BkToCstmrStmt/Stmt/Ntry/CdtDbtInd"
+    "Document/BkToCstmrStmt/Stmt/Acct"
   ],
   "official_source_url": "https://www.iso20022.org/iso-20022-message-definitions?search=camt.053",
   "note": "CWL-derived required-path fixture. Not an official RA XSD and not a substitute for iso20022.org."

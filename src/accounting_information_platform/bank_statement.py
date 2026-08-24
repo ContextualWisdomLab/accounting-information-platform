@@ -926,25 +926,25 @@ def _parse_bounded_xml(payload: bytes) -> "_XmlElement":
     root_holder: list[_XmlElement | None] = [None]
     stats = {"depth": 0, "elements": 0, "attributes": 0, "text_bytes": 0}
 
-    def reject_external(*_args: object) -> int:
+    def _reject_external(*_args: object) -> int:
         raise AccountingValidationError(
             "external XML entity or DTD resolution is not permitted. "
             "Remove DTD and external entities, then retry ingest."
         )
 
-    def reject_doctype(*_args: object) -> None:
+    def _reject_doctype(*_args: object) -> None:
         raise AccountingValidationError(
             "XML DTD declarations are not permitted. "
             "Remove the DTD, then retry ingest."
         )
 
-    def reject_entity(*_args: object) -> None:
+    def _reject_entity(*_args: object) -> None:
         raise AccountingValidationError(
             "XML entity declarations are not permitted. "
             "Remove entity declarations, then retry ingest."
         )
 
-    def reject_pi(target: str, _data: str) -> None:
+    def _reject_pi(target: str, _data: str) -> None:
         if target.lower() in {"xml-stylesheet", "xsl", "xslt"}:
             raise AccountingValidationError(
                 "XML stylesheet processing is not permitted. "
@@ -955,7 +955,7 @@ def _parse_bounded_xml(payload: bytes) -> "_XmlElement":
             "Remove processing instructions, then retry ingest."
         )
 
-    def start_element(name: str, attributes: object) -> None:
+    def _start_element(name: str, attributes: object) -> None:
         attrib = (
             {str(key): str(value) for key, value in attributes.items()}
             if isinstance(attributes, dict)
@@ -990,11 +990,11 @@ def _parse_bounded_xml(payload: bytes) -> "_XmlElement":
             root_holder[0] = element
         stack.append(element)
 
-    def end_element(_name: str) -> None:
+    def _end_element(_name: str) -> None:
         stack.pop()
         stats["depth"] -= 1
 
-    def handle_text(text: str) -> None:
+    def _handle_text(text: str) -> None:
         encoded = text.encode("utf-8")
         stats["text_bytes"] += len(encoded)
         if stats["text_bytes"] > MAX_TEXT_BYTES:
@@ -1005,14 +1005,14 @@ def _parse_bounded_xml(payload: bytes) -> "_XmlElement":
         if stack:
             stack[-1].text += text
 
-    parser.StartDoctypeDeclHandler = reject_doctype
-    parser.EntityDeclHandler = reject_entity
-    parser.UnparsedEntityDeclHandler = reject_entity
-    parser.ExternalEntityRefHandler = reject_external
-    parser.ProcessingInstructionHandler = reject_pi
-    parser.StartElementHandler = start_element
-    parser.EndElementHandler = end_element
-    parser.CharacterDataHandler = handle_text
+    parser.StartDoctypeDeclHandler = _reject_doctype
+    parser.EntityDeclHandler = _reject_entity
+    parser.UnparsedEntityDeclHandler = _reject_entity
+    parser.ExternalEntityRefHandler = _reject_external
+    parser.ProcessingInstructionHandler = _reject_pi
+    parser.StartElementHandler = _start_element
+    parser.EndElementHandler = _end_element
+    parser.CharacterDataHandler = _handle_text
     try:
         parser.Parse(payload, True)
     except AccountingValidationError:

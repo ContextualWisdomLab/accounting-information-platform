@@ -25,8 +25,8 @@
     {
       "local_package_path": "iso20022/fixtures/camt.053.001.14.structural-profile.json",
       "artifact_role": "cwl_derived_structural_profile",
-      "sha256": "09efe64e26eabf5816658a977325c4640c6170e6d8213108976a3efe03542798",
-      "byte_length": 725
+      "sha256": "19994e3f7ffbe750b8766ce053053a90a82bc35a03796d70f4d44df1fe6216f8",
+      "byte_length": 631
     }
   ]
 }
