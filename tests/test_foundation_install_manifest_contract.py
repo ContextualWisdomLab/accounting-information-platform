@@ -51,6 +51,34 @@ class FoundationInstallManifestContractTests(unittest.TestCase):
                 self.assertIn(migration_ten, text)
                 self.assertLess(text.index(migration_nine), text.index(migration_ten))
 
+    def test_required_files_and_install_docs_include_bank_statement_evidence(self) -> None:
+        """Bank-statement evidence follows soft-close command evidence in operator docs."""
+        migration_ten = "database/migrations/0010_soft_close_command_evidence.sql"
+        migration_eleven = "database/migrations/0011_bank_statement_evidence.sql"
+        self.assertIn(migration_eleven, set(REQUIRED_FILES))
+        for relative_path in ("docs/OPERABILITY.md", "docs/ARCHITECTURE.md"):
+            with self.subTest(relative_path=relative_path):
+                text = (ROOT / relative_path).read_text(encoding="utf-8")
+                self.assertIn(migration_ten, text)
+                self.assertIn(migration_eleven, text)
+                self.assertLess(text.index(migration_ten), text.index(migration_eleven))
+
+    def test_install_fails_closed_when_bank_statement_migration_is_missing(self) -> None:
+        """The foundation loader may not silently omit migration 0011."""
+        original_is_file = Path.is_file
+
+        def is_file(path: Path) -> bool:
+            if path.name == "0011_bank_statement_evidence.sql":
+                return False
+            return original_is_file(path)
+
+        with patch.object(Path, "is_file", is_file):
+            with self.assertRaises(AccountingValidationError):
+                apply_foundation_migration(
+                    "postgresql://unused",
+                    ROOT / "database/migrations/0001_accounting_foundation.sql",
+                )
+
     def test_install_fails_closed_when_soft_close_evidence_migration_is_missing(self) -> None:
         """The foundation loader may not silently omit migration 0010."""
         original_is_file = Path.is_file

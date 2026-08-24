@@ -28,6 +28,15 @@ The foundation ERD is maintained in [ERD.md](ERD.md). PostgreSQL migrations are 
 - `trial_balance_line`: exact debit, credit, and net values per chart account.
 - `home_tax_submission`: fail-closed HomeTax filing-command receipt for one entity, book, and period. The row preserves the tenant-scoped `submission_idempotency_key`, canonical command `source_payload_hash`, immutable `source_payload_reference`, `submission_status_code`, `rejection_reason_code`, `as_of_date`, `closing_amount`, and derived `register_payload_hash`. It does not store raw register JSON, NTS payloads, or credentials.
 
+## Bank-statement evidence data
+
+- `bank_account_record`: tenant-scoped opaque bank-account identity with `account_currency_code` and `account_identifier_hash`. Generic list/read models do not require a plaintext bank-account identifier.
+- `bank_account_assignment`: effective-dated binding of one bank account to a legal entity, accounting book, and same-book cash/bank chart account.
+- `bank_statement_artifact`: host evidence-store locator, `source_artifact_hash`, and byte length. The original XML is not stored as a durable database text column.
+- `bank_statement_record`: one canonical statement population with `message_definition_identifier`, statement identity, sequence and period evidence, opening/closing balance hashes, `source_artifact_hash`, `normalized_payload_hash`, and `ingestion_idempotency_key`.
+- `bank_statement_entry`: normalized entry facts including exact `numeric` amount, ISO currency, credit/debit indicator, source locator, bank-transaction codes, bounded remittance/counterparty projection, and `source_entry_hash`.
+- `bank_statement_entry_detail`: one transaction-detail record when identity, matching, or amount conservation requires it. Those facts are not collapsed into an opaque JSON column.
+
 Financial-statement, cash-flow, changes-in-equity, aging, account-balance, ledger, rollforward, VAT-register, and period-close-package reads are deterministic projections over authoritative journal, period, catalog, and snapshot facts. They do not create a second statutory ledger.
 
 ## Normalization and integrity rules
@@ -43,7 +52,7 @@ Financial-statement, cash-flow, changes-in-equity, aging, account-balance, ledge
 
 ## Future extensions
 
-Revenue contracts and performance obligations, durable receivable/payable subledgers, cash-application evidence, bank-statement reconciliation, foreign-exchange rates and remeasurement, fixed assets, intercompany balances and eliminations, consolidation, and reporting-taxonomy mappings are later normalized modules. They will reference, not duplicate, the journal authority and will not let external statement or model output post accounting facts automatically.
+Revenue contracts and performance obligations, durable receivable/payable subledgers, cash-application evidence, deterministic bank-statement matching, foreign-exchange rates and remeasurement, fixed assets, intercompany balances and eliminations, consolidation, and reporting-taxonomy mappings are later normalized modules. They will reference, not duplicate, the journal authority and will not let external statement or model output post accounting facts automatically.
 
 ## Runtime tenant binding
 

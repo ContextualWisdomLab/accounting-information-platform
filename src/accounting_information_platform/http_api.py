@@ -1,4 +1,4 @@
-"""Thin stdlib HTTP boundary for Billing proposals, AIS adjusting journals, pulls, receipts, close, open, TB, statements, catalog, ledgers, balances, rollforwards, leftover-cash rollforward, VAT period register, HomeTax submission, receivable aging, payable aging, period-close packages, journals, reversals, outbox, and audit history."""
+"""Thin stdlib HTTP boundary for Billing proposals, AIS adjusting journals, pulls, receipts, close, open, TB, statements, catalog, ledgers, balances, rollforwards, leftover-cash rollforward, VAT period register, HomeTax submission, receivable aging, payable aging, period-close packages, journals, reversals, bank-statement evidence, outbox, and audit history."""
 
 from __future__ import annotations
 
@@ -12,12 +12,18 @@ from urllib.parse import parse_qs, urlparse
 from .accept import (
     HomeTaxRequestValidationError,
     accept_adjusting_journal,
+    accept_bank_account_assignment,
+    accept_bank_account_record,
+    accept_bank_statement_evidence,
     accept_home_tax_submission,
     accept_journal_proposal,
     accept_journal_reversal,
     accept_period_close,
     accept_period_open,
     lookup_account_balances,
+    lookup_bank_statement,
+    lookup_bank_statement_entries,
+    lookup_bank_statements,
     lookup_account_rollforward,
     lookup_account_ledger,
     lookup_account_role_mappings,
@@ -44,6 +50,7 @@ from .accept import (
     lookup_vat_period_register,
     publish_outbox_event,
 )
+from .bank_statement import MemoryArtifactStore
 from .billing_pull import accept_billing_proposal_pull
 from .core import AccountingValidationError, IdempotencyConflictError, _require_reference
 
@@ -68,6 +75,10 @@ ACCOUNT_ROLLFORWARD_PATH = "/account-rollforwards"
 UNAPPLIED_CASH_ROLLFORWARD_PATH = "/unapplied-cash-rollforwards"
 VAT_PERIOD_REGISTER_PATH = "/vat-period-registers"
 HOME_TAX_SUBMISSION_PATH = "/home-tax-submissions"
+BANK_ACCOUNT_PATH = "/bank-accounts"
+BANK_ACCOUNT_ASSIGNMENT_PATH = "/bank-account-assignments"
+BANK_STATEMENT_PATH = "/bank-statements"
+BANK_STATEMENT_ENTRY_PATH = "/bank-statement-entries"
 RECEIVABLE_AGING_PATH = "/receivable-agings"
 PAYABLE_AGING_PATH = "/payable-agings"
 PERIOD_CLOSE_PACKAGE_PATH = "/period-close-packages"
@@ -95,16 +106,17 @@ class JournalProposalServer(ThreadingHTTPServer):
         """Bind *server_address* to one tenant's posting endpoint."""
         self.database_url = database_url
         self.tenant_reference = tenant_reference
+        self.artifact_store = MemoryArtifactStore()
         super().__init__(server_address, JournalProposalHandler)
 
 
 class JournalProposalHandler(BaseHTTPRequestHandler):
-    """Serve proposal POST, reverse, reversal list, pull, receipt GET, close, TB, catalog, journal, leftover-cash rollforward, VAT period register, receivable aging, payable aging, period-close package, outbox, audit history, and healthz."""
+    """Serve proposal POST, reverse, reversal list, pull, receipt GET, close, TB, catalog, journal, leftover-cash rollforward, VAT period register, receivable aging, payable aging, period-close package, bank-statement evidence, outbox, audit history, and healthz."""
 
     server: JournalProposalServer
 
     def do_GET(self) -> None:
-        """Route healthz, receipt, trial-balance, catalog, journal, leftover-cash rollforward, reversal list, close list, outbox, audit history, aging, and GET 405s."""
+        """Route healthz, receipt, trial-balance, catalog, journal, leftover-cash rollforward, reversal list, close list, outbox, audit history, aging, bank-statement evidence, and GET 405s."""
         parsed = urlparse(self.path)
         if parsed.path == HEALTHZ_PATH:
             self._write_json(200, {"status": "ok"})
@@ -168,6 +180,26 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         if parsed.path == HOME_TAX_SUBMISSION_PATH:
             self._get_home_tax_submissions(parsed.query)
             return
+        if parsed.path == BANK_ACCOUNT_PATH:
+            self._write_error(
+                405,
+                "GET is not supported on the bank-account register endpoint. "
+                "POST a bank-account command, then retry.",
+            )
+            return
+        if parsed.path == BANK_ACCOUNT_ASSIGNMENT_PATH:
+            self._write_error(
+                405,
+                "GET is not supported on the bank-account-assignment endpoint. "
+                "POST a bank-account assignment, then retry.",
+            )
+            return
+        if parsed.path == BANK_STATEMENT_PATH:
+            self._get_bank_statements(parsed.query)
+            return
+        if parsed.path == BANK_STATEMENT_ENTRY_PATH:
+            self._get_bank_statement_entries(parsed.query)
+            return
         if parsed.path == RECEIVABLE_AGING_PATH:
             self._get_receivable_aging(parsed.query)
             return
@@ -206,7 +238,8 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             "GET /account-role-mappings, GET /accounting-books, "
             "GET /legal-entities, GET /chart-accounts, GET /account-ledgers, "
             "GET /account-balances, GET /account-rollforwards, GET /unapplied-cash-rollforwards, "
-            "GET /vat-period-registers, GET /home-tax-submissions, GET /receivable-agings, "
+            "GET /vat-period-registers, GET /home-tax-submissions, GET /bank-statements, "
+            "GET /bank-statement-entries, GET /receivable-agings, "
             "GET /payable-agings, GET /period-close-packages, GET /journals, "
             "GET /journal-reversals, GET /period-closes, GET /fiscal-periods, "
             "GET /outbox-events?event_type_code=, or GET /audit-events, then retry.",
@@ -334,6 +367,22 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         if parsed_path == HOME_TAX_SUBMISSION_PATH:
             self._post_home_tax_submission(raw_body)
             return
+        if parsed_path == BANK_ACCOUNT_PATH:
+            self._post_bank_account(raw_body)
+            return
+        if parsed_path == BANK_ACCOUNT_ASSIGNMENT_PATH:
+            self._post_bank_account_assignment(raw_body)
+            return
+        if parsed_path == BANK_STATEMENT_PATH:
+            self._post_bank_statement(raw_body)
+            return
+        if parsed_path == BANK_STATEMENT_ENTRY_PATH:
+            self._write_error(
+                405,
+                "POST is not supported on the bank-statement-entry list endpoint. "
+                "GET the statement entries, then retry.",
+            )
+            return
         if parsed_path == FISCAL_PERIOD_PATH:
             self._post_fiscal_period(raw_body)
             return
@@ -360,6 +409,7 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             404,
             "unknown path. POST /journal-proposals, POST /journals, POST /journal-reversals, "
             "POST /billing-proposal-pulls, POST /period-closes, POST /home-tax-submissions, "
+            "POST /bank-accounts, POST /bank-account-assignments, POST /bank-statements, "
             "POST /fiscal-periods, "
             "or POST /outbox-events/{outbox_event_id}/publish, then retry.",
         )
@@ -1397,6 +1447,176 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             return
         self._write_json(422, document)
 
+    def _post_bank_account(self, raw_body: bytes) -> None:
+        tenant_header = self._bound_tenant_header("bank-account")
+        if tenant_header is None:
+            return
+        payload = self._read_json_object(raw_body, "a bank-account command")
+        if payload is None:
+            return
+        if payload.get("tenant_reference") != tenant_header:
+            self._write_error(
+                403,
+                "bank-account tenant_reference does not match X-CWL-Tenant-Reference. "
+                "Send the bank-account command to that tenant's AIS endpoint, then retry.",
+            )
+            return
+        try:
+            document = accept_bank_account_record(
+                payload, self.server.database_url, tenant_header
+            )
+        except IdempotencyConflictError as error:
+            self._write_error(409, f"{error}. Supply a new bank_account_reference, then retry.")
+            return
+        except AccountingValidationError as error:
+            self._write_error(422, str(error))
+            return
+        self._write_json(200, document)
+
+    def _post_bank_account_assignment(self, raw_body: bytes) -> None:
+        tenant_header = self._bound_tenant_header("bank-account-assignment")
+        if tenant_header is None:
+            return
+        payload = self._read_json_object(raw_body, "a bank-account-assignment command")
+        if payload is None:
+            return
+        if payload.get("tenant_reference") != tenant_header:
+            self._write_error(
+                403,
+                "bank-account-assignment tenant_reference does not match X-CWL-Tenant-Reference. "
+                "Send the assignment to that tenant's AIS endpoint, then retry.",
+            )
+            return
+        try:
+            document = accept_bank_account_assignment(
+                payload, self.server.database_url, tenant_header
+            )
+        except AccountingValidationError as error:
+            self._write_error(_bank_statement_status(error), str(error))
+            return
+        self._write_json(200, document)
+
+    def _post_bank_statement(self, raw_body: bytes) -> None:
+        tenant_header = self._bound_tenant_header("bank-statement")
+        if tenant_header is None:
+            return
+        payload = self._read_json_object(raw_body, "a bank-statement command")
+        if payload is None:
+            return
+        if payload.get("tenant_reference") != tenant_header:
+            self._write_error(
+                403,
+                "bank-statement tenant_reference does not match X-CWL-Tenant-Reference. "
+                "Send the statement to that tenant's AIS endpoint, then retry.",
+            )
+            return
+        try:
+            document = accept_bank_statement_evidence(
+                payload,
+                self.server.database_url,
+                tenant_header,
+                artifact_store=self.server.artifact_store,
+            )
+        except IdempotencyConflictError as error:
+            self._write_error(
+                409,
+                f"{error}. Supply a new ingestion_idempotency_key, then retry.",
+            )
+            return
+        except AccountingValidationError as error:
+            self._write_error(_bank_statement_status(error), str(error))
+            return
+        self._write_json(200, document)
+
+    def _get_bank_statements(self, query: str) -> None:
+        tenant_header = self._bound_tenant_header("bank-statement")
+        if tenant_header is None:
+            return
+        fields = parse_qs(query, keep_blank_values=True)
+        record_id = _first_query(fields, "bank_statement_record_id")
+        if record_id:
+            try:
+                document = lookup_bank_statement(
+                    self.server.database_url, tenant_header, record_id
+                )
+            except AccountingValidationError as error:
+                self._write_error(_bank_statement_status(error), str(error))
+                return
+            self._write_json(200, document)
+            return
+        bank_account_reference = _first_query(fields, "bank_account_reference")
+        if not bank_account_reference:
+            self._write_error(
+                400,
+                "bank_account_reference or bank_statement_record_id is required. "
+                "Supply one of those query keys, then retry the statement read.",
+            )
+            return
+        raw_limit = _first_query(fields, "page_limit")
+        page_limit: int | None = None
+        if raw_limit:
+            try:
+                page_limit = int(raw_limit)
+            except ValueError:
+                self._write_error(
+                    400,
+                    "page_limit must be an integer. "
+                    "Supply a bank-statement-list page_limit, then retry the statement list.",
+                )
+                return
+        try:
+            document = lookup_bank_statements(
+                self.server.database_url,
+                tenant_header,
+                bank_account_reference,
+                period_start=_first_query(fields, "period_start") or None,
+                period_end=_first_query(fields, "period_end") or None,
+                page_limit=page_limit,
+                cursor=_first_query(fields, "cursor") or None,
+            )
+        except AccountingValidationError as error:
+            self._write_error(_bank_statement_status(error), str(error))
+            return
+        self._write_json(200, document)
+
+    def _get_bank_statement_entries(self, query: str) -> None:
+        tenant_header = self._bound_tenant_header("bank-statement-entry")
+        if tenant_header is None:
+            return
+        fields = parse_qs(query, keep_blank_values=True)
+        record_id = _first_query(fields, "bank_statement_record_id")
+        if not record_id:
+            self._write_error(
+                400,
+                "bank_statement_record_id is required. "
+                "Supply that query key, then retry the entry list.",
+            )
+            return
+        raw_limit = _first_query(fields, "page_limit")
+        page_limit: int | None = None
+        if raw_limit:
+            try:
+                page_limit = int(raw_limit)
+            except ValueError:
+                self._write_error(
+                    400,
+                    "page_limit must be an integer. "
+                    "Supply a bank-statement-entry page_limit, then retry the entry list.",
+                )
+                return
+        try:
+            document = lookup_bank_statement_entries(
+                self.server.database_url,
+                tenant_header,
+                record_id,
+                page_limit=page_limit,
+                cursor=_first_query(fields, "cursor") or None,
+            )
+        except AccountingValidationError as error:
+            self._write_error(_bank_statement_status(error), str(error))
+            return
+        self._write_json(200, document)
+
     def _post_billing_proposal_pull(self, raw_body: bytes) -> None:
         tenant_header = self._bound_tenant_header("pull")
         if tenant_header is None:
@@ -1524,6 +1744,17 @@ def _adjusting_journal_status(error: AccountingValidationError) -> int:
     return 422
 
 
+def _bank_statement_status(error: AccountingValidationError) -> int:
+    message = str(error)
+    if "is not recorded" in message:
+        return 404
+    if "page_limit" in message or "cursor" in message or "must be a UUID" in message:
+        return 400
+    if "UTC" in message and "timestamp" in message:
+        return 422
+    return 422
+
+
 def _query_validation_status(error: AccountingValidationError) -> int:
     if "UTC offset" in str(error):
         return 422
@@ -1541,7 +1772,7 @@ def create_journal_proposal_server(
     host: str = "127.0.0.1",
     port: int = 0,
 ) -> JournalProposalServer:
-    """Create a stdlib HTTP server that posts Billing proposals, AIS adjusting journals, pulls, closes, opens periods, and reads TB, statements, journals, reversals, receivable aging, payable aging, outbox, and audit history."""
+    """Create a stdlib HTTP server that posts Billing proposals, AIS adjusting journals, pulls, closes, opens periods, accepts bank-statement evidence, and reads TB, statements, journals, reversals, receivable aging, payable aging, outbox, and audit history."""
     if not database_url:
         raise AccountingValidationError(
             "ACCOUNTING_DATABASE_URL is empty. Set a PostgreSQL 18 URL and retry posting."

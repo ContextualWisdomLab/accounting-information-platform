@@ -1,0 +1,53 @@
+ISO 20022 adapter evidence notice
+=================================
+
+This directory contains an integrity-pinned local copy of the AIS camt.053.001.14
+adapter evidence used by accounting-information-platform.
+
+The official ISO 20022 Registration Authority site is the sole source of
+up-to-date Repository and message-definition material:
+
+https://www.iso20022.org
+
+https://www.iso20022.org/iso-20022-message-definitions?search=camt.053
+
+Material published on iso20022.org is intended to be used and reproduced freely
+under the ISO 20022 Intellectual Property Rights Policy, while remaining subject
+to the Registration Authority terms of use. Contributing organizations retain
+their IPR and grant third parties a non-exclusive, royalty-free license to use
+published Repository information.
+
+This local copy is not the official or current source. A later Registration
+Authority catalogue update, a same-version schema whose generation timestamp or
+SHA-256 changes, or a newer camt.053 revision is a compatibility and
+supply-chain review event. It must not silently change parsing behavior under
+an existing adapter version.
+
+AIS does not edit a Registration Authority XSD in place. Parser-security
+limits, revision dispatch, and monetary normalization live in adapter code.
+The checked-in structural profile is a separately identified CWL-derived
+fixture used to pin required message paths for this adapter version.
+
+Primary references:
+
+International Organization for Standardization. (2026). ISO 20022-1:2026
+Financial services—Universal financial industry message scheme—Part 1:
+Metamodel. https://www.iso.org/standard/20022-1
+
+International Organization for Standardization. (2026). ISO 20022-4:2026
+Financial services—Universal financial industry message scheme—Part 4: XML
+Schema generation. https://www.iso.org/standard/20022-4
+
+International Organization for Standardization. (2026). ISO 20022-9:2026
+Financial services—Universal financial industry message scheme—Part 9: Syntax
+generation requirements and rules. https://www.iso.org/standard/20022-9
+
+ISO 20022 Registration Authority. (2026). Bank-to-Customer Cash Management:
+camt.053.001.14 BankToCustomerStatementV14.
+https://www.iso20022.org/iso-20022-message-definitions?search=camt.053
+
+ISO 20022 Registration Authority. (n.d.). Terms of use.
+https://www.iso20022.org/terms-use
+
+ISO 20022 Registration Authority. (n.d.). Intellectual property rights.
+https://www.iso20022.org/intellectual-property-rights

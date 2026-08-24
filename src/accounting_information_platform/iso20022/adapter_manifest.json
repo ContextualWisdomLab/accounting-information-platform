@@ -1,0 +1,32 @@
+{
+  "adapter_version": "1",
+  "message_definition_identifier": "camt.053.001.14",
+  "message_definition_name": "BankToCustomerStatementV14",
+  "submitting_organization": "SWIFT / ISO 20022 Registration Authority",
+  "official_source_url": "https://www.iso20022.org/iso-20022-message-definitions?search=camt.053",
+  "retrieval_time": "2026-08-20T03:41:27Z",
+  "ra_generation_timestamp": null,
+  "terms_of_use_url": "https://www.iso20022.org/terms-use",
+  "intellectual_property_rights_url": "https://www.iso20022.org/intellectual-property-rights",
+  "local_package_root": "src/accounting_information_platform/iso20022",
+  "artifacts": [
+    {
+      "local_package_path": "iso20022/NOTICE",
+      "artifact_role": "provenance_notice",
+      "sha256": "0240b173d05ab32565f827b76ed9206ee945b4b0fca36725238ea020a22b6e39",
+      "byte_length": 2480
+    },
+    {
+      "local_package_path": "iso20022/fixtures/camt.053.001.14.valid.xml",
+      "artifact_role": "canonical_valid_fixture",
+      "sha256": "6c09078392519cbf035a499e9ef23fddd74876384aa3619e0e62d754e4959b60",
+      "byte_length": 3605
+    },
+    {
+      "local_package_path": "iso20022/fixtures/camt.053.001.14.structural-profile.json",
+      "artifact_role": "cwl_derived_structural_profile",
+      "sha256": "09efe64e26eabf5816658a977325c4640c6170e6d8213108976a3efe03542798",
+      "byte_length": 725
+    }
+  ]
+}

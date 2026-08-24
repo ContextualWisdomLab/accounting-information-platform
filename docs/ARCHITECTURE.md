@@ -34,6 +34,7 @@ Metering and billing remain authoritative for usage, pricing, invoice intent, pa
 | `reporting_projection` | Versioned statements, ledgers, balances, rollforwards and close-package reads |
 | `integration_outbox` | Transactional publication evidence and append-only audit history |
 | `tax_interface` | VAT register and fail-closed HomeTax submission evidence; no NTS transport in this foundation |
+| `bank_statement_registry` | Immutable camt.053.001.14 statement/entry evidence, bank-account-to-book mapping, and host artifact locators |
 
 ## Persistence and migration order
 
@@ -125,6 +126,7 @@ Shared fiscal-calendar dates do not collapse independent accounting books into o
 8. `database/migrations/0008_fiscal_period_open_command.sql` — durable fiscal-period-open command identity and source evidence.
 9. `database/migrations/0009_accounting_book_period_control.sql` — accounting-book-scoped close authority and journal guard lookup.
 10. `database/migrations/0010_soft_close_command_evidence.sql` — immutable exact soft-close command identity and source count/hash.
+11. `database/migrations/0011_bank_statement_evidence.sql` — immutable camt.053.001.14 statement evidence, bank-account assignment, and entry provenance.
 
 ## Durable soft-close command evidence
 

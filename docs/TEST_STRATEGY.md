@@ -15,7 +15,7 @@ Every behavior change follows RED → GREEN: reproduce the defect with the small
 5. **Reversal behavior** — equal-and-opposite lines, original preservation, temporal order, occupied-reference protection and command replay/conflict evidence.
 6. **Close behavior** — open, soft-close and hard-close state transitions, close idempotency and period-owned database guards.
 7. **PostgreSQL invariants** — commit-boundary balance, immutable facts, RLS, tenant binding and restricted runtime roles.
-8. **Read models** — trial balance, journals, ledgers, balances, rollforwards, aging, statements, close package, VAT register and audit/outbox views tie to the authoritative population.
+8. **Read models** — trial balance, journals, ledgers, balances, rollforwards, aging, statements, close package, VAT register, bank-statement entries, and audit/outbox views tie to the authoritative population.
 9. **Integration contracts** — Billing proposal GET/pull envelopes, idempotent retry, origin allowlist and fail-closed remote errors.
 10. **Security / abuse** — cross-tenant references, malformed origins, oversized bodies, hostile parser inputs, privilege escalation and replay storms.
 11. **Packaging / release** — clean install, wheel install, typing marker, migration install / upgrade, deterministic exact-source provenance, SBOM, protected-head attestations and recovery rehearsals.
@@ -37,6 +37,17 @@ Required regressions include:
 - migration `0005` changes a pre-existing LOGIN `accounting_closing_writer` back to `NOLOGIN`;
 - every tenant-scoped authoritative table both enables and forces RLS;
 - a non-owner, non-superuser, non-`BYPASSRLS` runtime login can execute an ordinary supported posting/read path for its bound tenant but cannot read another tenant or acquire owner / administrative authority.
+
+## Bank-statement evidence tests
+
+Issue #7 requires RED → GREEN proof that statement ingest is evidence only:
+
+- a pinned `camt.053.001.14` fixture produces one statement and exact debit/credit entries;
+- identical bytes replay without duplicate rows;
+- the same idempotency key with changed bytes or the same statement identity with changed material entries fails closed and writes nothing;
+- revision mismatch, DTD/external-entity input, bound violations, and malformed decimals persist zero rows;
+- cross-tenant assignment/read/write fails, and assignment to a chart account from another book fails at PostgreSQL;
+- source artifact → statement → entry provenance is complete, and migration 0011 is required by the foundation loader.
 
 ## Fiscal-period-open command tests
 

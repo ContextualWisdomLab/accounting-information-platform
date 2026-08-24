@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added the immutable ISO 20022 `camt.053.001.14` bank-statement evidence registry: tenant-scoped bank-account mapping, host-owned artifact locators, exact normalized entries, duplicate-delivery replay, and fail-closed parser security. Statement entries cannot post journals. ADR 0052 records the boundary.
+
 - Scope fiscal-period close authority, close identity, and PostgreSQL journal admission by accounting book so sibling statutory/management books can close independently.
 
 ### Security

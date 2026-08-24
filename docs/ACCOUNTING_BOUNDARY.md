@@ -19,7 +19,8 @@
 - authoritative general journals and reversals;
 - trial balance, close, consolidation, and reporting projections;
 - the statutory tax-invoice register / period VAT bundle that ties to posted `tax_payable`;
-- the authoritative schema for `accounting_posting_receipt`.
+- the authoritative schema for `accounting_posting_receipt`;
+- accepted immutable bank-statement evidence, bank-account-to-book mapping, and normalized statement entries.
 
 ## Required interaction
 

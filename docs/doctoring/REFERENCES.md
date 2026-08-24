@@ -32,6 +32,16 @@ IFRS Foundation. (2024). *Post-implementation review of IFRS 15 revenue from con
 
 International Organization for Standardization. (2026). *ISO 20022-1:2026 financial services—Universal financial industry message scheme—Part 1: Metamodel* (3rd ed.). https://www.iso.org/standard/20022-1
 
+International Organization for Standardization. (2026). *ISO 20022-4:2026 financial services—Universal financial industry message scheme—Part 4: XML Schema generation* (2nd ed.). https://www.iso.org/standard/20022-4
+
+International Organization for Standardization. (2026). *ISO 20022-9:2026 financial services—Universal financial industry message scheme—Part 9: Syntax generation requirements and rules* (1st ed.). https://www.iso.org/standard/20022-9
+
+ISO 20022 Registration Authority. (2026). *Bank-to-Customer Cash Management: camt.053.001.14 BankToCustomerStatementV14*. https://www.iso20022.org/iso-20022-message-definitions?search=camt.053
+
+ISO 20022 Registration Authority. (n.d.). *Terms of use*. https://www.iso20022.org/terms-use
+
+ISO 20022 Registration Authority. (n.d.). *Intellectual property rights*. https://www.iso20022.org/intellectual-property-rights
+
 International Organization for Standardization. (2022). *ISO/IEC/IEEE 42010:2022 software, systems and enterprise—Architecture description*. https://www.iso.org/standard/74393.html
 
 Internet Engineering Task Force. (2022). *HTTP/1.1* (RFC 9112). https://www.rfc-editor.org/rfc/rfc9112
