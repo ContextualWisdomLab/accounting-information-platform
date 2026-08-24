@@ -15,8 +15,8 @@ The foundation ERD is maintained in [ERD.md](ERD.md). PostgreSQL migrations are 
 
 - `journal_proposal_record`: immutable external proposal identity, contract version, tenant-scoped idempotency key, and source-payload hash.
 - `fiscal_period_open_command`: append-only period-open command evidence binding tenant, legal entity, fiscal period, tenant-scoped idempotency key, canonical source-payload hash, and requested dates. Exact retries replay this evidence; changed payload under the same key conflicts.
-- `general_journal`: authoritative posted or reversed header.
-- `journal_entry_line`: one-sided exact debit or credit mapped to a chart account.
+- `general_journal`: authoritative posted or reversed header. Its composite book reference requires the selected `accounting_book` to belong to the same tenant and `legal_entity_record`; independently valid entity/book identifiers cannot be mixed into one journal.
+- `journal_entry_line`: one-sided exact debit or credit mapped to a chart account. The database `journal_line_book_scope_guard` rejects a chart account whose `accounting_book_id` differs from the parent journal rather than relying only on application lookup.
 - `journal_source_reference`: evidence references and hashes attached to a journal.
 - `journal_reversal`: original-to-reversal lineage; a reversal is a new append-only journal rather than a mutation of the original.
 - `posting_receipt`: source-facing authoritative outcome for the proposal command.
@@ -35,6 +35,7 @@ Financial-statement, cash-flow, changes-in-equity, aging, account-balance, ledge
 - Account role, chart account, journal line, period, command evidence, receipt, and publication event are separate facts.
 - A provider, bank, or source-system identifier is never an internal primary key.
 - Legal entity, book, chart account, fiscal period, journal, receipt, and tax-command references preserve tenant scope through composite keys where the relationship crosses tables.
+- `general_journal` preserves legal-entity/book consistency with a composite foreign key, while `journal_entry_line` preserves same-book chart-account scope with a database trigger so the normalized line does not duplicate `accounting_book_id` merely to enforce the relationship.
 - Historical master-data rows close their validity interval rather than being overwritten.
 - Posted journals are never updated or deleted; finalized journal populations cannot be extended after receipt issuance.
 - Exact debit and credit amounts use PostgreSQL `numeric` and application `Decimal`; binary floating-point accounting amounts are rejected at input boundaries.
