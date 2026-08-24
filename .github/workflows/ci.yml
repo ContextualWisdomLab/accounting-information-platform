@@ -228,8 +228,30 @@ jobs:
         env:
           PYTHONPATH: src:.
         run: python -m coverage run --branch -m unittest discover -s tests -p 'test_*.py'
-      - name: Enforce complete statement and branch coverage
-        run: python -m coverage report --fail-under=100 --show-missing
+      - name: Enforce complete coverage and publish denominator evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m coverage report --fail-under=100 --show-missing
+          python -m coverage json -o coverage.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          totals = json.loads(Path("coverage.json").read_text(encoding="utf-8"))["totals"]
+          lines = int(totals["num_statements"])
+          covered_lines = int(totals["covered_lines"])
+          branches = int(totals["num_branches"])
+          covered_branches = int(totals["covered_branches"])
+          if lines <= 0 or branches <= 0:
+              raise SystemExit("coverage denominator must contain positive statement and branch counts")
+          if covered_lines != lines or covered_branches != branches:
+              raise SystemExit("coverage denominator evidence does not prove exact 100% statement/branch coverage")
+          print(
+              f"coverage lines:{lines} branches:{branches} "
+              f"covered_lines:{covered_lines} covered_branches:{covered_branches}"
+          )
+          PY
       - name: Validate repository contracts
         run: python scripts/validate_repository.py .
       - name: Compile production and test modules
@@ -275,6 +297,7 @@ jobs:
             dist/SHA256SUMS
             dist/sbom.spdx.json
             dist/source-provenance.json
+            coverage.json
           if-no-files-found: error
           retention-days: 14
 
