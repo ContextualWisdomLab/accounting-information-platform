@@ -1,71 +1,40 @@
 # Contributor and agent operations
 
-Buyer and operator documentation lives in the root [README](../README.md).
-This file keeps repository-operation rules that are not product claims.
+Buyer and operator documentation lives in the root [README](../README.md). This file keeps repository-operation rules that are not product claims.
 
 ## Writer boundary
 
-- This repository is the only CWL authority for legal books, posted journals,
-  reversals, fiscal-period control, trial balances, and
-  `accounting_posting_receipt`.
-- The Metering Billing Platform owns commercial facts and
-  `accounting_journal_proposal`. Billing and other sources may propose
-  semantic account roles. They may not select final chart-account identifiers,
-  write journal tables, or claim that a proposal has posted.
-- AI systems may explain or propose classifications. They cannot approve
-  policy, open periods, map chart accounts, or post journals.
+- This repository is the only CWL authority for legal books, posted journals, reversals, fiscal-period control, trial balances, and `accounting_posting_receipt`.
+- The Metering Billing Platform owns commercial facts and `accounting_journal_proposal`. Billing and other sources may propose semantic account roles. They may not select final chart-account identifiers, write journal tables, or claim that a proposal has posted.
+- AI systems may explain or propose classifications. They cannot approve policy, open periods, map chart accounts, post journals, or approve reconciliations.
+- Repositories with their own enabled dedicated writers are read-only dependencies from this lane. Integrate only through published package/API/event contracts and existing owner-control paths.
 
-Normative development rules are in [AGENTS.md](../AGENTS.md) and
-[CLAUDE.md](../CLAUDE.md).
+Normative development rules are in [AGENTS.md](../AGENTS.md) and [CLAUDE.md](../CLAUDE.md).
 
 ## Independent verification
 
-Run the commands in the root README from this checkout only. Do not require a
-Naruon or sibling worktree. Production statement and branch coverage must
-remain 100%. `scripts/validate_repository.py` rejects missing required files,
-unresolved placeholder tokens, mutable GitHub Action tags, SQL naming for
-schemas, tables, columns, policies, and functions, and `UPDATE`/`DELETE` of
-`general_journal` or `journal_entry_line`.
+Run the commands in the root README from this checkout only. Do not require a Naruon or sibling worktree. Production statement and branch coverage must remain 100%. `scripts/validate_repository.py` rejects missing required files, unresolved placeholder tokens, mutable GitHub Action tags, invalid SQL naming, and destructive mutation of append-only journal tables.
 
-## Exact-head CI
+Real PostgreSQL integration is required for database-owned invariants. Local reproduction is supporting evidence only; merge readiness requires the applicable GitHub jobs to execute against the unchanged exact head.
 
-[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) checks out the exact
-commit under test, pins Actions to full commit SHAs, and installs quality
-dependencies with `--require-hashes`. Mutable tags such as `@v4` are not
-acceptable evidence. GitHub-hosted required checks on that exact head are the
-merge-readiness signal. Local reproduction is supporting evidence, not a
-substitute for those checks.
+## Exact-head evidence
 
-## Pull-request stacking
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) checks out the exact commit under test, pins Actions to full commit SHAs, and installs quality dependencies with `--require-hashes`. Repository-owned SAST, secret scanning, dependency-vulnerability review, coverage, package reproducibility, SBOM, and provenance evidence must be tied to the same exact head and independently resolved live base where applicable.
 
-The protected default branch may remain a bootstrap commit while successor
-heads carry product work. Current line:
+Queued, pending, skipped, cancelled, absent, neutral, failed, stale, predecessor, status-only, synthetic-merge-only, or model-only evidence is non-passing. A green predecessor head does not transfer evidence to a new head. Push-only integrated attestations are release evidence only after the exact protected integrated head actually runs them successfully.
 
-1. `agent/initial-accounting-foundation` — repository bootstrap (also the
-   commit currently on `main`).
-2. `agent/accounting-posting-foundation` — first executable foundation
-   (open draft against `main`).
-3. Later successor heads stack on the previous product head.
+## Pull requests and the live ruleset
 
-Do not merge a successor by collapsing it into a bootstrap README or by
-treating a review-bot summary as the product description. Open one focused
-change per successor. Keep stacked drafts in Draft until exact-head required
-checks and independent review complete. Do not treat “may be composed by
-Naruon” as a defect; keep independent run documented in the root README.
+The protected integration branch is `develop`. Before any Ready or merge transition, refetch the live ruleset, exact base tip, current head, formal reviews, unresolved threads, and required workflows; remembered settings are stale. Satisfy the currently enforced approval count, last-push approval rule, stale-review dismissal behavior, review-thread resolution, required workflows, and merge-method constraints without using administrator bypass as the normal path.
+
+Process dependency roots before successors. A successor that was authored on a predecessor branch must be rebuilt/revalidated against the exact integrated protected base after the predecessor merges. Preserve only its unique product/documentation intent; do not carry stale implementation claims or treat predecessor evidence as current-head evidence. Never force-push or destructively rebase merely to make a stacked PR look current.
+
+The durable implementation order is maintained in [`docs/doctoring/IMPLEMENTATION_SEQUENCE.md`](doctoring/IMPLEMENTATION_SEQUENCE.md). After the accounting foundation and this documentation successor, bank-statement evidence remains evidence only; deterministic reconciliation precedes probabilistic assistance, and there is no automatic journal posting from a statement line.
 
 ## Review evidence is not the product
 
-CodeRabbit, OpenCode, Strix, and similar summaries are review artifacts.
-They are not the buyer/operator story, the published contract, or proof of
-readiness. Do not copy them into the root README.
+CodeRabbit, Devin, OpenCode, Strix, Noema, and similar summaries are review artifacts. They are not the buyer/operator story, the published accounting contract, or proof of readiness. Verify each finding against the current source. Resolve only addressed current-head threads, never self-approve, and never manufacture missing approval or scan evidence.
 
-Human approval, if required by repository settings, is a GitHub branch
-protection or org-workflow concern. Do not encode hidden approve-gates,
-auto-merge instructions, or bot-only merge language in the root README.
+## When behavior or material documentation changes
 
-## When behavior changes
-
-Update `CHANGELOG.md`, the relevant ADR, and
-[STANDARD_TRACEABILITY.md](doctoring/STANDARD_TRACEABILITY.md) when authority,
-contracts, or monetary invariants change. Write a failing test before changing
-reference-core behavior.
+Update `CHANGELOG.md`, the relevant ADR, and [STANDARD_TRACEABILITY.md](doctoring/STANDARD_TRACEABILITY.md) when authority, contracts, accounting policy boundaries, material standards decisions, or monetary invariants change. Keep APA 7 primary-source references in [REFERENCES.md](doctoring/REFERENCES.md). Write a failing test before changing reference-core or durable accounting behavior.
