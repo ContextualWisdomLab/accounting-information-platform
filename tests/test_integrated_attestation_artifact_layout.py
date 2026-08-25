@@ -1,4 +1,4 @@
-"""Regression contract for integrated-head package-evidence download layout."""
+"""Regression contracts for integrated-head package-evidence attestation repair."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class IntegratedAttestationArtifactLayoutTests(unittest.TestCase):
-    """Keep downloaded evidence at the paths consumed by attestation verification."""
+    """Keep downloaded evidence and its release-history record reviewable."""
 
     def test_download_preserves_uploaded_dist_prefix(self) -> None:
         """Artifact extraction must not add a second dist directory before verification."""
@@ -37,6 +37,13 @@ class IntegratedAttestationArtifactLayoutTests(unittest.TestCase):
             "sbom-path: ${{ github.workspace }}/dist/sbom.spdx.json",
             attestation_job,
         )
+
+    def test_integrated_attestation_repair_is_recorded_in_changelog(self) -> None:
+        """Release tooling behavior changes must remain visible in the changelog."""
+        changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+
+        self.assertIn("`Integrated-head attestations`", changelog)
+        self.assertIn("artifact", changelog.lower())
 
 
 if __name__ == "__main__":
