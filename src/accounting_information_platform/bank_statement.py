@@ -421,6 +421,10 @@ def accept_bank_statement_evidence(
                 "statement account identifier does not match the registered bank account. "
                 "Register the matching account identifier, then retry ingest."
             )
+        ledger._acquire_command_lock(
+            connection,
+            f"bank_statement_identity:{account_row[0]}:{statement.statement_identity_reference}",
+        )
         prior_key = connection.execute(
             """
             SELECT bank_statement_record_id, source_artifact_hash, normalized_payload_hash
@@ -1287,7 +1291,7 @@ def _normalize_detail(
 
 def _normalize_balance(node: "_XmlElement") -> tuple[str | None, str]:
     code = _first_text(node, ("Tp", "CdOrPrtry", "Cd"))
-    amount, currency = _required_amount(node, "Bal/Amt")
+    amount, currency = _required_amount(node, "Bal/Amt", allow_zero=True)
     indicator = _required_text(node, ("CdtDbtInd",), "balance credit/debit indicator")
     return code, _sha256_digest(
         json.dumps(
@@ -1358,16 +1362,20 @@ def _entry_payload(entry: NormalizedStatementEntry) -> dict[str, object]:
     }
 
 
-def _required_amount(parent: "_XmlElement", label: str) -> tuple[Decimal, str]:
+def _required_amount(
+    parent: "_XmlElement", label: str, *, allow_zero: bool = False
+) -> tuple[Decimal, str]:
     amount_node = _direct_children(parent, "Amt")
     if not amount_node:
         raise AccountingValidationError(
             f"{label} is missing. Supply Amt and Ccy, then retry ingest."
         )
-    return _amount_from_element(amount_node[0], label)
+    return _amount_from_element(amount_node[0], label, allow_zero=allow_zero)
 
 
-def _amount_from_element(amount_node: "_XmlElement", label: str) -> tuple[Decimal, str]:
+def _amount_from_element(
+    amount_node: "_XmlElement", label: str, *, allow_zero: bool = False
+) -> tuple[Decimal, str]:
     currency = amount_node.attributes.get("Ccy", "")
     try:
         _require_currency(currency)
@@ -1383,7 +1391,7 @@ def _amount_from_element(amount_node: "_XmlElement", label: str) -> tuple[Decima
             f"{label} must be an exact decimal with at most six fractional digits. "
             "Correct the amount, then retry ingest."
         ) from error
-    if amount <= 0:
+    if amount == 0 and not allow_zero:
         raise AccountingValidationError(
             f"{label} must be greater than zero. Correct the amount, then retry ingest."
         )

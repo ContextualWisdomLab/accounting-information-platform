@@ -328,6 +328,17 @@ class BankStatementAdapterTests(unittest.TestCase):
                 CAMT053_MESSAGE_DEFINITION,
             )
 
+    def test_zero_opening_balance_is_accepted(self) -> None:
+        """camt.053 OPBD/CLBD may be zero; only Ntry/TxAmt amounts must be positive."""
+        payload = FIXTURE.read_text(encoding="utf-8").replace(
+            '<Amt Ccy="KRW">100000.00</Amt>',
+            '<Amt Ccy="KRW">0.00</Amt>',
+            1,
+        ).encode("utf-8")
+        statement = parse_bank_statement_payload(payload, CAMT053_MESSAGE_DEFINITION)
+        self.assertEqual(statement.statement_identity_reference, "BANK-STMT-2026-08-24")
+        self.assertIsNotNone(statement.opening_balance_hash)
+
     def test_helper_boundaries_fail_closed(self) -> None:
         """List cursors, hashes, and foreign-key detection stay fail-closed."""
         self.assertEqual(_page_limit(None), 50)
@@ -400,6 +411,10 @@ class BankStatementAdapterTests(unittest.TestCase):
         )
         self.assertIn(
             'ledger._acquire_command_lock(connection, f"bank_statement_hash:{source_hash}")',
+            source,
+        )
+        self.assertIn(
+            'f"bank_statement_identity:{account_row[0]}:{statement.statement_identity_reference}"',
             source,
         )
 
