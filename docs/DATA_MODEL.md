@@ -31,7 +31,7 @@ The foundation ERD is maintained in [ERD.md](ERD.md). PostgreSQL migrations are 
 ## Bank-statement evidence data
 
 - `bank_account_record`: tenant-scoped opaque bank-account identity with `account_currency_code` and `account_identifier_hash`. Generic list/read models do not require a plaintext bank-account identifier.
-- `bank_account_assignment`: effective-dated binding of one bank account to a legal entity, accounting book, and same-book cash/bank chart account.
+- `bank_account_assignment`: effective-dated binding of one bank account to a legal entity, accounting book, and same-book cash/bank chart account. PostgreSQL requires the book to belong to that same legal entity through the composite `(tenant_account_id, legal_entity_id, accounting_book_id)` foreign key.
 - `bank_statement_artifact`: host evidence-store locator, `source_artifact_hash`, and byte length. The original XML is not stored as a durable database text column.
 - `bank_statement_record`: one canonical statement population with `message_definition_identifier`, statement identity, sequence and period evidence, opening/closing balance hashes, `source_artifact_hash`, `normalized_payload_hash`, and `ingestion_idempotency_key`.
 - `bank_statement_entry`: normalized entry facts including exact `numeric` amount, ISO currency, credit/debit indicator, source locator, bank-transaction codes, bounded remittance/counterparty projection, and `source_entry_hash`.

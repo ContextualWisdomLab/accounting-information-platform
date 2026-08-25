@@ -42,6 +42,10 @@ class DataModelDocumentationContractTests(unittest.TestCase):
         ):
             self.assertIn(column_name, migration)
             self.assertIn(column_name, data_model)
+        self.assertIn(
+            "FOREIGN KEY (tenant_account_id, legal_entity_id, accounting_book_id)",
+            migration,
+        )
 
     def test_current_financial_statements_are_not_described_as_future_work(self) -> None:
         """The future-extension section must not demote already implemented statement reads."""

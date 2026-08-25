@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-- Added the immutable ISO 20022 `camt.053.001.14` bank-statement evidence registry: tenant-scoped bank-account mapping, host-owned artifact locators, exact normalized entries, duplicate-delivery replay, and fail-closed parser security. Statement entries cannot post journals. Normalized `TxDtls` amounts are `AmtDtls/TxAmt/Amt` only; an earlier `InstdAmt` is not recorded, a detail without `TxAmt` fails closed, and a malformed detail `CdtDbtInd` fails closed as `CRDT`/`DBIT` before persist. ADR 0052 records the boundary.
+- Added the immutable ISO 20022 `camt.053.001.14` bank-statement evidence registry: tenant-scoped bank-account mapping, host-owned artifact locators, exact normalized entries, duplicate-delivery replay, and fail-closed parser security. Statement entries cannot post journals. Normalized `TxDtls` amounts are `AmtDtls/TxAmt/Amt` only; an earlier `InstdAmt` is not recorded, a detail without `TxAmt` fails closed, and a malformed detail `CdtDbtInd` fails closed as `CRDT`/`DBIT` before persist. Assignment rows require the book to belong to the same legal entity at PostgreSQL. Ingest fail-closes when the statement `account_identifier_hash` does not match the registered bank account. ADR 0052 records the boundary.
 
 - Scope fiscal-period close authority, close identity, and PostgreSQL journal admission by accounting book so sibling statutory/management books can close independently.
 

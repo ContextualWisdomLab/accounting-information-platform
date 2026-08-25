@@ -10,7 +10,7 @@ The first adapter pins `camt.053.001.14` / `BankToCustomerStatementV14`. The par
 
 The relational database stores hashes, message metadata, locators, and normalized facts. The original artifact belongs in a host-owned immutable evidence store. Reuse of an ingestion idempotency key with a changed artifact fails closed. The same source bytes produce one canonical statement population. The same statement identity with changed material entry evidence fails closed until an explicit correction contract exists.
 
-Bank-account assignment is effective-dated and binds one bank account to a legal entity, accounting book, and a chart account that must belong to that same book at the PostgreSQL boundary. Generic list/read models expose `account_identifier_hash`, not a plaintext account identifier.
+Bank-account assignment is effective-dated and binds one bank account to a legal entity, accounting book, and a chart account that must belong to that same book at the PostgreSQL boundary. The assignment row also carries the composite `(tenant, legal_entity, accounting_book)` foreign key so a book cannot be paired with another legal entity. Ingest compares the parsed statement `account_identifier_hash` to the registered bank account; a same-currency statement for a different IBAN/Othr identity fails closed. Generic list/read models expose `account_identifier_hash`, not a plaintext account identifier.
 
 HTTP surfaces are `POST /bank-accounts`, `POST /bank-account-assignments`, `POST /bank-statements`, `GET /bank-statements`, and `GET /bank-statement-entries`. Keyverse remains the owner of `X-CWL-Tenant-Reference`; AIS fail-closes on a missing or mismatched header and does not provision tenants. Billing consume, pull, and `proposal_status` are unchanged.
 

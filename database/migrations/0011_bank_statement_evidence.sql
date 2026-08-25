@@ -30,6 +30,10 @@ CREATE TABLE accounting_core.bank_account_assignment (
         REFERENCES accounting_core.bank_account_record (tenant_account_id, bank_account_record_id),
     FOREIGN KEY (tenant_account_id, legal_entity_id)
         REFERENCES accounting_core.legal_entity_record (tenant_account_id, legal_entity_id),
+    FOREIGN KEY (tenant_account_id, legal_entity_id, accounting_book_id)
+        REFERENCES accounting_core.accounting_book (
+            tenant_account_id, legal_entity_id, accounting_book_id
+        ),
     FOREIGN KEY (tenant_account_id, accounting_book_id)
         REFERENCES accounting_core.accounting_book (tenant_account_id, accounting_book_id),
     FOREIGN KEY (tenant_account_id, accounting_book_id, chart_account_id)

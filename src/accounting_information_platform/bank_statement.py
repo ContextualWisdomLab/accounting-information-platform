@@ -415,6 +415,11 @@ def accept_bank_statement_evidence(
                 "statement account currency does not match the registered bank account. "
                 "Register the matching currency, then retry ingest."
             )
+        if account_row[2] != statement.account_identifier_hash:
+            raise AccountingValidationError(
+                "statement account identifier does not match the registered bank account. "
+                "Register the matching account identifier, then retry ingest."
+            )
         prior_key = connection.execute(
             """
             SELECT bank_statement_record_id, source_artifact_hash, normalized_payload_hash

@@ -268,6 +268,76 @@ class BankStatementRegistryTests(unittest.TestCase):
                 self.case.policy.tenant_reference,
             )
 
+    def test_assignment_to_other_legal_entity_book_fails_at_postgres(self) -> None:
+        """A book owned by another legal entity cannot be assigned at PostgreSQL."""
+        other_legal_entity_id, other_book_id, other_chart_id = (
+            self._seed_other_legal_entity_book()
+        )
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            tenant_id = connection.execute(
+                "SELECT tenant_account_id FROM accounting_core.tenant_account WHERE tenant_account_code = %s",
+                (self.case.policy.tenant_reference,),
+            ).fetchone()[0]
+            account_id = connection.execute(
+                """
+                SELECT bank_account_record_id
+                FROM accounting_core.bank_account_record
+                WHERE tenant_account_id = %s AND bank_account_reference = %s
+                """,
+                (tenant_id, self.account_reference),
+            ).fetchone()[0]
+            legal_entity_id = connection.execute(
+                """
+                SELECT legal_entity_id
+                FROM accounting_core.legal_entity_record
+                WHERE tenant_account_id = %s AND legal_entity_code = %s
+                """,
+                (tenant_id, self.case.policy.legal_entity_reference),
+            ).fetchone()[0]
+            self.assertNotEqual(legal_entity_id, other_legal_entity_id)
+            with self.assertRaises(psycopg.Error):
+                connection.execute(
+                    """
+                    INSERT INTO accounting_core.bank_account_assignment (
+                        tenant_account_id, bank_account_record_id, legal_entity_id,
+                        accounting_book_id, chart_account_id, valid_from
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        tenant_id,
+                        account_id,
+                        legal_entity_id,
+                        other_book_id,
+                        other_chart_id,
+                        VALID_FROM,
+                    ),
+                )
+                connection.commit()
+
+    def test_statement_account_identifier_must_match_registered_account(self) -> None:
+        """A same-currency statement whose IBAN/Othr hash differs is not recorded."""
+        other_reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
+        accept_bank_account_record(
+            {
+                "tenant_reference": self.case.policy.tenant_reference,
+                "bank_account_reference": other_reference,
+                "account_currency_code": "KRW",
+                "account_identifier": "acct-other-iban",
+            },
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+        )
+        command = self._command(load_canonical_statement_fixture(), key="identifier-mismatch")
+        command["bank_account_reference"] = other_reference
+        with self.assertRaisesRegex(AccountingValidationError, "account identifier"):
+            accept_bank_statement_evidence(
+                command,
+                posting.DATABASE_URL,
+                self.case.policy.tenant_reference,
+                artifact_store=self.store,
+            )
+
     def test_source_artifact_statement_entry_provenance_is_complete(self) -> None:
         """Every persisted entry keeps artifact, statement, locator, and hash lineage."""
         document = self._ingest(load_canonical_statement_fixture())
@@ -875,6 +945,58 @@ class BankStatementRegistryTests(unittest.TestCase):
             ).fetchone()[0]
             connection.commit()
         return book_id, chart_id
+
+    def _seed_other_legal_entity_book(self) -> tuple[object, object, object]:
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            tenant_id = connection.execute(
+                "SELECT tenant_account_id FROM accounting_core.tenant_account WHERE tenant_account_code = %s",
+                (self.case.policy.tenant_reference,),
+            ).fetchone()[0]
+            other_legal_entity_id = connection.execute(
+                """
+                INSERT INTO accounting_core.legal_entity_record (
+                    tenant_account_id, legal_entity_code, entity_name,
+                    functional_currency_code, valid_from
+                )
+                VALUES (%s, %s, %s, 'KRW', %s)
+                RETURNING legal_entity_id
+                """,
+                (
+                    tenant_id,
+                    f"urn:cwl:legal_entity:other_{uuid.uuid4().hex}",
+                    "Other statutory entity",
+                    VALID_FROM,
+                ),
+            ).fetchone()[0]
+            other_book_id = connection.execute(
+                """
+                INSERT INTO accounting_core.accounting_book (
+                    tenant_account_id, legal_entity_id, book_role_code, book_name,
+                    reporting_currency_code, valid_from
+                )
+                VALUES (%s, %s, 'statutory', %s, 'KRW', %s)
+                RETURNING accounting_book_id
+                """,
+                (
+                    tenant_id,
+                    other_legal_entity_id,
+                    f"urn:cwl:accounting_book:other_{uuid.uuid4().hex}",
+                    VALID_FROM,
+                ),
+            ).fetchone()[0]
+            other_chart_id = connection.execute(
+                """
+                INSERT INTO accounting_core.chart_account (
+                    tenant_account_id, accounting_book_id, chart_account_code,
+                    account_name, normal_balance_code, account_class_code, valid_from
+                )
+                VALUES (%s, %s, '110200', 'Other entity cash', 'debit', 'asset', %s)
+                RETURNING chart_account_id
+                """,
+                (tenant_id, other_book_id, VALID_FROM),
+            ).fetchone()[0]
+            connection.commit()
+        return other_legal_entity_id, other_book_id, other_chart_id
 
 
 if __name__ == "__main__":
