@@ -32,7 +32,8 @@ schemas, tables, columns, policies, and functions, and `UPDATE`/`DELETE` of
 [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) checks out the exact
 commit under test, pins Actions to full commit SHAs, and installs quality
 dependencies with `--require-hashes`. The rebuilt wheel is installed with
-`--require-hashes` and its measured SHA-256. Mutable tags such as `@v4` are not
+`--require-hashes` from a requirements line that carries its measured
+`--hash=sha256:` digest. Mutable tags such as `@v4` are not
 acceptable evidence. GitHub-hosted required checks on that exact head are the
 merge-readiness signal. Local reproduction is supporting evidence, not a
 substitute for those checks.

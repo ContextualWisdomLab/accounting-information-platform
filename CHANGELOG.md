@@ -8,7 +8,7 @@
 
 ### Security
 
-- Exact-head CI installs the rebuilt wheel with `--require-hashes` and the measured SHA-256 so Scorecard Pinned-Dependencies does not treat the smoke-test `pip install` as an unpinned command. The intermediate public-API smoke test imports the source tree over `PYTHONPATH` instead of an unhashed editable install.
+- Exact-head CI installs the rebuilt wheel with `--require-hashes` from a requirements line that carries the measured `--hash=sha256:` digest so Scorecard Pinned-Dependencies does not treat the smoke-test `pip install` as an unpinned command, and so pip does not receive `--hash` as a CLI option. The intermediate public-API smoke test imports the source tree over `PYTHONPATH` instead of an unhashed editable install.
 
 - Bound ordinary PostgreSQL runtime logins to one admin-owned tenant identity for forced RLS; caller-controlled custom GUCs can no longer rebind accounting tenant scope.
 

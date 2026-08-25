@@ -201,9 +201,20 @@ class AccountingCiContractTests(unittest.TestCase):
             'wheel_hash="$(sha256sum "$primary_wheel" | cut -d\' \' -f1)"',
             workflow,
         )
+        for line in pip_install_lines:
+            self.assertNotRegex(
+                line,
+                r"pip(?:3)? install\b.*--hash=",
+                "pip install does not accept --hash as a CLI option; "
+                "put --hash=sha256: on a requirements line",
+            )
+        self.assertIn(
+            'printf \'%s --hash=sha256:%s\\n\' "$primary_wheel" "$wheel_hash" > "$wheel_req"',
+            workflow,
+        )
         self.assertIn(
             'python -m pip install --no-index --no-deps --force-reinstall '
-            '--require-hashes --hash="sha256:${wheel_hash}" "$primary_wheel"',
+            '--require-hashes -r "$wheel_req"',
             workflow,
         )
         self.assertNotIn(

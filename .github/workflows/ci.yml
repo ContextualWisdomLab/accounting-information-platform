@@ -283,7 +283,9 @@ jobs:
             --source-date-epoch "$SOURCE_DATE_EPOCH"
           (cd dist && sha256sum -c SHA256SUMS)
           wheel_hash="$(sha256sum "$primary_wheel" | cut -d' ' -f1)"
-          python -m pip install --no-index --no-deps --force-reinstall --require-hashes --hash="sha256:${wheel_hash}" "$primary_wheel"
+          wheel_req="$(mktemp)"
+          printf '%s --hash=sha256:%s\n' "$primary_wheel" "$wheel_hash" > "$wheel_req"
+          python -m pip install --no-index --no-deps --force-reinstall --require-hashes -r "$wheel_req"
           cd "${RUNNER_TEMP}"
           python -c "import accounting_information_platform as aip; assert aip.PostingLedger.__name__ == 'PostingLedger'"
       - name: Verify typing marker is packaged
