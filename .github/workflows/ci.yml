@@ -317,7 +317,7 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: accounting-information-platform-${{ github.sha }}
-          path: dist
+          path: .
       - name: Verify integrated-head evidence identity
         env:
           EXPECTED_SHA: ${{ github.sha }}
