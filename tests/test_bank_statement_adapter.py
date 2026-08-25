@@ -82,6 +82,36 @@ class BankStatementAdapterTests(unittest.TestCase):
         self.assertTrue(credit.source_entry_hash.startswith("sha256:"))
         self.assertTrue(statement.source_artifact_hash.startswith("sha256:"))
 
+    def test_detail_records_txamt_when_instdamt_precedes_it(self) -> None:
+        """TxDtls/AmtDtls/TxAmt/Amt is the stored detail amount, not an earlier InstdAmt."""
+        payload = FIXTURE.read_text(encoding="utf-8").replace(
+            "<AmtDtls>\n              <TxAmt>\n                <Amt Ccy=\"KRW\">25000.00</Amt>\n              </TxAmt>\n            </AmtDtls>",
+            "<AmtDtls>\n              <InstdAmt>\n                <Amt Ccy=\"KRW\">99999.00</Amt>\n              </InstdAmt>\n              <TxAmt>\n                <Amt Ccy=\"KRW\">25000.00</Amt>\n              </TxAmt>\n            </AmtDtls>",
+            1,
+        ).encode("utf-8")
+        statement = parse_bank_statement_payload(payload, CAMT053_MESSAGE_DEFINITION)
+        self.assertEqual(statement.entries[0].entry_details[0].detail_amount, Decimal("25000.00"))
+
+    def test_detail_without_txamt_fails_closed(self) -> None:
+        """A detail that has only InstdAmt is not recorded as transaction evidence."""
+        payload = FIXTURE.read_text(encoding="utf-8").replace(
+            "<AmtDtls>\n              <TxAmt>\n                <Amt Ccy=\"KRW\">25000.00</Amt>\n              </TxAmt>\n            </AmtDtls>",
+            "<AmtDtls>\n              <InstdAmt>\n                <Amt Ccy=\"KRW\">99999.00</Amt>\n              </InstdAmt>\n            </AmtDtls>",
+            1,
+        ).encode("utf-8")
+        with self.assertRaisesRegex(AccountingValidationError, "TxDtls/AmtDtls/TxAmt/Amt"):
+            parse_bank_statement_payload(payload, CAMT053_MESSAGE_DEFINITION)
+
+    def test_detail_credit_debit_indicator_must_be_crdt_or_dbit(self) -> None:
+        """A malformed TxDtls CdtDbtInd fails closed before persist, same as Ntry."""
+        payload = FIXTURE.read_text(encoding="utf-8").replace(
+            "<TxDtls>\n            <Refs>\n              <EndToEndId>E2E-1</EndToEndId>",
+            "<TxDtls>\n            <CdtDbtInd>FOOO</CdtDbtInd>\n            <Refs>\n              <EndToEndId>E2E-1</EndToEndId>",
+            1,
+        ).encode("utf-8")
+        with self.assertRaisesRegex(AccountingValidationError, "CRDT or DBIT"):
+            parse_bank_statement_payload(payload, CAMT053_MESSAGE_DEFINITION)
+
     def test_revision_mismatch_is_rejected(self) -> None:
         """Another camt.053 revision is not coerced into the pinned adapter."""
         payload = FIXTURE.read_text(encoding="utf-8").replace(
@@ -322,7 +352,12 @@ class BankStatementAdapterTests(unittest.TestCase):
         amount = _XmlElement("Amt", "", {"Ccy": "KRW"}, "100.00", [])
         tx_amount = _XmlElement("TxAmt", "", {}, "", [amount])
         amount_details = _XmlElement("AmtDtls", "", {}, "", [tx_amount])
-        detail = _normalize_detail(amount_details, 1, 1, "CRDT")
+        detail = _normalize_detail(
+            _XmlElement("TxDtls", "", {}, "", [amount_details]),
+            1,
+            1,
+            "CRDT",
+        )
         self.assertEqual(detail.detail_amount, Decimal("100.00"))
         empty_statement = _XmlElement("Stmt", "", {}, "", [])
         with self.assertRaisesRegex(AccountingValidationError, "statement account"):

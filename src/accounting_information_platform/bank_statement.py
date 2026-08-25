@@ -1224,27 +1224,29 @@ def _normalize_detail(
     detail_sequence: int,
     fallback_credit_debit: str,
 ) -> NormalizedEntryDetail:
-    amount_node = _find_path(detail_node, ["AmtDtls", "TxAmt", "Amt"])
+    amount_node = _find_path(detail_node, ["TxDtls", "AmtDtls", "TxAmt", "Amt"])
     if amount_node is None:
-        amount_node = _find_local(detail_node, "Amt")
-        if amount_node is None:
-            raise AccountingValidationError(
-                "transaction detail is missing an exact amount. "
-                "Supply TxDtls/AmtDtls/TxAmt/Amt, then retry ingest."
-            )
-        amount, currency = _amount_from_element(amount_node, "TxDtls/Amt")
-    else:
-        amount, currency = _amount_from_element(amount_node, "TxDtls/AmtDtls/TxAmt/Amt")
+        raise AccountingValidationError(
+            "transaction detail is missing an exact amount. "
+            "Supply TxDtls/AmtDtls/TxAmt/Amt, then retry ingest."
+        )
+    amount, currency = _amount_from_element(amount_node, "TxDtls/AmtDtls/TxAmt/Amt")
     locator = (
         f"Document/BkToCstmrStmt/Stmt/Ntry[{entry_sequence}]/NtryDtls/TxDtls[{detail_sequence}]"
     )
     remittance = _bound_text(_first_text(detail_node, ("RmtInf", "Ustrd")))
+    credit_debit_code = _first_text(detail_node, ("CdtDbtInd",)) or fallback_credit_debit
+    if credit_debit_code not in {"CRDT", "DBIT"}:
+        raise AccountingValidationError(
+            "credit/debit indicator must be CRDT or DBIT. "
+            "Correct CdtDbtInd, then retry ingest."
+        )
     detail = NormalizedEntryDetail(
         detail_sequence_number=detail_sequence,
         source_locator_path=locator,
         detail_amount=amount,
         detail_currency_code=currency,
-        credit_debit_code=_first_text(detail_node, ("CdtDbtInd",)) or fallback_credit_debit,
+        credit_debit_code=credit_debit_code,
         end_to_end_reference=_first_text(detail_node, ("Refs", "EndToEndId")),
         account_servicer_reference=_first_text(detail_node, ("Refs", "AcctSvcrRef")),
         remittance_evidence_text=remittance,
@@ -1421,16 +1423,6 @@ def _child_elements(parent: "_XmlElement", *path: str) -> list["_XmlElement"]:
 
 def _direct_children(parent: "_XmlElement", name: str) -> list["_XmlElement"]:
     return [child for child in parent.children if child.local_name == name]
-
-
-def _find_local(parent: "_XmlElement", name: str) -> "_XmlElement | None":
-    if parent.local_name == name:
-        return parent
-    for child in parent.children:
-        found = _find_local(child, name)
-        if found is not None:
-            return found
-    return None
 
 
 def _parse_reversal(value: str | None) -> bool:
