@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "accounting-information-platform"
+version = "0.1.0"
+description = "Evidence-backed accounting posting and financial reporting control plane."
+readme = "README.md"
+requires-python = ">=3.13"
+license = "Apache-2.0"
+authors = [{name = "ContextualWisdomLab"}]
+dependencies = []
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Programming Language :: Python :: 3.13",
+  "Typing :: Typed"
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+accounting_information_platform = ["py.typed"]

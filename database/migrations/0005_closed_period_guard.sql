@@ -1,0 +1,315 @@
+BEGIN;
+
+DO $role_setup$
+BEGIN
+    IF to_regrole('accounting_closing_writer') IS NULL THEN
+        CREATE ROLE accounting_closing_writer NOLOGIN;
+    END IF;
+END
+$role_setup$;
+
+ALTER ROLE accounting_closing_writer NOLOGIN;
+
+ALTER TABLE accounting_core.legal_entity_record FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.accounting_book FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.chart_account FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.account_role_mapping FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.fiscal_calendar FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.fiscal_period FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_integration.journal_proposal_record FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.general_journal FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.journal_entry_line FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.journal_source_reference FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.journal_reversal FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_integration.posting_receipt FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_reporting.trial_balance_snapshot FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_reporting.trial_balance_line FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_integration.outbox_event FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_integration.home_tax_submission FORCE ROW LEVEL SECURITY;
+
+CREATE OR REPLACE FUNCTION accounting_core.guard_period_insert()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    period_status_value text;
+    journal_write_role_value text;
+BEGIN
+    SELECT fiscal_period.period_status_code
+      INTO period_status_value
+      FROM accounting_core.fiscal_period
+     WHERE fiscal_period.tenant_account_id = NEW.tenant_account_id
+       AND fiscal_period.fiscal_period_id = NEW.fiscal_period_id;
+
+    IF period_status_value IS NULL THEN
+        RAISE EXCEPTION
+            'fiscal period is missing for this journal insert (period_closed)'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    IF period_status_value = 'open' THEN
+        RETURN NEW;
+    END IF;
+
+    journal_write_role_value := nullif(
+        current_setting('accounting_core.journal_write_role', true),
+        ''
+    );
+
+    IF period_status_value = 'soft_closed'
+       AND journal_write_role_value IN ('period_closing', 'adjusting', 'reversal')
+       AND pg_has_role(session_user, 'accounting_closing_writer', 'MEMBER')
+    THEN
+        RETURN NEW;
+    END IF;
+
+    RAISE EXCEPTION
+        'Fiscal period is % (period_closed). Ordinary journals cannot be inserted after close. Post the AIS closing journal before hard-close; do not insert a later ordinary or reversal journal into a locked period.',
+        period_status_value
+        USING ERRCODE = 'check_violation';
+END;
+$$;
+
+CREATE OR REPLACE TRIGGER closed_period_guard
+    BEFORE INSERT ON accounting_core.general_journal
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.guard_period_insert();
+
+CREATE OR REPLACE FUNCTION accounting_core.assert_journal_balance()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    target_tenant_id uuid;
+    target_journal_id uuid;
+    journal_exists_value boolean;
+    line_count_value bigint;
+    debit_total_value numeric(38, 6);
+    credit_total_value numeric(38, 6);
+BEGIN
+    target_tenant_id := COALESCE(NEW.tenant_account_id, OLD.tenant_account_id);
+    target_journal_id := COALESCE(NEW.general_journal_id, OLD.general_journal_id);
+
+    SELECT EXISTS (
+        SELECT 1
+          FROM accounting_core.general_journal
+         WHERE general_journal.tenant_account_id = target_tenant_id
+           AND general_journal.general_journal_id = target_journal_id
+    )
+      INTO journal_exists_value;
+
+    IF NOT journal_exists_value THEN
+        RETURN NULL;
+    END IF;
+
+    SELECT count(*),
+           COALESCE(sum(journal_entry_line.debit_amount), 0),
+           COALESCE(sum(journal_entry_line.credit_amount), 0)
+      INTO line_count_value, debit_total_value, credit_total_value
+      FROM accounting_core.journal_entry_line
+     WHERE journal_entry_line.tenant_account_id = target_tenant_id
+       AND journal_entry_line.general_journal_id = target_journal_id;
+
+    IF line_count_value = 0 OR debit_total_value <> credit_total_value THEN
+        RAISE EXCEPTION
+            'journal must contain lines whose debit and credit totals are equal (journal_unbalanced)'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS general_journal_balance_guard
+    ON accounting_core.general_journal;
+CREATE CONSTRAINT TRIGGER general_journal_balance_guard
+    AFTER INSERT OR UPDATE ON accounting_core.general_journal
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.assert_journal_balance();
+
+DROP TRIGGER IF EXISTS journal_entry_balance_guard
+    ON accounting_core.journal_entry_line;
+CREATE CONSTRAINT TRIGGER journal_entry_balance_guard
+    AFTER INSERT OR UPDATE OR DELETE ON accounting_core.journal_entry_line
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.assert_journal_balance();
+
+CREATE OR REPLACE FUNCTION accounting_core.guard_reversal_temporal_order()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    original_accounting_date_value date;
+    reversal_accounting_date_value date;
+BEGIN
+    SELECT original_journal.accounting_date,
+           reversal_journal.accounting_date
+      INTO original_accounting_date_value,
+           reversal_accounting_date_value
+      FROM accounting_core.general_journal AS original_journal
+      JOIN accounting_core.general_journal AS reversal_journal
+        ON reversal_journal.tenant_account_id = original_journal.tenant_account_id
+       AND reversal_journal.general_journal_id = NEW.reversal_journal_id
+     WHERE original_journal.tenant_account_id = NEW.tenant_account_id
+       AND original_journal.general_journal_id = NEW.original_journal_id;
+
+    IF original_accounting_date_value IS NULL
+       OR reversal_accounting_date_value IS NULL
+    THEN
+        RAISE EXCEPTION
+            'reversal journals must resolve inside the same tenant before lineage is recorded'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    IF reversal_accounting_date_value < original_accounting_date_value THEN
+        RAISE EXCEPTION
+            'reversal accounting date cannot precede original accounting date (reversal_temporal_order)'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS journal_reversal_temporal_guard
+    ON accounting_core.journal_reversal;
+DROP TRIGGER IF EXISTS journal_reversal_first_temporal_guard
+    ON accounting_core.journal_reversal;
+CREATE TRIGGER journal_reversal_first_temporal_guard
+    BEFORE INSERT ON accounting_core.journal_reversal
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.guard_reversal_temporal_order();
+
+CREATE OR REPLACE FUNCTION accounting_core.guard_reversal_lineage_insert()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+          FROM accounting_integration.posting_receipt
+         WHERE posting_receipt.tenant_account_id = NEW.tenant_account_id
+           AND posting_receipt.general_journal_id = NEW.original_journal_id
+    )
+    THEN
+        RAISE EXCEPTION
+            'reversal lineage requires a finalized original journal (ledger_immutable)'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+          FROM accounting_integration.posting_receipt
+         WHERE posting_receipt.tenant_account_id = NEW.tenant_account_id
+           AND posting_receipt.general_journal_id = NEW.reversal_journal_id
+    )
+    THEN
+        RAISE EXCEPTION
+            'a finalized journal cannot later acquire reversal lineage (ledger_immutable)'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS journal_reversal_finalization_guard
+    ON accounting_core.journal_reversal;
+DROP TRIGGER IF EXISTS journal_reversal_second_finalization_guard
+    ON accounting_core.journal_reversal;
+CREATE TRIGGER journal_reversal_second_finalization_guard
+    BEFORE INSERT ON accounting_core.journal_reversal
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.guard_reversal_lineage_insert();
+
+CREATE OR REPLACE FUNCTION accounting_core.reject_finalized_fact_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    RAISE EXCEPTION
+        'finalized accounting facts are immutable (ledger_immutable); correct posted facts by reversal and reposting'
+        USING ERRCODE = 'check_violation';
+END;
+$$;
+
+DROP TRIGGER IF EXISTS general_journal_immutable_guard
+    ON accounting_core.general_journal;
+CREATE TRIGGER general_journal_immutable_guard
+    BEFORE UPDATE OR DELETE ON accounting_core.general_journal
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.reject_finalized_fact_mutation();
+
+DROP TRIGGER IF EXISTS journal_entry_immutable_guard
+    ON accounting_core.journal_entry_line;
+CREATE TRIGGER journal_entry_immutable_guard
+    BEFORE UPDATE OR DELETE ON accounting_core.journal_entry_line
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.reject_finalized_fact_mutation();
+
+DROP TRIGGER IF EXISTS journal_source_immutable_guard
+    ON accounting_core.journal_source_reference;
+CREATE TRIGGER journal_source_immutable_guard
+    BEFORE UPDATE OR DELETE ON accounting_core.journal_source_reference
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.reject_finalized_fact_mutation();
+
+DROP TRIGGER IF EXISTS journal_reversal_immutable_guard
+    ON accounting_core.journal_reversal;
+CREATE TRIGGER journal_reversal_immutable_guard
+    BEFORE UPDATE OR DELETE ON accounting_core.journal_reversal
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.reject_finalized_fact_mutation();
+
+DROP TRIGGER IF EXISTS posting_receipt_immutable_guard
+    ON accounting_integration.posting_receipt;
+CREATE TRIGGER posting_receipt_immutable_guard
+    BEFORE UPDATE OR DELETE ON accounting_integration.posting_receipt
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.reject_finalized_fact_mutation();
+
+DROP TRIGGER IF EXISTS journal_proposal_immutable_guard
+    ON accounting_integration.journal_proposal_record;
+CREATE TRIGGER journal_proposal_immutable_guard
+    BEFORE UPDATE OR DELETE ON accounting_integration.journal_proposal_record
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.reject_finalized_fact_mutation();
+
+CREATE OR REPLACE FUNCTION accounting_core.guard_finalized_journal_extension()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+          FROM accounting_integration.posting_receipt
+         WHERE posting_receipt.tenant_account_id = NEW.tenant_account_id
+           AND posting_receipt.general_journal_id = NEW.general_journal_id
+    )
+    THEN
+        RAISE EXCEPTION
+            'finalized journal populations are immutable (ledger_immutable); reverse and repost instead of appending evidence'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS journal_entry_finalized_guard
+    ON accounting_core.journal_entry_line;
+CREATE TRIGGER journal_entry_finalized_guard
+    BEFORE INSERT ON accounting_core.journal_entry_line
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.guard_finalized_journal_extension();
+
+DROP TRIGGER IF EXISTS journal_source_finalized_guard
+    ON accounting_core.journal_source_reference;
+CREATE TRIGGER journal_source_finalized_guard
+    BEFORE INSERT ON accounting_core.journal_source_reference
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.guard_finalized_journal_extension();
+
+COMMIT;

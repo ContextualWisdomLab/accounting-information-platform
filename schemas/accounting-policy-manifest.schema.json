@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.contextualwisdomlab.org/accounting/policy-manifest/v1",
+  "title": "Accounting Policy Manifest",
+  "description": "Versioned accounting scope, book, period, currency, and semantic account-role mapping used to resolve a source proposal.",
+  "x-cwl-authority": "accounting-information-platform",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "policy_manifest_id",
+    "policy_contract_version",
+    "tenant_reference",
+    "legal_entity_reference",
+    "accounting_book_reference",
+    "intended_book_role_code",
+    "transaction_currency",
+    "functional_currency",
+    "open_period_start",
+    "open_period_end",
+    "accounting_policy_version",
+    "posting_rule_version",
+    "account_mappings"
+  ],
+  "properties": {
+    "policy_manifest_id": {"type": "string", "format": "uuid"},
+    "policy_contract_version": {"type": "integer", "minimum": 1},
+    "tenant_reference": {"type": "string", "pattern": "^urn:cwl:"},
+    "legal_entity_reference": {"type": "string", "pattern": "^urn:cwl:"},
+    "accounting_book_reference": {"type": "string", "pattern": "^urn:cwl:"},
+    "intended_book_role_code": {"type": "string", "pattern": "^[a-z][a-z0-9_]{1,63}$"},
+    "transaction_currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
+    "functional_currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
+    "open_period_start": {"type": "string", "format": "date"},
+    "open_period_end": {"type": "string", "format": "date"},
+    "accounting_policy_version": {"type": "string", "minLength": 1, "maxLength": 128},
+    "posting_rule_version": {"type": "string", "minLength": 1, "maxLength": 128},
+    "account_mappings": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "x-cwl-unique-items-by": "account_role_code",
+      "description": "At most one mapping per account_role_code. JSON Schema uniqueItems compares whole objects and is not sufficient when the same role maps to two chart accounts.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["account_role_code", "chart_account_code"],
+        "properties": {
+          "account_role_code": {"type": "string", "pattern": "^[a-z][a-z0-9_]{1,63}$"},
+          "chart_account_code": {"type": "string", "pattern": "^[A-Za-z0-9]{1,64}$"}
+        }
+      }
+    }
+  }
+}

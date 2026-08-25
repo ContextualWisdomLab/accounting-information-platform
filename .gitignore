@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.codegraph/
+.coverage
+coverage.json
+coverage.xml
+htmlcov/
+build/
+dist/
+*.egg-info/
+.DS_Store
