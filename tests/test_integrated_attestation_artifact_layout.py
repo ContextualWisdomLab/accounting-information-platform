@@ -94,7 +94,7 @@ class IntegratedAttestationArtifactLayoutTests(unittest.TestCase):
 
         self.assertTrue(repair_entry, "missing Integrated-head attestations changelog entry")
         for required_detail in (
-            "explicit staging root",
+            "workspace root",
             "`dist/`",
             "SHA256",
             "source-provenance",
