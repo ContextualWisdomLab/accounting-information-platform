@@ -12,6 +12,35 @@ ROOT = Path(__file__).resolve().parents[1]
 class IntegratedAttestationArtifactLayoutTests(unittest.TestCase):
     """Keep downloaded evidence and its release-history record reviewable."""
 
+    def test_package_evidence_uses_explicit_staging_root(self) -> None:
+        """Package artifact layout must not depend on upload-artifact LCA heuristics."""
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        foundation_job = workflow.split("  accounting-foundation:", 1)[1].split(
+            "  integrated-attestations:", 1
+        )[0]
+        upload_step = foundation_job.split(
+            "      - name: Upload package evidence", 1
+        )[1]
+
+        self.assertIn(
+            "      - name: Stage package evidence with explicit artifact root\n",
+            foundation_job,
+        )
+        self.assertIn(
+            'evidence_root="${RUNNER_TEMP}/accounting-package-evidence"',
+            foundation_job,
+        )
+        self.assertIn('mkdir -p "$evidence_root/dist"', foundation_job)
+        self.assertIn('cp coverage.json "$evidence_root/coverage.json"', foundation_job)
+        self.assertIn(
+            "          path: ${{ runner.temp }}/accounting-package-evidence/\n",
+            upload_step,
+        )
+        self.assertNotIn("            dist/*.whl\n", upload_step)
+        self.assertNotIn("            coverage.json\n", upload_step)
+
     def test_download_preserves_uploaded_dist_prefix(self) -> None:
         """Artifact extraction must not add a second dist directory before verification."""
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
