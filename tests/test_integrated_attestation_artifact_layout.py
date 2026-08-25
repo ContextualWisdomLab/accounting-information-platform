@@ -12,8 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 class IntegratedAttestationArtifactLayoutTests(unittest.TestCase):
     """Keep downloaded evidence and its release-history record reviewable."""
 
-    def test_package_evidence_uses_explicit_staging_root(self) -> None:
-        """Package artifact layout must not depend on upload-artifact LCA heuristics."""
+    def test_package_evidence_keeps_workspace_root_anchor(self) -> None:
+        """The upload must keep a root member so the retained dist prefix is stable."""
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
             encoding="utf-8"
         )
@@ -24,22 +24,18 @@ class IntegratedAttestationArtifactLayoutTests(unittest.TestCase):
             "      - name: Upload package evidence", 1
         )[1]
 
-        self.assertIn(
-            "      - name: Stage package evidence with explicit artifact root\n",
-            foundation_job,
-        )
-        self.assertIn(
-            'evidence_root="${RUNNER_TEMP}/accounting-package-evidence"',
-            foundation_job,
-        )
-        self.assertIn('mkdir -p "$evidence_root/dist"', foundation_job)
-        self.assertIn('cp coverage.json "$evidence_root/coverage.json"', foundation_job)
-        self.assertIn(
-            "          path: ${{ runner.temp }}/accounting-package-evidence/\n",
-            upload_step,
-        )
-        self.assertNotIn("            dist/*.whl\n", upload_step)
-        self.assertNotIn("            coverage.json\n", upload_step)
+        # actions/upload-artifact preserves paths from the least common ancestor.
+        # coverage.json intentionally anchors that ancestor at the workspace root;
+        # removing it would flatten dist/* and invalidate the integrated download.
+        for required_member in (
+            "            dist/*.whl\n",
+            "            dist/SHA256SUMS\n",
+            "            dist/sbom.spdx.json\n",
+            "            dist/source-provenance.json\n",
+            "            coverage.json\n",
+        ):
+            self.assertIn(required_member, upload_step)
+        self.assertLess(upload_step.index("dist/*.whl"), upload_step.index("coverage.json"))
 
     def test_download_preserves_uploaded_dist_prefix(self) -> None:
         """Artifact extraction must not add a second dist directory before verification."""
