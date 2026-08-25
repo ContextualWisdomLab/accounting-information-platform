@@ -12,30 +12,47 @@ ROOT = Path(__file__).resolve().parents[1]
 class IntegratedAttestationArtifactLayoutTests(unittest.TestCase):
     """Keep downloaded evidence and its release-history record reviewable."""
 
-    def test_package_evidence_keeps_workspace_root_anchor(self) -> None:
-        """The upload must keep a root member so the retained dist prefix is stable."""
+    def test_package_evidence_uses_explicit_staging_root(self) -> None:
+        """Artifact shape must not depend on upload-artifact path LCA behavior."""
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
             encoding="utf-8"
         )
         foundation_job = workflow.split("  accounting-foundation:", 1)[1].split(
             "  integrated-attestations:", 1
         )[0]
+        staging_step = foundation_job.split(
+            "      - name: Stage package evidence with explicit artifact root", 1
+        )[1].split("      - name: Upload package evidence", 1)[0]
         upload_step = foundation_job.split(
             "      - name: Upload package evidence", 1
         )[1]
 
-        # actions/upload-artifact preserves paths from the least common ancestor.
-        # coverage.json intentionally anchors that ancestor at the workspace root;
-        # removing it would flatten dist/* and invalidate the integrated download.
-        for required_member in (
-            "            dist/*.whl\n",
-            "            dist/SHA256SUMS\n",
-            "            dist/sbom.spdx.json\n",
-            "            dist/source-provenance.json\n",
-            "            coverage.json\n",
+        self.assertIn(
+            'evidence_root="${RUNNER_TEMP}/accounting-package-evidence"',
+            staging_step,
+        )
+        self.assertIn('rm -rf "$evidence_root"', staging_step)
+        self.assertIn('mkdir -p "$evidence_root/dist"', staging_step)
+        self.assertIn('cp "${wheels[0]}" "$evidence_root/dist/"', staging_step)
+        for required_file in (
+            "SHA256SUMS",
+            "sbom.spdx.json",
+            "source-provenance.json",
         ):
-            self.assertIn(required_member, upload_step)
-        self.assertLess(upload_step.index("dist/*.whl"), upload_step.index("coverage.json"))
+            self.assertIn(
+                f'cp "dist/{required_file}" "$evidence_root/dist/{required_file}"',
+                staging_step,
+            )
+        self.assertIn(
+            'cp "coverage.json" "$evidence_root/coverage.json"',
+            staging_step,
+        )
+        self.assertIn(
+            "          path: ${{ runner.temp }}/accounting-package-evidence/\n",
+            upload_step,
+        )
+        self.assertNotIn("            dist/*.whl\n", upload_step)
+        self.assertNotIn("            coverage.json\n", upload_step)
 
     def test_download_preserves_uploaded_dist_prefix(self) -> None:
         """Artifact extraction must not add a second dist directory before verification."""
@@ -77,7 +94,7 @@ class IntegratedAttestationArtifactLayoutTests(unittest.TestCase):
 
         self.assertTrue(repair_entry, "missing Integrated-head attestations changelog entry")
         for required_detail in (
-            "workspace root",
+            "explicit staging root",
             "`dist/`",
             "SHA256",
             "source-provenance",
