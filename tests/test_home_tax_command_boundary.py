@@ -73,6 +73,8 @@ class HomeTaxCommandBoundaryTests(unittest.TestCase):
             "legal_entity_reference": _ENTITY_REFERENCE,
             "book_reference": _BOOK_REFERENCE,
             "fiscal_period_reference": _PERIOD_REFERENCE,
+            "source_payload_hash": "sha256:" + "a" * 64,
+            "source_payload_reference": "urn:cwl:evidence:home_tax_submission_test_v1",
         }
         if include_key:
             payload["idempotency_key"] = _COMMAND_KEY

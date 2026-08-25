@@ -37,6 +37,55 @@ class HomeTaxIdempotencyContractTests(unittest.TestCase):
             ),
         )
 
+    def test_home_tax_storage_preserves_command_source_provenance(self) -> None:
+        """The durable command row keeps source hash and immutable source locator separately."""
+        migration = HOME_TAX_MIGRATION.read_text(encoding="utf-8")
+        self.assertRegex(
+            migration,
+            re.compile(
+                r"source_payload_hash\s+text\s+NOT\s+NULL\s+CHECK\s*\("
+                r"source_payload_hash\s*~\s*'\^sha256:\[0-9a-f\]\{64\}\$'\)",
+                re.IGNORECASE | re.MULTILINE,
+            ),
+        )
+        self.assertRegex(
+            migration,
+            re.compile(
+                r"source_payload_reference\s+text\s+NOT\s+NULL\s+"
+                r"CHECK\s*\(btrim\(source_payload_reference\)\s*<>\s*''\)",
+                re.IGNORECASE | re.MULTILINE,
+            ),
+        )
+
+        accept_source = ACCEPT_SOURCE.read_text(encoding="utf-8")
+        command = accept_source.split("def accept_home_tax_submission(", 1)[1].split(
+            "\ndef lookup_home_tax_submissions(", 1
+        )[0]
+        self.assertIn("source_payload_hash=source_payload_hash", command)
+        self.assertIn("source_payload_reference=source_payload_reference", command)
+
+        persistence_source = PERSISTENCE_SOURCE.read_text(encoding="utf-8")
+        method = persistence_source.split("    def persist_home_tax_submission(", 1)[1].split(
+            "\n    def load_home_tax_submissions(", 1
+        )[0]
+        self.assertIn("source_payload_hash: str", method)
+        self.assertIn("source_payload_reference: str", method)
+        self.assertRegex(
+            method,
+            re.compile(
+                r"INSERT\s+INTO\s+accounting_integration\.home_tax_submission"
+                r"[\s\S]+source_payload_hash[\s\S]+source_payload_reference",
+                re.IGNORECASE,
+            ),
+        )
+        self.assertRegex(
+            method,
+            re.compile(
+                r"SELECT[\s\S]+source_payload_hash[\s\S]+source_payload_reference",
+                re.IGNORECASE,
+            ),
+        )
+
     def test_home_tax_command_threads_idempotency_key_to_persistence(self) -> None:
         """The public command must require and pass its retry identity to durable storage."""
         accept_source = ACCEPT_SOURCE.read_text(encoding="utf-8")

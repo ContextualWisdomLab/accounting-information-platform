@@ -15,6 +15,7 @@ from .core import (
     AccountingValidationError,
     PeriodCloseReceipt,
     PostedJournalLine,
+    _HASH_PATTERN,
     _parse_amount,
     _require_currency,
 )
@@ -27,6 +28,10 @@ _JOURNAL_LIST_MAX_PAGE_LIMIT = 100
 _ALLOWED_OUTBOX_EVENT_TYPE_CODES = frozenset(
     {"posting_receipt", "period_close", "journal_reversal"}
 )
+
+
+class HomeTaxRequestValidationError(AccountingValidationError):
+    """Raised when a HomeTax command is malformed before catalog lookup."""
 
 
 def accept_journal_proposal(
@@ -236,7 +241,7 @@ def accept_period_close(
 def accept_period_open(
     payload: object, database_url: str, tenant_reference: str
 ) -> dict[str, object]:
-    """Open one fiscal period for *tenant_reference* and return the open receipt."""
+    """Open one fiscal period for *tenant_reference* with immutable command identity."""
     if not isinstance(payload, Mapping):
         raise AccountingValidationError(
             "period open payload must be a JSON object. "
@@ -256,6 +261,24 @@ def accept_period_open(
             "legal_entity_reference and fiscal_period_reference are required. "
             "Supply those period-open fields, then retry the period open."
         )
+    idempotency_key = payload.get("idempotency_key")
+    if (
+        not isinstance(idempotency_key, str)
+        or not idempotency_key
+        or idempotency_key != idempotency_key.strip()
+    ):
+        raise AccountingValidationError(
+            "idempotency_key is required and must be a canonical non-empty string. "
+            "Supply the period-open command key, then retry the period open."
+        )
+    source_payload_hash = payload.get("source_payload_hash")
+    if not isinstance(source_payload_hash, str) or not _HASH_PATTERN.fullmatch(
+        source_payload_hash
+    ):
+        raise AccountingValidationError(
+            "source_payload_hash must be a canonical sha256 digest. "
+            "Supply the immutable period-open command hash, then retry the period open."
+        )
     start_text = str(payload.get("period_start_date") or "")
     end_text = str(payload.get("period_end_date") or "")
     period_start_date = (
@@ -268,6 +291,8 @@ def accept_period_open(
         period_code,
         period_start_date,
         period_end_date,
+        idempotency_key=idempotency_key,
+        source_payload_hash=source_payload_hash,
     )
 
 
@@ -407,19 +432,34 @@ def accept_home_tax_submission(
         )
     submission_idempotency_key = payload.get("idempotency_key")
     if not submission_idempotency_key:
-        raise AccountingValidationError(
+        raise HomeTaxRequestValidationError(
             "home tax submission idempotency_key is required. "
             "Supply a tenant-scoped command key, then retry the home-tax-submission."
         )
     if not isinstance(submission_idempotency_key, str):
-        raise AccountingValidationError(
+        raise HomeTaxRequestValidationError(
             "home tax submission idempotency_key is required. "
             "Supply a tenant-scoped command key, then retry the home-tax-submission."
         )
     if not submission_idempotency_key.strip():
-        raise AccountingValidationError(
+        raise HomeTaxRequestValidationError(
             "home tax submission idempotency_key is required. "
             "Supply a tenant-scoped command key, then retry the home-tax-submission."
+        )
+    source_payload_hash = payload.get("source_payload_hash")
+    if (
+        not isinstance(source_payload_hash, str)
+        or _HASH_PATTERN.fullmatch(source_payload_hash) is None
+    ):
+        raise HomeTaxRequestValidationError(
+            "home tax submission source_payload_hash is required and must be a sha256 digest. "
+            "Supply immutable source evidence, then retry the home-tax-submission."
+        )
+    source_payload_reference = payload.get("source_payload_reference")
+    if not isinstance(source_payload_reference, str) or not source_payload_reference.strip():
+        raise HomeTaxRequestValidationError(
+            "home tax submission source_payload_reference is required. "
+            "Supply the immutable source locator, then retry the home-tax-submission."
         )
     legal_entity_reference = str(payload.get("legal_entity_reference") or "")
     book_reference = str(
@@ -453,6 +493,8 @@ def accept_home_tax_submission(
         accounting_book_reference=book_reference,
         period_code=period_code,
         submission_idempotency_key=submission_idempotency_key,
+        source_payload_hash=source_payload_hash,
+        source_payload_reference=source_payload_reference,
         register_document=register_document,
         rejection_reason_code=rejection_reason_code,
     )
@@ -918,60 +960,16 @@ def lookup_financial_statement_package(
             "statement_scope_code must be period or year_to_date. "
             "Supply a known statement scope, then retry the financial-statement-package read."
         )
-    income_statement = lookup_financial_statement(
-        database_url,
-        tenant_reference,
+    ledger = PostgresPostingLedger(database_url, tenant_reference)
+    return ledger.load_financial_statement_package(
         legal_entity_reference,
         book_reference,
-        fiscal_period_reference,
-        "income_statement",
-        comparison_fiscal_period_reference,
-        statement_scope_code,
+        _period_code_from_reference(fiscal_period_reference),
+        comparison_period_code=_period_code_from_reference(
+            comparison_fiscal_period_reference
+        ),
+        statement_scope_code=statement_scope_code,
     )
-    balance_sheet = lookup_financial_statement(
-        database_url,
-        tenant_reference,
-        legal_entity_reference,
-        book_reference,
-        fiscal_period_reference,
-        "balance_sheet",
-        comparison_fiscal_period_reference,
-        statement_scope_code,
-    )
-    changes_in_equity = lookup_financial_statement(
-        database_url,
-        tenant_reference,
-        legal_entity_reference,
-        book_reference,
-        fiscal_period_reference,
-        "changes_in_equity",
-        comparison_fiscal_period_reference,
-        statement_scope_code,
-    )
-    cash_flow = lookup_financial_statement(
-        database_url,
-        tenant_reference,
-        legal_entity_reference,
-        book_reference,
-        fiscal_period_reference,
-        "cash_flow",
-        comparison_fiscal_period_reference,
-        statement_scope_code,
-    )
-    document: dict[str, object] = {
-        "tenant_reference": income_statement["tenant_reference"],
-        "legal_entity_reference": income_statement["legal_entity_reference"],
-        "accounting_book_reference": income_statement["accounting_book_reference"],
-        "book_reference": income_statement["book_reference"],
-        "fiscal_period_reference": income_statement["fiscal_period_reference"],
-        "income_statement": income_statement,
-        "balance_sheet": balance_sheet,
-        "changes_in_equity": changes_in_equity,
-        "cash_flow": cash_flow,
-    }
-    if statement_scope_code == "year_to_date":
-        document["statement_scope_code"] = "year_to_date"
-    return document
 
 
 def lookup_period_close_package(
@@ -1070,7 +1068,18 @@ def _parse_adjusting_journal_lines(
                 "Supply one book currency, then retry the journal post."
             )
         transaction_currency = currency_code
-        amount = _parse_amount(str(raw_line.get("amount") or ""))
+        raw_amount = raw_line.get("amount")
+        if not isinstance(raw_amount, str):
+            raise AccountingValidationError(
+                "amount must be an exact decimal string. "
+                "Supply each adjusting-journal amount as a quoted decimal string, then retry the journal post."
+            )
+        amount = _parse_amount(raw_amount)
+        if amount <= 0:
+            raise AccountingValidationError(
+                "amount must be greater than zero. "
+                "Supply a positive exact decimal amount, then retry the journal post."
+            )
         debit_amount = amount if debit_credit_code == "debit" else Decimal("0")
         credit_amount = amount if debit_credit_code == "credit" else Decimal("0")
         debit_total += debit_amount
@@ -1394,6 +1403,12 @@ def _period_status_from_close_payload(payload: Mapping[str, object]) -> str:
         return "hard_closed"
     period_status_code = payload["period_status_code"]
     if type(period_status_code) is not str or not period_status_code:
+        raise AccountingValidationError(
+            "period_status_code must be soft_closed or hard_closed. "
+            "Omit the field to hard-close, or supply soft_closed or hard_closed, "
+            "then retry the close."
+        )
+    if period_status_code not in {"soft_closed", "hard_closed"}:
         raise AccountingValidationError(
             "period_status_code must be soft_closed or hard_closed. "
             "Omit the field to hard-close, or supply soft_closed or hard_closed, "

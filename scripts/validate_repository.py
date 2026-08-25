@@ -37,6 +37,11 @@ REQUIRED_FILES = (
     "database/migrations/0003_home_tax_submission.sql",
     "database/migrations/0004_close_idempotency_key.sql",
     "database/migrations/0005_closed_period_guard.sql",
+    "database/migrations/0006_concurrency_hot_partition.sql",
+    "database/migrations/0007_runtime_tenant_binding.sql",
+    "database/migrations/0008_fiscal_period_open_command.sql",
+    "database/migrations/0009_accounting_book_period_control.sql",
+    "database/migrations/0010_soft_close_command_evidence.sql",
     "docs/PRD.md",
     "docs/TRD.md",
     "docs/ARCHITECTURE.md",
@@ -93,6 +98,10 @@ REQUIRED_FILES = (
     "docs/adr/0045-http-vat-period-register.md",
     "docs/adr/0046-http-home-tax-submission.md",
     "docs/adr/0047-wage-income-withholding-reservation.md",
+    "docs/adr/0048-reproducible-package-evidence.md",
+    "docs/adr/0049-runtime-tenant-database-binding.md",
+    "docs/adr/0050-postgresql-concurrency-hot-partition.md",
+    "docs/adr/0051-accounting-book-period-control.md",
     "docs/doctoring/REFERENCES.md",
     "docs/doctoring/STANDARD_TRACEABILITY.md",
     "docs/superpowers/specs/2026-08-16-accounting-information-platform-design.md",
@@ -154,6 +163,7 @@ APPEND_ONLY_JOURNAL_MUTATION_PATTERN = re.compile(
     rf"(?=\s|;|$)",
     re.IGNORECASE,
 )
+_DOLLAR_QUOTE_PATTERN = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$")
 
 
 def find_mutable_action_references(text: str) -> tuple[str, ...]:
@@ -171,8 +181,21 @@ def find_placeholder_tokens(text: str) -> tuple[str, ...]:
     return tuple(sorted({match.group(1) for match in PLACEHOLDER_PATTERN.finditer(text)}))
 
 
+def _dollar_body_is_executable(prefix: str) -> bool:
+    """Return whether a dollar-quoted body is executable migration code rather than data."""
+    stripped = prefix.rstrip()
+    return bool(
+        re.search(r"\bAS\s*$", stripped, re.IGNORECASE)
+        or re.search(
+            r"\bDO(?:\s+LANGUAGE\s+[A-Za-z_][A-Za-z0-9_]*)?\s*$",
+            stripped,
+            re.IGNORECASE,
+        )
+    )
+
+
 def _lex_executable_sql(sql_text: str) -> str:
-    """Mask SQL comments and single-quoted literals while preserving executable tokens."""
+    """Mask SQL comments and data literals while preserving executable migration code."""
     output: list[str] = []
     index = 0
     length = len(sql_text)
@@ -200,10 +223,43 @@ def _lex_executable_sql(sql_text: str) -> str:
                     output.append(sql_text[index])
                 index += 1
             continue
+        if sql_text[index] == "$":
+            delimiter_match = _DOLLAR_QUOTE_PATTERN.match(sql_text, index)
+            if delimiter_match is not None:
+                delimiter = delimiter_match.group(0)
+                body_start = delimiter_match.end()
+                body_end = sql_text.find(delimiter, body_start)
+                if body_end < 0:
+                    output.append(sql_text[index])
+                    index += 1
+                    continue
+                body = sql_text[body_start:body_end]
+                if _dollar_body_is_executable("".join(output)):
+                    output.append(" ")
+                    output.append(_lex_executable_sql(body))
+                    output.append(" ")
+                else:
+                    output.append(" ")
+                    output.extend(character for character in body if character in "\r\n")
+                index = body_end + len(delimiter)
+                continue
         if sql_text[index] == "'":
+            escape_backslash = bool(
+                index > 0
+                and sql_text[index - 1] in "Ee"
+                and (
+                    index < 2
+                    or not (
+                        sql_text[index - 2].isalnum() or sql_text[index - 2] == "_"
+                    )
+                )
+            )
             output.append(" ")
             index += 1
             while index < length:
+                if escape_backslash and sql_text[index] == "\\" and index + 1 < length:
+                    index += 2
+                    continue
                 if sql_text[index] == "'":
                     if index + 1 < length and sql_text[index + 1] == "'":
                         index += 2
@@ -222,9 +278,30 @@ def _lex_executable_sql(sql_text: str) -> str:
 def validate_append_only_journal_sql(sql_text: str) -> tuple[str, ...]:
     """Reject executable destructive mutation of posted journal tables in migrations."""
     executable_sql = _lex_executable_sql(sql_text)
-    if APPEND_ONLY_JOURNAL_MUTATION_PATTERN.search(executable_sql) is None:
-        return ()
-    return (APPEND_ONLY_JOURNAL_MUTATION_ERROR,)
+    if APPEND_ONLY_JOURNAL_MUTATION_PATTERN.search(executable_sql) is not None:
+        return (APPEND_ONLY_JOURNAL_MUTATION_ERROR,)
+
+    table_list_pattern = re.compile(
+        r"\b(?:TRUNCATE(?:\s+TABLE)?|DROP\s+TABLE(?:\s+IF\s+EXISTS)?)\s+([^;]+)",
+        re.IGNORECASE,
+    )
+    protected_tables = {"general_journal", "journal_entry_line"}
+    for command_match in table_list_pattern.finditer(executable_sql):
+        targets_text = re.split(
+            r"\b(?:RESTART\s+IDENTITY|CONTINUE\s+IDENTITY|CASCADE|RESTRICT)\b",
+            command_match.group(1),
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0]
+        for raw_target in targets_text.split(","):
+            target = re.sub(r"^\s*ONLY\s+", "", raw_target, flags=re.IGNORECASE)
+            target = target.strip().removesuffix("*").strip()
+            identifier = target.rsplit(".", 1)[-1].strip()
+            if identifier.startswith('"') and identifier.endswith('"'):
+                identifier = identifier[1:-1].replace('""', '"')
+            if identifier.lower() in protected_tables:
+                return (APPEND_ONLY_JOURNAL_MUTATION_ERROR,)
+    return ()
 
 
 def validate_sql_object_names(sql_text: str) -> tuple[str, ...]:

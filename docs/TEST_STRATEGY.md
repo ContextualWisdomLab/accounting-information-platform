@@ -18,7 +18,7 @@ Every behavior change follows RED → GREEN: reproduce the defect with the small
 8. **Read models** — trial balance, journals, ledgers, balances, rollforwards, aging, statements, close package, VAT register and audit/outbox views tie to the authoritative population.
 9. **Integration contracts** — Billing proposal GET/pull envelopes, idempotent retry, origin allowlist and fail-closed remote errors.
 10. **Security / abuse** — cross-tenant references, malformed origins, oversized bodies, hostile parser inputs, privilege escalation and replay storms.
-11. **Packaging / release** — clean install, wheel install, typing marker, migration install / upgrade, SBOM / provenance and recovery rehearsals.
+11. **Packaging / release** — clean install, wheel install, typing marker, migration install / upgrade, deterministic exact-source provenance, SBOM, protected-head attestations and recovery rehearsals.
 
 ## PostgreSQL accounting regressions
 
@@ -37,6 +37,17 @@ Required regressions include:
 - migration `0005` changes a pre-existing LOGIN `accounting_closing_writer` back to `NOLOGIN`;
 - every tenant-scoped authoritative table both enables and forces RLS;
 - a non-owner, non-superuser, non-`BYPASSRLS` runtime login can execute an ordinary supported posting/read path for its bound tenant but cannot read another tenant or acquire owner / administrative authority.
+
+## Fiscal-period-open command tests
+
+Opening a fiscal period is an authoritative state-changing command, so its durable replay evidence is tested independently from period-close state tests. Required coverage proves:
+
+- missing, blank or noncanonical `idempotency_key` and malformed `source_payload_hash` fail before PostgreSQL work;
+- an exact retry with the same tenant, command key, immutable source hash, legal entity, period identity and requested dates replays the original open-command result without creating a second evidence row;
+- that exact replay remains a replay if the already-opened period has subsequently become `soft_closed` or `hard_closed`; replay must not reopen or otherwise mutate the current period state;
+- the same tenant-scoped command key with changed legal-entity scope, period identity, requested dates or source hash fails as an idempotency conflict and writes no second command-evidence row;
+- a different command key may acknowledge a matching period only while it is already `open`; it cannot reopen a `soft_closed` or `hard_closed` period;
+- migration `0008_fiscal_period_open_command.sql` creates append-only, forced-RLS command evidence, and the foundation migration loader fails closed before connecting when that required migration is absent.
 
 ## Reversal state matrix
 
@@ -82,6 +93,18 @@ Tests must prove:
 
 Request-body and header parsing must fail deterministically before accounting work. Cover missing / duplicate / malformed content-length, non-ASCII numeric forms, oversized bodies, malformed JSON, tenant mismatch and unsupported methods. Error responses identify the caller's next corrective action without leaking credentials or other-tenant existence.
 
+## Supply-chain evidence tests
+
+Pull-request builds must prove the artifact-to-source relationship without accepting GitHub's synthetic PR merge identity as the PR head. The reproducible-build step creates `source-provenance.json` from the verified `EXPECTED_SHA`, source-derived `SOURCE_DATE_EPOCH`, wheel SHA-256 and deterministic SPDX SBOM SHA-256. `SHA256SUMS` covers the wheel, SBOM and source-provenance manifest, and all three remain in the uploaded exact-head evidence bundle.
+
+The PR-capable `accounting-foundation` job must have `contents: read` only. Contract tests reject `id-token: write`, `attestations: write`, or `artifact-metadata: write` in that job because those permissions would be available to repository-controlled tests, build hooks, validation scripts and actions even when individual signing steps are conditionally skipped.
+
+The PR-only `exact-head-dependency-diff` job is a separate fail-closed dependency-security hard gate. It checks out `pull_request.head.sha`, independently fetches the live base branch tip, records the live base SHA, exact head SHA, dependency-manifest name/status diff and manifest SHA-256 values, and rejects a stale/non-ancestor base relationship. The complete hash-locked `requirements-quality.txt` is scanned with a digest-pinned OSV-Scanner container. A known vulnerable dependency, scanner failure, unavailable scanner/evidence path or missing expected evidence is non-passing. Because the current bootstrap base contains no dependency manifests, the foundation PR records both manifests as additions and requires the complete exact-head dependency set to be vulnerability-free instead of manufacturing an empty-base result. The SHA-named artifact retains both the live-base/head evidence record and OSV JSON result.
+
+Organization-level security workflows are supplemental. If an organization dependency-review support probe is forbidden or unsupported and the actual review step is skipped, aggregate workflow success is not accepted as dependency-review evidence; the repository-owned exact-head dependency-diff gate must itself execute and pass.
+
+GitHub OIDC-backed `actions/attest` provenance and SBOM attestations are applicable only to the separate `integrated-attestations` job on `push` builds for `develop` or `main`. That job must be job-level push-only, depend on `accounting-foundation`, download the immutable SHA-named artifact with a full-SHA-pinned action, verify `SHA256SUMS`, verify `source-provenance.json.source_sha == github.sha`, and only then exercise OIDC/attestation write authority. A `pull_request` event can carry a synthetic merge ref/commit in the attestation signing context even when the checked-out build tree is the exact PR head, so that signed statement is not accepted as exact PR-head provenance. After integration, the protected-branch push must rebuild the artifact and the signed attestations must pass on that integrated commit before release. This is evidence readiness; it does not claim a SLSA level or certification.
+
 ## Merge gates
 
 One unchanged exact PR head must pass all applicable gates together:
@@ -92,13 +115,22 @@ One unchanged exact PR head must pass all applicable gates together:
 - all behavior and real PostgreSQL integration tests;
 - repository contracts and compile checks;
 - hash-locked package build and installed-public-API smoke test;
-- SAST and security scans;
-- dependency / package policy, SBOM and provenance checks where configured;
+- exact-head SAST and security scans;
+- executed exact-head dependency-diff security gate against an independently resolved live base tip;
+- reproducible wheel, deterministic exact-source provenance manifest, SPDX SBOM and package checksums;
 - migration clean-install / upgrade rehearsal;
 - qualifying independent approval and zero still-valid unresolved review findings.
 
-Queued, pending, skipped, cancelled, absent, neutral, failed, stale, predecessor-head, synthetic merge-ref, status-only or model-only evidence is non-passing.
+Queued, pending, cancelled, absent, neutral, failed, stale, predecessor-head, synthetic merge-ref, status-only or model-only evidence is non-passing. A conditionally scoped gate is evaluated only on the event for which it is applicable; once applicable, a skipped result is non-passing. In particular, signed GitHub artifact attestations are a protected-branch push/release gate, not a substitute for exact PR-head provenance.
 
 ## Release / recovery acceptance
 
-Before a release tag, run backup / restore and rollback-strategy rehearsal with production-like PostgreSQL state and the restricted runtime identity. Verify that restored journal, receipt, close and outbox hashes correspond to the exact release source and artifacts. A successful CI helper workflow is not itself release evidence if generated changes were not normalized into the canonical source branch.
+Before a release tag, run backup / restore and rollback-strategy rehearsal with production-like PostgreSQL state and the restricted runtime identity. Verify that restored journal, receipt, close and outbox hashes correspond to the exact release source and artifacts. The integrated protected-head push must also reproduce the package and pass OIDC-backed provenance/SBOM attestations for that same integrated commit. A successful CI helper workflow is not itself release evidence if generated changes were not normalized into the canonical source branch.
+
+## Runtime tenant credential isolation
+
+Real PostgreSQL tests create non-owner, non-superuser, non-`BYPASSRLS` runtime logins. A provisioned login must post and read its own tenant, must fail when the application requests a different tenant, and must remain unable to see another tenant even after rewriting the legacy `app.tenant_account_id` custom GUC. A separate unbound runtime login must fail closed. Static migration tests require the session-user/OID binding, locked search path, and migration-loader presence.
+
+## Soft-close command replay regression
+
+Real PostgreSQL tests prove that first soft-close and same-key replay return the same durable source hash/count, a different key conflicts, privileged direct SQL cannot mutate recorded soft-close evidence, and a legacy soft-close with absent evidence fails closed rather than manufacturing a receipt from current ledger state.

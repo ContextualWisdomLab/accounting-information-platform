@@ -10,6 +10,7 @@ from typing import Callable
 from urllib.parse import parse_qs, urlparse
 
 from .accept import (
+    HomeTaxRequestValidationError,
     accept_adjusting_journal,
     accept_home_tax_submission,
     accept_journal_proposal,
@@ -1388,6 +1389,9 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
                 f"{error}. Supply a new HomeTax idempotency key, then retry.",
             )
             return
+        except HomeTaxRequestValidationError as error:
+            self._write_error(422, str(error))
+            return
         except AccountingValidationError as error:
             self._write_error(404, str(error))
             return
@@ -1451,6 +1455,15 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         return payload
 
     def _read_body(self) -> bytes | None:
+        transfer_encoding_values = self.headers.get_all("Transfer-Encoding")
+        if transfer_encoding_values:
+            self.close_connection = True
+            self._write_error(
+                400,
+                "Transfer-Encoding is not supported. "
+                "Send one ASCII decimal Content-Length and an unencoded body, then retry.",
+            )
+            return None
         length_values = self.headers.get_all("Content-Length")
         if length_values is None or len(length_values) != 1:
             self._write_error(
@@ -1477,7 +1490,16 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             return None
         if length < 1:
             return b""
-        return self.rfile.read(length)
+        body = self.rfile.read(length)
+        if len(body) != length:
+            self.close_connection = True
+            self._write_error(
+                400,
+                "request body is incomplete for Content-Length. "
+                "Send the declared number of body bytes, then retry.",
+            )
+            return None
+        return body
 
     def _write_error(self, status_code: int, error_message: str) -> None:
         self._write_json(status_code, {"error_message": error_message})

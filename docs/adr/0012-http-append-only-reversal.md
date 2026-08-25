@@ -28,4 +28,4 @@ The HTTP handler resolves catalog policy from the original journal and delegates
 
 Controllers can reverse a posted journal without editing history. Cross-tenant, cross-book, unknown-journal, invalid-period, temporal-order and occupied-reference cases fail closed before an authoritative second reversal is created. Soft-closed reversal still requires the purpose-limited database capability described in `docs/SECURITY.md` and `docs/OPERABILITY.md`; hard-closed periods reject a new reversal into the locked period.
 
-The in-memory `PostingLedger` is the executable reference oracle for exact command replay. The PostgreSQL adapter must preserve the same command-key plus immutable-hash semantics on durable rows before PR #2 can leave Draft. A passing cache-only replay or predecessor-head test is not sufficient release evidence.
+The in-memory `PostingLedger` is the executable reference oracle for exact command replay. The PostgreSQL adapter must preserve the same command-key plus immutable-hash semantics on durable rows before PR #2 can leave its non-release-ready state. A passing cache-only replay or predecessor-head test is not sufficient release evidence.

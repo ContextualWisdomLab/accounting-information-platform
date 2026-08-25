@@ -147,6 +147,7 @@ class BillingPublicFetchOriginTests(unittest.TestCase):
         create_context.return_value.wrap_socket.assert_called_once_with(
             raw_socket, server_hostname="billing.example.test"
         )
+        self.assertIs(connection.sock, tls_socket)
         self.assertIs(result, connection)
 
 

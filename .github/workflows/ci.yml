@@ -15,15 +15,163 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  exact-head-sast:
+    name: Exact-head SAST
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out exact head for SAST
+        uses: actions/checkout@631c942040754b6e095e929c1677c07e10ed4f87
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact SAST checkout
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Run pinned Semgrep on exact head
+        env:
+          SEMGREP_SEND_METRICS: "off"
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}:/src" \
+            -w /src \
+            -e SEMGREP_SEND_METRICS=off \
+            --entrypoint semgrep \
+            semgrep/semgrep@sha256:2b33f46ba66cf8cc2ad59ccfa7d22951fd00c632c38f1339e84ec8e6e641a942 \
+            scan \
+            --config=p/default \
+            --severity=WARNING \
+            --severity=ERROR \
+            --exclude=.github/workflows \
+            --exclude='docs/research/**/standards' \
+            --error \
+            --metrics=off
+
+  exact-head-security:
+    name: Exact-head security
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out exact head for security scanning
+        uses: actions/checkout@631c942040754b6e095e929c1677c07e10ed4f87
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact security checkout
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Run Trivy secret gate on exact head
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: secret
+          format: table
+          exit-code: '1'
+          version: v0.70.0
+      - name: Prove Trivy secret scanner traverses the exact-head workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          canary_file="${GITHUB_WORKSPACE}/.trivy-secret-canary.txt"
+          canary_output="${RUNNER_TEMP}/trivy-secret-canary.out"
+          trap 'rm -f "$canary_file" "$canary_output"' EXIT
+          printf '%s%s%s\n' 'AWS_ACCESS_KEY_ID = "' 'AKIAIOSFODNN7ASD' 'FGHJ"' > "$canary_file"
+          set +e
+          trivy fs --scanners secret --format table --exit-code 1 "${GITHUB_WORKSPACE}" >"$canary_output" 2>&1
+          canary_status=$?
+          set -e
+          cat "$canary_output"
+          test "$canary_status" -eq 1
+          grep -Fq "aws-access-key-id" "$canary_output"
+          grep -Fq ".trivy-secret-canary.txt" "$canary_output"
+
+  exact-head-dependency-diff:
+    name: Exact-head dependency diff
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      BASE_REF: ${{ github.event.pull_request.base.ref }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      OSV_SCANNER_IMAGE: ghcr.io/google/osv-scanner@sha256:5116601dedc01c1c580eb92371883ec052fc4c13c3fbc109d621a63ac416d475
+    steps:
+      - name: Check out exact head for dependency review
+        uses: actions/checkout@631c942040754b6e095e929c1677c07e10ed4f87
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Resolve live base and record dependency diff identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$HEAD_SHA"
+          git fetch --no-tags origin "refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+          LIVE_BASE_SHA="$(git rev-parse "refs/remotes/origin/${BASE_REF}")"
+          test -n "$LIVE_BASE_SHA"
+          git merge-base --is-ancestor "$LIVE_BASE_SHA" "$HEAD_SHA"
+          evidence_dir="${RUNNER_TEMP}/dependency-review"
+          mkdir -p "$evidence_dir"
+          {
+            printf 'live_base_ref=%s\n' "$BASE_REF"
+            printf 'live_base_sha=%s\n' "$LIVE_BASE_SHA"
+            printf 'head_sha=%s\n' "$HEAD_SHA"
+            printf '\n[dependency_manifest_name_status]\n'
+            git diff --name-status "$LIVE_BASE_SHA" "$HEAD_SHA" -- requirements-quality.txt pyproject.toml
+            printf '\n[head_manifest_sha256]\n'
+            sha256sum requirements-quality.txt pyproject.toml
+            printf '\n[live_base_manifest_sha256]\n'
+            for dependency_path in requirements-quality.txt pyproject.toml; do
+              if git cat-file -e "${LIVE_BASE_SHA}:${dependency_path}" 2>/dev/null; then
+                git show "${LIVE_BASE_SHA}:${dependency_path}" | sha256sum | awk -v path="$dependency_path" '{print path " " $1}'
+              else
+                printf '%s ABSENT\n' "$dependency_path"
+              fi
+            done
+          } > "$evidence_dir/dependency-diff-evidence.txt"
+          cat "$evidence_dir/dependency-diff-evidence.txt"
+      - name: Scan exact-head locked Python dependencies with OSV
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_dir="${RUNNER_TEMP}/dependency-review"
+          mkdir -p "$evidence_dir"
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}:/workspace:ro" \
+            -w /workspace \
+            "$OSV_SCANNER_IMAGE" \
+            scan source \
+            --lockfile=requirements.txt:requirements-quality.txt \
+            --format=json \
+            > "$evidence_dir/osv-head.json"
+          test -s "$evidence_dir/osv-head.json"
+      - name: Upload dependency-diff evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: accounting-dependency-diff-${{ github.event.pull_request.head.sha }}
+          path: |
+            ${{ runner.temp }}/dependency-review/dependency-diff-evidence.txt
+            ${{ runner.temp }}/dependency-review/osv-head.json
+          if-no-files-found: error
+          retention-days: 14
+
   accounting-foundation:
     name: Accounting foundation
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: read
-      id-token: write
-      attestations: write
-      artifact-metadata: write
     env:
       ACCOUNTING_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/accounting_test
     services:
@@ -80,8 +228,30 @@ jobs:
         env:
           PYTHONPATH: src:.
         run: python -m coverage run --branch -m unittest discover -s tests -p 'test_*.py'
-      - name: Enforce complete statement and branch coverage
-        run: python -m coverage report --fail-under=100 --show-missing
+      - name: Enforce complete coverage and publish denominator evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m coverage report --fail-under=100 --show-missing
+          python -m coverage json -o coverage.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          totals = json.loads(Path("coverage.json").read_text(encoding="utf-8"))["totals"]
+          lines = int(totals["num_statements"])
+          covered_lines = int(totals["covered_lines"])
+          branches = int(totals["num_branches"])
+          covered_branches = int(totals["covered_branches"])
+          if lines <= 0 or branches <= 0:
+              raise SystemExit("coverage denominator must contain positive statement and branch counts")
+          if covered_lines != lines or covered_branches != branches:
+              raise SystemExit("coverage denominator evidence does not prove exact 100% statement/branch coverage")
+          print(
+              f"coverage lines:{lines} branches:{branches} "
+              f"covered_lines:{covered_lines} covered_branches:{covered_branches}"
+          )
+          PY
       - name: Validate repository contracts
         run: python scripts/validate_repository.py .
       - name: Compile production and test modules
@@ -118,6 +288,52 @@ jobs:
           python -c "import accounting_information_platform as aip; assert aip.PostingLedger.__name__ == 'PostingLedger'"
       - name: Verify typing marker is packaged
         run: python -c "import zipfile, glob; wheel=glob.glob('dist/*.whl')[0]; names=zipfile.ZipFile(wheel).namelist(); assert 'accounting_information_platform/py.typed' in names"
+      - name: Upload package evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: accounting-information-platform-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            dist/*.whl
+            dist/SHA256SUMS
+            dist/sbom.spdx.json
+            dist/source-provenance.json
+            coverage.json
+          if-no-files-found: error
+          retention-days: 14
+
+  integrated-attestations:
+    name: Integrated-head attestations
+    if: github.event_name == 'push'
+    needs: accounting-foundation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Download exact-head package evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: accounting-information-platform-${{ github.sha }}
+          path: dist
+      - name: Verify integrated-head evidence identity
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd dist && sha256sum -c SHA256SUMS)
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          provenance = json.loads(Path("dist/source-provenance.json").read_text(encoding="utf-8"))
+          if provenance.get("source_sha") != os.environ["EXPECTED_SHA"]:
+              raise SystemExit("downloaded package evidence does not belong to the integrated head")
+          PY
       - name: Attest wheel provenance
         uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d
         with:
@@ -127,13 +343,3 @@ jobs:
         with:
           subject-path: ${{ github.workspace }}/dist/*.whl
           sbom-path: ${{ github.workspace }}/dist/sbom.spdx.json
-      - name: Upload package evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: accounting-information-platform-${{ github.event.pull_request.head.sha || github.sha }}
-          path: |
-            dist/*.whl
-            dist/SHA256SUMS
-            dist/sbom.spdx.json
-          if-no-files-found: error
-          retention-days: 14

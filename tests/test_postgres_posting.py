@@ -289,6 +289,52 @@ class PostgresPostingTests(unittest.TestCase):
             sum(balance.credit_total for balance in balances.values()),
         )
 
+    def test_database_session_sets_lock_safety_limits(self) -> None:
+        """Every application transaction bounds lock waits and idle transaction time."""
+        with self.ledger._session() as connection:
+            self.assertEqual(connection.execute("SHOW lock_timeout").fetchone()[0], "5s")
+            self.assertEqual(
+                connection.execute("SHOW idle_in_transaction_session_timeout").fetchone()[0],
+                "1min",
+            )
+
+    def test_command_advisory_lock_serializes_same_tenant_scope(self) -> None:
+        """A second transaction cannot enter one tenant command scope while it is held."""
+        command_scope = f"lock-test:{uuid.uuid4().hex}"
+        with self.ledger._session() as first_connection:
+            self.ledger._require_tenant(first_connection)
+            self.ledger._acquire_command_lock(first_connection, command_scope)
+            with psycopg.connect(DATABASE_URL) as second_connection:
+                second_connection.execute("SET lock_timeout = '100ms'")
+                with self.assertRaises(psycopg.errors.LockNotAvailable):
+                    second_connection.execute(
+                        "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+                        (self.policy.tenant_reference, command_scope),
+                    )
+
+    def test_period_recheck_fails_closed_if_period_row_disappears(self) -> None:
+        """A period that vanishes after lock acquisition cannot admit a journal."""
+        connection = mock.MagicMock()
+        initial_cursor = mock.MagicMock()
+        initial_cursor.fetchone.return_value = (
+            uuid.uuid4(),
+            "2026-08",
+            "open",
+            date(2026, 8, 1),
+            date(2026, 8, 31),
+        )
+        missing_cursor = mock.MagicMock()
+        missing_cursor.fetchone.return_value = None
+        connection.execute.side_effect = [initial_cursor, mock.MagicMock(), missing_cursor]
+        with self.assertRaisesRegex(AccountingValidationError, "No fiscal period covers"):
+            self.ledger._require_period_bounds(
+                connection,
+                uuid.uuid4(),
+                date(2026, 8, 31),
+                allowed_status_codes=frozenset({"open"}),
+                next_action="post",
+            )
+
     def test_replay_of_same_idempotency_key_does_not_duplicate_rows(self) -> None:
         """Exact replay returns the original receipt and writes no second journal."""
         proposal = self._two_line_proposal()
@@ -635,6 +681,27 @@ class PostgresPostingTests(unittest.TestCase):
             foundation.write_text(
                 MIGRATION_PATH.read_text(encoding="utf-8"), encoding="utf-8"
             )
+            for migration_name in (
+                "0002_chart_account_class.sql",
+                "0003_home_tax_submission.sql",
+                "0004_close_idempotency_key.sql",
+            ):
+                (temporary_root / migration_name).write_text(
+                    (ROOT / "database/migrations" / migration_name).read_text(
+                        encoding="utf-8"
+                    ),
+                    encoding="utf-8",
+                )
+            with self.assertRaisesRegex(
+                AccountingValidationError, "0005_closed_period_guard"
+            ):
+                apply_foundation_migration(DATABASE_URL, foundation)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            foundation = temporary_root / "0001_accounting_foundation.sql"
+            foundation.write_text(
+                MIGRATION_PATH.read_text(encoding="utf-8"), encoding="utf-8"
+            )
             (temporary_root / "0002_chart_account_class.sql").write_text(
                 (ROOT / "database/migrations/0002_chart_account_class.sql").read_text(
                     encoding="utf-8"
@@ -653,8 +720,14 @@ class PostgresPostingTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            (temporary_root / "0005_closed_period_guard.sql").write_text(
+                (ROOT / "database/migrations/0005_closed_period_guard.sql").read_text(
+                    encoding="utf-8"
+                ),
+                encoding="utf-8",
+            )
             with self.assertRaisesRegex(
-                AccountingValidationError, "0005_closed_period_guard"
+                AccountingValidationError, "0006_concurrency_hot_partition"
             ):
                 apply_foundation_migration(DATABASE_URL, foundation)
         with self.assertRaisesRegex(AccountingValidationError, "restore a clean database"):
@@ -1099,7 +1172,7 @@ class PostgresPostingTests(unittest.TestCase):
             "urn:cwl:accounting:fiscal_period:2026-08",
         )
         closing = self.ledger.load_posted_journal(
-            f"{self.policy.tenant_reference}:period_closing:2026-08"
+            f"{self.policy.tenant_reference}:period_closing:2026-08:{self.policy.accounting_book_reference}"
         )
         package = lookup_period_close_package(
             DATABASE_URL,
@@ -3910,6 +3983,8 @@ class PostgresPostingTests(unittest.TestCase):
                 accounting_book_reference=self.policy.accounting_book_reference,
                 period_code="2026-08",
                 submission_idempotency_key="",
+                source_payload_hash="sha256:" + "a" * 64,
+                source_payload_reference="urn:cwl:evidence:home_tax_test:v1",
                 register_document={},
                 rejection_reason_code="register_unavailable",
             )
@@ -3924,6 +3999,8 @@ class PostgresPostingTests(unittest.TestCase):
             accounting_book_reference=self.policy.accounting_book_reference,
             period_code="2026-08",
             submission_idempotency_key=command_key,
+            source_payload_hash="sha256:" + "a" * 64,
+            source_payload_reference="urn:cwl:evidence:home_tax_test:v1",
             register_document=register,
             rejection_reason_code="hometax_transport_unavailable",
         )
@@ -3932,9 +4009,34 @@ class PostgresPostingTests(unittest.TestCase):
             accounting_book_reference=self.policy.accounting_book_reference,
             period_code="2026-08",
             submission_idempotency_key=command_key,
+            source_payload_hash="sha256:" + "a" * 64,
+            source_payload_reference="urn:cwl:evidence:home_tax_test:v1",
             register_document=register,
             rejection_reason_code="register_unavailable",
         )
+        with self.assertRaises(IdempotencyConflictError):
+            self.ledger.persist_home_tax_submission(
+                legal_entity_reference=self.policy.legal_entity_reference,
+                accounting_book_reference=self.policy.accounting_book_reference,
+                period_code="2026-08",
+                submission_idempotency_key=command_key,
+                source_payload_hash="sha256:" + "b" * 64,
+                source_payload_reference="urn:cwl:evidence:home_tax_test:v1",
+                register_document=register,
+                rejection_reason_code="hometax_transport_unavailable",
+            )
+        with self.assertRaises(IdempotencyConflictError):
+            self.ledger.persist_home_tax_submission(
+                legal_entity_reference=self.policy.legal_entity_reference,
+                accounting_book_reference=self.policy.accounting_book_reference,
+                period_code="2026-08",
+                submission_idempotency_key=command_key,
+                source_payload_hash="sha256:" + "a" * 64,
+                source_payload_reference="urn:cwl:evidence:home_tax_test:changed:v1",
+                register_document=register,
+                rejection_reason_code="hometax_transport_unavailable",
+            )
+
         changed_register = dict(register)
         changed_register["closing_amount"] = "2501"
         with self.assertRaises(IdempotencyConflictError):
@@ -3943,6 +4045,8 @@ class PostgresPostingTests(unittest.TestCase):
                 accounting_book_reference=self.policy.accounting_book_reference,
                 period_code="2026-08",
                 submission_idempotency_key=command_key,
+                source_payload_hash="sha256:" + "a" * 64,
+                source_payload_reference="urn:cwl:evidence:home_tax_test:v1",
                 register_document=changed_register,
                 rejection_reason_code="hometax_transport_unavailable",
             )
@@ -3959,7 +4063,7 @@ class PostgresPostingTests(unittest.TestCase):
         connection = mock.MagicMock()
         empty_cursor = mock.MagicMock()
         empty_cursor.fetchone.return_value = None
-        connection.execute.side_effect = [empty_cursor, empty_cursor]
+        connection.execute.side_effect = [empty_cursor, empty_cursor, empty_cursor]
         session = mock.MagicMock()
         session.__enter__.return_value = connection
         session.__exit__.return_value = False
@@ -3986,6 +4090,8 @@ class PostgresPostingTests(unittest.TestCase):
                 accounting_book_reference=self.policy.accounting_book_reference,
                 period_code="2026-08",
                 submission_idempotency_key="urn:cwl:home_tax_submission:missing:v1",
+                source_payload_hash="sha256:" + "a" * 64,
+                source_payload_reference="urn:cwl:evidence:home_tax_test:v1",
                 register_document={"as_of_date": "2026-08-31", "closing_amount": "0"},
                 rejection_reason_code="register_unavailable",
             )
@@ -4836,7 +4942,7 @@ class PostgresPostingTests(unittest.TestCase):
             },
         )
         closing_status, closing = self._http_journal(
-            idempotency_key=f"{self.policy.tenant_reference}:period_closing:2026-08"
+            idempotency_key=f"{self.policy.tenant_reference}:period_closing:2026-08:{self.policy.accounting_book_reference}"
         )
         leftover_status, leftover = self._http_unapplied_cash_rollforward()
         package_status, package = self._http_period_close_package()
@@ -7825,7 +7931,7 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(len(closing_list["journals"]), 1)
         self.assertEqual(
             closing_keys,
-            {f"{self.policy.tenant_reference}:period_closing:2026-08"},
+            {f"{self.policy.tenant_reference}:period_closing:2026-08:{self.policy.accounting_book_reference}"},
         )
         self.assertTrue(
             str(closing_list["journals"][0]["journal_reference"]).startswith(
@@ -7843,7 +7949,7 @@ class PostgresPostingTests(unittest.TestCase):
             {str(invoice["idempotency_key"]), str(cash["idempotency_key"])},
         )
         self.assertNotIn(
-            f"{self.policy.tenant_reference}:period_closing:2026-08",
+            f"{self.policy.tenant_reference}:period_closing:2026-08:{self.policy.accounting_book_reference}",
             billing_close_keys,
         )
         self.assertEqual(omit_after_close_status, 200)
@@ -9503,6 +9609,8 @@ class PostgresPostingTests(unittest.TestCase):
                 "tenant_reference": self.policy.tenant_reference,
                 "legal_entity_reference": self.policy.legal_entity_reference,
                 "fiscal_period_reference": "urn:cwl:accounting:fiscal_period:2026-11",
+                    "idempotency_key": "period-open-invalid-v1",
+                    "source_payload_hash": "sha256:" + "e" * 64,
             },
         )
         with self.assertRaisesRegex(AccountingValidationError, "JSON object"):
@@ -9525,6 +9633,8 @@ class PostgresPostingTests(unittest.TestCase):
                     "tenant_reference": self.policy.tenant_reference,
                     "legal_entity_reference": self.policy.legal_entity_reference,
                     "fiscal_period_reference": "urn:cwl:accounting:fiscal_period:2026-11",
+                    "idempotency_key": "period-open-invalid-v1",
+                    "source_payload_hash": "sha256:" + "e" * 64,
                     "period_start_date": "01-11-2026",
                     "period_end_date": "2026-11-30",
                 },
@@ -9539,6 +9649,8 @@ class PostgresPostingTests(unittest.TestCase):
                 "2026-11",
                 date(2026, 11, 30),
                 date(2026, 11, 1),
+                idempotency_key="period-open-invalid-range-v1",
+                source_payload_hash="sha256:" + "f" * 64,
             )
         with self.assertRaisesRegex(AccountingValidationError, "fiscal_period_reference"):
             lookup_fiscal_period(DATABASE_URL, self.policy.tenant_reference, "", "")
@@ -9548,6 +9660,8 @@ class PostgresPostingTests(unittest.TestCase):
                     "tenant_reference": self.policy.tenant_reference,
                     "legal_entity_reference": self.policy.legal_entity_reference,
                     "fiscal_period_reference": "urn:cwl:accounting:fiscal_period:2026-11",
+                    "idempotency_key": "period-open-invalid-v1",
+                    "source_payload_hash": "sha256:" + "e" * 64,
                     "period_start_date": "2026-11-01",
                     "period_end_date": "30-11-2026",
                 },
@@ -9560,6 +9674,8 @@ class PostgresPostingTests(unittest.TestCase):
                     "tenant_reference": self.policy.tenant_reference,
                     "legal_entity_reference": self.policy.legal_entity_reference,
                     "period_code": "2026-11",
+                    "idempotency_key": "period-open-invalid-v1",
+                    "source_payload_hash": "sha256:" + "e" * 64,
                     "period_end_date": "2026-11-30",
                 },
                 DATABASE_URL,
@@ -9579,7 +9695,12 @@ class PostgresPostingTests(unittest.TestCase):
         with self.assertRaisesRegex(AccountingValidationError, "fiscal_period_reference"):
             PostgresPostingLedger(
                 DATABASE_URL, self.policy.tenant_reference
-            ).open_fiscal_period("", "")
+            ).open_fiscal_period(
+                "",
+                "",
+                idempotency_key="period-open-invalid-scope-v1",
+                source_payload_hash="sha256:" + "a" * 64,
+            )
         with self.assertRaisesRegex(AccountingValidationError, "legal_entity"):
             PostgresPostingLedger(
                 DATABASE_URL, self.policy.tenant_reference
@@ -9588,6 +9709,8 @@ class PostgresPostingTests(unittest.TestCase):
                 "2026-12",
                 date(2026, 12, 1),
                 date(2026, 12, 31),
+                idempotency_key="period-open-missing-entity-v1",
+                source_payload_hash="sha256:" + "b" * 64,
             )
         bare_tenant, bare_entity = self._seed_tenant_without_calendar()
         with self.assertRaisesRegex(AccountingValidationError, "fiscal_calendar"):
@@ -9596,6 +9719,8 @@ class PostgresPostingTests(unittest.TestCase):
                 "2026-12",
                 date(2026, 12, 1),
                 date(2026, 12, 31),
+                idempotency_key="period-open-missing-calendar-v1",
+                source_payload_hash="sha256:" + "c" * 64,
             )
 
         self.assertEqual(august_close[0], 200)
@@ -9603,8 +9728,9 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertIn("hard_closed", str(hard_open[1]))
         self.assertEqual(soft_open[0], 200)
         self.assertEqual(soft_close["period_status_code"], "soft_closed")
-        self.assertEqual(soft_reopen[0], 422)
-        self.assertIn("soft_closed", str(soft_reopen[1]))
+        self.assertEqual(soft_reopen[0], 200)
+        self.assertTrue(soft_reopen[1]["replayed"])
+        self.assertEqual(self._period_status("2026-10"), "soft_closed")
         self.assertEqual(missing_header[0], 400)
         self.assertEqual(missing_get_header[0], 400)
         self.assertEqual(bad_json[0], 400)
@@ -13266,6 +13392,13 @@ class PostgresPostingTests(unittest.TestCase):
             "period_end_date": "2026-09-30",
         }
         values.update(overrides)
+        period_reference = str(values["fiscal_period_reference"])
+        period_token = period_reference.rsplit(":", 1)[-1].replace("-", "")
+        values.setdefault("idempotency_key", f"period-open:{period_reference}")
+        values.setdefault(
+            "source_payload_hash",
+            "sha256:" + (period_token * 64)[:64],
+        )
         return values
 
     def _september_invoice_payload(self) -> dict[str, object]:
@@ -13379,6 +13512,8 @@ class PostgresPostingTests(unittest.TestCase):
                 else fiscal_period_reference
             ),
             "idempotency_key": idempotency_key or f"urn:cwl:home_tax_submission:test:{uuid.uuid4().hex}:v1",
+            "source_payload_hash": "sha256:" + "a" * 64,
+            "source_payload_reference": "urn:cwl:evidence:home_tax_submission_test_v1",
         }
         return self._http_json(
             "POST",

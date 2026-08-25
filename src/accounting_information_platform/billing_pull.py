@@ -12,7 +12,7 @@ from typing import Mapping
 from urllib.parse import ParseResult, urlencode, urlparse
 
 from .accept import accept_journal_proposal
-from .core import AccountingValidationError, _require_reference
+from .core import AccountingValidationError, IdempotencyConflictError, _require_reference
 
 
 TENANT_HEADER = "X-CWL-Tenant-Reference"
@@ -220,6 +220,8 @@ def accept_billing_proposal_pull(
 
 
 def _rejection_reason_code(error: BaseException) -> str:
+    if isinstance(error, IdempotencyConflictError):
+        return "idempotency_conflict"
     message = str(error)
     for needles, reason_code in _REJECTION_REASON_RULES:
         if any(needle in message for needle in needles):
@@ -317,6 +319,20 @@ def _configured_billing_bases() -> tuple[tuple[str, str], ...]:
             continue
         fetch_base = _require_billing_base_url(raw)
         origin = _canonical_billing_origin(fetch_base)
+        configured_url = urlparse(fetch_base)
+        if (
+            configured_url.username is not None
+            or configured_url.password is not None
+            or configured_url.path
+            or configured_url.params
+            or configured_url.query
+            or configured_url.fragment
+        ):
+            raise AccountingValidationError(
+                "Billing configured origins must not include a path, query, fragment, or userinfo. "
+                "Set BILLING_BASE_URL and BILLING_ALLOWED_ORIGINS to scheme://host[:port] origins, "
+                "then retry the pull."
+            )
         _require_safe_configured_billing_origin(origin)
         if origin in seen:
             continue
@@ -393,10 +409,14 @@ def _open_billing_connection(parsed: ParseResult) -> http.client.HTTPConnection:
         port = 443
     connection = http.client.HTTPConnection(parsed.hostname, port, timeout=5)
     if parsed.scheme == "https":
-        connection.connect()
-        connection.sock = ssl.create_default_context().wrap_socket(
-            connection.sock, server_hostname=parsed.hostname
-        )
+        try:
+            connection.connect()
+            connection.sock = ssl.create_default_context().wrap_socket(
+                connection.sock, server_hostname=parsed.hostname
+            )
+        except OSError:
+            connection.close()
+            raise
     return connection
 
 

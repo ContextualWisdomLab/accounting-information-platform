@@ -2,13 +2,18 @@
 
 ## [Unreleased]
 
+- Scope fiscal-period close authority, close identity, and PostgreSQL journal admission by accounting book so sibling statutory/management books can close independently.
+
+### Security
+
+- Bound ordinary PostgreSQL runtime logins to one admin-owned tenant identity for forced RLS; caller-controlled custom GUCs can no longer rebind accounting tenant scope.
+
+- HomeTax rejected-command receipts now retain immutable command source hash and source reference separately from the derived VAT-register hash, and exact replay fails closed on changed provenance.
+
 ### Changed
 
-- The customer/operator README remains the primary product entry point; local
-  validation and the next durable-intake sequence live in `CONTRIBUTING.md` and
-  `docs/doctoring/IMPLEMENTATION_SEQUENCE.md`.
-- ADRs 0001–0005 carry explicit context and APA 7th references grounded in the
-  standards already tracked by this repository.
+- PostgreSQL command transactions now set bounded lock and idle-transaction timeouts, serialize tenant-scoped state changes with transaction-level advisory locks, serialize posting/reversal against period transitions with a shared period lock, lock the close period row during close evaluation, and add tenant-leading indexes for high-write proposal, journal, receipt, tax-evidence, reversal, and pending-outbox scans. ADR 0050 records the partition-ready contract; physical partitioning remains a measured follow-up because PostgreSQL partitioned unique keys must include the partition key.
+- HomeTax command acceptance now requires immutable `source_payload_hash` and `source_payload_reference` before scope or database work; in-memory and PostgreSQL reversal retries distinguish an already-reversed journal from same-key changed-payload conflicts.
 - HomeTax rejected receipts now derive a missing register `as_of_date` from the resolved fiscal-period end, and PostgreSQL reversals persist and compare a deterministic command key plus immutable date/reason hash before replay. Changed reversal evidence and backdated reversal dates fail closed without creating another journal.
 - `PostingLedger.reverse` and `PostgresPostingLedger.reverse` fail closed when a journal already exists at `{journal_reference}:reversal`. They do not overwrite that posted journal (`posted journal is immutable`). Replay of the same reversal request still returns the original reversing receipt. Commercial `proposal_id` is the published hyphenated UUID charset, so a Billing proposal cannot construct that reversal key with `:` or a `:reversal` suffix. Ingest, `JournalProposal`, and the proposal schema enforce that rule. AIS does not rewrite 0001, invent accounts or roles, call NTS, flip Billing / VAT / HomeTax / collection status, or open 연말정산 or payroll. ADR 0003 and ADR 0012 record the collision gate.
 - `database/migrations/0005_closed_period_guard.sql` adds `guard_period_insert` / `closed_period_guard` so an ordinary `general_journal` `INSERT` into a `soft_closed` or `hard_closed` period fails at the database (`period_closed`), including a privileged SQL connection that bypasses Python. `POST /period-closes` still posts the AIS closing journal first, then flips `fiscal_period.period_status_code`. After hard-close, a later ordinary or reversal `INSERT` for that period fails at the trigger. Soft-close accepts approved AIS adjusting and append-only reversal writes only when the session login is a member of the purpose-limited `accounting_closing_writer` NOLOGIN capability role **and** the transaction sets the matching `accounting_core.journal_write_role`; the GUC alone is insufficient. Provision and revoke that membership through `docs/SECURITY.md` and `docs/OPERABILITY.md`. Replay of the same close key still returns the original receipt. AIS does not call NTS, flip Billing / collection / VAT / HomeTax status, open 연말정산 or payroll, invent a withholding role, add a second close command, or accept a Billing `journal_type`. ADR 0003, ADR 0006, and ADR 0023 record the guard.
@@ -25,8 +30,11 @@
 
 ### Fixed
 
+- Fiscal-period-open commands now require a tenant-scoped idempotency key and canonical source-payload hash, persist append-only command evidence under forced RLS, replay only the exact command, and reject changed scope/date/hash under the same key. In-memory reversal retry now consults an already-retained immutable reversal journal before applying current-period admission, so cache loss cannot turn a historical exact replay into a new closed-period write attempt.
+- Period-close commands now reject unknown non-empty status codes at the command boundary, and failed Billing HTTPS connect/TLS setup closes the partially opened connection before returning the existing fail-closed pull error.
+- AIS adjusting-journal commands now require each `amount` to arrive as a quoted exact-decimal string; JSON integer and binary floating-point numbers fail closed before PostgreSQL work, matching the Billing proposal exact-decimal boundary.
+- Foundation invariants now reject tenantless transactional-outbox rows at the PostgreSQL column boundary, reject zero-valued AIS adjusting-journal lines before persistence, return HTTP 422 for malformed HomeTax command provenance while preserving 404 for missing accounting catalog scope, and assemble the four-statement financial package from one PostgreSQL `REPEATABLE READ` snapshot.
 - The standalone `run_journal_proposal_server` now defaults to the loopback address `127.0.0.1` instead of `0.0.0.0`; a non-loopback bind must be an explicit deployment decision behind the documented trusted caller-authentication boundary. A dedicated regression proves the omitted-host path cannot expose accounting commands on all interfaces. The temporary self-mutating accounting repair workflow was removed after its generated fixes were normalized into the canonical PR branch, eliminating workflow-token writes back into the product branch.
-- Hash-locked `setuptools==84.0.0` so CI `--no-build-isolation` editable and wheel installs can import `setuptools.build_meta`.
 - HomeTax submission now requires a non-empty tenant-scoped `idempotency_key`, persists that key with the register evidence hash, replays the original rejected receipt on exact retry, and rejects changed evidence or scope without a second row; HTTP maps that changed-command conflict to 409 rather than a not-found response. The command remains fail-closed and does not transmit to NTS/HomeTax. ADR 0046 records the boundary.
 - Published `positive_decimal` and ingest/`_parse_amount` reject a debit or credit with more than six fractional digits (`0.0000010`). AIS does not coerce or round that value to `journal_entry_line numeric(38, 6)`. Integers and ≤6-place decimals, including whole KRW and typical 2-place Billing amounts, still pass. HTTP accept and Billing pull fail closed before persist. AIS does not invent roles, rewrite 0001, call NTS, flip Billing status, or open 연말정산 or payroll. ADR 0004 records the scale gate.
 - `POST /billing-proposal-pulls` / `accept_billing_proposal_pull` no longer fetch a request-body `billing_base_url` unless that origin is `BILLING_BASE_URL` or optional `BILLING_ALLOWED_ORIGINS`. Omit uses the env origin. `file://` is never accepted, and configured `localhost`, loopback, or link-local origins are rejected even when listed in `BILLING_ALLOWED_ORIGINS`. Pull stays GET `/v1/journal-proposals` and does not flip Billing `proposal_status`. AIS does not invent roles, rewrite 0001, call NTS, or open 연말정산 or payroll. ADR 0011 records the origin gate.
@@ -41,9 +49,6 @@
 
 ### Added
 
-- ADR 0049 records reporting taxonomy as a versioned projection over immutable
-  journal facts; PostgreSQL exact `numeric` types are listed in the standards
-  bibliography.
 - `docs/product-technical-gap-baseline.md` records the observed current PR/Issues/Checks state, buyer-visible product gaps, dependency order, and evidence required before claiming merge or release readiness. It intentionally leaves Figma/Storybook out of this backend-only milestone until a UI surface exists.
 - Billing #74 issued-credit-note-void consume is pinned on the existing ingest path (`metering-billing-platform` Ready head `f590183`): `{tenant}:issued_credit_note_void:{issued_credit_note_void_id}:{void.source_payload_hash}:v{issued_credit_note_void_contract_version}` with the reverse of credit journal #17/#52 (debit `accounts_receivable` for the tax-inclusive voided amount, credit `usage_revenue` exclusive, credit `tax_payable` when taxed; untaxed is two-line). Catalog maps stay `accounts_receivable` → 110100, `usage_revenue` → 410100, and `tax_payable` → 210100. After a taxed invoice 27500 then a taxed credit, `GET /receivable-agings` 110100 is 0; the void raises that outstanding back to 27500. An untaxed credit 4000 after an untaxed invoice 25000 drops aging to 21000 and the two-line void restores 25000; payable aging 210100 stays 0. Replay of that key returns the original receipt; conflicting reuse is 409. AIS does not add a credit-note or void role, flip collection / issued-credit-note / void status, or require Billing `journal_entry_id`; Billing binds the original credit by `reversed_journal_proposal_id` and `credit_adjustment_id` only. The published proposal is `proposal_status=validated` only. The journal stays `journal_source_code=billing`. Pull stays GET `/v1/journal-proposals`.
 - `GET /period-close-packages` always includes `vat_period_register`, the exact `GET /vat-period-registers` document for that tenant, legal entity, book, and period (`issued_amount`, `voided_amount`, `closing_amount` on catalog `tax_payable` 210100). Empty or untaxed books keep the zeros register; the binder is not 404 and the key is not omitted. The register loads inside the existing PostgreSQL `REPEATABLE READ` snapshot. HomeTax submission rows stay off the binder. Envelope keys are `tenant_reference`, `legal_entity_reference`, `accounting_book_reference`, `book_reference`, `fiscal_period_reference`, `fiscal_period`, `trial_balance`, `financial_statement_package`, `receivable_aging`, `payable_aging`, `unapplied_cash_rollforward`, `vat_period_register`, and `period_close`.
@@ -113,3 +118,9 @@
 
 - Rejected card data, PAT plaintext, provider secrets, prompt text, and response text from accounting contracts.
 - Required immutable source-payload hashes and fail-closed idempotency conflicts.
+
+### Durable soft-close command evidence
+
+- Persist exact soft-close idempotency identity and source hash/count per accounting book-period.
+- Replay soft-close from immutable stored evidence and reject a different command key.
+- Fail closed for legacy soft-close rows without provable command evidence instead of reconstructing historical evidence from later ledger state.

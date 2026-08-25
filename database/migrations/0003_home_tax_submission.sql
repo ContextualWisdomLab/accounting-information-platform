@@ -8,6 +8,10 @@ CREATE TABLE accounting_integration.home_tax_submission (
     fiscal_period_id uuid NOT NULL,
     submission_idempotency_key text NOT NULL
         CHECK (btrim(submission_idempotency_key) <> ''),
+    source_payload_hash text NOT NULL
+        CHECK (source_payload_hash ~ '^sha256:[0-9a-f]{64}$'),
+    source_payload_reference text NOT NULL
+        CHECK (btrim(source_payload_reference) <> ''),
     submission_status_code text NOT NULL CHECK (submission_status_code IN ('rejected')),
     rejection_reason_code text NOT NULL CHECK (
         rejection_reason_code IN (
@@ -29,6 +33,16 @@ CREATE TABLE accounting_integration.home_tax_submission (
     UNIQUE (tenant_account_id, submission_idempotency_key),
     UNIQUE (tenant_account_id, home_tax_submission_id)
 );
+
+CREATE INDEX home_tax_submission_scope_order_index
+    ON accounting_integration.home_tax_submission (
+        tenant_account_id,
+        legal_entity_id,
+        accounting_book_id,
+        fiscal_period_id,
+        created_at,
+        home_tax_submission_id
+    );
 
 ALTER TABLE accounting_integration.home_tax_submission ENABLE ROW LEVEL SECURITY;
 

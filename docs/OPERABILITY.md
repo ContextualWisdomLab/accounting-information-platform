@@ -2,7 +2,7 @@
 
 ## Deployment preconditions
 
-Use PostgreSQL 18 and keep the migration owner, application runtime login and administrative / break-glass identities separate. Apply migrations in numeric order through `0005_closed_period_guard.sql` before starting the service. Do not run the application with a table-owner, superuser or `BYPASSRLS` login.
+Use PostgreSQL 18 and keep the migration owner, application runtime login and administrative / break-glass identities separate. Apply migrations in numeric order through `0010_soft_close_command_evidence.sql` before starting the service. Do not run the application with a table-owner, superuser or `BYPASSRLS` login.
 
 Required environment values are deployment-specific. At minimum, configure the accounting database URL and bind this AIS process to exactly one tenant reference. Secrets belong in an approved secret store; do not place database passwords, NTS credentials, bearer tokens or provider secrets in journal payloads, logs or outbox events.
 
@@ -18,9 +18,35 @@ database/migrations/0002_chart_account_class.sql
 database/migrations/0003_home_tax_submission.sql
 database/migrations/0004_close_idempotency_key.sql
 database/migrations/0005_closed_period_guard.sql
+database/migrations/0006_concurrency_hot_partition.sql
+database/migrations/0007_runtime_tenant_binding.sql
+database/migrations/0008_fiscal_period_open_command.sql
+database/migrations/0009_accounting_book_period_control.sql
+database/migrations/0010_soft_close_command_evidence.sql
 ```
 
+Migration `0007_runtime_tenant_binding.sql` replaces caller-selected tenant authority with owner-controlled runtime-login binding. Migration `0008_fiscal_period_open_command.sql` adds forced-RLS, append-only command evidence so fiscal-period-open retries are bound to the original tenant key and source hash. Both must be installed before runtime database privileges are treated as production-ready.
+
 After installation, prove with the actual runtime login that supported reads and writes work for its tenant, another tenant is inaccessible, the login is not a migration owner / superuser / `BYPASSRLS`, and direct SQL cannot bypass journal immutability or period controls.
+
+## Concurrency and hot-write operations
+
+The multithreaded HTTP server gives each request an independent PostgreSQL
+transaction. Each new session bounds lock waits to five seconds and idle
+transactions to sixty seconds. State-changing proposal, adjusting, reversal,
+HomeTax, period-open, and period-close commands acquire tenant-scoped
+transaction advisory locks. Posting/reversal re-read their selected period
+after acquiring the shared period lock; close selects the period row with
+`FOR UPDATE` before evaluating its package. A lock timeout rolls back the
+transaction and must be retried after the operator resolves the competing
+command.
+
+Migration `0006_concurrency_hot_partition.sql` adds tenant-leading indexes to
+the high-write proposal, journal, line, reversal, receipt, HomeTax, and outbox
+populations. Monitor `pg_stat_activity`, `pg_locks`, lock-wait duration, and
+index usage before introducing physical hash-by-tenant/time partitions. A
+partition migration must preserve every tenant-scoped primary/unique key,
+foreign key, RLS policy, idempotency decision, and outbox ordering invariant.
 
 ## Purpose-limited soft-close authorization
 
@@ -48,6 +74,8 @@ Every monetary command uses exact decimal strings. Do not send JSON floating-poi
 
 For a normal proposal retry, reuse the original tenant-scoped idempotency key only when the immutable payload evidence is identical. Changed evidence under the same key is a conflict and requires correction at the source, not a new journal under the old key.
 
+For a fiscal-period-open retry, reuse the original `idempotency_key` and `source_payload_hash`. Exact replay returns the recorded open result even if that period has subsequently closed; changed scope, dates, or source hash under the same key is an idempotency conflict. A different command key may acknowledge an already-open matching period, but it cannot reopen a soft- or hard-closed period.
+
 Posted journal facts are append-only. Never repair a posted journal with SQL `UPDATE`, `DELETE`, `TRUNCATE` or destructive migration logic. Use explicit reversal and, when appropriate, a separately posted replacement.
 
 ## Reversal operations
@@ -56,7 +84,7 @@ A reversal identifies a posted original journal and posts equal-and-opposite lin
 
 Soft-closed periods can admit an approved reversal only through the purpose-limited closing-writer database capability. Hard-closed periods reject a new reversal into the locked period.
 
-Release acceptance requires exact replay to be bound to tenant, reversal command idempotency identity, original journal reference and immutable reversal-command evidence hash. If any of those differ, fail closed rather than returning an earlier receipt. Treat PR #2 as non-release-ready until that contract passes on the same exact head as the remaining gates.
+Current PostgreSQL integration tests prove exact reversal replay is bound to tenant, reversal command idempotency identity, original journal reference, reversal date/reason and immutable reversal-command evidence hash. The same command replays the original receipt; changed immutable command evidence fails closed instead of returning an earlier receipt. Treat this behavior as current foundation capability, while release readiness still requires the unchanged exact head to pass every applicable CI/security/package/review/governance gate together.
 
 ## Close operations
 
@@ -126,6 +154,26 @@ Before release, rehearse clean install, forward migration, rollback strategy, ba
 
 Recovery from an accounting error is not database row editing. Restore infrastructure only for infrastructure loss; correct economic facts with reversal / reposting according to accounting policy.
 
+## Package provenance and attestations
+
+Every pull-request package build first verifies the exact PR head checkout, derives `SOURCE_DATE_EPOCH` from that commit, builds the wheel twice, and requires byte-identical SHA-256 digests. `scripts/generate_supply_chain_evidence.py` then emits a deterministic `source-provenance.json` that binds the verified source SHA, source timestamp, wheel file/digest and SPDX SBOM digest. `SHA256SUMS` covers the wheel, SBOM and source-provenance manifest, and the uploaded artifact keeps all four files together.
+
+The PR-capable `accounting-foundation` job has `contents: read` only. It does not receive OIDC, attestation, or artifact-metadata write authority while executing repository-controlled tests and build code. Do not move those permissions back into that job merely because individual attestation steps are conditional; GitHub permissions apply to the whole job.
+
+Do not accept a GitHub OIDC attestation created by a `pull_request` event as exact PR-head provenance merely because the build checked out the PR head. The attestation signing context can identify GitHub's synthetic pull-request merge ref and merge commit. Repository CI therefore reserves signed provenance and SBOM attestations for the separate `integrated-attestations` job. That job is job-level push-only for `develop` or `main`, depends on a successful `accounting-foundation` build, downloads the SHA-named evidence bundle, verifies `SHA256SUMS` and `source-provenance.json.source_sha == github.sha`, and only then receives `id-token: write`, `attestations: write`, and `artifact-metadata: write`. The protected-head push must reproduce the package and those signed attestations must succeed before release. This control is evidence readiness only; it does not claim a SLSA level or certification.
+
 ## Release acceptance
 
-Release only from one unchanged protected head after all applicable evidence passes together: PostgreSQL integration, exact 100% owned production statement and branch coverage, public API docstrings, repository contracts, SAST / security, package build and install, SBOM / provenance, migration rehearsal, recovery evidence and qualifying independent review. Queued, skipped, cancelled, stale, predecessor or status-only evidence is non-passing.
+Release only from one unchanged protected head after all applicable evidence passes together: PostgreSQL integration, exact 100% owned production statement and branch coverage, public API docstrings, repository contracts, SAST / security, reproducible package build and install, deterministic exact-source provenance, SPDX SBOM, protected-head OIDC provenance/SBOM attestations, migration rehearsal, recovery evidence and qualifying independent review. Queued, cancelled, stale, predecessor or status-only evidence is non-passing. An applicable gate that is skipped is non-passing; the protected-head attestation job is intentionally not applicable to a pull-request event and becomes mandatory on the integrated `develop`/`main` push.
+
+## Runtime database tenant provisioning
+
+Before routing accounting traffic to a new database login, an owner-controlled operator records that login's current PostgreSQL role OID, role name, and tenant in `accounting_core.runtime_tenant_binding`. The runtime login itself must have no direct privilege on the binding table. Recreating a role, restoring into a new cluster, or intentionally reassigning a tenant requires a fresh binding because the role OID is part of the identity. An unbound runtime or a requested tenant that disagrees with the binding fails closed; do not restore service by setting `app.tenant_account_id`.
+
+## Accounting-book close isolation
+
+Apply `0009_accounting_book_period_control.sql` after `0008_fiscal_period_open_command.sql` before granting runtime access. After migration, verify that closing one book leaves an open sibling book postable and that direct SQL into the closed book fails at `guard_period_insert`. If a book-period control row is missing, repair catalog/control state before retrying close; do not edit posted journals.
+
+## Soft-close command evidence recovery
+
+New soft-close transitions atomically retain the original idempotency key, source-journal count and canonical source hash. Replays must use the same key and return those stored facts even after authorized adjustments change the live ledger. If a legacy migrated `soft_closed` row has no command evidence, the service fails closed; restore the original evidence through an audited migration only if it can be proven. Never synthesize historical evidence from current journals.

@@ -44,6 +44,8 @@ The PostgreSQL 18 foundation is installed in order:
 3. `database/migrations/0003_home_tax_submission.sql` — tenant-scoped HomeTax command evidence and idempotency identity.
 4. `database/migrations/0004_close_idempotency_key.sql` — deterministic close-command replay identity for hard-close snapshots.
 5. `database/migrations/0005_closed_period_guard.sql` — database-owned closed-period authorization and deferred journal-balance enforcement.
+6. `database/migrations/0006_concurrency_hot_partition.sql` — transaction lock safety limits and tenant-leading high-write indexes.
+7. `database/migrations/0007_runtime_tenant_binding.sql` — database-controlled runtime login-to-tenant binding consumed by forced-RLS policy evaluation.
 
 `0005_closed_period_guard.sql` makes `accounting_closing_writer` a `NOLOGIN` capability role. A soft-closed insert is admitted only when the session login is a member of that role **and** the transaction-local journal classification is `period_closing`, `adjusting`, or `reversal`. The GUC alone is not authority. Hard-closed periods reject every later journal insert.
 
@@ -63,6 +65,7 @@ A proposal follows one authoritative transaction boundary:
 validate published proposal
  -> bind tenant / entity / book / open period
  -> resolve semantic roles to chart accounts
+ -> acquire tenant/command transaction lock and shared fiscal-period advisory lock
  -> persist immutable proposal evidence
  -> persist balanced journal header and lines
  -> persist authoritative posting receipt
@@ -74,7 +77,7 @@ Exact replay returns the original receipt. Reuse of an idempotency key with chan
 
 ## Reversal boundary
 
-A reversal never updates or deletes the original journal. It posts an equal-and-opposite journal linked to the original and subject to period policy. The release contract requires replay to be bound to tenant, reversal command idempotency identity, original journal reference and immutable reversal-command evidence hash. Any changed command under the same identity must fail closed. PR #2 remains Draft until exact-current-head tests and PostgreSQL persistence prove that contract together.
+A reversal never updates or deletes the original journal. It posts an equal-and-opposite journal linked to the original and subject to period policy. The release contract requires replay to be bound to tenant, reversal command idempotency identity, original journal reference and immutable reversal-command evidence hash. Any changed command under the same identity must fail closed. PR #2 remains non-release-ready until exact-current-head tests and PostgreSQL persistence prove that contract together.
 
 A reversal accounting date may not precede the original accounting date. Soft-closed periods may admit an authorized reversal through the purpose-limited closing-writer capability. Hard-closed periods reject a new reversal into the locked period.
 
@@ -110,3 +113,19 @@ Billing pagination is page-progressive rather than one distributed transaction. 
 ## Evidence and release boundary
 
 No workflow, model output, stale predecessor check or synthetic merge-ref result is accounting evidence. Release evidence must come from one unchanged protected source head with applicable PostgreSQL integration, 100% owned production statement and branch coverage, public API docstrings, repository contracts, security scans, package / SBOM / provenance checks and qualifying independent review all passing together.
+
+## Database tenant trust boundary
+
+The HTTP/authentication adapter supplies a tenant reference, but PostgreSQL independently binds each ordinary runtime login to one tenant using `runtime_tenant_binding` and `session_user` (ADR 0049). Forced-RLS policies consume only that database-controlled identity. Request fields, model output, Billing proposals, and custom session GUCs cannot select another accounting tenant.
+
+## Book-scoped close authority
+
+Shared fiscal-calendar dates do not collapse independent accounting books into one close state. PostgreSQL `accounting_book_period_control` is checked by the journal insert guard and by application admission; statutory and management books can therefore close independently while immutable snapshots remain book scoped.
+
+8. `database/migrations/0008_fiscal_period_open_command.sql` — durable fiscal-period-open command identity and source evidence.
+9. `database/migrations/0009_accounting_book_period_control.sql` — accounting-book-scoped close authority and journal guard lookup.
+10. `database/migrations/0010_soft_close_command_evidence.sql` — immutable exact soft-close command identity and source count/hash.
+
+## Durable soft-close command evidence
+
+`accounting_core.accounting_book_period_control` owns book-period state. Migration `0010_soft_close_command_evidence.sql` augments soft-close rows with immutable tenant-scoped command identity plus source count/hash observed when the transition committed. Soft-close event and evidence share the accounting transaction. Replay reads stored evidence; hard-close separately owns the immutable trial-balance snapshot.

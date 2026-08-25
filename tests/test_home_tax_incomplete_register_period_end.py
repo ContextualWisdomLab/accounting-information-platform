@@ -47,7 +47,8 @@ class HomeTaxIncompleteRegisterPeriodEndTests(unittest.TestCase):
         self.assertEqual(listed_status, 200)
         self.assertEqual(len(listed["home_tax_submissions"]), 1)
         stored_register = listed["home_tax_submissions"][0]["vat_period_register"]
-        self.assertEqual(stored_register["as_of_date"], "2026-08-31")
+        expected_period_end = self.case.policy.open_period_end.isoformat()
+        self.assertEqual(stored_register["as_of_date"], expected_period_end)
         self.assertNotEqual(stored_register["as_of_date"], "0001-01-01")
         self.assertEqual(stored_register["closing_amount"], "0")
 

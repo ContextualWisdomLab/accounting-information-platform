@@ -94,6 +94,26 @@ Posting, reversal and close commands atomically persist authoritative evidence a
 
 SOC 2 and CSAP are evidence-readiness design targets only. Do not claim certification or compliance without the corresponding external and operational evidence.
 
+## Dependency-difference security gate
+
+Dependency evidence is exact-head evidence, not an aggregate workflow label. On pull requests, repository-owned `exact-head-dependency-diff` checks out the immutable `pull_request.head.sha`, independently fetches the current base branch tip, verifies that live base is an ancestor of the head, and records both identities plus the dependency-manifest diff and SHA-256 values. The complete hash-locked Python dependency set is scanned with a digest-pinned OSV-Scanner image.
+
+A known vulnerability, scanner failure, unavailable scanner/evidence path, stale/non-ancestor base, wrong checkout SHA or missing expected evidence fails the gate. No `continue-on-error`, skipped-success conversion or predecessor evidence is accepted. The job has `contents: read` only and no OIDC, attestation or repository-write authority. Its SHA-named artifact retains the live-base/head identity record and OSV JSON result.
+
+Organization dependency-review remains useful supplemental evidence when it actually executes. If its support probe fails or the review step is skipped, a green aggregate organization workflow does not make that skipped control passing. The repository-owned equivalent must execute successfully on the unchanged exact head before dependency-review evidence is considered satisfied.
+
+## CI signing-authority boundary
+
+Pull-request-controlled source, tests, build hooks and validation scripts execute in the `accounting-foundation` job with `contents: read` only. They do not receive `id-token: write`, `attestations: write`, or `artifact-metadata: write`. A conditional attestation step inside that same PR-capable job would not be sufficient isolation because GitHub permissions apply to all actions and commands in the job.
+
+Signed provenance and SBOM attestations are isolated in the `integrated-attestations` job. That job is push-only, depends on a successful exact-head foundation build, downloads the immutable SHA-named evidence artifact, verifies its checksums and embedded `source_sha` against the integrated `github.sha`, and only then receives OIDC/attestation write permissions. Pull-request events cannot execute that job.
+
+This is a least-privilege trust boundary, not evidence that branch governance itself is correctly configured. Protected-branch/ruleset enforcement must still be verified independently before release.
+
 ## Release security gate
 
-Security is passing only when one unchanged protected source head has applicable SAST / security checks, PostgreSQL restricted-runtime tests, 100% owned production statement / branch coverage, package / SBOM / provenance evidence and qualifying independent review all passing. Queued, stale, predecessor, skipped or model-only evidence is non-passing.
+Security is passing only when one unchanged protected source head has applicable exact-head SAST / security checks, an executed exact-head dependency-difference gate against an independently resolved live base, PostgreSQL restricted-runtime tests, 100% owned production statement / branch coverage, package / SBOM / provenance evidence and qualifying independent review all passing. Queued, stale, predecessor, skipped or model-only evidence is non-passing.
+
+## Database tenant binding
+
+Forced RLS derives the active tenant from the authenticated PostgreSQL `session_user` through admin-owned `accounting_core.runtime_tenant_binding` (ADR 0049), not from request payloads or a caller-writable custom GUC. Ordinary runtime credentials receive no direct privilege on that binding table. The application tenant reference must equal the database credential's active binding or the operation fails closed. Migration/superuser and `BYPASSRLS` identities remain separate administrative/break-glass paths and are not normal service credentials.

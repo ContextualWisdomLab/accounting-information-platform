@@ -37,6 +37,7 @@ class PostgresInvariantBoundaryTests(unittest.TestCase):
             autocommit=True,
             cursor_factory=psycopg.ClientCursor,
         ) as connection:
+            self.addCleanup(self._restore_closing_writer_nologin)
             connection.execute("ALTER ROLE accounting_closing_writer LOGIN")
             connection.execute(migration)
             role_can_login = connection.execute(
@@ -161,6 +162,21 @@ class PostgresInvariantBoundaryTests(unittest.TestCase):
                     sql.Identifier(closer_role)
                 )
             )
+            for role_name in (plain_role, closer_role):
+                role_oid = admin.execute(
+                    "SELECT oid FROM pg_catalog.pg_roles WHERE rolname = %s",
+                    (role_name,),
+                ).fetchone()[0]
+                admin.execute(
+                    """
+                    INSERT INTO accounting_core.runtime_tenant_binding (
+                        runtime_role_oid,
+                        runtime_role_name,
+                        tenant_account_id
+                    ) VALUES (%s, %s, %s)
+                    """,
+                    (role_oid, role_name, self.case.tenant_id),
+                )
 
         self.addCleanup(self._drop_test_roles, plain_role, closer_role)
 
@@ -308,7 +324,7 @@ class PostgresInvariantBoundaryTests(unittest.TestCase):
         return legal_entity_id, book_id, period_id, proposal_record_id
 
     def _bind_soft_close_session(self, connection: psycopg.Connection) -> None:
-        """Bind tenant and the caller-controlled classification GUC."""
+        """Set legacy tenant/classification GUCs while DB login binding remains authoritative."""
         connection.execute(
             "SELECT set_config('app.tenant_account_id', %s, false)",
             (self.case.tenant_id,),
@@ -357,9 +373,20 @@ class PostgresInvariantBoundaryTests(unittest.TestCase):
         )
 
     @staticmethod
+    def _restore_closing_writer_nologin() -> None:
+        """Restore the closing capability to NOLOGIN even if migration replay fails."""
+        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as admin:
+            admin.execute("ALTER ROLE accounting_closing_writer NOLOGIN")
+
+    @staticmethod
     def _drop_test_roles(plain_role: str, closer_role: str) -> None:
         """Remove purpose-limited test login roles even when an assertion fails."""
         with psycopg.connect(posting.DATABASE_URL, autocommit=True) as admin:
+            admin.execute(
+                "DELETE FROM accounting_core.runtime_tenant_binding "
+                "WHERE runtime_role_name = ANY(%s)",
+                ([plain_role, closer_role],),
+            )
             admin.execute(
                 sql.SQL("REVOKE accounting_closing_writer FROM {}").format(
                     sql.Identifier(closer_role)

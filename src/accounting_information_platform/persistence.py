@@ -91,6 +91,7 @@ class PostgresPostingLedger:
         proposal_uuid = _require_proposal_uuid(proposal_id)
         with self._session() as connection:
             tenant_id = self._require_tenant(connection)
+            self._acquire_command_lock(connection, f"adjusting:{idempotency_key}")
             prior = connection.execute(
                 """
                 SELECT source_payload_hash
@@ -134,7 +135,9 @@ class PostgresPostingLedger:
                     f"currency {reporting_currency_code}. Supply the book reporting currency, "
                     "then retry the journal post."
                 )
-            period_state = self._load_period_state(connection, tenant_id, period_code)
+            period_state = self._load_book_period_state(
+                connection, tenant_id, book_id, period_code
+            )
             if period_state is None:
                 raise AccountingValidationError(
                     f"Fiscal period {period_code} is not recorded for this tenant. "
@@ -638,7 +641,7 @@ class PostgresPostingLedger:
                        trial_balance_snapshot.source_journal_count,
                        trial_balance_snapshot.source_payload_hash,
                        fiscal_period.period_code,
-                       fiscal_period.period_status_code,
+                       accounting_book_period_control.period_status_code,
                        accounting_book.book_name,
                        legal_entity_record.legal_entity_code
                 FROM accounting_reporting.trial_balance_snapshot
@@ -648,13 +651,20 @@ class PostgresPostingLedger:
                 JOIN accounting_core.accounting_book
                   ON accounting_book.tenant_account_id = trial_balance_snapshot.tenant_account_id
                  AND accounting_book.accounting_book_id = trial_balance_snapshot.accounting_book_id
+                JOIN accounting_core.accounting_book_period_control
+                  ON accounting_book_period_control.tenant_account_id
+                     = trial_balance_snapshot.tenant_account_id
+                 AND accounting_book_period_control.accounting_book_id
+                     = trial_balance_snapshot.accounting_book_id
+                 AND accounting_book_period_control.fiscal_period_id
+                     = trial_balance_snapshot.fiscal_period_id
                 JOIN accounting_core.legal_entity_record
                   ON legal_entity_record.tenant_account_id = trial_balance_snapshot.tenant_account_id
                  AND legal_entity_record.legal_entity_id = trial_balance_snapshot.legal_entity_id
                 WHERE trial_balance_snapshot.tenant_account_id = %s
                   AND trial_balance_snapshot.legal_entity_id = %s
                   AND (%s OR trial_balance_snapshot.fiscal_period_id = %s)
-                  AND (%s OR fiscal_period.period_status_code = %s)
+                  AND (%s OR accounting_book_period_control.period_status_code = %s)
                   AND (
                         %s
                         OR (
@@ -931,6 +941,9 @@ class PostgresPostingLedger:
         proposal_uuid = _require_proposal_uuid(proposal.proposal_id)
         with self._session() as connection:
             tenant_id = self._require_tenant(connection)
+            self._acquire_command_lock(
+                connection, f"proposal:{proposal.idempotency_key}"
+            )
             prior = connection.execute(
                 """
                 SELECT source_payload_hash
@@ -957,9 +970,6 @@ class PostgresPostingLedger:
             resolved_lines = tuple(
                 PostingLedger._resolve_line(line, policy) for line in proposal.lines
             )
-            period_id = self._require_open_period(
-                connection, tenant_id, proposal.accounting_date
-            )
             legal_entity_id = self._require_legal_entity(
                 connection, tenant_id, proposal.legal_entity_reference
             )
@@ -969,6 +979,9 @@ class PostgresPostingLedger:
                 legal_entity_id,
                 policy.intended_book_role_code,
                 policy.accounting_book_reference,
+            )
+            period_id = self._require_open_book_period(
+                connection, tenant_id, book_id, proposal.accounting_date
             )
             journal_reference = f"urn:cwl:accounting:general_journal:{proposal.proposal_id}"
             receipt = PostingReceipt(
@@ -1043,7 +1056,7 @@ class PostgresPostingLedger:
                 "period_code is required. Supply the fiscal period code, then retry the close."
             )
         close_idempotency_key = idempotency_key.strip() or (
-            f"{self._tenant_reference}:period_close:{period_code}"
+            f"{self._tenant_reference}:period_close:{accounting_book_reference}:{period_code}"
         )
         try:
             _require_currency(snapshot_currency_code)
@@ -1062,6 +1075,9 @@ class PostgresPostingLedger:
             self._active_connection = connection
             try:
                 tenant_id = self._require_tenant(connection)
+                self._acquire_command_lock(
+                    connection, f"period:{accounting_book_reference}:{period_code}"
+                )
                 legal_entity_id = self._require_legal_entity(
                     connection,
                     tenant_id,
@@ -1077,8 +1093,8 @@ class PostgresPostingLedger:
                         f"currency {reporting_currency_code}. Supply the book reporting currency, "
                         "then retry the close."
                     )
-                period_id, current_status, period_end_date = self._require_fiscal_period(
-                    connection, tenant_id, period_code
+                period_id, current_status, period_end_date = self._lock_book_period(
+                    connection, tenant_id, book_id, period_code
                 )
                 if current_status == "hard_closed":
                     if period_status_code == "soft_closed":
@@ -1112,6 +1128,7 @@ class PostgresPostingLedger:
                         snapshot_currency_code=snapshot_currency_code,
                         legal_entity_reference=legal_entity_reference,
                         accounting_book_reference=accounting_book_reference,
+                        idempotency_key=close_idempotency_key,
                     )
                 if period_status_code == "soft_closed":
                     return self._persist_soft_close(
@@ -1125,6 +1142,7 @@ class PostgresPostingLedger:
                         snapshot_currency_code=snapshot_currency_code,
                         legal_entity_reference=legal_entity_reference,
                         accounting_book_reference=accounting_book_reference,
+                        idempotency_key=close_idempotency_key,
                     )
                 package = self._assemble_period_close_package(
                     legal_entity_reference,
@@ -1155,57 +1173,154 @@ class PostgresPostingLedger:
         period_code: str,
         period_start_date: date | None = None,
         period_end_date: date | None = None,
+        *,
+        idempotency_key: str,
+        source_payload_hash: str,
     ) -> dict[str, object]:
-        """Insert or replay an open fiscal_period row on the tenant calendar."""
+        """Insert or replay one fiscal-period-open command from durable evidence."""
         if not legal_entity_reference or not period_code:
             raise AccountingValidationError(
                 "legal_entity_reference and fiscal_period_reference are required. "
                 "Supply those period-open fields, then retry the period open."
             )
+        command_key = idempotency_key.strip()
+        if not command_key or command_key != idempotency_key:
+            raise AccountingValidationError(
+                "period-open idempotency_key must be a canonical non-empty string. "
+                "Supply the original command key, then retry the period open."
+            )
+        if re.fullmatch(r"sha256:[0-9a-f]{64}", source_payload_hash) is None:
+            raise AccountingValidationError(
+                "period-open source_payload_hash must be a canonical sha256 digest. "
+                "Supply the immutable command hash, then retry the period open."
+            )
         with self._session() as connection:
             tenant_id = self._require_tenant(connection)
-            self._require_legal_entity(
-                connection, tenant_id, legal_entity_reference, "the period open"
+            self._acquire_command_lock(connection, f"period-open:{command_key}")
+            self._acquire_command_lock(connection, f"period:{period_code}")
+            legal_entity_id, _functional_currency = self._load_legal_entity(
+                connection,
+                tenant_id,
+                legal_entity_reference,
+                next_action="the period open",
             )
+            prior = connection.execute(
+                """
+                SELECT period_open_command.legal_entity_id,
+                       fiscal_period.period_code,
+                       period_open_command.requested_period_start_date,
+                       period_open_command.requested_period_end_date,
+                       fiscal_period.period_start_date,
+                       fiscal_period.period_end_date,
+                       period_open_command.source_payload_hash
+                FROM accounting_integration.fiscal_period_open_command AS period_open_command
+                JOIN accounting_core.fiscal_period AS fiscal_period
+                  ON fiscal_period.tenant_account_id = period_open_command.tenant_account_id
+                 AND fiscal_period.fiscal_period_id = period_open_command.fiscal_period_id
+                WHERE period_open_command.tenant_account_id = %s
+                  AND period_open_command.period_open_idempotency_key = %s
+                """,
+                (tenant_id, command_key),
+            ).fetchone()
+            if prior is not None:
+                (
+                    prior_legal_entity_id,
+                    prior_period_code,
+                    prior_requested_start,
+                    prior_requested_end,
+                    stored_start_date,
+                    stored_end_date,
+                    prior_source_hash,
+                ) = prior
+                if (
+                    prior_legal_entity_id != legal_entity_id
+                    or prior_period_code != period_code
+                    or prior_requested_start != period_start_date
+                    or prior_requested_end != period_end_date
+                    or prior_source_hash != source_payload_hash
+                ):
+                    raise IdempotencyConflictError(
+                        "period-open idempotency key was already used with a different payload"
+                    )
+                return self._period_open_document(
+                    legal_entity_reference,
+                    period_code,
+                    stored_start_date,
+                    stored_end_date,
+                    replayed=True,
+                )
+
             existing = self._load_period_state(connection, tenant_id, period_code)
+            replayed = existing is not None
             if existing is not None:
-                _period_id, current_status, start_date, end_date = existing
+                period_id, current_status, stored_start_date, stored_end_date = existing
                 if current_status != "open":
                     raise AccountingValidationError(
                         f"Fiscal period {period_code} is {current_status}. "
                         "Closed periods cannot be reopened. Open a later period, "
                         "then retry the period open."
                     )
-                return self._period_open_document(
-                    legal_entity_reference,
-                    period_code,
-                    start_date,
-                    end_date,
-                    replayed=True,
-                )
-            if period_start_date is None or period_end_date is None:
-                raise AccountingValidationError(
-                    "period_start_date and period_end_date are required. "
-                    "Supply those fiscal_period dates, then retry the period open."
-                )
-            if period_end_date < period_start_date:
-                raise AccountingValidationError(
-                    "period_end_date must be on or after period_start_date. "
-                    "Supply a valid date range, then retry the period open."
-                )
-            calendar_id = self._require_tenant_calendar(connection, tenant_id)
+                if (
+                    period_start_date is not None
+                    and period_start_date != stored_start_date
+                ) or (
+                    period_end_date is not None and period_end_date != stored_end_date
+                ):
+                    raise AccountingValidationError(
+                        "period-open dates do not match the already-open fiscal period. "
+                        "Supply its existing dates or omit both dates, then retry."
+                    )
+            else:
+                if period_start_date is None or period_end_date is None:
+                    raise AccountingValidationError(
+                        "period_start_date and period_end_date are required. "
+                        "Supply those fiscal_period dates, then retry the period open."
+                    )
+                if period_end_date < period_start_date:
+                    raise AccountingValidationError(
+                        "period_end_date must be on or after period_start_date. "
+                        "Supply a valid date range, then retry the period open."
+                    )
+                calendar_id = self._require_tenant_calendar(connection, tenant_id)
+                period_id = connection.execute(
+                    """
+                    INSERT INTO accounting_core.fiscal_period (
+                        tenant_account_id, fiscal_calendar_id, period_code,
+                        period_start_date, period_end_date, period_status_code
+                    )
+                    VALUES (%s, %s, %s, %s, %s, 'open')
+                    RETURNING fiscal_period_id
+                    """,
+                    (
+                        tenant_id,
+                        calendar_id,
+                        period_code,
+                        period_start_date,
+                        period_end_date,
+                    ),
+                ).fetchone()[0]
+                stored_start_date = period_start_date
+                stored_end_date = period_end_date
+
             connection.execute(
                 """
-                INSERT INTO accounting_core.fiscal_period (
-                    tenant_account_id, fiscal_calendar_id, period_code,
-                    period_start_date, period_end_date, period_status_code
+                INSERT INTO accounting_integration.fiscal_period_open_command (
+                    tenant_account_id,
+                    legal_entity_id,
+                    fiscal_period_id,
+                    period_open_idempotency_key,
+                    source_payload_hash,
+                    requested_period_start_date,
+                    requested_period_end_date
                 )
-                VALUES (%s, %s, %s, %s, %s, 'open')
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     tenant_id,
-                    calendar_id,
-                    period_code,
+                    legal_entity_id,
+                    period_id,
+                    command_key,
+                    source_payload_hash,
                     period_start_date,
                     period_end_date,
                 ),
@@ -1213,9 +1328,9 @@ class PostgresPostingLedger:
             return self._period_open_document(
                 legal_entity_reference,
                 period_code,
-                period_start_date,
-                period_end_date,
-                replayed=False,
+                stored_start_date,
+                stored_end_date,
+                replayed=replayed,
             )
 
     def load_fiscal_period(
@@ -1784,14 +1899,27 @@ class PostgresPostingLedger:
         accounting_book_reference: str,
         period_code: str,
         submission_idempotency_key: str,
+        source_payload_hash: str,
+        source_payload_reference: str,
         register_document: dict[str, object],
         rejection_reason_code: str,
     ) -> dict[str, object]:
-        """Persist one rejected HomeTax receipt for a resolved entity, book, and period."""
+        """Persist or replay one rejected HomeTax receipt with immutable command provenance."""
         if not submission_idempotency_key:
             raise AccountingValidationError(
                 "submission_idempotency_key is required. "
                 "Supply the original HomeTax command key, then retry the home-tax-submission."
+            )
+        if re.fullmatch(r"sha256:[0-9a-f]{64}", source_payload_hash) is None:
+            raise AccountingValidationError(
+                "source_payload_hash must be a sha256 digest. "
+                "Supply immutable HomeTax source evidence, then retry the home-tax-submission."
+            )
+        normalized_source_reference = source_payload_reference.strip()
+        if not normalized_source_reference:
+            raise AccountingValidationError(
+                "source_payload_reference is required. "
+                "Supply the immutable HomeTax source locator, then retry the home-tax-submission."
             )
         register_payload_hash = "sha256:" + hashlib.sha256(
             json.dumps(
@@ -1808,6 +1936,9 @@ class PostgresPostingLedger:
                 tenant_id,
                 legal_entity_reference,
                 next_action="the home-tax-submission",
+            )
+            self._acquire_command_lock(
+                connection, f"home-tax:{submission_idempotency_key}"
             )
             book_id = self._require_book_for_close(
                 connection,
@@ -1832,12 +1963,14 @@ class PostgresPostingLedger:
                     accounting_book_id,
                     fiscal_period_id,
                     submission_idempotency_key,
+                    source_payload_hash,
+                    source_payload_reference,
                     submission_status_code,
                     rejection_reason_code,
                     as_of_date,
                     closing_amount,
                     register_payload_hash
-                ) VALUES (%s, %s, %s, %s, %s, 'rejected', %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'rejected', %s, %s, %s, %s)
                 ON CONFLICT (tenant_account_id, submission_idempotency_key) DO NOTHING
                 RETURNING home_tax_submission_id,
                           submission_status_code,
@@ -1845,6 +1978,8 @@ class PostgresPostingLedger:
                           as_of_date,
                           closing_amount,
                           register_payload_hash,
+                          source_payload_hash,
+                          source_payload_reference,
                           legal_entity_id,
                           accounting_book_id,
                           fiscal_period_id
@@ -1855,6 +1990,8 @@ class PostgresPostingLedger:
                     book_id,
                     period_id,
                     submission_idempotency_key,
+                    source_payload_hash,
+                    normalized_source_reference,
                     rejection_reason_code,
                     as_of_date,
                     closing_amount,
@@ -1870,6 +2007,8 @@ class PostgresPostingLedger:
                            as_of_date,
                            closing_amount,
                            register_payload_hash,
+                           source_payload_hash,
+                           source_payload_reference,
                            legal_entity_id,
                            accounting_book_id,
                            fiscal_period_id
@@ -1886,9 +2025,11 @@ class PostgresPostingLedger:
                     )
                 if (
                     row[5] != register_payload_hash
-                    or row[6] != legal_entity_id
-                    or row[7] != book_id
-                    or row[8] != period_id
+                    or row[6] != source_payload_hash
+                    or row[7] != normalized_source_reference
+                    or row[8] != legal_entity_id
+                    or row[9] != book_id
+                    or row[10] != period_id
                 ):
                     raise IdempotencyConflictError(
                         "HomeTax idempotency key was already used with different evidence or scope. "
@@ -2586,6 +2727,9 @@ class PostgresPostingLedger:
         )
         with self._session() as connection:
             tenant_id = self._require_tenant(connection)
+            self._acquire_command_lock(
+                connection, f"reversal:{journal_reference}:{command_key}"
+            )
             existing = connection.execute(
                 """
                 SELECT reversal_journal.journal_reference,
@@ -2610,9 +2754,12 @@ class PostgresPostingLedger:
                 (tenant_id, journal_reference),
             ).fetchone()
             if existing is not None:
+                if str(existing[1]) != command_key:
+                    raise AccountingValidationError(
+                        "journal is already reversed. Use the existing reversal receipt, then retry."
+                    )
                 if (
-                    str(existing[1]) != command_key
-                    or str(existing[2]) != command_hash
+                    str(existing[2]) != command_hash
                     or str(existing[3]) != journal_reference
                     or str(existing[4]) != reversal_reason_code
                     or existing[5] != reversal_date
@@ -3333,6 +3480,79 @@ class PostgresPostingLedger:
             document["comparison_total_debit_amount"] = compared["total_debit_amount"]
             document["comparison_total_credit_amount"] = compared["total_credit_amount"]
             document["comparison_net_income_amount"] = compared["net_income_amount"]
+        return document
+
+    def load_financial_statement_package(
+        self,
+        legal_entity_reference: str,
+        accounting_book_reference: str,
+        period_code: str,
+        comparison_period_code: str = "",
+        statement_scope_code: str = "",
+    ) -> dict[str, object]:
+        """Return all four financial statements from one REPEATABLE READ snapshot."""
+        with self._consistent_read_session():
+            return self._assemble_financial_statement_package(
+                legal_entity_reference,
+                accounting_book_reference,
+                period_code,
+                comparison_period_code=comparison_period_code,
+                statement_scope_code=statement_scope_code,
+            )
+
+    def _assemble_financial_statement_package(
+        self,
+        legal_entity_reference: str,
+        accounting_book_reference: str,
+        period_code: str,
+        comparison_period_code: str = "",
+        statement_scope_code: str = "",
+    ) -> dict[str, object]:
+        income_statement = self.load_financial_statement(
+            legal_entity_reference,
+            accounting_book_reference,
+            period_code,
+            "income_statement",
+            comparison_period_code,
+            statement_scope_code,
+        )
+        balance_sheet = self.load_financial_statement(
+            legal_entity_reference,
+            accounting_book_reference,
+            period_code,
+            "balance_sheet",
+            comparison_period_code,
+            statement_scope_code,
+        )
+        changes_in_equity = self.load_financial_statement(
+            legal_entity_reference,
+            accounting_book_reference,
+            period_code,
+            "changes_in_equity",
+            comparison_period_code,
+            statement_scope_code,
+        )
+        cash_flow = self.load_financial_statement(
+            legal_entity_reference,
+            accounting_book_reference,
+            period_code,
+            "cash_flow",
+            comparison_period_code,
+            statement_scope_code,
+        )
+        document: dict[str, object] = {
+            "tenant_reference": income_statement["tenant_reference"],
+            "legal_entity_reference": income_statement["legal_entity_reference"],
+            "accounting_book_reference": income_statement["accounting_book_reference"],
+            "book_reference": income_statement["book_reference"],
+            "fiscal_period_reference": income_statement["fiscal_period_reference"],
+            "income_statement": income_statement,
+            "balance_sheet": balance_sheet,
+            "changes_in_equity": changes_in_equity,
+            "cash_flow": cash_flow,
+        }
+        if statement_scope_code == "year_to_date":
+            document["statement_scope_code"] = "year_to_date"
         return document
 
     def load_period_close_package(
@@ -4068,6 +4288,8 @@ class PostgresPostingLedger:
                 "to that server, then retry posting."
             ) from error
         try:
+            connection.execute("SET lock_timeout = '5s'")
+            connection.execute("SET idle_in_transaction_session_timeout = '60s'")
             yield connection
         except Exception:
             connection.rollback()
@@ -4076,6 +4298,13 @@ class PostgresPostingLedger:
             connection.commit()
         finally:
             connection.close()
+
+    def _acquire_command_lock(self, connection: object, command_scope: str) -> None:
+        """Serialize one tenant command scope until the current transaction ends."""
+        connection.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+            (self._tenant_reference, command_scope),
+        )
 
     def _require_tenant(self, connection: object) -> UUID:
         row = connection.execute(
@@ -4090,11 +4319,30 @@ class PostgresPostingLedger:
             raise AccountingValidationError(
                 f"Tenant {self._tenant_reference} is not recorded. Create the tenant_account row, then retry posting."
             )
-        connection.execute(
-            "SELECT set_config('app.tenant_account_id', %s, true)",
-            (str(row[0]),),
+        requested_tenant_id = row[0]
+        bound_tenant_id = connection.execute(
+            "SELECT accounting_core.current_tenant_account_id()"
+        ).fetchone()[0]
+        if bound_tenant_id is not None:
+            if bound_tenant_id != requested_tenant_id:
+                raise AccountingValidationError(
+                    "database runtime tenant binding does not match the requested tenant. "
+                    "Use the database credential provisioned for this tenant, then retry."
+                )
+            return requested_tenant_id
+        rolsuper, rolbypassrls = connection.execute(
+            """
+            SELECT rolsuper, rolbypassrls
+            FROM pg_catalog.pg_roles
+            WHERE rolname = session_user
+            """
+        ).fetchone()
+        if rolsuper or rolbypassrls:
+            return requested_tenant_id
+        raise AccountingValidationError(
+            "database runtime identity is not bound to a tenant. "
+            "Provision accounting_core.runtime_tenant_binding for this login, then retry."
         )
-        return row[0]
 
     def _require_legal_entity(
         self,
@@ -4153,26 +4401,96 @@ class PostgresPostingLedger:
             )
         return row[0]
 
-    def _require_open_period(
-        self, connection: object, tenant_id: UUID, accounting_date: date
+    def _require_open_book_period(
+        self,
+        connection: object,
+        tenant_id: UUID,
+        book_id: UUID,
+        accounting_date: date,
     ) -> UUID:
-        return self._require_open_period_bounds(connection, tenant_id, accounting_date)[0]
+        """Require an open fiscal period for the selected accounting book."""
+        return self._require_open_book_period_bounds(
+            connection, tenant_id, book_id, accounting_date
+        )[0]
+
+    def _require_open_book_period_bounds(
+        self,
+        connection: object,
+        tenant_id: UUID,
+        book_id: UUID,
+        accounting_date: date,
+    ) -> tuple[UUID, date, date]:
+        """Return period identity and bounds when this accounting book is open."""
+        row = connection.execute(
+            """
+            SELECT fiscal_period.fiscal_period_id,
+                   fiscal_period.period_code,
+                   COALESCE(
+                       accounting_book_period_control.period_status_code,
+                       fiscal_period.period_status_code
+                   ),
+                   fiscal_period.period_start_date,
+                   fiscal_period.period_end_date
+            FROM accounting_core.fiscal_period
+            LEFT JOIN accounting_core.accounting_book_period_control
+              ON accounting_book_period_control.tenant_account_id
+                 = fiscal_period.tenant_account_id
+             AND accounting_book_period_control.fiscal_period_id
+                 = fiscal_period.fiscal_period_id
+             AND accounting_book_period_control.accounting_book_id = %s
+            WHERE fiscal_period.tenant_account_id = %s
+              AND fiscal_period.period_start_date <= %s
+              AND fiscal_period.period_end_date >= %s
+            """,
+            (book_id, tenant_id, accounting_date, accounting_date),
+        ).fetchone()
+        if row is None:
+            raise AccountingValidationError(
+                f"No fiscal period covers accounting date {accounting_date.isoformat()}. "
+                "Create an open fiscal period on the tenant calendar, then retry posting."
+            )
+        period_id, period_code = row[0], row[1]
+        self._acquire_command_lock(connection, f"period:{book_id}:{period_code}")
+        row = connection.execute(
+            """
+            SELECT fiscal_period.fiscal_period_id,
+                   fiscal_period.period_code,
+                   COALESCE(
+                       accounting_book_period_control.period_status_code,
+                       fiscal_period.period_status_code
+                   ),
+                   fiscal_period.period_start_date,
+                   fiscal_period.period_end_date
+            FROM accounting_core.fiscal_period
+            LEFT JOIN accounting_core.accounting_book_period_control
+              ON accounting_book_period_control.tenant_account_id
+                 = fiscal_period.tenant_account_id
+             AND accounting_book_period_control.fiscal_period_id
+                 = fiscal_period.fiscal_period_id
+             AND accounting_book_period_control.accounting_book_id = %s
+            WHERE fiscal_period.tenant_account_id = %s
+              AND fiscal_period.fiscal_period_id = %s
+            """,
+            (book_id, tenant_id, period_id),
+        ).fetchone()
+        if row is None:
+            raise AccountingValidationError(
+                f"No fiscal period covers accounting date {accounting_date.isoformat()}. "
+                "Create an open fiscal period on the tenant calendar, then retry posting."
+            )
+        if row[2] != "open":
+            locked_marker = " (period_closed)" if row[2] == "hard_closed" else ""
+            raise AccountingValidationError(
+                f"Fiscal period {row[1]} is {row[2]}{locked_marker}. "
+                "Open that period or post into an open period for this accounting book; "
+                "no journal was written."
+            )
+        return row[0], row[3], row[4]
 
     def _require_adjusting_period(
         self, connection: object, tenant_id: UUID, accounting_date: date
     ) -> UUID:
         return self._require_adjusting_period_bounds(connection, tenant_id, accounting_date)[0]
-
-    def _require_open_period_bounds(
-        self, connection: object, tenant_id: UUID, accounting_date: date
-    ) -> tuple[UUID, date, date]:
-        return self._require_period_bounds(
-            connection,
-            tenant_id,
-            accounting_date,
-            allowed_status_codes=frozenset({"open"}),
-            next_action="Open that period or post into an open period",
-        )
 
     def _require_adjusting_period_bounds(
         self, connection: object, tenant_id: UUID, accounting_date: date
@@ -4210,6 +4528,23 @@ class PostgresPostingLedger:
                 f"No fiscal period covers accounting date {accounting_date.isoformat()}. "
                 "Create an open fiscal period on the tenant calendar, then retry posting."
             )
+        period_id, period_code = row[0], row[1]
+        self._acquire_command_lock(connection, f"period:{period_code}")
+        row = connection.execute(
+            """
+            SELECT fiscal_period_id, period_code, period_status_code,
+                   period_start_date, period_end_date
+            FROM accounting_core.fiscal_period
+            WHERE tenant_account_id = %s
+              AND fiscal_period_id = %s
+            """,
+            (tenant_id, period_id),
+        ).fetchone()
+        if row is None:
+            raise AccountingValidationError(
+                f"No fiscal period covers accounting date {accounting_date.isoformat()}. "
+                "Create an open fiscal period on the tenant calendar, then retry posting."
+            )
         if row[2] not in allowed_status_codes:
             locked_marker = " (period_closed)" if row[2] == "hard_closed" else ""
             raise AccountingValidationError(
@@ -4235,8 +4570,8 @@ class PostgresPostingLedger:
             legal_entity_id,
             proposal.intended_book_role_code,
         )
-        _period_id, period_start, period_end = self._require_open_period_bounds(
-            connection, tenant_id, proposal.accounting_date
+        _period_id, period_start, period_end = self._require_open_book_period_bounds(
+            connection, tenant_id, book_id, proposal.accounting_date
         )
         mapping, policy_version, rule_version = self._load_role_mapping(
             connection, tenant_id, book_id, proposal
@@ -4391,6 +4726,108 @@ class PostgresPostingLedger:
                 f"Create the fiscal_period row, then retry {next_action}."
             )
         return row[0], row[1], row[2]
+
+    def _lock_book_period(
+        self,
+        connection: object,
+        tenant_id: UUID,
+        book_id: UUID,
+        period_code: str,
+    ) -> tuple[UUID, str, date]:
+        """Materialize and lock close state independently for one accounting book."""
+        period_row = connection.execute(
+            """
+            SELECT fiscal_period_id, period_status_code, period_closed_at
+            FROM accounting_core.fiscal_period
+            WHERE tenant_account_id = %s AND period_code = %s
+            """,
+            (tenant_id, period_code),
+        ).fetchone()
+        if period_row is None:
+            raise AccountingValidationError(
+                f"Fiscal period {period_code} is not recorded for this tenant. "
+                "Create the fiscal_period row, then retry the close."
+            )
+        period_id = period_row[0]
+        connection.execute(
+            """
+            INSERT INTO accounting_core.accounting_book_period_control (
+                tenant_account_id, accounting_book_id, fiscal_period_id,
+                period_status_code, period_closed_at
+            )
+            SELECT accounting_book.tenant_account_id,
+                   accounting_book.accounting_book_id,
+                   fiscal_period.fiscal_period_id,
+                   fiscal_period.period_status_code,
+                   fiscal_period.period_closed_at
+            FROM accounting_core.accounting_book
+            JOIN accounting_core.fiscal_period
+              ON fiscal_period.tenant_account_id = accounting_book.tenant_account_id
+            WHERE accounting_book.tenant_account_id = %s
+              AND accounting_book.valid_to IS NULL
+              AND fiscal_period.fiscal_period_id = %s
+            ON CONFLICT (tenant_account_id, accounting_book_id, fiscal_period_id)
+            DO NOTHING
+            """,
+            (tenant_id, period_id),
+        )
+        row = connection.execute(
+            """
+            SELECT fiscal_period.fiscal_period_id,
+                   accounting_book_period_control.period_status_code,
+                   fiscal_period.period_end_date
+            FROM accounting_core.fiscal_period
+            JOIN accounting_core.accounting_book_period_control
+              ON accounting_book_period_control.tenant_account_id
+                 = fiscal_period.tenant_account_id
+             AND accounting_book_period_control.fiscal_period_id
+                 = fiscal_period.fiscal_period_id
+             AND accounting_book_period_control.accounting_book_id = %s
+            WHERE fiscal_period.tenant_account_id = %s
+              AND fiscal_period.fiscal_period_id = %s
+            FOR UPDATE OF accounting_book_period_control
+            """,
+            (book_id, tenant_id, period_id),
+        ).fetchone()
+        if row is None:
+            raise AccountingValidationError(
+                f"Fiscal period {period_code} has no control row for this accounting book. "
+                "Repair accounting_book_period_control, then retry the close."
+            )
+        return row[0], row[1], row[2]
+
+    def _load_book_period_state(
+        self,
+        connection: object,
+        tenant_id: UUID,
+        book_id: UUID,
+        period_code: str,
+    ) -> tuple[UUID, str, date, date] | None:
+        """Return the selected book's period state, falling back to legacy calendar state."""
+        row = connection.execute(
+            """
+            SELECT fiscal_period.fiscal_period_id,
+                   COALESCE(
+                       accounting_book_period_control.period_status_code,
+                       fiscal_period.period_status_code
+                   ),
+                   fiscal_period.period_start_date,
+                   fiscal_period.period_end_date
+            FROM accounting_core.fiscal_period
+            LEFT JOIN accounting_core.accounting_book_period_control
+              ON accounting_book_period_control.tenant_account_id
+                 = fiscal_period.tenant_account_id
+             AND accounting_book_period_control.fiscal_period_id
+                 = fiscal_period.fiscal_period_id
+             AND accounting_book_period_control.accounting_book_id = %s
+            WHERE fiscal_period.tenant_account_id = %s
+              AND fiscal_period.period_code = %s
+            """,
+            (book_id, tenant_id, period_code),
+        ).fetchone()
+        if row is None:
+            return None
+        return row[0], row[1], row[2], row[3]
 
     def _load_period_state(
         self, connection: object, tenant_id: UUID, period_code: str
@@ -4648,26 +5085,42 @@ class PostgresPostingLedger:
         snapshot_currency_code: str,
         legal_entity_reference: str,
         accounting_book_reference: str,
+        idempotency_key: str,
     ) -> PeriodCloseReceipt:
-        period_closed_at = connection.execute(
+        (
+            period_closed_at,
+            stored_idempotency_key,
+            source_journal_count,
+            source_payload_hash,
+            evidence_complete,
+        ) = connection.execute(
             """
-            SELECT COALESCE(period_closed_at, clock_timestamp())
-            FROM accounting_core.fiscal_period
-            WHERE tenant_account_id = %s AND fiscal_period_id = %s
+            SELECT COALESCE(period_closed_at, clock_timestamp()),
+                   soft_close_idempotency_key,
+                   soft_close_source_journal_count,
+                   soft_close_source_payload_hash,
+                   (
+                       soft_close_idempotency_key IS NOT NULL
+                       AND soft_close_source_journal_count IS NOT NULL
+                       AND soft_close_source_payload_hash IS NOT NULL
+                   )
+            FROM accounting_core.accounting_book_period_control
+            WHERE tenant_account_id = %s
+              AND accounting_book_id = %s
+              AND fiscal_period_id = %s
             """,
-            (tenant_id, period_id),
-        ).fetchone()[0]
-        _lines, source_journal_count, source_payload_hash = self._live_close_source(
-            connection,
-            tenant_id=tenant_id,
-            legal_entity_id=legal_entity_id,
-            book_id=book_id,
-            period_end_date=period_end_date,
-            period_code=period_code,
-            snapshot_currency_code=snapshot_currency_code,
-            legal_entity_reference=legal_entity_reference,
-            accounting_book_reference=accounting_book_reference,
-        )
+            (tenant_id, book_id, period_id),
+        ).fetchone()
+        if not evidence_complete:
+            raise AccountingValidationError(
+                f"Fiscal period {period_code} is soft_closed without durable close-command evidence. "
+                "Restore the original evidence through an audited migration, then retry; "
+                "do not reconstruct it from later ledger state."
+            )
+        if stored_idempotency_key != idempotency_key:
+            raise IdempotencyConflictError(
+                "period-close idempotency key was already used by the soft-close command"
+            )
         return PeriodCloseReceipt(
             tenant_reference=self._tenant_reference,
             legal_entity_reference=legal_entity_reference,
@@ -4694,6 +5147,7 @@ class PostgresPostingLedger:
         snapshot_currency_code: str,
         legal_entity_reference: str,
         accounting_book_reference: str,
+        idempotency_key: str,
     ) -> PeriodCloseReceipt:
         _lines, source_journal_count, source_payload_hash = self._live_close_source(
             connection,
@@ -4706,8 +5160,27 @@ class PostgresPostingLedger:
             legal_entity_reference=legal_entity_reference,
             accounting_book_reference=accounting_book_reference,
         )
-        period_closed_at = self._set_period_closed(
-            connection, tenant_id, period_id, "soft_closed"
+        period_closed_at = self._set_book_period_closed(
+            connection, tenant_id, book_id, period_id, "soft_closed"
+        )
+        connection.execute(
+            """
+            UPDATE accounting_core.accounting_book_period_control
+            SET soft_close_idempotency_key = %s,
+                soft_close_source_payload_hash = %s,
+                soft_close_source_journal_count = %s
+            WHERE tenant_account_id = %s
+              AND accounting_book_id = %s
+              AND fiscal_period_id = %s
+            """,
+            (
+                idempotency_key,
+                source_payload_hash,
+                source_journal_count,
+                tenant_id,
+                book_id,
+                period_id,
+            ),
         )
         self._insert_period_close_event(
             connection,
@@ -4838,7 +5311,9 @@ class PostgresPostingLedger:
                     debit_total - credit_total,
                 ),
             )
-        self._set_period_closed(connection, tenant_id, period_id, period_status_code)
+        self._set_book_period_closed(
+            connection, tenant_id, book_id, period_id, period_status_code
+        )
         self._insert_period_close_event(
             connection,
             tenant_id,
@@ -4875,7 +5350,8 @@ class PostgresPostingLedger:
         accounting_book_reference: str,
     ) -> None:
         closing_reference = (
-            f"urn:cwl:accounting:general_journal:period_closing:{period_code}"
+            "urn:cwl:accounting:general_journal:period_closing:"
+            f"{period_code}:{accounting_book_reference}"
         )
         income_rows = connection.execute(
             """
@@ -4977,7 +5453,8 @@ class PostgresPostingLedger:
             """,
             (
                 tenant_id,
-                f"{self._tenant_reference}:period_closing:{period_code}",
+                f"{self._tenant_reference}:period_closing:{period_code}:"
+                f"{accounting_book_reference}",
                 source_payload_hash,
             ),
         ).fetchone()[0]
@@ -5055,23 +5532,63 @@ class PostgresPostingLedger:
             ).fetchone()[0]
         )
 
-    def _set_period_closed(
+    def _set_book_period_closed(
         self,
         connection: object,
         tenant_id: UUID,
+        book_id: UUID,
         period_id: UUID,
         period_status_code: str,
     ) -> datetime:
-        return connection.execute(
+        """Close one book and retain aggregate calendar status only for compatibility."""
+        period_closed_at = connection.execute(
+            """
+            UPDATE accounting_core.accounting_book_period_control
+            SET period_status_code = %s,
+                period_closed_at = clock_timestamp()
+            WHERE tenant_account_id = %s
+              AND accounting_book_id = %s
+              AND fiscal_period_id = %s
+            RETURNING period_closed_at
+            """,
+            (period_status_code, tenant_id, book_id, period_id),
+        ).fetchone()[0]
+        aggregate_row = connection.execute(
+            """
+            SELECT CASE
+                       WHEN bool_and(
+                           accounting_book_period_control.period_status_code = 'hard_closed'
+                       ) THEN 'hard_closed'
+                       WHEN bool_and(
+                           accounting_book_period_control.period_status_code <> 'open'
+                       ) THEN 'soft_closed'
+                       ELSE 'open'
+                   END,
+                   max(accounting_book_period_control.period_closed_at)
+            FROM accounting_core.accounting_book_period_control
+            JOIN accounting_core.accounting_book
+              ON accounting_book.tenant_account_id
+                 = accounting_book_period_control.tenant_account_id
+             AND accounting_book.accounting_book_id
+                 = accounting_book_period_control.accounting_book_id
+            WHERE accounting_book_period_control.tenant_account_id = %s
+              AND accounting_book_period_control.fiscal_period_id = %s
+              AND accounting_book.valid_to IS NULL
+            """,
+            (tenant_id, period_id),
+        ).fetchone()
+        aggregate_status = aggregate_row[0] or "open"
+        aggregate_closed_at = None if aggregate_status == "open" else aggregate_row[1]
+        connection.execute(
             """
             UPDATE accounting_core.fiscal_period
             SET period_status_code = %s,
-                period_closed_at = clock_timestamp()
+                period_closed_at = %s
             WHERE tenant_account_id = %s AND fiscal_period_id = %s
-            RETURNING period_closed_at
             """,
-            (period_status_code, tenant_id, period_id),
-        ).fetchone()[0]
+            (aggregate_status, aggregate_closed_at, tenant_id, period_id),
+        )
+        return period_closed_at
 
     def _insert_period_close_event(
         self,
@@ -5676,7 +6193,7 @@ def _journal_write_role(
 
 
 def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
-    """Apply the checked-in PostgreSQL 18 foundation through the closed-period guard."""
+    """Apply the checked-in PostgreSQL 18 accounting foundation in migration order."""
     if not migration_path.is_file():
         raise AccountingValidationError(
             f"Foundation migration is missing at {migration_path}. "
@@ -5706,6 +6223,42 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             f"Closed-period guard migration is missing at {period_guard_migration_path}. "
             "Restore database/migrations/0005_closed_period_guard.sql, then retry."
         )
+    concurrency_migration_path = migration_path.parent / "0006_concurrency_hot_partition.sql"
+    if not concurrency_migration_path.is_file():
+        raise AccountingValidationError(
+            f"Concurrency and hot-partition migration is missing at {concurrency_migration_path}. "
+            "Restore database/migrations/0006_concurrency_hot_partition.sql, then retry."
+        )
+    runtime_binding_migration_path = migration_path.parent / "0007_runtime_tenant_binding.sql"
+    if not runtime_binding_migration_path.is_file():
+        raise AccountingValidationError(
+            f"Runtime-tenant binding migration is missing at {runtime_binding_migration_path}. "
+            "Restore database/migrations/0007_runtime_tenant_binding.sql, then retry."
+        )
+    period_open_command_migration_path = (
+        migration_path.parent / "0008_fiscal_period_open_command.sql"
+    )
+    if not period_open_command_migration_path.is_file():
+        raise AccountingValidationError(
+            f"Fiscal-period-open command migration is missing at {period_open_command_migration_path}. "
+            "Restore database/migrations/0008_fiscal_period_open_command.sql, then retry."
+        )
+    book_period_control_migration_path = (
+        migration_path.parent / "0009_accounting_book_period_control.sql"
+    )
+    if not book_period_control_migration_path.is_file():
+        raise AccountingValidationError(
+            f"Accounting-book-period control migration is missing at {book_period_control_migration_path}. "
+            "Restore database/migrations/0009_accounting_book_period_control.sql, then retry."
+        )
+    soft_close_evidence_migration_path = (
+        migration_path.parent / "0010_soft_close_command_evidence.sql"
+    )
+    if not soft_close_evidence_migration_path.is_file():
+        raise AccountingValidationError(
+            f"Soft-close command-evidence migration is missing at {soft_close_evidence_migration_path}. "
+            "Restore database/migrations/0010_soft_close_command_evidence.sql, then retry."
+        )
     psycopg = _import_psycopg()
     try:
         with psycopg.connect(
@@ -5716,6 +6269,11 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             connection.execute(submission_migration_path.read_text(encoding="utf-8"))
             connection.execute(close_key_migration_path.read_text(encoding="utf-8"))
             connection.execute(period_guard_migration_path.read_text(encoding="utf-8"))
+            connection.execute(concurrency_migration_path.read_text(encoding="utf-8"))
+            connection.execute(runtime_binding_migration_path.read_text(encoding="utf-8"))
+            connection.execute(period_open_command_migration_path.read_text(encoding="utf-8"))
+            connection.execute(book_period_control_migration_path.read_text(encoding="utf-8"))
+            connection.execute(soft_close_evidence_migration_path.read_text(encoding="utf-8"))
     except Exception as error:
         raise AccountingValidationError(
             "Foundation migration failed. Inspect the PostgreSQL error, restore a clean "

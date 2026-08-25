@@ -17,7 +17,7 @@ from scripts.generate_supply_chain_evidence import generate_supply_chain_evidenc
 
 
 class SupplyChainEvidenceTests(unittest.TestCase):
-    """Keep wheel checksums and SPDX SBOM evidence deterministic and source-bound."""
+    """Keep wheel checksums, source provenance, and SPDX evidence deterministic."""
 
     def test_generates_deterministic_spdx_and_checksum_for_exact_wheel(self) -> None:
         """The same source, epoch, project metadata and wheel bytes generate identical evidence."""
@@ -31,30 +31,31 @@ class SupplyChainEvidenceTests(unittest.TestCase):
             wheel = root / "accounting_information_platform-0.1.0-py3-none-any.whl"
             wheel.write_bytes(b"deterministic-wheel")
             source_sha = "a" * 40
+            source_date_epoch = 1_787_000_000
             first = generate_supply_chain_evidence(
                 wheel_path=wheel,
                 project_path=project,
                 output_directory=root / "first",
                 source_sha=source_sha,
-                source_date_epoch=1_787_000_000,
+                source_date_epoch=source_date_epoch,
             )
             second = generate_supply_chain_evidence(
                 wheel_path=wheel,
                 project_path=project,
                 output_directory=root / "second",
                 source_sha=source_sha,
-                source_date_epoch=1_787_000_000,
+                source_date_epoch=source_date_epoch,
             )
 
             self.assertEqual(first.wheel_sha256, second.wheel_sha256)
             self.assertEqual(first.sbom_path.read_bytes(), second.sbom_path.read_bytes())
+            self.assertEqual(
+                first.provenance_path.read_bytes(), second.provenance_path.read_bytes()
+            )
             self.assertEqual(first.checksums_path.read_bytes(), second.checksums_path.read_bytes())
             expected_sha = hashlib.sha256(wheel.read_bytes()).hexdigest()
             self.assertEqual(first.wheel_sha256, expected_sha)
-            self.assertEqual(
-                first.checksums_path.read_text(encoding="utf-8"),
-                f"{expected_sha}  {wheel.name}\n",
-            )
+
             document = json.loads(first.sbom_path.read_text(encoding="utf-8"))
             self.assertEqual(document["spdxVersion"], "SPDX-2.3")
             self.assertEqual(document["dataLicense"], "CC0-1.0")
@@ -75,6 +76,37 @@ class SupplyChainEvidenceTests(unittest.TestCase):
             self.assertRegex(
                 document["creationInfo"]["created"],
                 r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$",
+            )
+
+            provenance = json.loads(first.provenance_path.read_text(encoding="utf-8"))
+            self.assertEqual(provenance["schema_version"], 1)
+            self.assertEqual(
+                provenance["source_repository"],
+                "https://github.com/ContextualWisdomLab/accounting-information-platform",
+            )
+            self.assertEqual(provenance["source_sha"], source_sha)
+            self.assertEqual(provenance["source_date_epoch"], source_date_epoch)
+            self.assertEqual(provenance["artifact_file_name"], wheel.name)
+            self.assertEqual(provenance["artifact_sha256"], expected_sha)
+            self.assertEqual(provenance["sbom_file_name"], first.sbom_path.name)
+            self.assertEqual(
+                provenance["sbom_sha256"],
+                hashlib.sha256(first.sbom_path.read_bytes()).hexdigest(),
+            )
+            self.assertEqual(provenance["build_definition"], ".github/workflows/ci.yml")
+
+            evidence_digests = {
+                wheel.name: expected_sha,
+                first.sbom_path.name: hashlib.sha256(first.sbom_path.read_bytes()).hexdigest(),
+                first.provenance_path.name: hashlib.sha256(
+                    first.provenance_path.read_bytes()
+                ).hexdigest(),
+            }
+            expected_checksums = "".join(
+                f"{digest}  {name}\n" for name, digest in evidence_digests.items()
+            )
+            self.assertEqual(
+                first.checksums_path.read_text(encoding="utf-8"), expected_checksums
             )
 
     def test_rejects_non_sha1_source_identity_and_missing_wheel(self) -> None:

@@ -8,7 +8,7 @@ from datetime import date
 
 import psycopg
 
-from accounting_information_platform import IdempotencyConflictError
+from accounting_information_platform import AccountingValidationError, IdempotencyConflictError
 import tests.test_postgres_posting as postgres_posting
 
 
@@ -56,6 +56,14 @@ class ReversalCommandIdempotencyPostgresTests(unittest.TestCase):
         )
 
         self.assertEqual(replay, first)
+        with self.assertRaisesRegex(AccountingValidationError, "already reversed"):
+            self.case.ledger.reverse(
+                original.journal_reference,
+                date(2026, 8, 21),
+                "billing_correction",
+                self.case.policy,
+                reversal_idempotency_key=f"{command_key}-different",
+            )
         with self.assertRaises(IdempotencyConflictError):
             self.case.ledger.reverse(
                 original.journal_reference,
@@ -89,6 +97,8 @@ class ReversalCommandIdempotencyPostgresTests(unittest.TestCase):
                 (self.case.tenant_id,),
             ).fetchone()
 
+        self.assertIsNotNone(stored)
+        assert stored is not None
         self.assertEqual(str(stored[0]), command_key)
         self.assertRegex(str(stored[1]), r"^sha256:[0-9a-f]{64}$")
         self.assertEqual(str(stored[2]), "billing_correction")
