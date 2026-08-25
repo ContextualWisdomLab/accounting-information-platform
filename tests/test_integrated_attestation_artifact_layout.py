@@ -39,11 +39,26 @@ class IntegratedAttestationArtifactLayoutTests(unittest.TestCase):
         )
 
     def test_integrated_attestation_repair_is_recorded_in_changelog(self) -> None:
-        """Release tooling behavior changes must remain visible in the changelog."""
+        """The exact repair entry must retain its operational verification details."""
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        repair_entry = next(
+            (
+                line
+                for line in changelog.splitlines()
+                if line.startswith("- `Integrated-head attestations` ")
+            ),
+            "",
+        )
 
-        self.assertIn("`Integrated-head attestations`", changelog)
-        self.assertIn("artifact", changelog.lower())
+        self.assertTrue(repair_entry, "missing Integrated-head attestations changelog entry")
+        for required_detail in (
+            "workspace root",
+            "`dist/`",
+            "SHA256",
+            "source-provenance",
+            "SPDX SBOM",
+        ):
+            self.assertIn(required_detail, repair_entry)
 
 
 if __name__ == "__main__":
