@@ -643,6 +643,18 @@ class BankStatementRegistryTests(unittest.TestCase):
         self.assertEqual(assign_status, 200)
         self.assertEqual(assignment["chart_account_code"], "110200")
 
+    def test_same_identity_changed_remittance_fails_closed(self) -> None:
+        """A remittance-only change under the same statement identity is not replay."""
+        self._ingest(load_canonical_statement_fixture(), key="remittance-original")
+        mutated = load_canonical_statement_fixture().replace(b"Invoice 1001", b"Invoice 1999", 1)
+        with self.assertRaisesRegex(AccountingValidationError, "different entry evidence"):
+            accept_bank_statement_evidence(
+                self._command(mutated, key="remittance-changed"),
+                posting.DATABASE_URL,
+                self.case.policy.tenant_reference,
+                artifact_store=self.store,
+            )
+
     def test_identity_replay_list_cursor_and_assignment_fk(self) -> None:
         """Same identity with a changed artifact hash replays; list cursors and FK fail closed."""
         original = load_canonical_statement_fixture()

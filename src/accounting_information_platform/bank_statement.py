@@ -1266,6 +1266,7 @@ def _normalize_detail(
                 "currency": detail.detail_currency_code,
                 "credit_debit": detail.credit_debit_code,
                 "end_to_end": detail.end_to_end_reference,
+                "remittance": detail.remittance_evidence_text,
             },
             separators=(",", ":"),
             sort_keys=True,
@@ -1340,6 +1341,8 @@ def _entry_payload(entry: NormalizedStatementEntry) -> dict[str, object]:
         "account_servicer_reference": entry.account_servicer_reference,
         "mandate_reference": entry.mandate_reference,
         "cheque_reference": entry.cheque_reference,
+        "remittance_evidence_text": entry.remittance_evidence_text,
+        "counterparty_evidence_hash": entry.counterparty_evidence_hash,
         "details": [
             {
                 "detail_sequence_number": detail.detail_sequence_number,
@@ -1348,6 +1351,7 @@ def _entry_payload(entry: NormalizedStatementEntry) -> dict[str, object]:
                 "detail_currency_code": detail.detail_currency_code,
                 "credit_debit_code": detail.credit_debit_code,
                 "end_to_end_reference": detail.end_to_end_reference,
+                "remittance_evidence_text": detail.remittance_evidence_text,
             }
             for detail in entry.entry_details
         ],

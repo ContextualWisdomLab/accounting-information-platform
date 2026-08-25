@@ -82,6 +82,27 @@ class BankStatementAdapterTests(unittest.TestCase):
         self.assertTrue(credit.source_entry_hash.startswith("sha256:"))
         self.assertTrue(statement.source_artifact_hash.startswith("sha256:"))
 
+    def test_remittance_and_counterparty_are_material_entry_evidence(self) -> None:
+        """Same statement identity with changed remittance or counterparty is not an exact replay."""
+        original = parse_bank_statement_payload(
+            load_canonical_statement_fixture(),
+            CAMT053_MESSAGE_DEFINITION,
+        )
+        remittance = parse_bank_statement_payload(
+            FIXTURE.read_bytes().replace(b"Invoice 1001", b"Invoice 1999", 1),
+            CAMT053_MESSAGE_DEFINITION,
+        )
+        counterparty = parse_bank_statement_payload(
+            FIXTURE.read_bytes().replace(b"Counterparty One", b"Counterparty Two", 1),
+            CAMT053_MESSAGE_DEFINITION,
+        )
+        self.assertNotEqual(original.normalized_payload_hash, remittance.normalized_payload_hash)
+        self.assertNotEqual(original.normalized_payload_hash, counterparty.normalized_payload_hash)
+        self.assertNotEqual(
+            original.entries[0].source_entry_hash,
+            remittance.entries[0].source_entry_hash,
+        )
+
     def test_detail_records_txamt_when_instdamt_precedes_it(self) -> None:
         """TxDtls/AmtDtls/TxAmt/Amt is the stored detail amount, not an earlier InstdAmt."""
         payload = FIXTURE.read_text(encoding="utf-8").replace(
