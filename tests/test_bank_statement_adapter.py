@@ -365,6 +365,23 @@ class BankStatementAdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(AccountingValidationError, "statement identity"):
             _required_text(empty_statement, ("Id",), "statement identity")
 
+    def test_ingest_serializes_same_artifact_bytes_across_keys(self) -> None:
+        """Same statement bytes under different keys share one advisory lock."""
+        source = (
+            ROOT
+            / "src"
+            / "accounting_information_platform"
+            / "bank_statement.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'ledger._acquire_command_lock(connection, f"bank_statement:{idempotency_key}")',
+            source,
+        )
+        self.assertIn(
+            'ledger._acquire_command_lock(connection, f"bank_statement_hash:{source_hash}")',
+            source,
+        )
+
     def test_assignment_reraises_non_foreign_key_insert_errors(self) -> None:
         """A non-FK assignment INSERT failure is not rewritten as a book-scope miss."""
 

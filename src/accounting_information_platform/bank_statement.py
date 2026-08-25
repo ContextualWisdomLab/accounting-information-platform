@@ -409,6 +409,7 @@ def accept_bank_statement_evidence(
     with ledger._session() as connection:
         tenant_id = ledger._require_tenant(connection)
         ledger._acquire_command_lock(connection, f"bank_statement:{idempotency_key}")
+        ledger._acquire_command_lock(connection, f"bank_statement_hash:{source_hash}")
         account_row = _load_bank_account(connection, tenant_id, bank_account_reference)
         if account_row[1] != statement.account_currency_code:
             raise AccountingValidationError(
