@@ -29,10 +29,9 @@ proposal is a statutory posting.
 
 The current foundation is backend-first: Python domain/reference logic, PostgreSQL
 persistence and database-owned invariants, a bounded stdlib HTTP surface, versioned
-JSON contracts, and a durable outbox. The accounting posting foundation is an integrated protected
-`develop` fact. The immutable camt.053.001.14 bank-statement evidence registry
-exists as a review-hardened candidate slice awaiting the same lawful protected
-integration. The platform does not yet reconcile statements to journals,
+JSON contracts, and a durable outbox. The accounting posting foundation and the
+immutable `camt.053.001.14` bank-statement evidence registry are integrated protected
+`develop` facts. The platform does not yet reconcile statements to journals,
 transmit HomeTax/NTS filings, enforce purpose-bound application authorization, or
 provide a controller UI. Those omissions are explicit product scope, not implied
 successes.
@@ -42,7 +41,7 @@ successes.
 | Item | Durable role | State expectation before it can close |
 | --- | --- | --- |
 | Accounting posting foundation | Dependency root for every later slice | Integrated into protected `develop`; post-integration signed provenance/SBOM attestations must stay green on the integrated head before any release claim |
-| Immutable bank-statement evidence registry | First buyer-visible reconciliation input; implements the statement-evidence issue | Same lawful protected integration; its acceptance tests (exact replay, changed-hash conflict, parser fail-closed behavior, tenant isolation, assignment command identity) must hold on the integrated head |
+| Immutable bank-statement evidence registry | First buyer-visible reconciliation input; implements the statement-evidence issue | Integrated into protected `develop`; exact replay, changed-hash conflict, parser fail-closed behavior, tenant isolation, and assignment command identity remain protected-branch invariants |
 | Documentation successor | Customer/operator README plus ADR enrichment rebuilt from the integrated foundation | Reconstructed from the exact integrated tree after the dependency roots land; stale ancestry must not merge |
 | Deterministic reconciliation and book-to-bank bridge | Second bounded reconciliation slice | Implemented only after the foundation and statement registry are integrated protected facts |
 | Bank-reconciliation buyer slice | Close-out of the reconciliation vertical | Closed only after matching, exceptions/approvals, exact bridge, and close-evidence provenance are integrated |
@@ -59,11 +58,10 @@ that renumbering cannot silently drop a commitment.
    CodeRabbit current-head status, and Strix — passed together on one unchanged
    head. Post-integration signed provenance/SBOM attestations run on the
    integrated-head push before any release/tag claim.
-2. **Immutable bank-statement evidence registry integration.** The
-   review-hardened candidate slice integrates through the same protected path:
-   fresh exact-head gates must pass together again after each review round,
-   including assignment command identity, entry-evidence hashing, direction-aware
-   counterparty selection, and currency-scope enforcement added during review.
+2. **Immutable bank-statement evidence registry.** Integrated into protected
+   `develop`; preserve its exact replay, changed-hash conflict, parser fail-closed,
+   tenant-isolation, assignment-command identity, direction-aware counterparty,
+   and currency-scope invariants on every later integrated head.
 3. **Documentation successor rebuild.** Its unique documentation value must be
    reconstructed and revalidated from the exact integrated foundation rather than
    merging stale ancestry or transferring predecessor checks/reviews.
@@ -86,7 +84,6 @@ exact-head gates rather than leaving merge safety to convention alone.
 
 | Priority | Gap | Buyer impact | Required evidence before closing |
 | --- | --- | --- | --- |
-| P0 | The statement-registry candidate is not yet an integrated protected-branch fact | A controller cannot yet treat bank-statement evidence as accepted platform authority | Fresh exact head and live base, all applicable exact-head gates green together, qualifying independent approvals, lawful protected merge SHA, then post-merge verification on the integrated head |
 | P0 | Repository governance does not yet enforce the intended merge/release policy everywhere | A technically green candidate could be integrated without durable control-plane enforcement, and `main` remains outside release-grade protection | Protected `develop`/`main` policy with required accounting CI/security/dependency gates, independent review, thread resolution, no force-push/deletion path, and fresh effective-policy evidence from branch and ruleset surfaces together |
 | P0 | Database authority must remain stronger than application intent on the integrated head | Direct SQL must never rewrite balances, tenant scope, finalized facts, or closed periods | Real PostgreSQL runtime tests for deferred balance, append-only/finalization guards, forced RLS with a restricted runtime login, DB-owned tenant binding, temporal reversal rules, and purpose-limited close authority |
 | P0 | Stateful commands require exact replay identity and immutable source evidence | Retries must not duplicate or mutate posting, reversal, close, tax, or statement-acceptance evidence | Tenant-scoped command keys, immutable source hashes/references, exact replay, changed-evidence conflict, and atomic command/outbox persistence proven in PostgreSQL |
