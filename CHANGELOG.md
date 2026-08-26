@@ -36,6 +36,7 @@
 
 ### Fixed
 
+- `Integrated-head attestations` now download the exact-head package evidence artifact to the workspace root so the retained `dist/` prefix is preserved exactly once before SHA256, source-provenance, wheel, and SPDX SBOM attestation verification.
 - Fiscal-period-open commands now require a tenant-scoped idempotency key and canonical source-payload hash, persist append-only command evidence under forced RLS, replay only the exact command, and reject changed scope/date/hash under the same key. In-memory reversal retry now consults an already-retained immutable reversal journal before applying current-period admission, so cache loss cannot turn a historical exact replay into a new closed-period write attempt.
 - Period-close commands now reject unknown non-empty status codes at the command boundary, and failed Billing HTTPS connect/TLS setup closes the partially opened connection before returning the existing fail-closed pull error.
 - AIS adjusting-journal commands now require each `amount` to arrive as a quoted exact-decimal string; JSON integer and binary floating-point numbers fail closed before PostgreSQL work, matching the Billing proposal exact-decimal boundary.

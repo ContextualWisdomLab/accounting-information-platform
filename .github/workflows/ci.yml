@@ -290,16 +290,26 @@ jobs:
           python -c "import accounting_information_platform as aip; assert aip.PostingLedger.__name__ == 'PostingLedger'"
       - name: Verify typing marker is packaged
         run: python -c "import zipfile, glob; wheel=glob.glob('dist/*.whl')[0]; names=zipfile.ZipFile(wheel).namelist(); assert 'accounting_information_platform/py.typed' in names"
+      - name: Stage package evidence with explicit artifact root
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_root="${RUNNER_TEMP}/accounting-package-evidence"
+          rm -rf "$evidence_root"
+          mkdir -p "$evidence_root/dist"
+          shopt -s nullglob
+          wheels=(dist/*.whl)
+          test "${#wheels[@]}" -eq 1
+          cp "${wheels[0]}" "$evidence_root/dist/"
+          cp "dist/SHA256SUMS" "$evidence_root/dist/SHA256SUMS"
+          cp "dist/sbom.spdx.json" "$evidence_root/dist/sbom.spdx.json"
+          cp "dist/source-provenance.json" "$evidence_root/dist/source-provenance.json"
+          cp "coverage.json" "$evidence_root/coverage.json"
       - name: Upload package evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: accounting-information-platform-${{ github.event.pull_request.head.sha || github.sha }}
-          path: |
-            dist/*.whl
-            dist/SHA256SUMS
-            dist/sbom.spdx.json
-            dist/source-provenance.json
-            coverage.json
+          path: ${{ runner.temp }}/accounting-package-evidence/
           if-no-files-found: error
           retention-days: 14
 
@@ -319,7 +329,7 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: accounting-information-platform-${{ github.sha }}
-          path: dist
+          path: .
       - name: Verify integrated-head evidence identity
         env:
           EXPECTED_SHA: ${{ github.sha }}
