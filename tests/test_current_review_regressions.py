@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import unittest
 from datetime import date
-from pathlib import Path
 from unittest import mock
 
 from accounting_information_platform import (
@@ -210,23 +209,36 @@ class AdjustingJournalExactDecimalBoundaryTests(unittest.TestCase):
 class CallerFacingStorageCopyTests(unittest.TestCase):
     """Keep storage implementation names and operator-owned repairs out of caller guidance."""
 
-    def test_persistence_copy_hides_storage_names_and_assigns_operator_recovery(self) -> None:
-        """Known review regressions stay absent from the durable adapter source."""
-        source = (
-            Path(__file__).resolve().parents[1]
-            / "src"
-            / "accounting_information_platform"
-            / "persistence.py"
-        ).read_text(encoding="utf-8")
-
-        self.assertNotIn("the database session is not provisioned for this tenant", source)
-        self.assertNotIn("Restore the trial_balance_snapshot", source)
-        self.assertNotIn("requires a stored trial_balance_snapshot", source)
-        self.assertNotIn("Repair the fiscal-period control data for this book", source)
-        self.assertIn(
-            "Ask the platform operator to restore the fiscal-period control data for this book, then retry the close.",
-            source,
+    def test_validation_error_sanitizes_known_storage_boundaries(self) -> None:
+        """Shared caller errors hide implementation names and route operator-owned recovery."""
+        cases = (
+            (
+                "the database session is not provisioned for this tenant. Ask the platform operator to verify tenant provisioning, then retry the request.",
+                "this deployment is not provisioned for this tenant",
+                "database session",
+            ),
+            (
+                "Fiscal period 2026-08 has no control row for this accounting book. Repair the fiscal-period control data for this book, then retry the close.",
+                "Ask the platform operator to restore the fiscal-period control data for this book, then retry the close.",
+                "Repair the fiscal-period control data",
+            ),
+            (
+                "balance_basis_code=post_close requires a stored trial_balance_snapshot. Hard-close the period, then retry the trial-balance read.",
+                "requires stored close evidence",
+                "trial_balance_snapshot",
+            ),
+            (
+                "Fiscal period 2026-08 is hard_closed without a trial-balance snapshot. Restore the trial_balance_snapshot for this book from the journal population, then retry the trial-balance read.",
+                "Ask the platform operator to restore the close evidence for this book from the authoritative journal history",
+                "trial_balance_snapshot",
+            ),
         )
+
+        for raw_message, expected, forbidden in cases:
+            with self.subTest(raw_message=raw_message):
+                message = str(AccountingValidationError(raw_message))
+                self.assertIn(expected, message)
+                self.assertNotIn(forbidden, message)
 
 
 if __name__ == "__main__":
