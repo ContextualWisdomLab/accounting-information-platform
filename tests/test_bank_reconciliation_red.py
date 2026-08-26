@@ -34,6 +34,7 @@ class DeterministicReconciliationRedTests(unittest.TestCase):
             "account_servicer_reference": "ASR-2026-0001",
             "amount": Decimal("25000.00"),
             "currency_code": "KRW",
+            "credit_debit_code": "CRDT",
             "booking_date": date(2026, 8, 24),
             "value_date": date(2026, 8, 24),
         }
@@ -48,6 +49,7 @@ class DeterministicReconciliationRedTests(unittest.TestCase):
             "account_servicer_reference": "ASR-2026-0001",
             "amount": Decimal("25000.00"),
             "currency_code": "KRW",
+            "credit_debit_code": "CRDT",
             "accounting_date": date(2026, 8, 24),
         }
         values.update(overrides)

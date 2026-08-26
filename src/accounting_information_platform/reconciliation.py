@@ -3,7 +3,7 @@
 The functions in this module never mutate statement evidence or accounting facts.
 They produce a deterministic match proposal or an explicit abstention for later
 authorized review. Monetary comparisons use :class:`decimal.Decimal` values
-without coercion or rounding.
+without coercion or rounding, and bank-movement direction remains explicit.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ class StatementEntryEvidence:
     account_servicer_reference: str | None
     amount: Decimal
     currency_code: str
+    credit_debit_code: str
     booking_date: date
     value_date: date
 
@@ -38,6 +39,7 @@ class BookJournalEvidence:
     account_servicer_reference: str | None
     amount: Decimal
     currency_code: str
+    credit_debit_code: str
     accounting_date: date
 
 
@@ -64,6 +66,9 @@ _STRONG_REFERENCE_RULES = (
     ("provider_reference", "provider_reference"),
     ("end_to_end_reference", "end_to_end_reference"),
     ("account_servicer_reference", "account_servicer_reference"),
+)
+_DIRECTION_MISMATCH_ACTION = (
+    "Verify whether the bank movement is a credit or debit before recording a reconciliation decision."
 )
 
 
@@ -109,10 +114,12 @@ def propose_deterministic_match(
     """Propose one deterministic match or abstain without mutating accounting facts.
 
     Strong statement identities take precedence over the weaker exact-money/date
-    rule. A strong-identity conflict never falls through to a weaker rule. When no
-    strong identity is available, exactly one same-currency, same-amount journal
-    within ``date_window_days`` may be proposed. Every ambiguity or mismatch is an
-    explicit exception with an operator next action.
+    rule. A strong-identity conflict never falls through to a weaker rule. Amount,
+    currency, and credit/debit direction must agree before any match can be
+    proposed. When no strong identity is available, exactly one same-direction,
+    same-currency, same-amount journal within ``date_window_days`` may be proposed.
+    Every ambiguity or mismatch is an explicit exception with an operator next
+    action.
     """
 
     candidate_tuple = tuple(candidates)
@@ -145,6 +152,8 @@ def propose_deterministic_match(
                 "amount_mismatch",
                 "Verify the exact statement and journal amounts before recording a reconciliation decision.",
             )
+        if candidate.credit_debit_code != statement.credit_debit_code:
+            return _abstain("direction_mismatch", _DIRECTION_MISMATCH_ACTION)
         return _match(statement, candidate, rule_code)
 
     exact_money_candidates = tuple(
@@ -153,9 +162,14 @@ def propose_deterministic_match(
         if candidate.currency_code == statement.currency_code
         and candidate.amount == statement.amount
     )
-    in_window_candidates = tuple(
+    same_direction_candidates = tuple(
         candidate
         for candidate in exact_money_candidates
+        if candidate.credit_debit_code == statement.credit_debit_code
+    )
+    in_window_candidates = tuple(
+        candidate
+        for candidate in same_direction_candidates
         if abs((candidate.accounting_date - statement.booking_date).days)
         <= policy.date_window_days
     )
@@ -166,11 +180,13 @@ def propose_deterministic_match(
             "ambiguous_reference",
             "Review the competing book candidates and record an explicit reconciliation decision.",
         )
-    if exact_money_candidates:
+    if same_direction_candidates:
         return _abstain(
             "date_window_mismatch",
             "Review the statement and journal dates or document an explicit reconciliation exception.",
         )
+    if exact_money_candidates:
+        return _abstain("direction_mismatch", _DIRECTION_MISMATCH_ACTION)
     return _abstain(
         "no_candidate",
         "Review unmatched statement evidence and create an authorized exception or adjusting-journal proposal if required.",
