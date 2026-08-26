@@ -21,15 +21,25 @@ class DocumentationRebuildContractTests(unittest.TestCase):
         self.assertIn("docs/doctoring/IMPLEMENTATION_SEQUENCE.md", text)
 
     def test_implementation_sequence_describes_integrated_foundation(self) -> None:
-        """The durable sequence cannot describe persistence or HTTP as unimplemented."""
+        """The sequence must recognize integrated bank evidence and move to reconciliation."""
         sequence = ROOT / "docs" / "doctoring" / "IMPLEMENTATION_SEQUENCE.md"
         self.assertTrue(sequence.is_file())
         text = sequence.read_text(encoding="utf-8")
         self.assertNotIn("does not yet run a live persistence adapter or HTTP service", text)
         self.assertIn("PostgresPostingLedger", text)
-        self.assertIn("immutable bank-statement evidence", text)
+        self.assertIn("bank-statement evidence registry", text)
+        self.assertIn("already contains", text)
         self.assertIn("deterministic reconciliation", text)
-        self.assertIn("no automatic posting", text)
+        self.assertIn("book-to-bank bridge", text)
+        self.assertIn("without automatically posting", text)
+        self.assertTrue((ROOT / "src" / "accounting_information_platform" / "bank_statement.py").is_file())
+
+    def test_gap_baseline_does_not_call_integrated_registry_a_candidate(self) -> None:
+        """Durable gap docs must not regress the integrated bank-evidence registry."""
+        text = (ROOT / "docs" / "product-technical-gap-baseline.md").read_text(encoding="utf-8")
+        self.assertNotIn("statement-registry candidate is not yet an integrated protected-branch fact", text)
+        self.assertNotIn("awaiting the same lawful protected integration", text)
+        self.assertIn("Deterministic reconciliation", text)
 
     def test_reporting_taxonomy_adr_does_not_reuse_runtime_binding_number(self) -> None:
         """Reporting projection must not collide with integrated ADR 0049."""
@@ -50,6 +60,7 @@ class DocumentationRebuildContractTests(unittest.TestCase):
         self.assertNotIn("open draft against `main`", text)
         self.assertIn("live ruleset", text)
         self.assertIn("predecessor evidence", text)
+        self.assertIn("already integrated", text)
 
 
 if __name__ == "__main__":

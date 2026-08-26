@@ -40,6 +40,16 @@ erDiagram
     legal_entity_record ||--o{ home_tax_submission : scopes
     accounting_book ||--o{ home_tax_submission : scopes
     fiscal_period ||--o{ home_tax_submission : scopes
+
+    tenant_account ||--o{ bank_account_record : scopes
+    bank_account_record ||--o{ bank_account_assignment : assigns
+    legal_entity_record ||--o{ bank_account_assignment : scopes
+    accounting_book ||--o{ bank_account_assignment : scopes
+    chart_account ||--o{ bank_account_assignment : cash
+    bank_account_record ||--o{ bank_statement_record : receives
+    bank_statement_artifact ||--o| bank_statement_record : evidences
+    bank_statement_record ||--o{ bank_statement_entry : contains
+    bank_statement_entry ||--o{ bank_statement_entry_detail : details
 ```
 
 ## Integrity boundaries
@@ -49,6 +59,8 @@ erDiagram
 `journal_proposal_record` preserves the command-side idempotency and immutable source-payload hash that precede posting. `fiscal_period_open_command` separately preserves period-open command identity, source hash, requested dates, and the period/legal-entity foreign keys so status changes do not erase replay evidence. `journal_source_reference` preserves source lineage attached to a journal. `posting_receipt` is the authoritative source-facing outcome, and `outbox_event` is committed transactionally with the accounting state it publishes.
 
 `home_tax_submission` is a fail-closed tax-command evidence row, not a transmitted-filing claim. Its tenant-scoped `submission_idempotency_key`, canonical `source_payload_hash`, immutable `source_payload_reference`, and derived `register_payload_hash` preserve command identity and register provenance without storing the raw VAT register or credentials.
+
+`bank_account_record` and `bank_account_assignment` map an opaque bank account onto one legal entity, book, and same-book cash chart account. The assignment composite foreign key requires that book to belong to the same legal entity. `bank_statement_record` and `bank_statement_entry` are append-only evidence. They retain `source_artifact_hash`, `normalized_payload_hash`, `ingestion_idempotency_key`, and `source_entry_hash` so a controller can prove which original artifact produced each entry without storing the raw XML in PostgreSQL.
 
 ## Temporal and tenant scope
 
