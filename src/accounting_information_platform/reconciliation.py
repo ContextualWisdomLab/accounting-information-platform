@@ -54,6 +54,7 @@ class DeterministicMatchPolicy:
 class ReconciliationDecision:
     """Return a reviewable match proposal or an explicit fail-closed abstention."""
 
+    statement_entry_reference: str
     decision_code: str
     rule_code: str | None
     matched_journal_references: tuple[str, ...]
@@ -80,8 +81,13 @@ def _strong_reference(statement: StatementEntryEvidence) -> tuple[str, str, str]
     return None
 
 
-def _abstain(exception_code: str, next_action: str) -> ReconciliationDecision:
+def _abstain(
+    statement: StatementEntryEvidence,
+    exception_code: str,
+    next_action: str,
+) -> ReconciliationDecision:
     return ReconciliationDecision(
+        statement_entry_reference=statement.statement_entry_reference,
         decision_code="abstain",
         rule_code=None,
         matched_journal_references=(),
@@ -97,6 +103,7 @@ def _match(
     rule_code: str,
 ) -> ReconciliationDecision:
     return ReconciliationDecision(
+        statement_entry_reference=statement.statement_entry_reference,
         decision_code="match",
         rule_code=rule_code,
         matched_journal_references=(candidate.journal_reference,),
@@ -133,27 +140,31 @@ def propose_deterministic_match(
         )
         if not reference_candidates:
             return _abstain(
+                statement,
                 "no_candidate",
                 "Review unmatched statement evidence and create an authorized exception or adjusting-journal proposal if required.",
             )
         if len(reference_candidates) > 1:
             return _abstain(
+                statement,
                 "ambiguous_reference",
                 "Review the competing book candidates and record an explicit reconciliation decision.",
             )
         candidate = reference_candidates[0]
         if candidate.currency_code != statement.currency_code:
             return _abstain(
+                statement,
                 "currency_mismatch",
                 "Verify the statement and book currencies before recording a reconciliation decision.",
             )
         if candidate.amount != statement.amount:
             return _abstain(
+                statement,
                 "amount_mismatch",
                 "Verify the exact statement and journal amounts before recording a reconciliation decision.",
             )
         if candidate.credit_debit_code != statement.credit_debit_code:
-            return _abstain("direction_mismatch", _DIRECTION_MISMATCH_ACTION)
+            return _abstain(statement, "direction_mismatch", _DIRECTION_MISMATCH_ACTION)
         return _match(statement, candidate, rule_code)
 
     exact_money_candidates = tuple(
@@ -177,17 +188,20 @@ def propose_deterministic_match(
         return _match(statement, in_window_candidates[0], "exact_money_bounded_date")
     if len(in_window_candidates) > 1:
         return _abstain(
+            statement,
             "ambiguous_reference",
             "Review the competing book candidates and record an explicit reconciliation decision.",
         )
     if same_direction_candidates:
         return _abstain(
+            statement,
             "date_window_mismatch",
             "Review the statement and journal dates or document an explicit reconciliation exception.",
         )
     if exact_money_candidates:
-        return _abstain("direction_mismatch", _DIRECTION_MISMATCH_ACTION)
+        return _abstain(statement, "direction_mismatch", _DIRECTION_MISMATCH_ACTION)
     return _abstain(
+        statement,
         "no_candidate",
         "Review unmatched statement evidence and create an authorized exception or adjusting-journal proposal if required.",
     )
