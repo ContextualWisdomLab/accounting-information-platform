@@ -24,4 +24,9 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-accounting_information_platform = ["py.typed"]
+accounting_information_platform = [
+  "py.typed",
+  "iso20022/NOTICE",
+  "iso20022/adapter_manifest.json",
+  "iso20022/fixtures/*",
+]

@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.14">
+  <BkToCstmrStmt>
+    <GrpHdr>
+      <MsgId>STMT-2026-08-24-001</MsgId>
+      <CreDtTm>2026-08-24T09:00:00+00:00</CreDtTm>
+    </GrpHdr>
+    <Stmt>
+      <Id>BANK-STMT-2026-08-24</Id>
+      <ElctrncSeqNb>42</ElctrncSeqNb>
+      <LglSeqNb>7</LglSeqNb>
+      <FrToDt>
+        <FrDtTm>2026-08-23T00:00:00+00:00</FrDtTm>
+        <ToDtTm>2026-08-24T23:59:59+00:00</ToDtTm>
+      </FrToDt>
+      <Acct>
+        <Id>
+          <Othr>
+            <Id>acct-opaque-fixture-only</Id>
+          </Othr>
+        </Id>
+        <Ccy>KRW</Ccy>
+      </Acct>
+      <Bal>
+        <Tp>
+          <CdOrPrtry>
+            <Cd>OPBD</Cd>
+          </CdOrPrtry>
+        </Tp>
+        <Amt Ccy="KRW">100000.00</Amt>
+        <CdtDbtInd>CRDT</CdtDbtInd>
+        <Dt>
+          <Dt>2026-08-23</Dt>
+        </Dt>
+      </Bal>
+      <Bal>
+        <Tp>
+          <CdOrPrtry>
+            <Cd>CLBD</Cd>
+          </CdOrPrtry>
+        </Tp>
+        <Amt Ccy="KRW">115000.00</Amt>
+        <CdtDbtInd>CRDT</CdtDbtInd>
+        <Dt>
+          <Dt>2026-08-24</Dt>
+        </Dt>
+      </Bal>
+      <Ntry>
+        <NtryRef>NTRY-1</NtryRef>
+        <Amt Ccy="KRW">25000.00</Amt>
+        <CdtDbtInd>CRDT</CdtDbtInd>
+        <RvslInd>false</RvslInd>
+        <BookgDt>
+          <DtTm>2026-08-24T01:15:00+00:00</DtTm>
+        </BookgDt>
+        <ValDt>
+          <Dt>2026-08-24</Dt>
+        </ValDt>
+        <AcctSvcrRef>ASV-1</AcctSvcrRef>
+        <BkTxCd>
+          <Domn>
+            <Cd>PMNT</Cd>
+            <Fmly>
+              <Cd>RCDT</Cd>
+              <SubFmlyCd>ESCT</SubFmlyCd>
+            </Fmly>
+          </Domn>
+        </BkTxCd>
+        <NtryDtls>
+          <TxDtls>
+            <Refs>
+              <EndToEndId>E2E-1</EndToEndId>
+              <MndtId>MND-1</MndtId>
+            </Refs>
+            <AmtDtls>
+              <TxAmt>
+                <Amt Ccy="KRW">25000.00</Amt>
+              </TxAmt>
+            </AmtDtls>
+            <RltdPties>
+              <Dbtr>
+                <Pty>
+                  <Nm>Counterparty One</Nm>
+                </Pty>
+              </Dbtr>
+            </RltdPties>
+            <RmtInf>
+              <Ustrd>Invoice 1001</Ustrd>
+            </RmtInf>
+          </TxDtls>
+        </NtryDtls>
+      </Ntry>
+      <Ntry>
+        <NtryRef>NTRY-2</NtryRef>
+        <Amt Ccy="KRW">10000.00</Amt>
+        <CdtDbtInd>DBIT</CdtDbtInd>
+        <BookgDt>
+          <Dt>2026-08-24</Dt>
+        </BookgDt>
+        <ValDt>
+          <DtTm>2026-08-24T04:00:00+00:00</DtTm>
+        </ValDt>
+        <BkTxCd>
+          <Domn>
+            <Cd>PMNT</Cd>
+            <Fmly>
+              <Cd>ICDT</Cd>
+              <SubFmlyCd>ESCT</SubFmlyCd>
+            </Fmly>
+          </Domn>
+        </BkTxCd>
+        <NtryDtls>
+          <TxDtls>
+            <Refs>
+              <EndToEndId>E2E-2A</EndToEndId>
+              <ChqNb>CHQ-9</ChqNb>
+            </Refs>
+            <AmtDtls>
+              <TxAmt>
+                <Amt Ccy="KRW">6000.00</Amt>
+              </TxAmt>
+            </AmtDtls>
+            <RmtInf>
+              <Ustrd>Split A</Ustrd>
+            </RmtInf>
+          </TxDtls>
+          <TxDtls>
+            <Refs>
+              <EndToEndId>E2E-2B</EndToEndId>
+            </Refs>
+            <AmtDtls>
+              <TxAmt>
+                <Amt Ccy="KRW">4000.00</Amt>
+              </TxAmt>
+            </AmtDtls>
+            <RmtInf>
+              <Ustrd>Split B</Ustrd>
+            </RmtInf>
+          </TxDtls>
+        </NtryDtls>
+      </Ntry>
+    </Stmt>
+  </BkToCstmrStmt>
+</Document>

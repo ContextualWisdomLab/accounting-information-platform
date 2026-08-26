@@ -8,7 +8,8 @@
 - immutable source hashes, command identities and evidence references;
 - posting receipts, close snapshots and transactional outbox events;
 - necessary accounting PII and access / export audit evidence;
-- purpose-limited tax and database credentials.
+- purpose-limited tax and database credentials;
+- original bank-statement artifacts, their hashes, and normalized statement entries.
 
 ## Trust boundaries
 
@@ -84,7 +85,7 @@ Generic journal / event contracts should use opaque master-data references when 
 
 ## Availability and parser controls
 
-Request and imported-artifact sizes are bounded before unbounded allocation. Invalid content length, malformed decimal, malformed URL, hostile XML or other parser errors must be converted to deterministic client / import failures rather than raw exceptions or partial persistence.
+Request and imported-artifact sizes are bounded before unbounded allocation. Invalid content length, malformed decimal, malformed URL, hostile XML or other parser errors must be converted to deterministic client / import failures rather than raw exceptions or partial persistence. The camt.053.001.14 adapter disables DTD, external entities, and stylesheet execution, bounds depth/element/text/entry counts, and writes no partial statement population when validation fails.
 
 Remote Billing pagination is bounded and detects non-advancing cursors. A later-page remote failure never rewrites already committed accounting facts; retry relies on idempotent posting.
 

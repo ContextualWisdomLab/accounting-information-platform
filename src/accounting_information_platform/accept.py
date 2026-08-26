@@ -19,6 +19,14 @@ from .core import (
     _parse_amount,
     _require_currency,
 )
+from .bank_statement import (
+    accept_bank_account_assignment,
+    accept_bank_account_record,
+    accept_bank_statement_evidence,
+    lookup_bank_statement,
+    lookup_bank_statement_entries,
+    lookup_bank_statements,
+)
 from .ingest import ingest_journal_proposal
 from .persistence import PostgresPostingLedger, _format_timestamp, _vat_register_is_loadable
 

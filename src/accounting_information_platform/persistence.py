@@ -6259,6 +6259,23 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             f"Soft-close command-evidence migration is missing at {soft_close_evidence_migration_path}. "
             "Restore database/migrations/0010_soft_close_command_evidence.sql, then retry."
         )
+    bank_statement_migration_path = (
+        migration_path.parent / "0011_bank_statement_evidence.sql"
+    )
+    if not bank_statement_migration_path.is_file():
+        raise AccountingValidationError(
+            f"Bank-statement evidence migration is missing at {bank_statement_migration_path}. "
+            "Restore database/migrations/0011_bank_statement_evidence.sql, then retry."
+        )
+    assignment_identity_migration_path = (
+        migration_path.parent / "0012_bank_assignment_command_identity.sql"
+    )
+    if not assignment_identity_migration_path.is_file():
+        raise AccountingValidationError(
+            "Bank-account assignment command-identity migration is missing at "
+            f"{assignment_identity_migration_path}. Restore "
+            "database/migrations/0012_bank_assignment_command_identity.sql, then retry."
+        )
     psycopg = _import_psycopg()
     try:
         with psycopg.connect(
@@ -6274,6 +6291,10 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             connection.execute(period_open_command_migration_path.read_text(encoding="utf-8"))
             connection.execute(book_period_control_migration_path.read_text(encoding="utf-8"))
             connection.execute(soft_close_evidence_migration_path.read_text(encoding="utf-8"))
+            connection.execute(bank_statement_migration_path.read_text(encoding="utf-8"))
+            connection.execute(
+                assignment_identity_migration_path.read_text(encoding="utf-8")
+            )
     except Exception as error:
         raise AccountingValidationError(
             "Foundation migration failed. Inspect the PostgreSQL error, restore a clean "

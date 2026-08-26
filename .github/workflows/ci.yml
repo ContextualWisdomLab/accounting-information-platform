@@ -215,10 +215,9 @@ jobs:
           cache-dependency-path: requirements-quality.txt
       - name: Install hash-locked quality and packaging dependencies
         run: >-
-          python -m pip install
+          python -m pip install --require-hashes
           --disable-pip-version-check
           --only-binary=:all:
-          --require-hashes
           -r requirements-quality.txt
       - name: Run behavior and repository tests
         env:
@@ -256,9 +255,9 @@ jobs:
         run: python scripts/validate_repository.py .
       - name: Compile production and test modules
         run: python -m compileall -q src scripts tests
-      - name: Install source package without network resolution
-        run: python -m pip install --no-deps --no-build-isolation -e .
-      - name: Smoke-test installed public API
+      - name: Smoke-test importable source tree
+        env:
+          PYTHONPATH: src
         run: python -c "import accounting_information_platform as aip; assert aip.PostingLedger.__name__ == 'PostingLedger'"
       - name: Build reproducible wheel and evidence
         env:
@@ -283,7 +282,10 @@ jobs:
             --source-sha "$EXPECTED_SHA" \
             --source-date-epoch "$SOURCE_DATE_EPOCH"
           (cd dist && sha256sum -c SHA256SUMS)
-          python -m pip install --no-index --no-deps --force-reinstall "$primary_wheel"
+          wheel_hash="$(sha256sum "$primary_wheel" | cut -d' ' -f1)"
+          wheel_req="$(mktemp)"
+          printf '%s --hash=sha256:%s\n' "$primary_wheel" "$wheel_hash" > "$wheel_req"
+          python -m pip install --no-index --no-deps --force-reinstall --require-hashes -r "$wheel_req"
           cd "${RUNNER_TEMP}"
           python -c "import accounting_information_platform as aip; assert aip.PostingLedger.__name__ == 'PostingLedger'"
       - name: Verify typing marker is packaged

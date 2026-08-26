@@ -30,6 +30,12 @@ _RLS_TABLES = (
     ("accounting_reporting", "trial_balance_line"),
     ("accounting_integration", "outbox_event"),
     ("accounting_integration", "home_tax_submission"),
+    ("accounting_core", "bank_account_record"),
+    ("accounting_core", "bank_account_assignment"),
+    ("accounting_integration", "bank_statement_artifact"),
+    ("accounting_integration", "bank_statement_record"),
+    ("accounting_integration", "bank_statement_entry"),
+    ("accounting_integration", "bank_statement_entry_detail"),
 )
 
 
