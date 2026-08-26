@@ -429,7 +429,7 @@ class AccountingCoreTests(unittest.TestCase):
             posting_rule_version="billing-issued-v1",
         )
 
-        with self.assertRaisesRegex(AccountingValidationError, "unmapped account role"):
+        with self.assertRaisesRegex(AccountingValidationError, "account role .* is not mapped on this book"):
             self.ledger.post(self._invoice_proposal(), policy)
 
     def test_unsupported_currency_conversion_is_rejected(self) -> None:

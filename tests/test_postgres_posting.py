@@ -361,7 +361,7 @@ class PostgresPostingTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(
             IdempotencyConflictError,
-            "already used by another accounting command",
+            "already used by another accounting command. Supply a new reversal command identity",
         ):
             self.ledger.reverse(
                 receipt.journal_reference,
@@ -614,7 +614,9 @@ class PostgresPostingTests(unittest.TestCase):
             "accounting_information_platform.persistence.importlib.import_module",
             side_effect=ImportError("missing"),
         ):
-            with self.assertRaisesRegex(AccountingValidationError, "requirements-quality.txt"):
+            with self.assertRaisesRegex(
+                AccountingValidationError, "accounting database adapter is unavailable"
+            ):
                 PostgresPostingLedger(
                     DATABASE_URL, tenant_reference=self.policy.tenant_reference
                 ).journal_count
@@ -12012,7 +12014,9 @@ class PostgresPostingTests(unittest.TestCase):
 
     def test_resolve_accounting_policy_catalog_failures_name_the_next_action(self) -> None:
         """Policy resolution fails closed without inventing chart codes or versions."""
-        with self.assertRaisesRegex(AccountingValidationError, "Open a PostgresPostingLedger"):
+        with self.assertRaisesRegex(
+                AccountingValidationError, "proposal tenant scope does not match this deployment"
+            ):
             self.ledger.resolve_accounting_policy(
                 ingest_journal_proposal(
                     self._billing_validated_payload(tenant_reference="urn:cwl:tenant_other")

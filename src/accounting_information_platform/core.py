@@ -49,13 +49,13 @@ class JournalLineProposal:
     def __post_init__(self) -> None:
         """Normalize exact decimals and require exactly one positive side."""
         if self.line_number < 1:
-            raise AccountingValidationError("line number must be positive")
+            raise AccountingValidationError("line_number must be positive. Supply a line_number starting at 1, then retry ingest.")
         _require_code(self.account_role_code, "account role code")
         debit_amount = _parse_amount(self.debit_amount)
         credit_amount = _parse_amount(self.credit_amount)
         if (debit_amount > 0) == (credit_amount > 0):
             raise AccountingValidationError(
-                "journal line must contain exactly one positive debit or credit amount"
+                "journal line must contain exactly one positive debit or credit amount. Supply exactly one positive debit_amount or credit_amount per line, then retry ingest."
             )
         object.__setattr__(self, "debit_amount", debit_amount)
         object.__setattr__(self, "credit_amount", credit_amount)
@@ -81,29 +81,29 @@ class JournalProposal:
     def __post_init__(self) -> None:
         """Validate identity, provenance, exact balancing, and line uniqueness."""
         if not self.proposal_id or self.proposal_contract_version < 1:
-            raise AccountingValidationError("proposal identity and contract version are required")
+            raise AccountingValidationError("proposal identity and contract version are required. Supply proposal_id and proposal_contract_version, then retry ingest.")
         _require_proposal_id(self.proposal_id)
         if not self.idempotency_key:
-            raise AccountingValidationError("idempotency key is required")
+            raise AccountingValidationError("idempotency_key is required. Supply the source-system idempotency_key, then retry ingest.")
         _require_reference(self.tenant_reference, "tenant reference")
         _require_reference(self.legal_entity_reference, "legal entity reference")
         _require_code(self.intended_book_role_code, "intended book role code")
         _require_currency(self.transaction_currency)
         if _HASH_PATTERN.fullmatch(self.source_payload_hash) is None:
-            raise AccountingValidationError("source payload hash must be canonical sha256")
+            raise AccountingValidationError("source_payload_hash must be canonical sha256. Supply sha256: plus 64 hex characters, then retry ingest.")
         if not self.source_event_references:
-            raise AccountingValidationError("at least one source event reference is required")
+            raise AccountingValidationError("at least one source event reference is required. Supply at least one source_event_reference, then retry ingest.")
         for reference in self.source_event_references:
             _require_reference(reference, "source event reference")
         if len(self.lines) < 2:
-            raise AccountingValidationError("journal proposal requires at least two lines")
+            raise AccountingValidationError("journal proposal requires at least two lines. Supply at least two journal lines, then retry ingest.")
         line_numbers = tuple(line.line_number for line in self.lines)
         if len(set(line_numbers)) != len(line_numbers):
-            raise AccountingValidationError("journal line numbers must be unique")
+            raise AccountingValidationError("journal line numbers must be unique. Supply unique line numbers, then retry ingest.")
         debit_total = sum((line.debit_amount for line in self.lines), Decimal("0"))
         credit_total = sum((line.credit_amount for line in self.lines), Decimal("0"))
         if debit_total != credit_total:
-            raise AccountingValidationError("journal proposal must balance")
+            raise AccountingValidationError("journal proposal must balance. Correct the line amounts so debit totals equal credit totals, then retry ingest.")
 
     @property
     def debit_total(self) -> Decimal:
@@ -141,14 +141,14 @@ class AccountingPolicy:
         _require_currency(self.transaction_currency)
         _require_currency(self.functional_currency)
         if self.open_period_start > self.open_period_end:
-            raise AccountingValidationError("open fiscal period start must not exceed end")
+            raise AccountingValidationError("open fiscal period start must not exceed end. Correct open_period_start/open_period_end in the policy manifest, then retry policy load.")
         if not self.accounting_policy_version or not self.posting_rule_version:
-            raise AccountingValidationError("accounting policy and posting rule versions are required")
+            raise AccountingValidationError("accounting policy and posting rule versions are required. Supply accounting_policy_version and posting_rule_version, then retry policy load.")
         normalized_mapping: dict[str, str] = {}
         for role_code, account_code in self.chart_account_mapping.items():
             _require_code(role_code, "account role code")
             if not account_code or not account_code.isascii() or not account_code.isalnum():
-                raise AccountingValidationError("chart account code must be non-empty ASCII alphanumeric")
+                raise AccountingValidationError("chart account code must be non-empty ASCII alphanumeric. Supply a non-empty alphanumeric chart_account_code, then retry policy load.")
             normalized_mapping[role_code] = account_code
         object.__setattr__(self, "chart_account_mapping", MappingProxyType(normalized_mapping))
 
@@ -393,7 +393,7 @@ class PostingLedger:
             else reversal_idempotency_key.strip()
         )
         if not command_key:
-            raise AccountingValidationError("reversal idempotency key must not be empty")
+            raise AccountingValidationError("reversal idempotency key must not be empty. Supply the reversal command identity, then retry reversal.")
         command_hash = _reversal_command_hash(
             tenant_reference=policy.tenant_reference,
             reversal_idempotency_key=command_key,
@@ -412,14 +412,14 @@ class PostingLedger:
             return prior_receipt
         original = self._journals.get(reversal_key)
         if original is None:
-            raise AccountingValidationError("journal does not exist")
+            raise AccountingValidationError("journal does not exist. Supply a posted journal reference, then retry reversal.")
         if original.reversal_of_journal_reference is not None:
-            raise AccountingValidationError("a reversal journal cannot itself be reversed")
+            raise AccountingValidationError("a reversal journal cannot itself be reversed. Reverse the original journal, or post a replacement.")
         if (
             original.legal_entity_reference != policy.legal_entity_reference
             or original.accounting_book_reference != policy.accounting_book_reference
         ):
-            raise AccountingValidationError("reversal policy scope does not match original journal")
+            raise AccountingValidationError("reversal policy scope does not match original journal. Supply the reversal policy for the original journal's legal entity and book, then retry reversal.")
         reversal_reference = f"{journal_reference}:reversal"
         occupant = self._journals.get(
             self._tenant_cache_key(original.tenant_reference, reversal_reference)
@@ -447,10 +447,10 @@ class PostingLedger:
             return receipt
         if reversal_date < original.accounting_date:
             raise AccountingValidationError(
-                "reversal date must not precede the original journal accounting date"
+                "reversal date must not precede the original journal accounting date. Supply a reversal_date on or after the original accounting date, then retry reversal."
             )
         if not policy.permits(reversal_date):
-            raise AccountingValidationError("reversal date belongs to a closed fiscal period")
+            raise AccountingValidationError("reversal date belongs to a closed fiscal period. Reverse into an open or soft-closed period, then retry reversal.")
         reversal_lines = tuple(
             PostedJournalLine(
                 line_number=line.line_number,
@@ -609,7 +609,7 @@ class PostingLedger:
         chart_account_code = policy.chart_account_mapping.get(line.account_role_code)
         if chart_account_code is None:
             raise AccountingValidationError(
-                f"unmapped account role: {line.account_role_code}"
+                f"account role {line.account_role_code} is not mapped on this book. Map that role in the policy manifest, then retry posting."
             )
         return PostedJournalLine(
             line_number=line.line_number,
@@ -625,18 +625,18 @@ class PostingLedger:
     ) -> None:
         """Require exact scope, book role, period, and supported currency policy."""
         if proposal.tenant_reference != policy.tenant_reference:
-            raise AccountingValidationError("proposal tenant scope does not match policy")
+            raise AccountingValidationError("proposal tenant scope does not match policy. Send the proposal under the matching tenant scope, then retry posting.")
         if proposal.legal_entity_reference != policy.legal_entity_reference:
-            raise AccountingValidationError("proposal legal entity scope does not match policy")
+            raise AccountingValidationError("proposal legal entity scope does not match policy. Send the proposal under the matching legal-entity scope, then retry posting.")
         if proposal.intended_book_role_code != policy.intended_book_role_code:
-            raise AccountingValidationError("proposal book role does not match policy")
+            raise AccountingValidationError("proposal book role does not match policy. Send the proposal under the matching book role, then retry posting.")
         if not policy.permits(proposal.accounting_date):
-            raise AccountingValidationError("accounting date belongs to a closed fiscal period")
+            raise AccountingValidationError("accounting date belongs to a closed fiscal period. Post into an open period for this book, then retry posting.")
         if proposal.transaction_currency != policy.transaction_currency:
-            raise AccountingValidationError("proposal transaction currency does not match policy")
+            raise AccountingValidationError("proposal transaction currency does not match policy. Supply the policy transaction currency, then retry posting.")
         if policy.transaction_currency != policy.functional_currency:
             raise AccountingValidationError(
-                "foreign exchange accounting is outside the initial posting milestone"
+                "foreign exchange accounting is outside the initial posting milestone. Post in the book's functional currency, then retry posting."
             )
 
 
@@ -690,16 +690,16 @@ def _require_proposal_id(proposal_id: str) -> str:
 def _require_code(value: str, label: str) -> None:
     """Require a lower snake-case semantic code."""
     if _CODE_PATTERN.fullmatch(value) is None:
-        raise AccountingValidationError(f"{label} must be lower snake_case")
+        raise AccountingValidationError(f"{label} must be lower snake_case. Supply a valid {label}, then retry.")
 
 
 def _require_currency(value: str) -> None:
     """Require a three-letter uppercase currency code."""
     if _CURRENCY_PATTERN.fullmatch(value) is None:
-        raise AccountingValidationError("currency code must contain three uppercase letters")
+        raise AccountingValidationError("currency code must contain three uppercase letters. Supply a three-letter uppercase ISO currency code, then retry.")
 
 
 def _require_reference(value: str, label: str) -> None:
     """Require an opaque CWL URN reference rather than embedded business data."""
     if _REFERENCE_PATTERN.fullmatch(value) is None:
-        raise AccountingValidationError(f"{label} must be a CWL URN")
+        raise AccountingValidationError(f"{label} must be a CWL URN. Supply an opaque urn:cwl: reference, then retry.")

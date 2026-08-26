@@ -2779,7 +2779,7 @@ class PostgresPostingLedger:
             ).fetchone()
             if prior_command is not None:
                 raise IdempotencyConflictError(
-                    "reversal idempotency key was already used by another accounting command"
+                    "reversal idempotency key was already used by another accounting command. Supply a new reversal command identity, then retry."
                 )
             original = connection.execute(
                 """
@@ -2809,10 +2809,10 @@ class PostgresPostingLedger:
                 )
             if reversal_date < original[7]:
                 raise AccountingValidationError(
-                    "reversal date cannot precede original journal accounting date"
+                    "reversal date cannot precede original journal accounting date. Supply a reversal_date on or after the original accounting date, then retry reversal."
                 )
             if not policy.permits(reversal_date):
-                raise AccountingValidationError("reversal date belongs to a closed fiscal period")
+                raise AccountingValidationError("reversal date belongs to a closed fiscal period. Reverse into an open or soft-closed period, then retry reversal.")
             if (
                 self._tenant_reference != policy.tenant_reference
                 or self._legal_entity_code(connection, tenant_id, original[1])
@@ -2821,7 +2821,7 @@ class PostgresPostingLedger:
                 != policy.accounting_book_reference
             ):
                 raise AccountingValidationError(
-                    "reversal policy scope does not match original journal"
+                    "reversal policy scope does not match original journal. Supply the reversal policy for the original journal's legal entity and book, then retry reversal."
                 )
             period_id = self._require_adjusting_period(connection, tenant_id, reversal_date)
             original_lines = self._load_lines(connection, tenant_id, original[0])
@@ -4326,8 +4326,9 @@ class PostgresPostingLedger:
         if bound_tenant_id is not None:
             if bound_tenant_id != requested_tenant_id:
                 raise AccountingValidationError(
-                    "database runtime tenant binding does not match the requested tenant. "
-                    "Use the database credential provisioned for this tenant, then retry."
+                    "the database session is not provisioned for this tenant. "
+                    "Ask the platform operator to verify tenant provisioning, "
+                    "then retry the request."
                 )
             return requested_tenant_id
         rolsuper, rolbypassrls = connection.execute(
@@ -4340,8 +4341,8 @@ class PostgresPostingLedger:
         if rolsuper or rolbypassrls:
             return requested_tenant_id
         raise AccountingValidationError(
-            "database runtime identity is not bound to a tenant. "
-            "Provision accounting_core.runtime_tenant_binding for this login, then retry."
+            "this request cannot be authorized for the requested tenant. "
+            "Ask the platform operator to verify tenant provisioning, then retry."
         )
 
     def _require_legal_entity(
@@ -4558,8 +4559,8 @@ class PostgresPostingLedger:
     ) -> AccountingPolicy:
         if proposal.tenant_reference != self._tenant_reference:
             raise AccountingValidationError(
-                "proposal tenant scope does not match this ledger. "
-                "Open a PostgresPostingLedger for that tenant, then retry posting."
+                "proposal tenant scope does not match this deployment. "
+                "Send the proposal to that tenant's accounting endpoint, then retry posting."
             )
         legal_entity_id, functional_currency = self._load_legal_entity(
             connection, tenant_id, proposal.legal_entity_reference
@@ -4792,7 +4793,7 @@ class PostgresPostingLedger:
         if row is None:
             raise AccountingValidationError(
                 f"Fiscal period {period_code} has no control row for this accounting book. "
-                "Repair accounting_book_period_control, then retry the close."
+                "Repair the fiscal-period control data for this book, then retry the close."
             )
         return row[0], row[1], row[2]
 
@@ -5119,7 +5120,7 @@ class PostgresPostingLedger:
             )
         if stored_idempotency_key != idempotency_key:
             raise IdempotencyConflictError(
-                "period-close idempotency key was already used by the soft-close command"
+                "period-close idempotency key was already used by the soft-close command. Replay the original close idempotency key, then retry the close."
             )
         return PeriodCloseReceipt(
             tenant_reference=self._tenant_reference,
@@ -6307,8 +6308,9 @@ def _import_psycopg():
         return importlib.import_module("psycopg")
     except ImportError as error:
         raise AccountingValidationError(
-            "psycopg is not installed. Install hash-locked dependencies from "
-            "requirements-quality.txt, then retry posting."
+            "the accounting database adapter is unavailable on this deployment. "
+            "Ask the platform operator to install the pinned runtime dependencies, "
+            "then retry the request."
         ) from error
 
 
