@@ -232,6 +232,11 @@ class CallerFacingStorageCopyTests(unittest.TestCase):
                 "Ask the platform operator to restore the close evidence for this book from the authoritative journal history",
                 "trial_balance_snapshot",
             ),
+            (
+                "reversal date belongs to a closed fiscal period. Reverse into an open or soft-closed period, then retry reversal.",
+                "reversal_date is outside the permitted accounting policy date range. Supply a reversal_date within the policy range, then retry reversal.",
+                "closed fiscal period",
+            ),
         )
 
         for raw_message, expected, forbidden in cases:
