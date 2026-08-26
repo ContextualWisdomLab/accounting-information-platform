@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-26
+
+First tagged release of the accounting system of record foundation: exact-decimal proposal validation, idempotent posting, append-only reversal, trial balance, financial statements, fiscal-period close control, VAT/HomeTax fail-closed evidence, durable outbox, tenant-scoped row-level security, immutable ISO 20022 camt.053.001.14 bank-statement evidence registry, and action-guiding caller-facing copy. Pre-Alpha (Development Status :: 3 - Alpha planned next); foreign exchange, deterministic reconciliation matching, purpose-bound authorization, and live NTS transmission remain explicit future scope.
+
 - Hardened every caller-facing message against the two product-writing rules: no internal implementation boundary (driver module, internal class or schema-object names) reaches a customer-visible error, and every failure names the customer's next action ("Supply …, then retry …"). The database-driver absence path now routes to the platform operator instead of naming internals; tenant-scope and runtime-binding failures describe the deployment fact rather than internal objects; unmapped account roles, unbalanced proposals, reversal conflicts, and close-key reuse all carry explicit next-action guidance.
 
 - Completed the review-hardening pass over the bank-statement evidence registry: `POST /bank-account-assignments` now requires tenant-scoped `assignment_idempotency_key` with immutable canonical command evidence — an exact retry returns the original binding (`replayed: true`) while reuse of a key with different evidence fails closed as `409`, and a partial unique index admits only one active binding per tenant, bank account, and book (`0012_bank_assignment_command_identity.sql`). Entry material evidence now includes the ISO 20022 bank-transaction-code domain/family/sub-family, counterparty evidence follows entry direction (`CRDT` records the payer `Dbtr` name, `DBIT` records the payee `Cdtr` name), and a foreign-currency statement entry fails closed before persistence because foreign-exchange accounting remains out of scope per the TRD. ADR 0052 records the completed contract.
