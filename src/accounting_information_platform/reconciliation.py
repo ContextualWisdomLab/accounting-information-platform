@@ -124,7 +124,12 @@ def propose_deterministic_match(
             for candidate in candidate_tuple
             if getattr(candidate, field_name) == reference_value
         )
-        if len(reference_candidates) != 1:
+        if not reference_candidates:
+            return _abstain(
+                "no_candidate",
+                "Review unmatched statement evidence and create an authorized exception or adjusting-journal proposal if required.",
+            )
+        if len(reference_candidates) > 1:
             return _abstain(
                 "ambiguous_reference",
                 "Review the competing book candidates and record an explicit reconciliation decision.",
