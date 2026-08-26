@@ -14,6 +14,16 @@ from decimal import Decimal
 from typing import Iterable
 
 
+_CREDIT_DEBIT_CODES = frozenset({"CRDT", "DBIT"})
+
+
+def _require_credit_debit_code(value: str) -> None:
+    if value not in _CREDIT_DEBIT_CODES:
+        raise ValueError(
+            "credit_debit_code must be CRDT or DBIT. Normalize the source movement direction before reconciliation."
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class StatementEntryEvidence:
     """Immutable normalized statement evidence considered for reconciliation."""
@@ -28,6 +38,10 @@ class StatementEntryEvidence:
     booking_date: date
     value_date: date
 
+    def __post_init__(self) -> None:
+        """Reject statement evidence outside the normalized CRDT/DBIT direction domain."""
+        _require_credit_debit_code(self.credit_debit_code)
+
 
 @dataclass(frozen=True, slots=True)
 class BookJournalEvidence:
@@ -41,6 +55,10 @@ class BookJournalEvidence:
     currency_code: str
     credit_debit_code: str
     accounting_date: date
+
+    def __post_init__(self) -> None:
+        """Reject book evidence outside the normalized CRDT/DBIT direction domain."""
+        _require_credit_debit_code(self.credit_debit_code)
 
 
 @dataclass(frozen=True, slots=True)
