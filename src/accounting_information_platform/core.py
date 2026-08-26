@@ -27,10 +27,39 @@ _PROPOSAL_ID_PATTERN = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
 _REFERENCE_PATTERN = re.compile(r"^urn:cwl:[A-Za-z0-9_:.\-]+$")
+_CUSTOMER_ERROR_REPLACEMENTS = (
+    (
+        "the database session is not provisioned for this tenant",
+        "this deployment is not provisioned for this tenant",
+    ),
+    (
+        "Repair the fiscal-period control data for this book, then retry the close.",
+        "Ask the platform operator to restore the fiscal-period control data for this book, then retry the close.",
+    ),
+    (
+        "requires a stored trial_balance_snapshot",
+        "requires stored close evidence",
+    ),
+    (
+        "without a trial-balance snapshot. Restore the trial_balance_snapshot for this book from the journal population, then retry the trial-balance read.",
+        "without stored close evidence. Ask the platform operator to restore the close evidence for this book from the authoritative journal history, then retry the trial-balance read.",
+    ),
+)
+
+
+def _customer_safe_error_message(message: str) -> str:
+    """Remove known storage boundaries from caller-visible validation guidance."""
+    for internal_text, customer_text in _CUSTOMER_ERROR_REPLACEMENTS:
+        message = message.replace(internal_text, customer_text)
+    return message
 
 
 class AccountingValidationError(ValueError):
     """Raised when an accounting fact violates a deterministic invariant."""
+
+    def __init__(self, message: str) -> None:
+        """Store only caller-safe guidance while retaining the validation category."""
+        super().__init__(_customer_safe_error_message(message))
 
 
 class IdempotencyConflictError(AccountingValidationError):
@@ -450,7 +479,10 @@ class PostingLedger:
                 "reversal date must not precede the original journal accounting date. Supply a reversal_date on or after the original accounting date, then retry reversal."
             )
         if not policy.permits(reversal_date):
-            raise AccountingValidationError("reversal date belongs to a closed fiscal period. Reverse into an open or soft-closed period, then retry reversal.")
+            raise AccountingValidationError(
+                "reversal_date is outside the permitted accounting policy date range. "
+                "Supply a reversal_date within the policy range, then retry reversal."
+            )
         reversal_lines = tuple(
             PostedJournalLine(
                 line_number=line.line_number,
@@ -667,13 +699,15 @@ def _parse_amount(value: Decimal | str) -> Decimal:
     text = str(value)
     if _DECIMAL_PATTERN.fullmatch(text) is None:
         raise AccountingValidationError(
-            "amount must be a canonical non-negative decimal with at most six "
-            "fractional digits"
+            "amount must be a canonical non-negative decimal with at most six fractional digits. "
+            "Supply a non-negative decimal string with no more than six fractional digits, then retry ingest."
         )
     try:
         amount = Decimal(text)
     except InvalidOperation as error:  # pragma: no cover - guarded by the regex.
-        raise AccountingValidationError("amount is not a valid decimal") from error
+        raise AccountingValidationError(
+            "amount is not a valid decimal. Supply a canonical non-negative decimal string, then retry ingest."
+        ) from error
     return amount
 
 
