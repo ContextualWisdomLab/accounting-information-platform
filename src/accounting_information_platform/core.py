@@ -45,8 +45,8 @@ _CUSTOMER_ERROR_REPLACEMENTS = (
         "without stored close evidence. Ask the platform operator to restore the close evidence for this book from the authoritative journal history, then retry the trial-balance read.",
     ),
     (
-        "without a trial-balance snapshot. Restore the trial_balance_snapshot for this book from the journal population, then retry the close.",
-        "without stored close evidence. Ask the platform operator to restore the close evidence for this book from the authoritative journal history, then retry the close.",
+        "Restore the trial_balance_snapshot for this book from the journal population",
+        "Ask the platform operator to restore the close evidence for this book from the authoritative journal history",
     ),
     (
         "reversal date belongs to a closed fiscal period. Reverse into an open or soft-closed period, then retry reversal.",
