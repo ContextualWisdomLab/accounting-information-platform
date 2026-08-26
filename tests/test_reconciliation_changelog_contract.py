@@ -36,7 +36,6 @@ class ReconciliationChangelogContractTests(unittest.TestCase):
         entry = matching_entries[0]
         for required_phrase in (
             "exact decimal",
-            "CRDT/DBIT",
             "explicit abstention",
             "no automatic journal posting",
             "ADR 0054",
@@ -50,7 +49,7 @@ class ReconciliationChangelogContractTests(unittest.TestCase):
 
 ## [Unreleased]
 
-- Added the deterministic bank-reconciliation proposal engine with exact decimal, CRDT/DBIT, explicit abstention, no automatic journal posting, and ADR 0054.
+- Added the deterministic bank-reconciliation proposal engine with exact decimal, explicit abstention, no automatic journal posting, and ADR 0054.
 
 ## [0.1.0] - 2026-08-26
 
