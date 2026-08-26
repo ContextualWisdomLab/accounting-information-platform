@@ -101,6 +101,22 @@ class ReversalCommandIdentityTests(unittest.TestCase):
                 reversal_idempotency_key="review-reversal-command-v1",
             )
 
+    def test_out_of_policy_reversal_does_not_invent_closed_period_status(self) -> None:
+        """A date-range failure must not claim a fiscal-period status it did not inspect."""
+        with self.assertRaises(AccountingValidationError) as captured:
+            self.ledger.reverse(
+                self.receipt.journal_reference,
+                date(2026, 9, 1),
+                "billing_correction",
+                self.policy,
+                reversal_idempotency_key="review-reversal-outside-policy-v1",
+            )
+
+        message = str(captured.exception)
+        self.assertIn("outside the permitted accounting policy date range", message)
+        self.assertIn("Supply a reversal_date within the policy range", message)
+        self.assertNotIn("closed fiscal period", message)
+
 
 class HomeTaxCommandProvenanceBoundaryTests(unittest.TestCase):
     """Require immutable source provenance before any HomeTax command work."""
@@ -178,6 +194,61 @@ class AdjustingJournalExactDecimalBoundaryTests(unittest.TestCase):
                             tenant_reference,
                         )
                     ledger_type.assert_not_called()
+
+    def test_core_decimal_error_names_the_next_action(self) -> None:
+        """Core validation tells an upstream caller how to correct a malformed amount."""
+        with self.assertRaises(AccountingValidationError) as captured:
+            JournalLineProposal(1, "accounts_receivable", "1.0000001", "0")
+
+        message = str(captured.exception)
+        self.assertIn("canonical non-negative decimal", message)
+        self.assertIn("Supply a non-negative decimal string", message)
+        self.assertIn("then retry ingest", message)
+
+
+class CallerFacingStorageCopyTests(unittest.TestCase):
+    """Keep storage implementation names and operator-owned repairs out of caller guidance."""
+
+    def test_validation_error_sanitizes_known_storage_boundaries(self) -> None:
+        """Shared caller errors hide implementation names and route operator-owned recovery."""
+        cases = (
+            (
+                "the database session is not provisioned for this tenant. Ask the platform operator to verify tenant provisioning, then retry the request.",
+                "this deployment is not provisioned for this tenant",
+                "database session",
+            ),
+            (
+                "Fiscal period 2026-08 has no control row for this accounting book. Repair the fiscal-period control data for this book, then retry the close.",
+                "Ask the platform operator to restore the fiscal-period control data for this book, then retry the close.",
+                "Repair the fiscal-period control data",
+            ),
+            (
+                "balance_basis_code=post_close requires a stored trial_balance_snapshot. Hard-close the period, then retry the trial-balance read.",
+                "requires stored close evidence",
+                "trial_balance_snapshot",
+            ),
+            (
+                "Fiscal period 2026-08 is hard_closed without a trial-balance snapshot. Restore the trial_balance_snapshot for this book from the journal population, then retry the trial-balance read.",
+                "Ask the platform operator to restore the close evidence for this book from the authoritative journal history",
+                "trial_balance_snapshot",
+            ),
+            (
+                "Fiscal period 2026-08 is hard_closed without a trial-balance snapshot. Restore the trial_balance_snapshot for this book from the journal population, then retry the close.",
+                "Ask the platform operator to restore the close evidence for this book from the authoritative journal history",
+                "trial_balance_snapshot",
+            ),
+            (
+                "reversal date belongs to a closed fiscal period. Reverse into an open or soft-closed period, then retry reversal.",
+                "reversal_date is outside the permitted accounting policy date range. Supply a reversal_date within the policy range, then retry reversal.",
+                "closed fiscal period",
+            ),
+        )
+
+        for raw_message, expected, forbidden in cases:
+            with self.subTest(raw_message=raw_message):
+                message = str(AccountingValidationError(raw_message))
+                self.assertIn(expected, message)
+                self.assertNotIn(forbidden, message)
 
 
 if __name__ == "__main__":
