@@ -470,7 +470,7 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             if "must be unadjusted, adjusted, or post_close" in message:
                 self._write_error(400, message)
                 return
-            if "post_close requires a stored trial_balance_snapshot" in message:
+            if "post_close requires stored close evidence" in message:
                 self._write_error(409, message)
                 return
             self._write_error(404, message)
