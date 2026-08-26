@@ -361,7 +361,7 @@ class PostgresPostingTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(
             IdempotencyConflictError,
-            "already used by another accounting command",
+            "already used by another accounting command. Supply a new reversal command identity",
         ):
             self.ledger.reverse(
                 receipt.journal_reference,
@@ -532,7 +532,10 @@ class PostgresPostingTests(unittest.TestCase):
             )
 
         receipt = self.ledger.post(self._two_line_proposal(), self.policy)
-        with self.assertRaisesRegex(AccountingValidationError, "closed fiscal period"):
+        with self.assertRaisesRegex(
+                AccountingValidationError,
+                "outside the permitted accounting policy date range",
+            ):
             self.ledger.reverse(
                 receipt.journal_reference,
                 date(2026, 9, 1),
@@ -614,7 +617,9 @@ class PostgresPostingTests(unittest.TestCase):
             "accounting_information_platform.persistence.importlib.import_module",
             side_effect=ImportError("missing"),
         ):
-            with self.assertRaisesRegex(AccountingValidationError, "requirements-quality.txt"):
+            with self.assertRaisesRegex(
+                AccountingValidationError, "accounting database adapter is unavailable"
+            ):
                 PostgresPostingLedger(
                     DATABASE_URL, tenant_reference=self.policy.tenant_reference
                 ).journal_count
@@ -994,7 +999,7 @@ class PostgresPostingTests(unittest.TestCase):
         )
         self._delete_snapshots()
         with self.assertRaisesRegex(
-            AccountingValidationError, "Restore the trial_balance_snapshot"
+            AccountingValidationError, "restore the close evidence"
         ):
             other_ledger.close_fiscal_period(
                 legal_entity_reference=self.policy.legal_entity_reference,
@@ -6806,7 +6811,7 @@ class PostgresPostingTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(
             AccountingValidationError,
-            "post_close requires a stored trial_balance_snapshot",
+            "post_close requires stored close evidence",
         ):
             self.ledger.load_period_trial_balance(
                 self.policy.legal_entity_reference,
@@ -6852,7 +6857,7 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(empty_adjusted["balance_basis_code"], "adjusted")
         self.assertEqual(empty_post_close_status, 409)
         self.assertIn(
-            "post_close requires a stored trial_balance_snapshot",
+            "post_close requires stored close evidence",
             str(empty_post_close["error_message"]),
         )
         self.assertEqual(invalid_status, 400)
@@ -6970,7 +6975,7 @@ class PostgresPostingTests(unittest.TestCase):
         )
         self.assertEqual(soft_post_close_status, 409)
         self.assertIn(
-            "post_close requires a stored trial_balance_snapshot",
+            "post_close requires stored close evidence",
             str(soft_post_close["error_message"]),
         )
 
@@ -10412,7 +10417,7 @@ class PostgresPostingTests(unittest.TestCase):
             self._count_table("accounting_reporting.trial_balance_snapshot"), snapshots_before
         )
         self._delete_snapshots()
-        with self.assertRaisesRegex(AccountingValidationError, "Restore the trial_balance_snapshot"):
+        with self.assertRaisesRegex(AccountingValidationError, "restore the close evidence"):
             lookup_trial_balance(
                 DATABASE_URL,
                 self.policy.tenant_reference,
@@ -12012,7 +12017,9 @@ class PostgresPostingTests(unittest.TestCase):
 
     def test_resolve_accounting_policy_catalog_failures_name_the_next_action(self) -> None:
         """Policy resolution fails closed without inventing chart codes or versions."""
-        with self.assertRaisesRegex(AccountingValidationError, "Open a PostgresPostingLedger"):
+        with self.assertRaisesRegex(
+                AccountingValidationError, "proposal tenant scope does not match this deployment"
+            ):
             self.ledger.resolve_accounting_policy(
                 ingest_journal_proposal(
                     self._billing_validated_payload(tenant_reference="urn:cwl:tenant_other")

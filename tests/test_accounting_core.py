@@ -405,7 +405,10 @@ class AccountingCoreTests(unittest.TestCase):
     def test_closed_period_is_rejected(self) -> None:
         proposal = self._invoice_proposal(accounting_date=date(2026, 9, 1))
 
-        with self.assertRaisesRegex(AccountingValidationError, "closed fiscal period"):
+        with self.assertRaisesRegex(
+            AccountingValidationError,
+            "accounting date belongs to a closed fiscal period",
+        ):
             self.ledger.post(proposal, self.policy)
 
     def test_policy_scope_mismatch_is_rejected(self) -> None:
@@ -429,7 +432,7 @@ class AccountingCoreTests(unittest.TestCase):
             posting_rule_version="billing-issued-v1",
         )
 
-        with self.assertRaisesRegex(AccountingValidationError, "unmapped account role"):
+        with self.assertRaisesRegex(AccountingValidationError, "account role .* is not mapped on this book"):
             self.ledger.post(self._invoice_proposal(), policy)
 
     def test_unsupported_currency_conversion_is_rejected(self) -> None:
@@ -701,7 +704,10 @@ class AccountingCoreTests(unittest.TestCase):
                     AccountingPolicy(**values)
 
         receipt = self.ledger.post(proposal, self.policy)
-        with self.assertRaisesRegex(AccountingValidationError, "closed fiscal period"):
+        with self.assertRaisesRegex(
+                    AccountingValidationError,
+                    "outside the permitted accounting policy date range",
+                ):
             self.ledger.reverse(
                 receipt.journal_reference,
                 date(2026, 9, 1),

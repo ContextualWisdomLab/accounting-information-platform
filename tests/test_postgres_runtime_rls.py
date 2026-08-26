@@ -128,7 +128,9 @@ class PostgresRuntimeRlsTests(unittest.TestCase):
         self.assertEqual(rebound_other_count, 0)
 
         wrong_tenant_ledger = PostgresPostingLedger(runtime_url, other.policy.tenant_reference)
-        with self.assertRaisesRegex(AccountingValidationError, "does not match"):
+        with self.assertRaisesRegex(
+            AccountingValidationError, "not provisioned for this tenant"
+        ):
             _ = wrong_tenant_ledger.journal_count
 
         unbound_role = f"accounting_runtime_{uuid.uuid4().hex[:10]}"
@@ -137,7 +139,9 @@ class PostgresRuntimeRlsTests(unittest.TestCase):
         self.addCleanup(self._drop_runtime_role, unbound_role)
         unbound_url = self._runtime_database_url(unbound_role, unbound_password)
         unbound_ledger = PostgresPostingLedger(unbound_url, self.case.policy.tenant_reference)
-        with self.assertRaisesRegex(AccountingValidationError, "not bound to a tenant"):
+        with self.assertRaisesRegex(
+            AccountingValidationError, "cannot be authorized for the requested tenant"
+        ):
             _ = unbound_ledger.journal_count
 
         with psycopg.connect(posting.DATABASE_URL) as admin:
