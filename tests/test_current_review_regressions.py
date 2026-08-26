@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 from datetime import date
+from pathlib import Path
 from unittest import mock
 
 from accounting_information_platform import (
@@ -101,6 +102,22 @@ class ReversalCommandIdentityTests(unittest.TestCase):
                 reversal_idempotency_key="review-reversal-command-v1",
             )
 
+    def test_out_of_policy_reversal_does_not_invent_closed_period_status(self) -> None:
+        """A date-range failure must not claim a fiscal-period status it did not inspect."""
+        with self.assertRaises(AccountingValidationError) as captured:
+            self.ledger.reverse(
+                self.receipt.journal_reference,
+                date(2026, 9, 1),
+                "billing_correction",
+                self.policy,
+                reversal_idempotency_key="review-reversal-outside-policy-v1",
+            )
+
+        message = str(captured.exception)
+        self.assertIn("outside the permitted accounting policy date range", message)
+        self.assertIn("Supply a reversal_date within the policy range", message)
+        self.assertNotIn("closed fiscal period", message)
+
 
 class HomeTaxCommandProvenanceBoundaryTests(unittest.TestCase):
     """Require immutable source provenance before any HomeTax command work."""
@@ -178,6 +195,38 @@ class AdjustingJournalExactDecimalBoundaryTests(unittest.TestCase):
                             tenant_reference,
                         )
                     ledger_type.assert_not_called()
+
+    def test_core_decimal_error_names_the_next_action(self) -> None:
+        """Core validation tells an upstream caller how to correct a malformed amount."""
+        with self.assertRaises(AccountingValidationError) as captured:
+            JournalLineProposal(1, "accounts_receivable", "1.0000001", "0")
+
+        message = str(captured.exception)
+        self.assertIn("canonical non-negative decimal", message)
+        self.assertIn("Supply a non-negative decimal string", message)
+        self.assertIn("then retry ingest", message)
+
+
+class CallerFacingStorageCopyTests(unittest.TestCase):
+    """Keep storage implementation names and operator-owned repairs out of caller guidance."""
+
+    def test_persistence_copy_hides_storage_names_and_assigns_operator_recovery(self) -> None:
+        """Known review regressions stay absent from the durable adapter source."""
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "src"
+            / "accounting_information_platform"
+            / "persistence.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertNotIn("the database session is not provisioned for this tenant", source)
+        self.assertNotIn("Restore the trial_balance_snapshot", source)
+        self.assertNotIn("requires a stored trial_balance_snapshot", source)
+        self.assertNotIn("Repair the fiscal-period control data for this book", source)
+        self.assertIn(
+            "Ask the platform operator to restore the fiscal-period control data for this book, then retry the close.",
+            source,
+        )
 
 
 if __name__ == "__main__":
