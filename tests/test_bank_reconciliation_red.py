@@ -1,7 +1,7 @@
 """RED contracts for deterministic bank-to-book reconciliation.
 
 These tests deliberately define the first bounded behavior for issue #8 before
-production reconciliation code exists.  They use exact decimal evidence and
+production reconciliation code exists. They use exact decimal evidence and
 require abstention whenever stable evidence does not identify one safe match.
 """
 
@@ -169,6 +169,41 @@ class DeterministicReconciliationRedTests(unittest.TestCase):
         self.assertEqual(decision.exception_code, "date_window_mismatch")
         self.assertTrue(decision.next_action)
         self.assertEqual(decision.matched_journal_references, ())
+
+    def test_duplicate_stable_reference_abstains_instead_of_choosing_a_journal(self) -> None:
+        """A duplicated strong identity remains an exception even when exact money agrees."""
+        module = self._module()
+        decision = module.propose_deterministic_match(
+            self._statement(module),
+            (
+                self._journal(module, "journal-a"),
+                self._journal(module, "journal-b"),
+            ),
+            module.DeterministicMatchPolicy(date_window_days=2),
+        )
+        self.assertEqual(decision.decision_code, "abstain")
+        self.assertEqual(decision.exception_code, "ambiguous_reference")
+        self.assertEqual(decision.matched_journal_references, ())
+
+    def test_no_exact_money_candidate_abstains_with_review_action(self) -> None:
+        """Absence of an exact-money candidate never becomes an inferred match."""
+        module = self._module()
+        statement = self._statement(module, account_servicer_reference=None)
+        candidate = self._journal(
+            module,
+            "journal-other",
+            account_servicer_reference=None,
+            amount=Decimal("24999.00"),
+        )
+        decision = module.propose_deterministic_match(
+            statement,
+            (candidate,),
+            module.DeterministicMatchPolicy(date_window_days=2),
+        )
+        self.assertEqual(decision.decision_code, "abstain")
+        self.assertEqual(decision.exception_code, "no_candidate")
+        self.assertTrue(decision.next_action)
+        self.assertEqual(decision.allocated_amount, Decimal("0"))
 
 
 if __name__ == "__main__":
