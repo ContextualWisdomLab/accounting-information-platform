@@ -22,10 +22,15 @@ from accounting_information_platform.reconciliation import (
 class ReconciliationCreditDebitDirectionTests(unittest.TestCase):
     """Require deterministic proposals to preserve bank-movement direction."""
 
-    def _statement(self, *, credit_debit_code: str = "CRDT") -> StatementEntryEvidence:
+    def _statement(
+        self,
+        *,
+        provider_reference: str | None = "provider-direction-1",
+        credit_debit_code: str = "CRDT",
+    ) -> StatementEntryEvidence:
         return StatementEntryEvidence(
             statement_entry_reference="statement-direction-1",
-            provider_reference="provider-direction-1",
+            provider_reference=provider_reference,
             end_to_end_reference=None,
             account_servicer_reference=None,
             amount=Decimal("25000.00"),
@@ -72,7 +77,7 @@ class ReconciliationCreditDebitDirectionTests(unittest.TestCase):
     def test_weak_exact_money_rule_never_matches_opposite_direction(self) -> None:
         """Exact money/date evidence remains insufficient when movement direction conflicts."""
         decision = propose_deterministic_match(
-            self._statement(credit_debit_code="CRDT"),
+            self._statement(provider_reference=None, credit_debit_code="CRDT"),
             (
                 self._journal(
                     provider_reference=None,
