@@ -1491,6 +1491,9 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             document = accept_bank_account_assignment(
                 payload, self.server.database_url, tenant_header
             )
+        except IdempotencyConflictError as error:
+            self._write_error(409, f"{error}. Supply a new assignment key, then retry.")
+            return
         except AccountingValidationError as error:
             self._write_error(_bank_statement_status(error), str(error))
             return

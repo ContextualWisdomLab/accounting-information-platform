@@ -62,6 +62,7 @@ class BankStatementRegistryTests(unittest.TestCase):
                 "accounting_book_reference": self.case.policy.accounting_book_reference,
                 "chart_account_code": "110200",
                 "valid_from": "2026-01-01T00:00:00Z",
+                "assignment_idempotency_key": f"assign-setup-{uuid.uuid4().hex}",
             },
             posting.DATABASE_URL,
             self.case.policy.tenant_reference,
@@ -189,6 +190,7 @@ class BankStatementRegistryTests(unittest.TestCase):
                     "accounting_book_reference": other.policy.accounting_book_reference,
                     "chart_account_code": "110200",
                     "valid_from": "2026-01-01T00:00:00Z",
+                    "assignment_idempotency_key": f"assign-cross-{uuid.uuid4().hex}",
                 },
                 posting.DATABASE_URL,
                 other.policy.tenant_reference,
@@ -239,9 +241,10 @@ class BankStatementRegistryTests(unittest.TestCase):
                     """
                     INSERT INTO accounting_core.bank_account_assignment (
                         tenant_account_id, bank_account_record_id, legal_entity_id,
-                        accounting_book_id, chart_account_id, valid_from
+                        accounting_book_id, chart_account_id, valid_from,
+                        assignment_idempotency_key, assignment_command_hash
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, 'sha256:probe')
                     """,
                     (
                         tenant_id,
@@ -250,6 +253,7 @@ class BankStatementRegistryTests(unittest.TestCase):
                         book_id,
                         other_chart_id,
                         VALID_FROM,
+                        f"assign-fk-probe-{uuid.uuid4().hex}",
                     ),
                 )
                 connection.commit()
@@ -263,6 +267,7 @@ class BankStatementRegistryTests(unittest.TestCase):
                     "accounting_book_reference": self.case.policy.accounting_book_reference,
                     "chart_account_code": "119900",
                     "valid_from": "2026-02-01T00:00:00Z",
+                    "assignment_idempotency_key": f"assign-x1-" + uuid.uuid4().hex,
                 },
                 posting.DATABASE_URL,
                 self.case.policy.tenant_reference,
@@ -300,9 +305,10 @@ class BankStatementRegistryTests(unittest.TestCase):
                     """
                     INSERT INTO accounting_core.bank_account_assignment (
                         tenant_account_id, bank_account_record_id, legal_entity_id,
-                        accounting_book_id, chart_account_id, valid_from
+                        accounting_book_id, chart_account_id, valid_from,
+                        assignment_idempotency_key, assignment_command_hash
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, 'sha256:probe')
                     """,
                     (
                         tenant_id,
@@ -311,9 +317,162 @@ class BankStatementRegistryTests(unittest.TestCase):
                         other_book_id,
                         other_chart_id,
                         VALID_FROM,
+                        f"assign-fk-probe-2-{uuid.uuid4().hex}",
                     ),
                 )
                 connection.commit()
+
+    def test_assignment_idempotency_key_is_required(self) -> None:
+        """An assignment without tenant-scoped idempotency identity fails closed."""
+        with self.assertRaisesRegex(
+            AccountingValidationError, "assignment_idempotency_key is required"
+        ):
+            accept_bank_account_assignment(
+                {
+                    "tenant_reference": self.case.policy.tenant_reference,
+                    "bank_account_reference": self.account_reference,
+                    "legal_entity_reference": self.case.policy.legal_entity_reference,
+                    "accounting_book_reference": self.case.policy.accounting_book_reference,
+                    "chart_account_code": "110200",
+                    "valid_from": "2026-01-01T00:00:00Z",
+                },
+                posting.DATABASE_URL,
+                self.case.policy.tenant_reference,
+            )
+
+    def test_assignment_replay_returns_original_and_conflicts_on_change(self) -> None:
+        """Exact assignment replay returns the original binding; changed reuse fails closed."""
+        key = f"assign-replay-{uuid.uuid4().hex}"
+        command = {
+            "tenant_reference": self.case.policy.tenant_reference,
+            "bank_account_reference": f"urn:cwl:bank_account:{uuid.uuid4().hex}",
+            "legal_entity_reference": self.case.policy.legal_entity_reference,
+            "accounting_book_reference": self.case.policy.accounting_book_reference,
+            "chart_account_code": "110200",
+            "valid_from": "2026-02-01T00:00:00Z",
+            "assignment_idempotency_key": key,
+        }
+        accept_bank_account_record(
+            {
+                "tenant_reference": self.case.policy.tenant_reference,
+                "bank_account_reference": command["bank_account_reference"],
+                "account_currency_code": "KRW",
+                "account_identifier": "acct-opaque-fixture-only-2",
+            },
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+        )
+        first = accept_bank_account_assignment(
+            dict(command), posting.DATABASE_URL, self.case.policy.tenant_reference
+        )
+        self.assertFalse(first["replayed"])
+        second = accept_bank_account_assignment(
+            dict(command), posting.DATABASE_URL, self.case.policy.tenant_reference
+        )
+        self.assertTrue(second["replayed"])
+        self.assertEqual(
+            first["bank_account_assignment_id"], second["bank_account_assignment_id"]
+        )
+        changed = dict(command)
+        changed["chart_account_code"] = "110100"
+        with self.assertRaises(IdempotencyConflictError):
+            accept_bank_account_assignment(
+                changed, posting.DATABASE_URL, self.case.policy.tenant_reference
+            )
+
+    def test_second_active_assignment_same_book_fails_closed(self) -> None:
+        """A second active binding for one bank account and book is a data defect."""
+        reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
+        accept_bank_account_record(
+            {
+                "tenant_reference": self.case.policy.tenant_reference,
+                "bank_account_reference": reference,
+                "account_currency_code": "KRW",
+                "account_identifier": "acct-opaque-fixture-only-3",
+            },
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+        )
+        base = {
+            "tenant_reference": self.case.policy.tenant_reference,
+            "bank_account_reference": reference,
+            "legal_entity_reference": self.case.policy.legal_entity_reference,
+            "accounting_book_reference": self.case.policy.accounting_book_reference,
+            "chart_account_code": "110200",
+            "valid_from": "2026-03-01T00:00:00Z",
+        }
+        accept_bank_account_assignment(
+            {**base, "assignment_idempotency_key": f"assign-first-{uuid.uuid4().hex}"},
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "active assignment"):
+            accept_bank_account_assignment(
+                {**base, "assignment_idempotency_key": f"assign-second-{uuid.uuid4().hex}"},
+                posting.DATABASE_URL,
+                self.case.policy.tenant_reference,
+            )
+
+    def test_entry_currency_outside_account_scope_fails_closed(self) -> None:
+        """An entry in another currency is rejected before any evidence persists."""
+        payload = load_canonical_statement_fixture().replace(
+            b'<Amt Ccy="KRW">25000.00</Amt>',
+            b'<Amt Ccy="USD">25000.00</Amt>',
+            1,
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "currency"):
+            self._ingest(payload, key="fx-entry")
+        self.assertEqual(self._count("accounting_integration.bank_statement_record"), 0)
+        self.assertEqual(self._count("accounting_integration.bank_statement_entry"), 0)
+
+    def test_assignment_key_reuse_conflicts_over_http_with_409(self) -> None:
+        """Reuse of an assignment key with different evidence maps to HTTP 409."""
+        server = self.case._start_http_server()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        tenant = self.case.policy.tenant_reference
+        reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
+        registered, _ = self.case._http_json(
+            "POST",
+            "/bank-accounts",
+            {
+                "tenant_reference": tenant,
+                "bank_account_reference": reference,
+                "account_currency_code": "KRW",
+                "account_identifier": "acct-opaque-fixture-only-http",
+            },
+        )
+        self.assertEqual(registered, 200)
+        key = f"assign-conflict-{uuid.uuid4().hex}"
+        first_status, _ = self.case._http_json(
+            "POST",
+            "/bank-account-assignments",
+            {
+                "tenant_reference": tenant,
+                "bank_account_reference": reference,
+                "legal_entity_reference": self.case.policy.legal_entity_reference,
+                "accounting_book_reference": self.case.policy.accounting_book_reference,
+                "chart_account_code": "110200",
+                "valid_from": "2026-06-01T00:00:00Z",
+                "assignment_idempotency_key": key,
+            },
+        )
+        self.assertEqual(first_status, 200)
+        conflict_status, conflict_body = self.case._http_json(
+            "POST",
+            "/bank-account-assignments",
+            {
+                "tenant_reference": tenant,
+                "bank_account_reference": reference,
+                "legal_entity_reference": self.case.policy.legal_entity_reference,
+                "accounting_book_reference": self.case.policy.accounting_book_reference,
+                "chart_account_code": "110100",
+                "valid_from": "2026-06-01T00:00:00Z",
+                "assignment_idempotency_key": key,
+            },
+        )
+        self.assertEqual(conflict_status, 409)
+        self.assertIn("assignment", str(conflict_body).lower())
 
     def test_statement_account_identifier_must_match_registered_account(self) -> None:
         """A same-currency statement whose IBAN/Othr hash differs is not recorded."""
@@ -488,6 +647,7 @@ class BankStatementRegistryTests(unittest.TestCase):
                     "legal_entity_reference": self.case.policy.legal_entity_reference,
                     "accounting_book_reference": self.case.policy.accounting_book_reference,
                     "valid_from": "2026-03-01T00:00:00Z",
+                    "assignment_idempotency_key": f"assign-x2-" + uuid.uuid4().hex,
                 },
                 posting.DATABASE_URL,
                 self.case.policy.tenant_reference,
@@ -501,6 +661,7 @@ class BankStatementRegistryTests(unittest.TestCase):
                     "accounting_book_reference": "urn:cwl:accounting_book:missing",
                     "chart_account_code": "110200",
                     "valid_from": "2026-03-01T00:00:00Z",
+                    "assignment_idempotency_key": f"assign-x3-" + uuid.uuid4().hex,
                 },
                 posting.DATABASE_URL,
                 self.case.policy.tenant_reference,
@@ -638,7 +799,8 @@ class BankStatementRegistryTests(unittest.TestCase):
                 "accounting_book_reference": self.case.policy.accounting_book_reference,
                 "chart_account_code": "110200",
                 "valid_from": "2026-01-01T00:00:00Z",
-            },
+            
+                "assignment_idempotency_key": "assign-http-1-" + uuid.uuid4().hex,},
         )
         self.assertEqual(assign_status, 200)
         self.assertEqual(assignment["chart_account_code"], "110200")
@@ -731,6 +893,7 @@ class BankStatementRegistryTests(unittest.TestCase):
                         "accounting_book_reference": self.case.policy.accounting_book_reference,
                         "chart_account_code": "110200",
                         "valid_from": "2026-04-01T00:00:00Z",
+                    "assignment_idempotency_key": f"assign-x4-" + uuid.uuid4().hex,
                     },
                     posting.DATABASE_URL,
                     self.case.policy.tenant_reference,
@@ -795,7 +958,8 @@ class BankStatementRegistryTests(unittest.TestCase):
                 "accounting_book_reference": self.case.policy.accounting_book_reference,
                 "chart_account_code": "110200",
                 "valid_from": "2026-01-01T00:00:00Z",
-            },
+            
+                "assignment_idempotency_key": "assign-http-3-" + uuid.uuid4().hex,},
         )
         self.assertEqual(assign_forbidden, 403)
         assign_invalid, assign_body = self.case._http_json(
@@ -807,7 +971,8 @@ class BankStatementRegistryTests(unittest.TestCase):
                 "legal_entity_reference": self.case.policy.legal_entity_reference,
                 "accounting_book_reference": self.case.policy.accounting_book_reference,
                 "valid_from": "2026-05-01T00:00:00Z",
-            },
+            
+                "assignment_idempotency_key": "assign-http-4-" + uuid.uuid4().hex,},
         )
         self.assertEqual(assign_invalid, 422)
         self.assertIn("chart_account_code", str(assign_body))
@@ -821,7 +986,8 @@ class BankStatementRegistryTests(unittest.TestCase):
                 "accounting_book_reference": self.case.policy.accounting_book_reference,
                 "chart_account_code": "110200",
                 "valid_from": "not-a-timestamp",
-            },
+            
+                "assignment_idempotency_key": "assign-http-5-" + uuid.uuid4().hex,},
         )
         self.assertEqual(assign_timestamp, 422)
         self.assertIn("timestamp", str(assign_timestamp_body).lower())

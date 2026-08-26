@@ -261,7 +261,14 @@ def accept_bank_account_record(
 def accept_bank_account_assignment(
     payload: object, database_url: str, tenant_reference: str
 ) -> dict[str, object]:
-    """Bind one bank account to a legal entity, book, and same-book cash chart account."""
+    """Bind one bank account to a legal entity, book, and same-book cash chart account.
+
+    The command carries tenant-scoped idempotency identity plus immutable
+    command evidence: an exact retry returns the original binding with
+    ``replayed=True`` while reuse of the key with different evidence fails
+    closed. A second active binding for the same bank account and book is a
+    data defect and is rejected at the database scope guard.
+    """
     command = _require_command(payload, "a bank-account-assignment command", tenant_reference)
     bank_account_reference = str(command.get("bank_account_reference") or "")
     legal_entity_reference = str(command.get("legal_entity_reference") or "")
@@ -277,6 +284,12 @@ def accept_bank_account_assignment(
             "chart_account_code is required. "
             "Supply the cash chart account on the same book, then retry the assignment."
         )
+    idempotency_key = str(command.get("assignment_idempotency_key") or "")
+    if not idempotency_key.strip():
+        raise AccountingValidationError(
+            "assignment_idempotency_key is required. "
+            "Supply the tenant-scoped assignment key, then retry the assignment."
+        )
     valid_from = _parse_timestamp(
         str(command.get("valid_from") or ""),
         "assignment valid_from",
@@ -287,10 +300,41 @@ def accept_bank_account_assignment(
         if raw_valid_to in (None, "")
         else _parse_timestamp(str(raw_valid_to), "assignment valid_to")
     )
+    command_hash = _assignment_command_hash(
+        bank_account_reference=bank_account_reference,
+        legal_entity_reference=legal_entity_reference,
+        accounting_book_reference=accounting_book_reference,
+        chart_account_code=chart_account_code,
+        valid_from=valid_from,
+        valid_to=valid_to,
+    )
     ledger = PostgresPostingLedger(database_url, tenant_reference)
     with ledger._session() as connection:
         tenant_id = ledger._require_tenant(connection)
         ledger._acquire_command_lock(connection, f"bank_assignment:{bank_account_reference}")
+        ledger._acquire_command_lock(connection, f"bank_assignment_key:{idempotency_key}")
+        prior_command = connection.execute(
+            """
+            SELECT bank_account_assignment_id, assignment_command_hash,
+                   legal_entity_id, accounting_book_id, chart_account_id
+            FROM accounting_core.bank_account_assignment
+            WHERE tenant_account_id = %s AND assignment_idempotency_key = %s
+            """,
+            (tenant_id, idempotency_key),
+        ).fetchone()
+        if prior_command is not None:
+            if prior_command[1] != command_hash:
+                raise IdempotencyConflictError(
+                    "assignment idempotency key was already used with a different "
+                    "bank-account assignment"
+                )
+            return _load_assignment_document(
+                connection,
+                tenant_id,
+                tenant_reference,
+                prior_command[0],
+                replayed=True,
+            )
         account_row = _load_bank_account(connection, tenant_id, bank_account_reference)
         legal_entity_id, _currency = ledger._load_legal_entity(
             connection, tenant_id, legal_entity_reference, "the bank-account assignment"
@@ -332,9 +376,10 @@ def accept_bank_account_assignment(
                 """
                 INSERT INTO accounting_core.bank_account_assignment (
                     tenant_account_id, bank_account_record_id, legal_entity_id,
-                    accounting_book_id, chart_account_id, valid_from, valid_to
+                    accounting_book_id, chart_account_id, valid_from, valid_to,
+                    assignment_idempotency_key, assignment_command_hash
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING bank_account_assignment_id
                 """,
                 (
@@ -345,6 +390,8 @@ def accept_bank_account_assignment(
                     chart_row[0],
                     valid_from,
                     valid_to,
+                    idempotency_key,
+                    command_hash,
                 ),
             ).fetchone()[0]
         except Exception as error:
@@ -352,6 +399,11 @@ def accept_bank_account_assignment(
                 raise AccountingValidationError(
                     "bank-account assignment must use a chart account from the same accounting book. "
                     "Select that book's cash chart account, then retry the assignment."
+                ) from error
+            if _is_unique_violation(error):
+                raise AccountingValidationError(
+                    "bank account already has an active assignment on that accounting book. "
+                    "Close the existing binding with an explicit valid_to, then retry the assignment."
                 ) from error
             raise
     return {
@@ -362,6 +414,80 @@ def accept_bank_account_assignment(
         "chart_account_code": chart_account_code,
         "bank_account_assignment_id": str(assignment_id),
         "replayed": False,
+    }
+
+
+def _assignment_command_hash(
+    *,
+    bank_account_reference: str,
+    legal_entity_reference: str,
+    accounting_book_reference: str,
+    chart_account_code: str,
+    valid_from: datetime,
+    valid_to: datetime | None,
+) -> str:
+    """Return the canonical SHA-256 identity of one assignment command's evidence."""
+
+    payload = {
+        "bank_account_reference": bank_account_reference,
+        "chart_account_code": chart_account_code,
+        "accounting_book_reference": accounting_book_reference,
+        "legal_entity_reference": legal_entity_reference,
+        "valid_from": _format_timestamp(valid_from),
+        "valid_to": None if valid_to is None else _format_timestamp(valid_to),
+    }
+    return _sha256_digest(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    )
+
+
+def _load_assignment_document(
+    connection: object,
+    tenant_id: UUID,
+    tenant_reference: str,
+    assignment_id: UUID,
+    *,
+    replayed: bool,
+) -> dict[str, object]:
+    """Load one stored assignment back into its public command document shape."""
+
+    row = connection.execute(
+        """
+        SELECT bank_account.bank_account_reference,
+               legal_entity.legal_entity_code,
+               accounting_book.book_name,
+               chart_account.chart_account_code
+        FROM accounting_core.bank_account_assignment AS assignment
+        JOIN accounting_core.bank_account_record AS bank_account
+            ON bank_account.tenant_account_id = assignment.tenant_account_id
+            AND bank_account.bank_account_record_id = assignment.bank_account_record_id
+        JOIN accounting_core.legal_entity_record AS legal_entity
+            ON legal_entity.tenant_account_id = assignment.tenant_account_id
+            AND legal_entity.legal_entity_id = assignment.legal_entity_id
+        JOIN accounting_core.accounting_book AS accounting_book
+            ON accounting_book.tenant_account_id = assignment.tenant_account_id
+            AND accounting_book.accounting_book_id = assignment.accounting_book_id
+        JOIN accounting_core.chart_account AS chart_account
+            ON chart_account.tenant_account_id = assignment.tenant_account_id
+            AND chart_account.chart_account_id = assignment.chart_account_id
+        WHERE assignment.tenant_account_id = %s
+          AND assignment.bank_account_assignment_id = %s
+        """,
+        (tenant_id, assignment_id),
+    ).fetchone()
+    if row is None:
+        raise AccountingValidationError(
+            "bank-account assignment could not be reloaded after replay. "
+            "Repeat the original command, then retry."
+        )
+    return {
+        "tenant_reference": tenant_reference,
+        "bank_account_reference": row[0],
+        "legal_entity_reference": row[1],
+        "accounting_book_reference": row[2],
+        "chart_account_code": row[3],
+        "bank_account_assignment_id": str(assignment_id),
+        "replayed": replayed,
     }
 
 
@@ -421,6 +547,7 @@ def accept_bank_statement_evidence(
                 "statement account identifier does not match the registered bank account. "
                 "Register the matching account identifier, then retry ingest."
             )
+        _require_entry_currencies(statement)
         ledger._acquire_command_lock(
             connection,
             f"bank_statement_identity:{account_row[0]}:{statement.statement_identity_reference}",
@@ -1149,6 +1276,24 @@ def _normalize_statement(statement: "_XmlElement", payload: bytes) -> Normalized
     )
 
 
+def _require_entry_currencies(statement: NormalizedBankStatement) -> None:
+    """Fail closed when an entry currency leaves the registered account scope.
+
+    Foreign-exchange accounting is explicitly rejected until rate source, rate
+    type, rounding, remeasurement, and translation policy exist (TRD), so every
+    entry on an accepted statement must carry the statement's own currency.
+    """
+
+    for entry in statement.entries:
+        if entry.entry_currency_code != statement.account_currency_code:
+            raise AccountingValidationError(
+                f"statement entry {entry.entry_sequence_number} uses currency "
+                f"{entry.entry_currency_code}, but this registry accepts only "
+                f"{statement.account_currency_code} evidence. Register a matching-currency "
+                "account or correct the statement, then retry ingest."
+            )
+
+
 def _normalize_entry(entry_node: "_XmlElement", sequence: int) -> NormalizedStatementEntry:
     amount, currency = _required_amount(entry_node, "Ntry/Amt")
     credit_debit = _required_text(entry_node, ("CdtDbtInd",), "credit/debit indicator")
@@ -1164,11 +1309,19 @@ def _normalize_entry(entry_node: "_XmlElement", sequence: int) -> NormalizedStat
     ):
         details.append(_normalize_detail(detail_node, sequence, detail_index, credit_debit))
     remittance = _bound_text(_first_text(entry_node, ("NtryDtls", "TxDtls", "RmtInf", "Ustrd")))
-    counterparty = _first_text(entry_node, ("NtryDtls", "TxDtls", "RltdPties", "Dbtr", "Pty", "Nm"))
-    if counterparty is None:
-        counterparty = _first_text(
-            entry_node, ("NtryDtls", "TxDtls", "RltdPties", "Cdtr", "Pty", "Nm")
-        )
+    debtor_name = _first_text(entry_node, ("NtryDtls", "TxDtls", "RltdPties", "Dbtr", "Pty", "Nm"))
+    creditor_name = _first_text(
+        entry_node, ("NtryDtls", "TxDtls", "RltdPties", "Cdtr", "Pty", "Nm")
+    )
+    # camt.053 CdtDbtInd is expressed from the account owner's perspective:
+    # a CRDT entry records money received from the payer (Dbtr), while a DBIT
+    # entry records money sent to the payee (Cdtr). The counterparty evidence
+    # therefore follows the entry direction before falling back to whatever
+    # party the statement supplies.
+    if credit_debit == "CRDT":
+        counterparty = debtor_name if debtor_name is not None else creditor_name
+    else:
+        counterparty = creditor_name if creditor_name is not None else debtor_name
     domain = _first_text(entry_node, ("BkTxCd", "Domn", "Cd"))
     family = _first_text(entry_node, ("BkTxCd", "Domn", "Fmly", "Cd"))
     subfamily = _first_text(entry_node, ("BkTxCd", "Domn", "Fmly", "SubFmlyCd"))
@@ -1341,6 +1494,9 @@ def _entry_payload(entry: NormalizedStatementEntry) -> dict[str, object]:
         "entry_currency_code": entry.entry_currency_code,
         "credit_debit_code": entry.credit_debit_code,
         "reversal_indicator": entry.reversal_indicator,
+        "bank_transaction_domain_code": entry.bank_transaction_domain_code,
+        "bank_transaction_family_code": entry.bank_transaction_family_code,
+        "bank_transaction_subfamily_code": entry.bank_transaction_subfamily_code,
         "end_to_end_reference": entry.end_to_end_reference,
         "account_servicer_reference": entry.account_servicer_reference,
         "mandate_reference": entry.mandate_reference,
@@ -1550,6 +1706,16 @@ def _is_foreign_key_error(error: BaseException) -> bool:
         return True
     cause = error.__cause__
     return cause is not None and getattr(cause, "sqlstate", None) == "23503"
+
+
+def _is_unique_violation(error: BaseException) -> bool:
+    """Return whether *error* is PostgreSQL SQLSTATE 23505 at any cause depth."""
+
+    sqlstate = getattr(error, "sqlstate", None)
+    if sqlstate == "23505":
+        return True
+    cause = error.__cause__
+    return cause is not None and getattr(cause, "sqlstate", None) == "23505"
 
 
 @dataclass

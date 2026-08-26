@@ -103,6 +103,69 @@ class BankStatementAdapterTests(unittest.TestCase):
             remittance.entries[0].source_entry_hash,
         )
 
+    def test_transaction_codes_are_material_entry_evidence(self) -> None:
+        """Changed BkTxCd domain evidence is not an exact entry replay."""
+        original = parse_bank_statement_payload(
+            load_canonical_statement_fixture(),
+            CAMT053_MESSAGE_DEFINITION,
+        )
+        changed = parse_bank_statement_payload(
+            FIXTURE.read_bytes().replace(b"<Cd>PMNT</Cd>", b"<Cd>ACMT</Cd>", 1),
+            CAMT053_MESSAGE_DEFINITION,
+        )
+        self.assertEqual(
+            original.entries[0].bank_transaction_domain_code,
+            "PMNT",
+        )
+        self.assertEqual(changed.entries[0].bank_transaction_domain_code, "ACMT")
+        self.assertNotEqual(
+            original.entries[0].source_entry_hash,
+            changed.entries[0].source_entry_hash,
+        )
+
+    def test_counterparty_evidence_follows_entry_direction(self) -> None:
+        """CRDT records the payer (Dbtr); DBIT records the payee (Cdtr)."""
+        fixture_text = FIXTURE.read_text(encoding="utf-8")
+        both_parties = (
+            "<RltdPties>\n"
+            "              <Dbtr>\n"
+            "                <Pty>\n"
+            "                  <Nm>Payer Alpha</Nm>\n"
+            "                </Pty>\n"
+            "              </Dbtr>\n"
+            "              <Cdtr>\n"
+            "                <Pty>\n"
+            "                  <Nm>Payee Beta</Nm>\n"
+            "                </Pty>\n"
+            "              </Cdtr>\n"
+            "            </RltdPties>"
+        )
+        credit_payload = fixture_text.replace(
+            "<RltdPties>\n              <Dbtr>\n                <Pty>\n"
+            "                  <Nm>Counterparty One</Nm>\n"
+            "                </Pty>\n              </Dbtr>\n            </RltdPties>",
+            both_parties,
+            1,
+        ).encode("utf-8")
+        debit_payload = fixture_text.replace(
+            "<TxDtls>\n            <Refs>\n              <EndToEndId>E2E-2A</EndToEndId>",
+            "<TxDtls>\n            "
+            + both_parties.replace("\n", "\n            ")
+            + "\n            <Refs>\n              <EndToEndId>E2E-2A</EndToEndId>",
+            1,
+        ).encode("utf-8")
+        statement = parse_bank_statement_payload(credit_payload, CAMT053_MESSAGE_DEFINITION)
+        self.assertEqual(
+            statement.entries[0].counterparty_evidence_hash,
+            "sha256:" + hashlib.sha256(b"Payer Alpha").hexdigest(),
+        )
+        debit_statement = parse_bank_statement_payload(debit_payload, CAMT053_MESSAGE_DEFINITION)
+        self.assertEqual(debit_statement.entries[1].credit_debit_code, "DBIT")
+        self.assertEqual(
+            debit_statement.entries[1].counterparty_evidence_hash,
+            "sha256:" + hashlib.sha256(b"Payee Beta").hexdigest(),
+        )
+
     def test_detail_records_txamt_when_instdamt_precedes_it(self) -> None:
         """TxDtls/AmtDtls/TxAmt/Amt is the stored detail amount, not an earlier InstdAmt."""
         payload = FIXTURE.read_text(encoding="utf-8").replace(
@@ -422,15 +485,26 @@ class BankStatementAdapterTests(unittest.TestCase):
         """A non-FK assignment INSERT failure is not rewritten as a book-scope miss."""
 
         class _Result:
-            def fetchone(self) -> tuple[object, ...]:
-                return (uuid.uuid4(), "KRW")
+            def __init__(self, rows: tuple[object, ...]) -> None:
+                self._rows = rows
+
+            def fetchone(self) -> tuple[object, ...] | None:
+                return self._rows or None
 
         class _Connection:
-            def execute(self, sql: object, _params: object = None) -> _Result:
+            def execute(self, sql: object, _params: object = None) -> "_Result":
                 query = sql if isinstance(sql, str) else str(sql)
                 if "INSERT INTO accounting_core.bank_account_assignment" in query:
                     raise RuntimeError("disk full")
-                return _Result()
+                if (
+                    "SELECT" in query
+                    and "assignment_idempotency_key" in query
+                    and "INSERT" not in query
+                ):
+                    # No stored command identity resolves in this probe; only
+                    # the INSERT failure is under test.
+                    return _Result(())
+                return _Result((uuid.uuid4(),))
 
         class _Ledger:
             def __init__(self, *_args: object, **_kwargs: object) -> None:
@@ -472,10 +546,68 @@ class BankStatementAdapterTests(unittest.TestCase):
                             "accounting_book_reference": "urn:cwl:accounting_book:reraise",
                             "chart_account_code": "110200",
                             "valid_from": "2026-01-01T00:00:00Z",
+                            "assignment_idempotency_key": "assign-reraise-probe",
                         },
                         "postgresql://unused",
                         tenant,
                     )
+
+    def test_assignment_replay_reload_failure_fails_closed(self) -> None:
+        """A replay whose stored binding cannot be reloaded fails closed, not 200."""
+
+        class _Result:
+            def __init__(self, rows: tuple[object, ...]) -> None:
+                self._rows = rows
+
+            def fetchone(self) -> tuple[object, ...] | None:
+                return self._rows or None
+
+        class _Connection:
+            def execute(self, sql: object, _params: object = None) -> "_Result":
+                query = sql if isinstance(sql, str) else str(sql)
+                if "assignment_command_hash" in query:
+                    # Prior command identity resolves with matching evidence.
+                    return _Result((uuid.uuid4(), "sha256:probe"))
+                if "SELECT" in query:
+                    # The reload lookup finds nothing, which must fail closed.
+                    return _Result(())
+                return _Result((uuid.uuid4(),))
+
+        class _Ledger:
+            def __init__(self, *_args: object, **_kwargs: object) -> None:
+                return None
+
+            def _session(self) -> contextlib.AbstractContextManager[object]:
+                return contextlib.nullcontext(_Connection())
+
+            def _require_tenant(self, _connection: object) -> object:
+                return uuid.uuid4()
+
+            def _acquire_command_lock(self, _connection: object, _scope: str) -> None:
+                return None
+
+        tenant = "urn:cwl:tenant:assignment-reload"
+        with mock.patch(
+            "accounting_information_platform.bank_statement.PostgresPostingLedger",
+            _Ledger,
+        ), mock.patch(
+            "accounting_information_platform.bank_statement._assignment_command_hash",
+            return_value="sha256:probe",
+        ):
+            with self.assertRaisesRegex(AccountingValidationError, "could not be reloaded"):
+                accept_bank_account_assignment(
+                    {
+                        "tenant_reference": tenant,
+                        "bank_account_reference": "urn:cwl:bank_account:reload",
+                        "legal_entity_reference": "urn:cwl:legal_entity:reload",
+                        "accounting_book_reference": "urn:cwl:accounting_book:reload",
+                        "chart_account_code": "110200",
+                        "valid_from": "2026-01-01T00:00:00Z",
+                        "assignment_idempotency_key": "assign-reload-probe",
+                    },
+                    "postgresql://unused",
+                    tenant,
+                )
 
     def test_manifest_revision_and_parser_reject_handlers_fail_closed(self) -> None:
         """Wrong adapter identity and unused expat reject handlers fail closed."""
