@@ -103,6 +103,22 @@ class FoundationInstallManifestContractTests(unittest.TestCase):
                     ROOT / "database/migrations/0001_accounting_foundation.sql",
                 )
 
+    def test_install_fails_closed_when_candidate_allocation_migration_is_missing(self) -> None:
+        """The public foundation loader may not silently omit migration 0014."""
+        original_is_file = Path.is_file
+
+        def is_file(path: Path) -> bool:
+            if path.name == "0014_reconciliation_candidate_allocation.sql":
+                return False
+            return original_is_file(path)
+
+        with patch.object(Path, "is_file", is_file):
+            with self.assertRaises(AccountingValidationError):
+                apply_foundation_migration(
+                    "postgresql://unused",
+                    ROOT / "database/migrations/0001_accounting_foundation.sql",
+                )
+
     def test_install_fails_closed_when_reconciliation_control_apply_fails(self) -> None:
         """Applying migration 0013 inside the authoritative chain keeps the PostgreSQL cause."""
         failing_psycopg = type("FailingPsycopg", (), {
