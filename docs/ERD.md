@@ -50,6 +50,19 @@ erDiagram
     bank_statement_artifact ||--o| bank_statement_record : evidences
     bank_statement_record ||--o{ bank_statement_entry : contains
     bank_statement_entry ||--o{ bank_statement_entry_detail : details
+
+    tenant_account ||--o{ reconciliation_run : scopes
+    legal_entity_record ||--o{ reconciliation_run : scopes
+    accounting_book ||--o{ reconciliation_run : scopes
+    bank_account_assignment ||--o{ reconciliation_run : reconciles
+    reconciliation_run ||--o{ reconciliation_exception : records
+    reconciliation_run ||--o{ reconciliation_evidence : evidences
+    reconciliation_exception ||--o{ reconciliation_evidence : supports
+    reconciliation_run ||--o{ reconciliation_candidate : evaluates
+    reconciliation_candidate ||--o{ reconciliation_match : disposition
+    reconciliation_run ||--o{ reconciliation_match : records
+    reconciliation_match ||--o{ statement_match_allocation : consumes
+    reconciliation_match ||--o{ journal_match_allocation : consumes
 ```
 
 ## Integrity boundaries
@@ -61,6 +74,10 @@ erDiagram
 `home_tax_submission` is a fail-closed tax-command evidence row, not a transmitted-filing claim. Its tenant-scoped `submission_idempotency_key`, canonical `source_payload_hash`, immutable `source_payload_reference`, and derived `register_payload_hash` preserve command identity and register provenance without storing the raw VAT register or credentials.
 
 `bank_account_record` and `bank_account_assignment` map an opaque bank account onto one legal entity, book, and same-book cash chart account. The assignment composite foreign key requires that book to belong to the same legal entity. `bank_statement_record` and `bank_statement_entry` are append-only evidence. They retain `source_artifact_hash`, `normalized_payload_hash`, `ingestion_idempotency_key`, and `source_entry_hash` so a controller can prove which original artifact produced each entry without storing the raw XML in PostgreSQL.
+
+`reconciliation_run` binds one evaluated reconciliation to tenant, legal entity, accounting book, bank-account assignment, currency, bank/book cutoffs, matching-policy version, and knowledge cutoff. Its evaluated scope is immutable. `reconciliation_exception` and `reconciliation_evidence` retain explicit exception ownership, next action, effective/system time, evidence references, and optional hashes rather than hiding unresolved items in derived status text.
+
+`reconciliation_candidate` records a deterministic statement/journal candidate and its exact source amounts; after INSERT it is append-only. `reconciliation_match` records the reviewable disposition. `statement_match_allocation` and `journal_match_allocation` preserve exact many-to-many consumption and are append-only regardless of later match status. Database-owned conservation guards serialize by immutable source identity and reject cross-run source-amount conflicts or over-consumption. Only an `approved` match consumes active source capacity; changing that match to `rejected` or `superseded` releases active capacity without deleting or rewriting the historical candidate/allocation evidence. These reconciliation relations provide audit and operator-control evidence only: they do not post, reverse, close, approve accounting policy, or mutate authoritative journals.
 
 ## Temporal and tenant scope
 
