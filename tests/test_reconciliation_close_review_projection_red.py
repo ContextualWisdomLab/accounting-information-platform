@@ -53,6 +53,10 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
             "reconciled_book_balance": Decimal("1200.00"),
             "outstanding_book_items": Decimal("100.00"),
             "outstanding_bank_items": Decimal("50.00"),
+            "tenant_account_reference": "tenant-a",
+            "legal_entity_reference": "entity-a",
+            "accounting_book_reference": "book-a",
+            "bank_account_assignment_reference": "bank-assignment-a",
         }
         values.update(overrides)
         return compute_book_to_bank_bridge(BookToBankBridgeInput(**values))
