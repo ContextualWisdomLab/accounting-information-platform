@@ -95,7 +95,7 @@ class PostgresCrossRunReconciliationConservationRedTests(unittest.TestCase):
                     reconciliation_match_id, tenant_account_id, reconciliation_run_id,
                     reconciliation_candidate_id, match_status_code, approved_at
                 )
-                VALUES (%s, %s, %s, %s, 'approved', clock_timestamp())
+                VALUES (%s, %s, %s, %s, 'proposed', NULL)
                 RETURNING reconciliation_match_id
                 """,
                 (
@@ -106,6 +106,19 @@ class PostgresCrossRunReconciliationConservationRedTests(unittest.TestCase):
                 ),
             ).fetchone()
         return row[0]
+
+    def _approve_match(self, run_reference: uuid.UUID, match_id: uuid.UUID) -> None:
+        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
+            connection.execute(
+                """
+                UPDATE accounting_core.reconciliation_match
+                SET match_status_code = 'approved', approved_at = clock_timestamp()
+                WHERE tenant_account_id = %s
+                  AND reconciliation_run_id = %s
+                  AND reconciliation_match_id = %s
+                """,
+                (self.case.scope["tenant_account_id"], run_reference, match_id),
+            )
 
     def _insert_statement_allocation(
         self,
@@ -157,44 +170,59 @@ class PostgresCrossRunReconciliationConservationRedTests(unittest.TestCase):
                 ),
             )
 
+    def _insert_balanced_allocations(
+        self,
+        run_reference: uuid.UUID,
+        match_id: uuid.UUID,
+        statement_reference: str,
+        journal_reference: str,
+        amount: str = "1000.00",
+    ) -> None:
+        self._insert_statement_allocation(run_reference, match_id, statement_reference, amount)
+        self._insert_journal_allocation(run_reference, match_id, journal_reference, amount)
+
     def test_second_active_run_cannot_reconsume_statement_source(self) -> None:
         """An approved statement amount is conserved across active reconciliation runs."""
         first_candidate = self.case._insert_candidate("stmt-cross-run", "journal-a")
         first_match = self.case._insert_match(first_candidate)
         self.case._insert_allocations(first_match, "stmt-cross-run", "journal-a", "1000.00")
+        self.case._approve_match(first_match)
 
         second_run = self._insert_run()
         second_candidate = self._insert_candidate(second_run, "stmt-cross-run", "journal-b")
         second_match = self._insert_match(second_run, second_candidate)
+        self._insert_balanced_allocations(
+            second_run, second_match, "stmt-cross-run", "journal-b"
+        )
 
         with self.assertRaises(psycopg.errors.CheckViolation):
-            self._insert_statement_allocation(
-                second_run,
-                second_match,
-                "stmt-cross-run",
-            )
+            self._approve_match(second_run, second_match)
 
     def test_second_active_run_cannot_reconsume_journal_source(self) -> None:
         """An approved journal amount is conserved across active reconciliation runs."""
         first_candidate = self.case._insert_candidate("stmt-a", "journal-cross-run")
         first_match = self.case._insert_match(first_candidate)
         self.case._insert_allocations(first_match, "stmt-a", "journal-cross-run", "1000.00")
+        self.case._approve_match(first_match)
 
         second_run = self._insert_run()
         second_candidate = self._insert_candidate(second_run, "stmt-b", "journal-cross-run")
         second_match = self._insert_match(second_run, second_candidate)
+        self._insert_balanced_allocations(
+            second_run, second_match, "stmt-b", "journal-cross-run"
+        )
 
         with self.assertRaises(psycopg.errors.CheckViolation):
-            self._insert_journal_allocation(
-                second_run,
-                second_match,
-                "journal-cross-run",
-            )
+            self._approve_match(second_run, second_match)
 
     def test_concurrent_active_runs_serialize_same_statement_source(self) -> None:
-        """Two reviewers cannot concurrently consume the same remaining statement amount."""
+        """Two reviewers cannot concurrently approve consumption of the same statement source."""
         first_candidate = self.case._insert_candidate("stmt-concurrent", "journal-first")
         first_match = self.case._insert_match(first_candidate)
+        self.case._insert_allocations(
+            first_match, "stmt-concurrent", "journal-first", "1000.00"
+        )
+
         second_run = self._insert_run()
         second_candidate = self._insert_candidate(
             second_run,
@@ -202,12 +230,15 @@ class PostgresCrossRunReconciliationConservationRedTests(unittest.TestCase):
             "journal-second",
         )
         second_match = self._insert_match(second_run, second_candidate)
-        insert_sql = """
-            INSERT INTO accounting_core.statement_match_allocation (
-                tenant_account_id, reconciliation_run_id, reconciliation_match_id,
-                statement_entry_reference, allocated_amount
-            )
-            VALUES (%s, %s, %s, %s, '1000.00')
+        self._insert_balanced_allocations(
+            second_run, second_match, "stmt-concurrent", "journal-second"
+        )
+        approval_sql = """
+            UPDATE accounting_core.reconciliation_match
+            SET match_status_code = 'approved', approved_at = clock_timestamp()
+            WHERE tenant_account_id = %s
+              AND reconciliation_run_id = %s
+              AND reconciliation_match_id = %s
         """
         first_connection = psycopg.connect(posting.DATABASE_URL)
         second_connection = psycopg.connect(posting.DATABASE_URL)
@@ -216,23 +247,21 @@ class PostgresCrossRunReconciliationConservationRedTests(unittest.TestCase):
 
         first_connection.execute("SET lock_timeout = '5s'")
         first_connection.execute(
-            insert_sql,
+            approval_sql,
             (
                 self.case.scope["tenant_account_id"],
                 self.case.run_reference,
                 first_match,
-                "stmt-concurrent",
             ),
         )
         second_connection.execute("SET lock_timeout = '250ms'")
         with self.assertRaises(psycopg.errors.LockNotAvailable):
             second_connection.execute(
-                insert_sql,
+                approval_sql,
                 (
                     self.case.scope["tenant_account_id"],
                     second_run,
                     second_match,
-                    "stmt-concurrent",
                 ),
             )
         second_connection.rollback()
@@ -240,12 +269,11 @@ class PostgresCrossRunReconciliationConservationRedTests(unittest.TestCase):
 
         with self.assertRaises(psycopg.errors.CheckViolation):
             second_connection.execute(
-                insert_sql,
+                approval_sql,
                 (
                     self.case.scope["tenant_account_id"],
                     second_run,
                     second_match,
-                    "stmt-concurrent",
                 ),
             )
         second_connection.rollback()
@@ -260,6 +288,7 @@ class PostgresCrossRunReconciliationConservationRedTests(unittest.TestCase):
             "journal-released",
             "1000.00",
         )
+        self.case._approve_match(first_match)
         with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
             connection.execute(
                 """
@@ -283,8 +312,10 @@ class PostgresCrossRunReconciliationConservationRedTests(unittest.TestCase):
             "journal-released",
         )
         second_match = self._insert_match(second_run, second_candidate)
-        self._insert_statement_allocation(second_run, second_match, "stmt-released")
-        self._insert_journal_allocation(second_run, second_match, "journal-released")
+        self._insert_balanced_allocations(
+            second_run, second_match, "stmt-released", "journal-released"
+        )
+        self._approve_match(second_run, second_match)
 
         with psycopg.connect(posting.DATABASE_URL) as connection:
             statuses = connection.execute(
