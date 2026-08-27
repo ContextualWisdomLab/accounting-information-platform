@@ -75,6 +75,7 @@ class PostgresReconciliationAppendOnlyEvidenceRedTests(unittest.TestCase):
             journal_reference,
             "1000.00",
         )
+        self.case._approve_match(match_id)
         with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
             connection.execute(
                 """
