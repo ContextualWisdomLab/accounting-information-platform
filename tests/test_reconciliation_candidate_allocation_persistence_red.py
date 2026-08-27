@@ -190,27 +190,56 @@ class PostgresReconciliationAllocationRedTests(unittest.TestCase):
         return row[0]
 
     def _insert_match(self, candidate_id: uuid.UUID, status: str = "approved") -> uuid.UUID:
+        match_id = uuid.uuid4()
+        initial_status = "proposed" if status == "approved" else status
         with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
-            row = connection.execute(
+            connection.execute(
                 """
                 INSERT INTO accounting_core.reconciliation_match (
                     reconciliation_match_id, tenant_account_id, reconciliation_run_id,
                     reconciliation_candidate_id, match_status_code, approved_at
                 )
-                VALUES (%s, %s, %s, %s, %s,
-                        CASE WHEN %s = 'approved' THEN clock_timestamp() ELSE NULL END)
-                RETURNING reconciliation_match_id
+                VALUES (%s, %s, %s, %s, %s, NULL)
                 """,
                 (
-                    uuid.uuid4(),
+                    match_id,
                     self.scope["tenant_account_id"],
                     self.run_reference,
                     candidate_id,
-                    status,
-                    status,
+                    initial_status,
                 ),
-            ).fetchone()
-        return row[0]
+            )
+            if status == "approved":
+                connection.execute(
+                    """
+                    INSERT INTO accounting_core.reconciliation_approval (
+                        tenant_account_id, reconciliation_run_id, reconciliation_match_id,
+                        approval_command_key, source_payload_hash, approver_reference,
+                        approval_purpose_code, approval_decision_code, effective_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, 'reviewer-fixture',
+                            'reconciliation_review', 'approved', %s)
+                    """,
+                    (
+                        self.scope["tenant_account_id"],
+                        self.run_reference,
+                        match_id,
+                        f"approve-{match_id}",
+                        f"sha256:{match_id.hex}{match_id.hex}",
+                        VALID_FROM,
+                    ),
+                )
+                connection.execute(
+                    """
+                    UPDATE accounting_core.reconciliation_match
+                    SET match_status_code = 'approved', approved_at = clock_timestamp()
+                    WHERE tenant_account_id = %s
+                      AND reconciliation_run_id = %s
+                      AND reconciliation_match_id = %s
+                    """,
+                    (self.scope["tenant_account_id"], self.run_reference, match_id),
+                )
+        return match_id
 
     def _insert_allocations(
         self,

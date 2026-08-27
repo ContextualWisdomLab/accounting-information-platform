@@ -99,6 +99,54 @@ class FoundationInstallManifestContractTests(unittest.TestCase):
                 self.assertIn(migration_fifteen, text)
                 self.assertLess(text.index(migration_fourteen), text.index(migration_fifteen))
 
+    def test_required_files_and_install_docs_include_reconciliation_approval_evidence(self) -> None:
+        """Migration 0016 follows conservation and is required by operator/install contracts."""
+        migration_fifteen = "database/migrations/0015_reconciliation_multi_match_conservation.sql"
+        migration_sixteen = "database/migrations/0016_reconciliation_approval_evidence.sql"
+        self.assertIn(migration_sixteen, set(REQUIRED_FILES))
+        for relative_path in ("docs/OPERABILITY.md", "docs/ARCHITECTURE.md"):
+            with self.subTest(relative_path=relative_path):
+                text = (ROOT / relative_path).read_text(encoding="utf-8")
+                self.assertIn(migration_fifteen, text)
+                self.assertIn(migration_sixteen, text)
+                self.assertLess(text.index(migration_fifteen), text.index(migration_sixteen))
+
+    def test_canonical_persistence_loader_fails_closed_when_approval_evidence_is_missing(self) -> None:
+        """Real PostgreSQL fixtures may not silently stop the authoritative chain at 0015."""
+        from accounting_information_platform.persistence import (
+            apply_foundation_migration as apply_persistence_foundation_migration,
+        )
+
+        original_is_file = Path.is_file
+
+        def is_file(path: Path) -> bool:
+            if path.name == "0016_reconciliation_approval_evidence.sql":
+                return False
+            return original_is_file(path)
+
+        with patch.object(Path, "is_file", is_file):
+            with self.assertRaises(AccountingValidationError):
+                apply_persistence_foundation_migration(
+                    "postgresql://unused",
+                    ROOT / "database/migrations/0001_accounting_foundation.sql",
+                )
+
+    def test_public_loader_fails_closed_when_approval_evidence_is_missing(self) -> None:
+        """The exported install boundary must delegate to the same complete chain through 0016."""
+        original_is_file = Path.is_file
+
+        def is_file(path: Path) -> bool:
+            if path.name == "0016_reconciliation_approval_evidence.sql":
+                return False
+            return original_is_file(path)
+
+        with patch.object(Path, "is_file", is_file):
+            with self.assertRaises(AccountingValidationError):
+                apply_foundation_migration(
+                    "postgresql://unused",
+                    ROOT / "database/migrations/0001_accounting_foundation.sql",
+                )
+
     def test_canonical_persistence_loader_fails_closed_when_conservation_is_missing(self) -> None:
         """Real PostgreSQL fixtures may not silently stop the authoritative chain at 0014."""
         from accounting_information_platform.persistence import (
