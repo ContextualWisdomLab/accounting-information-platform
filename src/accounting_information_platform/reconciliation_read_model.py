@@ -23,7 +23,10 @@ class ReconciliationCloseReviewInput:
 
     bridge_result: BookToBankBridgeResult
     decisions: tuple[ReconciliationDecision, ...]
+    expected_statement_entry_references: tuple[str, ...]
+    reconciliation_scope_reference: str
     preceding_bridge_result: BookToBankBridgeResult | None = None
+    preceding_reconciliation_scope_reference: str | None = None
 
 
 @dataclass(frozen=True)
@@ -56,6 +59,15 @@ def build_reconciliation_close_review(
     """Build an exact, read-only close-review projection from reconciliation evidence."""
 
     bridge = projection_input.bridge_result
+    expected_references = tuple(projection_input.expected_statement_entry_references)
+    decision_references = tuple(
+        decision.statement_entry_reference for decision in projection_input.decisions
+    )
+    population_is_complete = (
+        len(decision_references) == len(expected_references)
+        and len(set(decision_references)) == len(decision_references)
+        and set(decision_references) == set(expected_references)
+    )
     exceptions = tuple(
         decision
         for decision in projection_input.decisions
@@ -66,7 +78,12 @@ def build_reconciliation_close_review(
     )
 
     preceding = projection_input.preceding_bridge_result
-    if preceding is None:
+    preceding_is_comparable = (
+        preceding is not None
+        and projection_input.preceding_reconciliation_scope_reference
+        == projection_input.reconciliation_scope_reference
+    )
+    if preceding is None or not preceding_is_comparable:
         unexplained_change = None
         outstanding_bank_change = None
         outstanding_book_change = None
@@ -81,7 +98,11 @@ def build_reconciliation_close_review(
             bridge.outstanding_book_items - preceding.outstanding_book_items
         )
 
-    suitable = bridge.status_code == "reconciled" and not exceptions
+    suitable = (
+        bridge.status_code == "reconciled"
+        and not exceptions
+        and population_is_complete
+    )
     if bridge.status_code != "reconciled":
         next_action = (
             "Resolve the exact book-to-bank bridge difference "
@@ -91,6 +112,18 @@ def build_reconciliation_close_review(
         next_action = (
             f"Resolve {len(exceptions)} reconciliation exception(s) from the listed "
             "statement evidence, then rerun period-close review."
+        )
+    elif not population_is_complete:
+        next_action = (
+            "The expected statement-entry population is not fully reconciled: every "
+            "expected statement entry must have exactly one decision before close "
+            "review may become suitable."
+        )
+    elif not preceding_is_comparable and preceding is not None:
+        next_action = (
+            "Compare only the preceding reconciliation run for the same reconciliation "
+            "scope (tenant, legal entity, accounting book, bank-account assignment, "
+            "and currency) before period-close review."
         )
     else:
         next_action = (
