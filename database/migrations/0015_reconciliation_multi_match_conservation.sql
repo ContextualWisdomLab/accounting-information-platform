@@ -420,6 +420,10 @@ DECLARE
     current_accounting_book_id uuid;
     current_bank_account_assignment_id uuid;
     current_currency_code text;
+    statement_allocation_count bigint;
+    journal_allocation_count bigint;
+    statement_allocation_total numeric(30, 6);
+    journal_allocation_total numeric(30, 6);
 BEGIN
     IF NEW.match_status_code <> 'approved'
        OR (TG_OP = 'UPDATE' AND OLD.match_status_code = 'approved') THEN
@@ -443,6 +447,28 @@ BEGIN
     IF NOT FOUND THEN
         RAISE EXCEPTION
             'match is outside the tenant reconciliation run (reconciliation_scope_mismatch)'
+            USING ERRCODE = '23514';
+    END IF;
+
+    SELECT COUNT(*), COALESCE(SUM(allocation.allocated_amount), 0)
+    INTO statement_allocation_count, statement_allocation_total
+    FROM accounting_core.statement_match_allocation AS allocation
+    WHERE allocation.tenant_account_id = NEW.tenant_account_id
+      AND allocation.reconciliation_run_id = NEW.reconciliation_run_id
+      AND allocation.reconciliation_match_id = NEW.reconciliation_match_id;
+
+    SELECT COUNT(*), COALESCE(SUM(allocation.allocated_amount), 0)
+    INTO journal_allocation_count, journal_allocation_total
+    FROM accounting_core.journal_match_allocation AS allocation
+    WHERE allocation.tenant_account_id = NEW.tenant_account_id
+      AND allocation.reconciliation_run_id = NEW.reconciliation_run_id
+      AND allocation.reconciliation_match_id = NEW.reconciliation_match_id;
+
+    IF statement_allocation_count = 0
+       OR journal_allocation_count = 0
+       OR statement_allocation_total <> journal_allocation_total THEN
+        RAISE EXCEPTION
+            'approved reconciliation match requires non-empty equal statement and journal allocation totals (reconciliation_match_unbalanced)'
             USING ERRCODE = '23514';
     END IF;
 
