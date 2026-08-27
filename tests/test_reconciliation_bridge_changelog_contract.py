@@ -45,6 +45,32 @@ class ReconciliationBridgeChangelogContractTests(unittest.TestCase):
             with self.subTest(required_phrase=required_phrase):
                 self.assertIn(required_phrase, entry)
 
+    def test_unreleased_records_finite_decimal_bridge_validation(self) -> None:
+        """The current release notes must preserve the bridge monetary-domain hardening."""
+        changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        entries = _unreleased_entries(changelog)
+        matching_entries = [
+            line
+            for line in entries
+            if "book-to-bank bridge monetary inputs" in line
+        ]
+        self.assertEqual(
+            len(matching_entries),
+            1,
+            "[Unreleased] must contain one book-to-bank bridge monetary-input validation entry",
+        )
+        entry = matching_entries[0]
+        for required_phrase in (
+            "finite `Decimal`",
+            "binary float",
+            "NaN",
+            "infinities",
+            "signed",
+            "ADR 0054",
+        ):
+            with self.subTest(required_phrase=required_phrase):
+                self.assertIn(required_phrase, entry)
+
     def test_released_history_does_not_count_as_unreleased(self) -> None:
         """A historical bridge entry must not satisfy the live Unreleased contract."""
         changelog = """# Changelog
