@@ -151,6 +151,19 @@ class ReconciliationDecisionProvenanceTests(unittest.TestCase):
                         next_action="Review unmatched evidence and record an explicit exception.",
                     )
 
+    def test_unknown_decision_code_cannot_forge_reconciliation_evidence(self) -> None:
+        """A decision with an unexpected decision_code fails closed instead of passing silently."""
+        with self.assertRaisesRegex(ValueError, "decision_code must be match or abstain"):
+            ReconciliationDecision(
+                statement_entry_reference="statement-provenance-1",
+                decision_code="approved",
+                rule_code=None,
+                matched_journal_references=(),
+                allocated_amount=Decimal("0"),
+                exception_code=None,
+                next_action="Review unmatched evidence and record an explicit exception.",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

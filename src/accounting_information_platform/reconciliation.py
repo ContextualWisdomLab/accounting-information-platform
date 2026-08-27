@@ -135,6 +135,10 @@ class ReconciliationDecision:
                 raise ValueError(
                     "abstain decision requires an exception_code. Review unmatched evidence and record an explicit exception."
                 )
+        else:
+            raise ValueError(
+                "reconciliation decision_code must be match or abstain. Rebuild the deterministic proposal from source evidence."
+            )
 
 
 _STRONG_REFERENCE_RULES = (
