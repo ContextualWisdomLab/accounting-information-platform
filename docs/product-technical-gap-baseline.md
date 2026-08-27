@@ -43,8 +43,8 @@ successes.
 | Accounting posting foundation | Dependency root for every later slice | Integrated into protected `develop`; post-integration signed provenance/SBOM attestations must stay green on the integrated head before any release claim |
 | Immutable bank-statement evidence registry | First buyer-visible reconciliation input; implements the statement-evidence issue | Integrated into protected `develop`; exact replay, changed-hash conflict, parser fail-closed behavior, tenant isolation, and assignment command identity remain protected-branch invariants |
 | Documentation successor | Customer/operator README plus ADR enrichment rebuilt from the integrated foundation | Reconstructed from the exact integrated tree after the dependency roots land; stale ancestry must not merge |
-| Deterministic reconciliation and book-to-bank bridge | Second bounded reconciliation slice | Implemented only after the foundation and statement registry are integrated protected facts |
-| Bank-reconciliation buyer slice | Close-out of the reconciliation vertical | Closed only after matching, exceptions/approvals, exact bridge, and close-evidence provenance are integrated |
+| Deterministic reconciliation and book-to-bank bridge | Second bounded reconciliation slice | Delivered on protected `develop`: deterministic proposal engine, exact bridge with finite-`Decimal` boundary, immutable-scope close-review projection, and the durable `reconciliation_run`/`reconciliation_exception`/`reconciliation_evidence` substrate with forced tenant RLS and immutable run scope |
+| Bank-reconciliation buyer slice | Close-out of the reconciliation vertical | Closed only after candidate/match allocation conservation, exception/approval workflow, and close-package provenance are integrated on top of the delivered substrate |
 | Purpose-bound accounting authorization | Least-privilege operation authority | Versioned permission model with fail-closed decisions and immutable audit evidence |
 | Branch/release governance | Integration and release control plane | Protected `develop`/`main` effective policy including repository-owned exact-head accounting CI, independent reviews, and no normal force-push/deletion/bypass path |
 
@@ -73,15 +73,19 @@ that renumbering cannot silently drop a commitment.
    finite-`Decimal` monetary-domain boundary (binary float, `NaN`, and infinities
    fail closed before bridge arithmetic; finite signed balances and movements
    remain valid because populations may be signed; ADR 0054).
-5. **Bank-reconciliation buyer-slice close-out.** Close only after the registry,
-   matching/exception/approval workflow, exact bridge, close evidence, and
-   provenance are integrated. The read-only close-review projection (exact
+5. **Bank-reconciliation buyer-slice close-in.** Close only after candidate/match
+   allocation conservation, exception/approval workflow, exact bridge, close
+   evidence, and provenance are integrated on top of the delivered substrate.
+   Delivered on `develop`: read-only close-review projection (exact
    bank/book/reconciled/outstanding/unexplained values, immutable run and
    population provenance, unresolved statement-entry references, preceding-run
-   deltas, JSON/CSV decimal-string exports, and evidence-eligibility-only
-   `suitable_for_period_close_review`) is integrated as an intermediate buyer
-   slice; the durable run/exception/evidence substrate and the extended exception
-   model remain open.
+   deltas scoped to the same accounting scope, JSON/CSV decimal-string exports,
+   and evidence-eligibility-only `suitable_for_period_close_review`) plus the
+   durable `reconciliation_run`/`reconciliation_exception`/
+   `reconciliation_evidence` rows with forced tenant RLS and the immutable
+   evaluated-run scope guard. Open: many-to-many exact allocation conservation,
+   candidate/match persistence, and reconciliation approval with close-package
+   provenance.
 6. **Purpose-bound accounting authorization.** Keep tenant identity separate from
    operation authority for posting, reversal, close, tax, outbox, audit, and read
    permissions.
@@ -97,7 +101,7 @@ exact-head gates rather than leaving merge safety to convention alone.
 | P0 | Repository governance does not yet enforce the intended merge/release policy everywhere | A technically green candidate could be integrated without durable control-plane enforcement, and `main` remains outside release-grade protection | Protected `develop`/`main` policy with required accounting CI/security/dependency gates, independent review, thread resolution, no force-push/deletion path, and fresh effective-policy evidence from branch and ruleset surfaces together |
 | P0 | Database authority must remain stronger than application intent on the integrated head | Direct SQL must never rewrite balances, tenant scope, finalized facts, or closed periods | Real PostgreSQL runtime tests for deferred balance, append-only/finalization guards, forced RLS with a restricted runtime login, DB-owned tenant binding, temporal reversal rules, and purpose-limited close authority |
 | P0 | Stateful commands require exact replay identity and immutable source evidence | Retries must not duplicate or mutate posting, reversal, close, tax, or statement-acceptance evidence | Tenant-scoped command keys, immutable source hashes/references, exact replay, changed-evidence conflict, and atomic command/outbox persistence proven in PostgreSQL |
-| P1 | Deterministic reconciliation and book-to-bank bridge are absent | Cash close cannot explain differences or safely abstain from ambiguous matches | Exact split/aggregate conservation, temporal cutoff, concurrency safety, exception/approval workflow, provenance, and bridge equations from bank evidence to posted cash journals. The bridge and its finite-`Decimal` domain boundary are integrated; the remaining P1 is the durable run/exception/evidence substrate, exception workflow, and exact close-package provenance |
+| P1 | Deterministic reconciliation and candidate/match allocation are partially delivered | Cash close can now explain differences and safely abstain, but approved candidates with exact split/aggregate conservation are not yet persistent across runs | Exact split/aggregate conservation with many-to-many allocation rows, temporal cutoff, concurrency safety, exception/approval workflow, provenance, and bridge equations from bank evidence to posted cash journals. Delivered so far: deterministic proposal engine, finite-Decimal bridge, immutable-scope close-review projection, and the durable run/exception/evidence substrate on protected `develop` |
 | P1 | Close-review projection integration is in flight | Controllers cannot yet read an exact, exportable close-review projection from one integrated head | The read-only projection and its authority/export contracts are integrated; it cannot approve or post. Outstanding: close-review opened only from integrated projection and its restacked successors |
 | P1 | Purpose-bound authorization is absent | Tenant authentication alone is too coarse for accounting powers | Versioned operation-to-permission mapping, host identity adapter boundary, fail-closed authorization tests, immutable allow/deny audit evidence, and no caller/model-controlled promotion |
 | P1 | Production operability and release proof remain incomplete | An operator cannot yet deploy, observe, back up, and recover the service with release-grade evidence | Supported deployment boundary, migration/rollback rehearsal, outbox-drain ownership, metrics/alerts, backup/restore exercise, integrated-head signed attestations, release version, artifact/source hashes, and recovery runbook evidence |
@@ -162,11 +166,12 @@ The first buyer-visible reconciliation vertical is deliberately bounded:
 immutable bank statement artifact
 → normalized statement / entry identity          [delivered by the registry slice]
 → bank-account ↔ legal-entity / book assignment  [delivered by the registry slice]
-→ deterministic candidate matching               [reconciliation milestone]
-→ exact book-to-bank bridge                      [integrated; finite-Decimal domain boundary in ADR 0054]
-→ close-review projection                        [anonymous read-only slice, evidence eligibility only]
-→ durable run/exception/evidence and exception workflow  [open buyer-slice close-out]
-→ close evidence and exportable provenance       [buyer-slice close-out]
+→ deterministic candidate matching               [delivered: proposal engine]
+→ exact book-to-bank bridge                      [delivered; finite-Decimal boundary + bridge scope in ADR 0054]
+→ durable run / exception / evidence rows        [delivered; forced RLS + run-scope guard]
+→ close-review projection                        [delivered; evidence eligibility only, same-scope deltas]
+→ candidate/match allocation conservation        [open M2 slice]
+→ reconciliation approval and close package      [open M2 slice]
 ```
 
 The delivered adapter pins the supported ISO 20022 message-definition revision and
