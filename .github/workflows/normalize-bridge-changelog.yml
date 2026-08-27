@@ -38,7 +38,7 @@ jobs:
           path = Path("CHANGELOG.md")
           text = path.read_text(encoding="utf-8")
           marker = "- Added the exact book-to-bank reconciliation bridge with exact Decimal equations, fail-closed one minor unit differences, statement-population and book-population provenance, no automatic journal posting, and ADR 0054."
-          entry = "- Book-to-bank bridge monetary inputs now fail closed unless every component is a finite `Decimal`: binary float values, `NaN`, and infinities are rejected before bridge arithmetic, while finite signed balances and movements remain valid accounting evidence. ADR 0054 records the boundary."
+          entry = "- book-to-bank bridge monetary inputs now fail closed unless every component is a finite `Decimal`: binary float values, `NaN`, and infinities are rejected before bridge arithmetic, while finite signed balances and movements remain valid accounting evidence. ADR 0054 records the boundary."
           unreleased, separator, released = text.partition("\n## [0.1.0] - 2026-08-26")
           if not separator:
               raise SystemExit("expected 0.1.0 release boundary is missing")
