@@ -2,7 +2,7 @@
 
 ## Deployment preconditions
 
-Use PostgreSQL 18 and keep the migration owner, application runtime login and administrative / break-glass identities separate. Apply migrations in numeric order through `0013_reconciliation_run_exception_evidence.sql` before starting the service. Do not run the application with a table-owner, superuser or `BYPASSRLS` login.
+Use PostgreSQL 18 and keep the migration owner, application runtime login and administrative / break-glass identities separate. Apply migrations in numeric order through `0014_reconciliation_match_allocation.sql` before starting the service. Do not run the application with a table-owner, superuser or `BYPASSRLS` login.
 
 Required environment values are deployment-specific. At minimum, configure the accounting database URL and bind this AIS process to exactly one tenant reference. Secrets belong in an approved secret store; do not place database passwords, NTS credentials, bearer tokens or provider secrets in journal payloads, logs or outbox events.
 
@@ -26,6 +26,7 @@ database/migrations/0010_soft_close_command_evidence.sql
 database/migrations/0011_bank_statement_evidence.sql
 database/migrations/0012_bank_assignment_command_identity.sql
 database/migrations/0013_reconciliation_run_exception_evidence.sql
+database/migrations/0014_reconciliation_match_allocation.sql
 ```
 
 Migration `0007_runtime_tenant_binding.sql` replaces caller-selected tenant authority with owner-controlled runtime-login binding. Migration `0008_fiscal_period_open_command.sql` adds forced-RLS, append-only command evidence so fiscal-period-open retries are bound to the original tenant key and source hash. Both must be installed before runtime database privileges are treated as production-ready.
@@ -180,3 +181,7 @@ Apply `0009_accounting_book_period_control.sql` after `0008_fiscal_period_open_c
 ## Soft-close command evidence recovery
 
 New soft-close transitions atomically retain the original idempotency key, source-journal count and canonical source hash. Replays must use the same key and return those stored facts even after authorized adjustments change the live ledger. If a legacy migrated `soft_closed` row has no command evidence, the service fails closed; restore the original evidence through an audited migration only if it can be proven. Never synthesize historical evidence from current journals.
+
+## Reconciliation allocation evidence
+
+Migration `0014_reconciliation_match_allocation.sql` persists proposed reconciliation matches as normalized append-only rows. Insert the match plus all statement-side and journal-side allocations in one transaction because the database defers exact conservation until commit and rejects a match with an empty side or unequal exact totals. The database also proves that statement rows belong to the run's assigned bank account and currency, and that journal rows belong to the run's legal entity, accounting book, and currency. These rows are proposal evidence only: operators may not update/delete them, and they do not approve reconciliation or post/reverse a journal. Record a later superseding run for corrections.

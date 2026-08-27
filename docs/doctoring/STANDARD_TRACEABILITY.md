@@ -23,3 +23,9 @@
 | XBRL 2.1 | Treat external reporting taxonomy as a versioned projection rather than core ledger columns | Reporting roadmap |
 
 The initial milestone does not claim production compliance with a jurisdiction's accounting, tax, or statutory reporting rules. It establishes controls and traceability required to implement reviewed policies without changing the journal authority model.
+
+### Durable reconciliation allocation evidence
+
+- **Decision:** ADR 0054 / migration `0014_reconciliation_match_allocation.sql` persist normalized many-to-many proposal evidence under forced tenant RLS, append-only mutation guards, same-scope source checks, and deferred exact Decimal-compatible SQL conservation.
+- **External authority boundary:** ISO 20022 remains the authority for the bank-statement source-message vocabulary already retained by the statement registry. It does not prescribe AIS matching precedence, allocation conservation, approval, or journal posting; those remain internal reviewed accounting controls.
+- **Claim limit:** this is evidence readiness only. It does not claim ISO conformance for reconciliation behavior, SOC 2/CSAP certification, reconciliation approval, or statutory posting from statement lines.

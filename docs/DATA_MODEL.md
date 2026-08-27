@@ -65,3 +65,7 @@ Revenue contracts and performance obligations, durable receivable/payable subled
 ## Soft-close command evidence fields
 
 `accounting_book_period_control` carries nullable `soft_close_idempotency_key`, `soft_close_source_payload_hash` and `soft_close_source_journal_count` for migration compatibility. PostgreSQL requires them to be all absent or complete, makes non-null keys unique per tenant and prevents changes after a key is recorded. New application soft-closes always populate the complete set atomically; all-null values represent legacy rows whose original command evidence was not recoverable during migration.
+
+## Durable reconciliation allocation evidence
+
+`reconciliation_run` remains the evaluated tenant/entity/book/bank-assignment/currency scope. Migration `0014_reconciliation_match_allocation.sql` adds `reconciliation_match` as one proposed match identity, `statement_match_allocation` as its normalized links to immutable `bank_statement_entry` rows, and `journal_match_allocation` as its normalized links to immutable `general_journal` rows. Allocation money is `numeric(38, 6)` and strictly positive; currency is bound to the parent match/run. Deferred database constraints require at least one row on both sides and exact equality of the two allocation sums at commit. Scope triggers reject a statement from another assigned bank account or a journal from another legal entity/book/currency. All three relations use forced tenant RLS and reject `UPDATE`/`DELETE`; later corrections use superseding evidence rather than rewriting a recorded proposal.

@@ -69,3 +69,14 @@ Master-data mappings use validity intervals where policy or assignment can chang
 ## Runtime tenant identity
 
 `tenant_account` is referenced by `runtime_tenant_binding`, which also records the authenticated PostgreSQL role OID/name and effective interval. This control-plane relation is not a business subledger; it supplies the trusted tenant key consumed by forced RLS for authoritative accounting tables.
+
+## Reconciliation allocation extension
+
+```text
+reconciliation_run
+    1 ──< reconciliation_match
+              1 ──< statement_match_allocation >── 1 bank_statement_entry
+              1 ──< journal_match_allocation   >── 1 general_journal
+```
+
+The two allocation sides are normalized rather than stored as JSON. `(tenant_account_id, reconciliation_run_id, reconciliation_match_id)` is the shared match identity; statement and journal source foreign keys are tenant-scoped, and database guards additionally prove bank-account/entity/book/currency scope. Exact allocation conservation is deferred to transaction commit so a match and all of its rows can be inserted atomically.

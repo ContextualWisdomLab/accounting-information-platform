@@ -87,6 +87,34 @@ class FoundationInstallManifestContractTests(unittest.TestCase):
                 self.assertIn(migration_thirteen, text)
                 self.assertLess(text.index(migration_twelve), text.index(migration_thirteen))
 
+    def test_required_files_and_install_docs_include_reconciliation_allocation(self) -> None:
+        """Allocation evidence follows run/exception evidence in install contracts."""
+        migration_thirteen = "database/migrations/0013_reconciliation_run_exception_evidence.sql"
+        migration_fourteen = "database/migrations/0014_reconciliation_match_allocation.sql"
+        self.assertIn(migration_fourteen, set(REQUIRED_FILES))
+        for relative_path in ("docs/OPERABILITY.md", "docs/ARCHITECTURE.md"):
+            with self.subTest(relative_path=relative_path):
+                text = (ROOT / relative_path).read_text(encoding="utf-8")
+                self.assertIn(migration_thirteen, text)
+                self.assertIn(migration_fourteen, text)
+                self.assertLess(text.index(migration_thirteen), text.index(migration_fourteen))
+
+    def test_install_fails_closed_when_reconciliation_allocation_migration_is_missing(self) -> None:
+        """The public foundation loader may not silently omit migration 0014."""
+        original_is_file = Path.is_file
+
+        def is_file(path: Path) -> bool:
+            if path.name == "0014_reconciliation_match_allocation.sql":
+                return False
+            return original_is_file(path)
+
+        with patch.object(Path, "is_file", is_file):
+            with self.assertRaises(AccountingValidationError):
+                apply_foundation_migration(
+                    "postgresql://unused",
+                    ROOT / "database/migrations/0001_accounting_foundation.sql",
+                )
+
     def test_install_fails_closed_when_reconciliation_control_migration_is_missing(self) -> None:
         """The public foundation loader may not silently omit migration 0013."""
         original_is_file = Path.is_file

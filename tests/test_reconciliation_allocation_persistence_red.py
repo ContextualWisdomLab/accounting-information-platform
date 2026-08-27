@@ -6,6 +6,10 @@ import re
 import unittest
 from pathlib import Path
 
+import psycopg
+
+from tests import test_postgres_posting as posting
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / "database/migrations/0014_reconciliation_match_allocation.sql"
@@ -75,6 +79,96 @@ class ReconciliationAllocationPersistenceRedTests(unittest.TestCase):
         self.assertIn("before update or delete on accounting_core.reconciliation_match", normalized)
         self.assertIn("before update or delete on accounting_core.statement_match_allocation", normalized)
         self.assertIn("before update or delete on accounting_core.journal_match_allocation", normalized)
+
+
+@unittest.skipUnless(MIGRATION.exists(), "RED until durable allocation migration exists")
+class PostgresReconciliationAllocationPersistenceTests(unittest.TestCase):
+    """Verify allocation isolation and deferred conservation on PostgreSQL 18."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        posting.PostgresPostingTests.setUpClass()
+
+    def test_allocation_tables_force_rls(self) -> None:
+        """Every durable match/allocation relation is forced through tenant RLS."""
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            rows = connection.execute(
+                """
+                SELECT c.relname, c.relrowsecurity, c.relforcerowsecurity
+                FROM pg_class AS c
+                JOIN pg_namespace AS n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'accounting_core'
+                  AND c.relname = ANY(%s)
+                ORDER BY c.relname
+                """,
+                ([
+                    "journal_match_allocation",
+                    "reconciliation_match",
+                    "statement_match_allocation",
+                ],),
+            ).fetchall()
+        self.assertEqual(
+            rows,
+            [
+                ("journal_match_allocation", True, True),
+                ("reconciliation_match", True, True),
+                ("statement_match_allocation", True, True),
+            ],
+        )
+
+    def test_conservation_guards_are_deferred_constraint_triggers(self) -> None:
+        """Partial match writes can exist inside one transaction but not at commit."""
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            rows = connection.execute(
+                """
+                SELECT c.relname, t.tgname, t.tgdeferrable, t.tginitdeferred
+                FROM pg_trigger AS t
+                JOIN pg_class AS c ON c.oid = t.tgrelid
+                JOIN pg_namespace AS n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'accounting_core'
+                  AND t.tgname = ANY(%s)
+                  AND NOT t.tgisinternal
+                ORDER BY c.relname, t.tgname
+                """,
+                ([
+                    "journal_match_conservation_guard",
+                    "reconciliation_match_conservation_guard",
+                    "statement_match_conservation_guard",
+                ],),
+            ).fetchall()
+        self.assertEqual(len(rows), 3)
+        self.assertTrue(all(row[2] and row[3] for row in rows))
+
+    def test_scope_and_immutability_guards_exist(self) -> None:
+        """Database guardrails own same-scope admission and append-only evidence."""
+        expected = {
+            "journal_match_allocation_immutable_guard",
+            "journal_match_allocation_scope_guard",
+            "reconciliation_match_immutable_guard",
+            "statement_match_allocation_immutable_guard",
+            "statement_match_allocation_scope_guard",
+        }
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            names = {
+                row[0]
+                for row in connection.execute(
+                    """
+                    SELECT t.tgname
+                    FROM pg_trigger AS t
+                    JOIN pg_class AS c ON c.oid = t.tgrelid
+                    JOIN pg_namespace AS n ON n.oid = c.relnamespace
+                    WHERE n.nspname = 'accounting_core'
+                      AND c.relname = ANY(%s)
+                      AND NOT t.tgisinternal
+                    """,
+                    ([
+                        "journal_match_allocation",
+                        "reconciliation_match",
+                        "statement_match_allocation",
+                    ],),
+                ).fetchall()
+            }
+        self.assertTrue(expected <= names)
 
 
 if __name__ == "__main__":

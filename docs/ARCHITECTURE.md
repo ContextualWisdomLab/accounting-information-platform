@@ -35,6 +35,7 @@ Metering and billing remain authoritative for usage, pricing, invoice intent, pa
 | `integration_outbox` | Transactional publication evidence and append-only audit history |
 | `tax_interface` | VAT register and fail-closed HomeTax submission evidence; no NTS transport in this foundation |
 | `bank_statement_registry` | Immutable camt.053.001.14 statement/entry evidence, bank-account-to-book mapping, and host artifact locators |
+| `reconciliation_control` | Deterministic proposal evidence, durable run/exception lineage, normalized many-to-many match allocations, and exact book-to-bank close evidence without posting authority |
 
 ## Persistence and migration order
 
@@ -129,6 +130,7 @@ Shared fiscal-calendar dates do not collapse independent accounting books into o
 11. `database/migrations/0011_bank_statement_evidence.sql` — immutable camt.053.001.14 statement evidence, bank-account assignment, and entry provenance.
 12. `database/migrations/0012_bank_assignment_command_identity.sql` — tenant-scoped bank-account-assignment command identity, replay/conflict evidence, and the active book-scope uniqueness guard.
 13. `database/migrations/0013_reconciliation_run_exception_evidence.sql` — durable reconciliation-run and exception evidence required by the installed bank-reconciliation control chain.
+14. `database/migrations/0014_reconciliation_match_allocation.sql` — normalized append-only statement/journal allocation evidence, forced tenant isolation, same-scope guards, and deferred exact allocation conservation.
 
 ## Durable soft-close command evidence
 

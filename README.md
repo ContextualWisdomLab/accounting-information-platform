@@ -36,9 +36,8 @@ What is present:
 - product, architecture, security, and standards documents listed below.
 
 What is not present: an automatically started listener, gRPC or live event
-transport, foreign exchange, revenue schedules, bank-statement ingestion and
-reconciliation, consolidation, tax calculation, or live HomeTax/NTS
-transmission. The outbox is durable but this tree does not publish it to a
+transport, foreign exchange, revenue schedules, reconciliation approval and allocation-consumption
+workflow, consolidation, tax calculation, or live HomeTax/NTS transmission. The outbox is durable but this tree does not publish it to a
 bus. The in-memory `PostingLedger` remains the reference oracle that the
 PostgreSQL adapter must match.
 
@@ -118,7 +117,7 @@ factory/runner and provide the tenant-bound host boundary explicitly.
 `unittest` discovery also runs `tests/test_postgres_posting.py`, which needs a
 reachable PostgreSQL 18 instance and `ACCOUNTING_DATABASE_URL` (CI uses
 `postgresql://postgres:postgres@127.0.0.1:5432/accounting_test` and applies
-the checked-in migration chain through `database/migrations/0013_reconciliation_run_exception_evidence.sql`). Persistence is still
+the checked-in migration chain through `database/migrations/0014_reconciliation_match_allocation.sql`). Persistence is still
 local to this repository; it is not a Naruon or sibling checkout.
 
 Optional import smoke after the editable install above:
