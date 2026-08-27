@@ -75,6 +75,18 @@ class FoundationInstallManifestContractTests(unittest.TestCase):
                 self.assertIn(migration_twelve, text)
                 self.assertLess(text.index(migration_eleven), text.index(migration_twelve))
 
+    def test_required_files_and_install_docs_include_reconciliation_control(self) -> None:
+        """Reconciliation control follows assignment identity in operator/install contracts."""
+        migration_twelve = "database/migrations/0012_bank_assignment_command_identity.sql"
+        migration_thirteen = "database/migrations/0013_reconciliation_run_exception_evidence.sql"
+        self.assertIn(migration_thirteen, set(REQUIRED_FILES))
+        for relative_path in ("docs/OPERABILITY.md", "docs/ARCHITECTURE.md"):
+            with self.subTest(relative_path=relative_path):
+                text = (ROOT / relative_path).read_text(encoding="utf-8")
+                self.assertIn(migration_twelve, text)
+                self.assertIn(migration_thirteen, text)
+                self.assertLess(text.index(migration_twelve), text.index(migration_thirteen))
+
     def test_install_fails_closed_when_reconciliation_control_migration_is_missing(self) -> None:
         """The public foundation loader may not silently omit migration 0013."""
         original_is_file = Path.is_file
@@ -92,8 +104,9 @@ class FoundationInstallManifestContractTests(unittest.TestCase):
                 )
 
     def test_install_fails_closed_when_reconciliation_control_apply_fails(self) -> None:
-        """Applying migration 0013 inside the authoritative chain keeps an accounting error."""
+        """Applying migration 0013 inside the authoritative chain keeps the PostgreSQL cause."""
         failing_psycopg = type("FailingPsycopg", (), {
+            "ClientCursor": object,
             "connect": staticmethod(
                 lambda *args, **kwargs: (_ for _ in ()).throw(
                     RuntimeError("postgres connection refused")
@@ -106,11 +119,13 @@ class FoundationInstallManifestContractTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(
                 AccountingValidationError, "Foundation migration failed"
-            ):
+            ) as raised:
                 apply_foundation_migration(
                     "postgresql://unused",
                     ROOT / "database/migrations/0001_accounting_foundation.sql",
                 )
+        self.assertIsInstance(raised.exception.__cause__, RuntimeError)
+        self.assertEqual(str(raised.exception.__cause__), "postgres connection refused")
 
     def test_install_fails_closed_when_assignment_identity_migration_is_missing(self) -> None:
         """The foundation loader may not silently omit migration 0012."""
