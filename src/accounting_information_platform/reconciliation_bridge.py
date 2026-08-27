@@ -52,6 +52,27 @@ class BookToBankBridgeResult(NamedTuple):
     next_action: str
 
 
+_BRIDGE_MONEY_FIELDS = (
+    "statement_opening_balance",
+    "statement_period_movements",
+    "statement_closing_balance",
+    "book_opening_balance",
+    "posted_cash_book_movements",
+    "book_closing_balance",
+    "reconciled_book_balance",
+    "outstanding_book_items",
+    "outstanding_bank_items",
+)
+
+
+def _validate_bridge_money(bridge_input: BookToBankBridgeInput) -> None:
+    """Reject non-Decimal or non-finite monetary bridge evidence before arithmetic."""
+    for field_name in _BRIDGE_MONEY_FIELDS:
+        value = getattr(bridge_input, field_name)
+        if not isinstance(value, Decimal) or not value.is_finite():
+            raise ValueError(f"{field_name} must be a finite Decimal")
+
+
 def _result(
     bridge_input: BookToBankBridgeInput,
     *,
@@ -88,6 +109,8 @@ def compute_book_to_bank_bridge(
     bridge_input: BookToBankBridgeInput,
 ) -> BookToBankBridgeResult:
     """Prove statement, book, and bridge equations with exact ``Decimal`` values."""
+    _validate_bridge_money(bridge_input)
+
     expected_statement_closing = (
         bridge_input.statement_opening_balance
         + bridge_input.statement_period_movements
