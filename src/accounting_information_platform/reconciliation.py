@@ -137,7 +137,7 @@ class ReconciliationDecision:
                 )
         else:
             raise ValueError(
-                "reconciliation decision_code must be match or abstain. Rebuild the deterministic proposal from source evidence."
+                "decision_code must be match or abstain. Rebuild the reconciliation decision from deterministic source evidence."
             )
 
 
