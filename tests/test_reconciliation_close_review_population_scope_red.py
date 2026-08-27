@@ -1,9 +1,10 @@
-"""RED contracts for complete close-review populations and same-scope deltas.
+"""RED and coverage contracts for complete close-review populations and scope.
 
 A close-review projection must not become period-close-review eligible from a
-caller-selected subset of statement decisions.  Preceding-run deltas must also
+caller-selected subset of statement decisions. Preceding-run deltas must also
 compare only the same immutable accounting/bank scope; matching currency alone
-is insufficient evidence of scope identity.
+is insufficient evidence of scope identity. These tests also execute every
+fail-closed validation branch that protects that authority boundary.
 """
 
 from __future__ import annotations
@@ -54,14 +55,21 @@ class ReconciliationCloseReviewPopulationScopeTests(unittest.TestCase):
         )
 
     @staticmethod
-    def _scope(*, book: str = "book-a", bank: str = "bank-a"):
+    def _scope(
+        *,
+        tenant: str = "tenant-a",
+        entity: str = "entity-a",
+        book: str = "book-a",
+        bank: str = "bank-a",
+        currency: str = "KRW",
+    ):
         Scope = read_model.ReconciliationCloseReviewScope
         return Scope(
-            tenant_account_reference="tenant-a",
-            legal_entity_reference="entity-a",
+            tenant_account_reference=tenant,
+            legal_entity_reference=entity,
             accounting_book_reference=book,
             bank_account_assignment_reference=bank,
-            currency_code="KRW",
+            currency_code=currency,
         )
 
     def _input(
@@ -114,6 +122,54 @@ class ReconciliationCloseReviewPopulationScopeTests(unittest.TestCase):
                 )
             )
 
+    def test_scope_identity_and_currency_are_validated_before_projection(self) -> None:
+        """Incomplete or cross-currency close-review scope is never authoritative."""
+        with self.assertRaisesRegex(ValueError, "scope identity"):
+            read_model.build_reconciliation_close_review(
+                self._input(
+                    decisions=(self._match("stmt-001"),),
+                    expected=("stmt-001",),
+                    current_scope=self._scope(tenant="   "),
+                )
+            )
+
+        with self.assertRaisesRegex(ValueError, "scope currency"):
+            read_model.build_reconciliation_close_review(
+                self._input(
+                    decisions=(self._match("stmt-001"),),
+                    expected=("stmt-001",),
+                    current_scope=self._scope(currency="USD"),
+                )
+            )
+
+    def test_expected_statement_population_identity_must_be_nonempty_and_unique(self) -> None:
+        """The expected immutable population cannot contain blanks or duplicates."""
+        with self.assertRaisesRegex(ValueError, "statement population identities"):
+            read_model.build_reconciliation_close_review(
+                self._input(
+                    decisions=(self._match("stmt-001"),),
+                    expected=("stmt-001", " "),
+                )
+            )
+
+        with self.assertRaisesRegex(ValueError, "must be unique"):
+            read_model.build_reconciliation_close_review(
+                self._input(
+                    decisions=(self._match("stmt-001"), self._match("stmt-002")),
+                    expected=("stmt-001", "stmt-001"),
+                )
+            )
+
+    def test_decision_statement_identity_must_be_nonempty(self) -> None:
+        """A decision without immutable statement identity cannot enter close evidence."""
+        with self.assertRaisesRegex(ValueError, "decision identities"):
+            read_model.build_reconciliation_close_review(
+                self._input(
+                    decisions=(self._match(" "),),
+                    expected=("stmt-001",),
+                )
+            )
+
     def test_preceding_delta_rejects_same_currency_but_different_accounting_scope(self) -> None:
         """A prior run from another book or bank account cannot produce plausible deltas."""
         preceding = self._bridge(
@@ -129,6 +185,31 @@ class ReconciliationCloseReviewPopulationScopeTests(unittest.TestCase):
                     preceding=preceding,
                     current_scope=self._scope(book="book-a", bank="bank-a"),
                     preceding_scope=self._scope(book="book-b", bank="bank-a"),
+                )
+            )
+
+    def test_preceding_bridge_and_scope_must_be_supplied_together(self) -> None:
+        """Historical deltas cannot be computed from an unscoped or scope-only prior run."""
+        preceding = self._bridge(
+            run_reference="run-previous",
+            statement_reference="statement-previous",
+            book_reference="book-previous",
+        )
+        with self.assertRaisesRegex(ValueError, "preceding reconciliation scope"):
+            read_model.build_reconciliation_close_review(
+                self._input(
+                    decisions=(self._match("stmt-001"),),
+                    expected=("stmt-001",),
+                    preceding_scope=self._scope(),
+                )
+            )
+
+        with self.assertRaisesRegex(ValueError, "preceding reconciliation scope"):
+            read_model.build_reconciliation_close_review(
+                self._input(
+                    decisions=(self._match("stmt-001"),),
+                    expected=("stmt-001",),
+                    preceding=preceding,
                 )
             )
 
