@@ -4,8 +4,11 @@ BEGIN;
 -- source-level allocation conservation. A reconciliation run can approve
 -- multiple independent matches, including split/aggregate plans, while exact
 -- statement and journal source amounts remain impossible to over-consume.
--- This migration records reconciliation evidence only; it grants no journal
--- posting, reversal, close, or accounting-policy authority.
+-- Conservation follows immutable source identity across reconciliation runs;
+-- explicitly rejected or superseded matches release their allocations because
+-- only approved matches consume capacity. This migration records reconciliation
+-- evidence only; it grants no journal posting, reversal, close, or
+-- accounting-policy authority.
 
 DROP INDEX accounting_core.reconciliation_match_approved_single;
 
@@ -67,36 +70,131 @@ ALTER TABLE accounting_core.journal_match_allocation
             reconciliation_match_id
         );
 
-CREATE OR REPLACE FUNCTION accounting_core.reconciliation_candidate_capacity_guard()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $$
+CREATE INDEX statement_allocation_source_index
+    ON accounting_core.statement_match_allocation (
+        tenant_account_id,
+        statement_entry_reference,
+        reconciliation_run_id,
+        reconciliation_match_id
+    );
+
+CREATE INDEX journal_allocation_source_index
+    ON accounting_core.journal_match_allocation (
+        tenant_account_id,
+        journal_reference,
+        reconciliation_run_id,
+        reconciliation_match_id
+    );
+
+DO $$
 BEGIN
     IF EXISTS (
         SELECT 1
         FROM accounting_core.reconciliation_candidate AS candidate
-        WHERE candidate.tenant_account_id = NEW.tenant_account_id
-          AND candidate.reconciliation_run_id = NEW.reconciliation_run_id
-          AND candidate.statement_entry_reference = NEW.statement_entry_reference
-          AND candidate.reconciliation_candidate_id <> NEW.reconciliation_candidate_id
-          AND candidate.statement_amount <> NEW.statement_amount
+        JOIN accounting_core.reconciliation_run AS run_scope
+          ON run_scope.tenant_account_id = candidate.tenant_account_id
+         AND run_scope.reconciliation_run_id = candidate.reconciliation_run_id
+        GROUP BY
+            candidate.tenant_account_id,
+            run_scope.legal_entity_id,
+            run_scope.accounting_book_id,
+            run_scope.bank_account_assignment_id,
+            run_scope.currency_code,
+            candidate.statement_entry_reference
+        HAVING MIN(candidate.statement_amount) <> MAX(candidate.statement_amount)
     ) THEN
         RAISE EXCEPTION
-            'statement source amount differs across reconciliation candidates (reconciliation_source_amount_conflict)'
+            'statement source amount differs across reconciliation runs (reconciliation_source_amount_conflict)'
             USING ERRCODE = '23514';
     END IF;
 
     IF EXISTS (
         SELECT 1
         FROM accounting_core.reconciliation_candidate AS candidate
+        JOIN accounting_core.reconciliation_run AS run_scope
+          ON run_scope.tenant_account_id = candidate.tenant_account_id
+         AND run_scope.reconciliation_run_id = candidate.reconciliation_run_id
+        GROUP BY
+            candidate.tenant_account_id,
+            run_scope.legal_entity_id,
+            run_scope.accounting_book_id,
+            run_scope.currency_code,
+            candidate.journal_reference
+        HAVING MIN(candidate.journal_amount) <> MAX(candidate.journal_amount)
+    ) THEN
+        RAISE EXCEPTION
+            'journal source amount differs across reconciliation runs (reconciliation_source_amount_conflict)'
+            USING ERRCODE = '23514';
+    END IF;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION accounting_core.reconciliation_candidate_capacity_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    current_legal_entity_id uuid;
+    current_accounting_book_id uuid;
+    current_bank_account_assignment_id uuid;
+    current_currency_code text;
+BEGIN
+    SELECT
+        run_scope.legal_entity_id,
+        run_scope.accounting_book_id,
+        run_scope.bank_account_assignment_id,
+        run_scope.currency_code
+    INTO
+        current_legal_entity_id,
+        current_accounting_book_id,
+        current_bank_account_assignment_id,
+        current_currency_code
+    FROM accounting_core.reconciliation_run AS run_scope
+    WHERE run_scope.tenant_account_id = NEW.tenant_account_id
+      AND run_scope.reconciliation_run_id = NEW.reconciliation_run_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION
+            'candidate is outside the tenant reconciliation run (reconciliation_scope_mismatch)'
+            USING ERRCODE = '23514';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM accounting_core.reconciliation_candidate AS candidate
+        JOIN accounting_core.reconciliation_run AS candidate_run
+          ON candidate_run.tenant_account_id = candidate.tenant_account_id
+         AND candidate_run.reconciliation_run_id = candidate.reconciliation_run_id
         WHERE candidate.tenant_account_id = NEW.tenant_account_id
-          AND candidate.reconciliation_run_id = NEW.reconciliation_run_id
+          AND candidate.statement_entry_reference = NEW.statement_entry_reference
+          AND candidate.reconciliation_candidate_id <> NEW.reconciliation_candidate_id
+          AND candidate_run.legal_entity_id = current_legal_entity_id
+          AND candidate_run.accounting_book_id = current_accounting_book_id
+          AND candidate_run.bank_account_assignment_id = current_bank_account_assignment_id
+          AND candidate_run.currency_code = current_currency_code
+          AND candidate.statement_amount <> NEW.statement_amount
+    ) THEN
+        RAISE EXCEPTION
+            'statement source amount differs across reconciliation runs (reconciliation_source_amount_conflict)'
+            USING ERRCODE = '23514';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM accounting_core.reconciliation_candidate AS candidate
+        JOIN accounting_core.reconciliation_run AS candidate_run
+          ON candidate_run.tenant_account_id = candidate.tenant_account_id
+         AND candidate_run.reconciliation_run_id = candidate.reconciliation_run_id
+        WHERE candidate.tenant_account_id = NEW.tenant_account_id
           AND candidate.journal_reference = NEW.journal_reference
           AND candidate.reconciliation_candidate_id <> NEW.reconciliation_candidate_id
+          AND candidate_run.legal_entity_id = current_legal_entity_id
+          AND candidate_run.accounting_book_id = current_accounting_book_id
+          AND candidate_run.currency_code = current_currency_code
           AND candidate.journal_amount <> NEW.journal_amount
     ) THEN
         RAISE EXCEPTION
-            'journal source amount differs across reconciliation candidates (reconciliation_source_amount_conflict)'
+            'journal source amount differs across reconciliation runs (reconciliation_source_amount_conflict)'
             USING ERRCODE = '23514';
     END IF;
 
@@ -125,6 +223,10 @@ DECLARE
     candidate_statement_amount numeric(30, 6);
     candidate_journal_amount numeric(30, 6);
     current_match_status text;
+    current_legal_entity_id uuid;
+    current_accounting_book_id uuid;
+    current_bank_account_assignment_id uuid;
+    current_currency_code text;
     consumed_amount numeric(30, 6);
     conservation_key text;
 BEGIN
@@ -133,18 +235,29 @@ BEGIN
         candidate.journal_reference,
         candidate.statement_amount,
         candidate.journal_amount,
-        match.match_status_code
+        match.match_status_code,
+        run_scope.legal_entity_id,
+        run_scope.accounting_book_id,
+        run_scope.bank_account_assignment_id,
+        run_scope.currency_code
     INTO
         candidate_statement_reference,
         candidate_journal_reference,
         candidate_statement_amount,
         candidate_journal_amount,
-        current_match_status
+        current_match_status,
+        current_legal_entity_id,
+        current_accounting_book_id,
+        current_bank_account_assignment_id,
+        current_currency_code
     FROM accounting_core.reconciliation_match AS match
     JOIN accounting_core.reconciliation_candidate AS candidate
       ON candidate.tenant_account_id = match.tenant_account_id
      AND candidate.reconciliation_run_id = match.reconciliation_run_id
      AND candidate.reconciliation_candidate_id = match.reconciliation_candidate_id
+    JOIN accounting_core.reconciliation_run AS run_scope
+      ON run_scope.tenant_account_id = match.tenant_account_id
+     AND run_scope.reconciliation_run_id = match.reconciliation_run_id
     WHERE match.tenant_account_id = NEW.tenant_account_id
       AND match.reconciliation_run_id = NEW.reconciliation_run_id
       AND match.reconciliation_match_id = NEW.reconciliation_match_id;
@@ -167,7 +280,10 @@ BEGIN
                 ':',
                 'reconciliation-statement',
                 NEW.tenant_account_id::text,
-                NEW.reconciliation_run_id::text,
+                current_legal_entity_id::text,
+                current_accounting_book_id::text,
+                current_bank_account_assignment_id::text,
+                current_currency_code,
                 NEW.statement_entry_reference
             );
             PERFORM pg_advisory_xact_lock(hashtextextended(conservation_key, 0));
@@ -179,14 +295,20 @@ BEGIN
               ON approved_match.tenant_account_id = allocation.tenant_account_id
              AND approved_match.reconciliation_run_id = allocation.reconciliation_run_id
              AND approved_match.reconciliation_match_id = allocation.reconciliation_match_id
+            JOIN accounting_core.reconciliation_run AS consuming_run
+              ON consuming_run.tenant_account_id = allocation.tenant_account_id
+             AND consuming_run.reconciliation_run_id = allocation.reconciliation_run_id
             WHERE allocation.tenant_account_id = NEW.tenant_account_id
-              AND allocation.reconciliation_run_id = NEW.reconciliation_run_id
               AND allocation.statement_entry_reference = NEW.statement_entry_reference
-              AND approved_match.match_status_code = 'approved';
+              AND approved_match.match_status_code = 'approved'
+              AND consuming_run.legal_entity_id = current_legal_entity_id
+              AND consuming_run.accounting_book_id = current_accounting_book_id
+              AND consuming_run.bank_account_assignment_id = current_bank_account_assignment_id
+              AND consuming_run.currency_code = current_currency_code;
 
             IF consumed_amount + NEW.allocated_amount > candidate_statement_amount THEN
                 RAISE EXCEPTION
-                    'approved reconciliation allocations exceed statement source amount (reconciliation_allocation_overconsumed)'
+                    'approved reconciliation allocations exceed statement source amount across active runs (reconciliation_allocation_overconsumed)'
                     USING ERRCODE = '23514';
             END IF;
         END IF;
@@ -202,7 +324,9 @@ BEGIN
                 ':',
                 'reconciliation-journal',
                 NEW.tenant_account_id::text,
-                NEW.reconciliation_run_id::text,
+                current_legal_entity_id::text,
+                current_accounting_book_id::text,
+                current_currency_code,
                 NEW.journal_reference
             );
             PERFORM pg_advisory_xact_lock(hashtextextended(conservation_key, 0));
@@ -214,14 +338,19 @@ BEGIN
               ON approved_match.tenant_account_id = allocation.tenant_account_id
              AND approved_match.reconciliation_run_id = allocation.reconciliation_run_id
              AND approved_match.reconciliation_match_id = allocation.reconciliation_match_id
+            JOIN accounting_core.reconciliation_run AS consuming_run
+              ON consuming_run.tenant_account_id = allocation.tenant_account_id
+             AND consuming_run.reconciliation_run_id = allocation.reconciliation_run_id
             WHERE allocation.tenant_account_id = NEW.tenant_account_id
-              AND allocation.reconciliation_run_id = NEW.reconciliation_run_id
               AND allocation.journal_reference = NEW.journal_reference
-              AND approved_match.match_status_code = 'approved';
+              AND approved_match.match_status_code = 'approved'
+              AND consuming_run.legal_entity_id = current_legal_entity_id
+              AND consuming_run.accounting_book_id = current_accounting_book_id
+              AND consuming_run.currency_code = current_currency_code;
 
             IF consumed_amount + NEW.allocated_amount > candidate_journal_amount THEN
                 RAISE EXCEPTION
-                    'approved reconciliation allocations exceed journal source amount (reconciliation_allocation_overconsumed)'
+                    'approved reconciliation allocations exceed journal source amount across active runs (reconciliation_allocation_overconsumed)'
                     USING ERRCODE = '23514';
             END IF;
         END IF;
@@ -284,10 +413,34 @@ DECLARE
     source_capacity numeric(30, 6);
     consumed_amount numeric(30, 6);
     conservation_key text;
+    current_legal_entity_id uuid;
+    current_accounting_book_id uuid;
+    current_bank_account_assignment_id uuid;
+    current_currency_code text;
 BEGIN
     IF NEW.match_status_code <> 'approved'
        OR (TG_OP = 'UPDATE' AND OLD.match_status_code = 'approved') THEN
         RETURN NEW;
+    END IF;
+
+    SELECT
+        run_scope.legal_entity_id,
+        run_scope.accounting_book_id,
+        run_scope.bank_account_assignment_id,
+        run_scope.currency_code
+    INTO
+        current_legal_entity_id,
+        current_accounting_book_id,
+        current_bank_account_assignment_id,
+        current_currency_code
+    FROM accounting_core.reconciliation_run AS run_scope
+    WHERE run_scope.tenant_account_id = NEW.tenant_account_id
+      AND run_scope.reconciliation_run_id = NEW.reconciliation_run_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION
+            'match is outside the tenant reconciliation run (reconciliation_scope_mismatch)'
+            USING ERRCODE = '23514';
     END IF;
 
     FOR source_row IN
@@ -303,7 +456,10 @@ BEGIN
             ':',
             'reconciliation-statement',
             NEW.tenant_account_id::text,
-            NEW.reconciliation_run_id::text,
+            current_legal_entity_id::text,
+            current_accounting_book_id::text,
+            current_bank_account_assignment_id::text,
+            current_currency_code,
             source_row.statement_entry_reference
         );
         PERFORM pg_advisory_xact_lock(hashtextextended(conservation_key, 0));
@@ -311,9 +467,15 @@ BEGIN
         SELECT MAX(candidate.statement_amount)
         INTO source_capacity
         FROM accounting_core.reconciliation_candidate AS candidate
+        JOIN accounting_core.reconciliation_run AS candidate_run
+          ON candidate_run.tenant_account_id = candidate.tenant_account_id
+         AND candidate_run.reconciliation_run_id = candidate.reconciliation_run_id
         WHERE candidate.tenant_account_id = NEW.tenant_account_id
-          AND candidate.reconciliation_run_id = NEW.reconciliation_run_id
-          AND candidate.statement_entry_reference = source_row.statement_entry_reference;
+          AND candidate.statement_entry_reference = source_row.statement_entry_reference
+          AND candidate_run.legal_entity_id = current_legal_entity_id
+          AND candidate_run.accounting_book_id = current_accounting_book_id
+          AND candidate_run.bank_account_assignment_id = current_bank_account_assignment_id
+          AND candidate_run.currency_code = current_currency_code;
 
         SELECT COALESCE(SUM(allocation.allocated_amount), 0)
         INTO consumed_amount
@@ -322,16 +484,22 @@ BEGIN
           ON approved_match.tenant_account_id = allocation.tenant_account_id
          AND approved_match.reconciliation_run_id = allocation.reconciliation_run_id
          AND approved_match.reconciliation_match_id = allocation.reconciliation_match_id
+        JOIN accounting_core.reconciliation_run AS consuming_run
+          ON consuming_run.tenant_account_id = allocation.tenant_account_id
+         AND consuming_run.reconciliation_run_id = allocation.reconciliation_run_id
         WHERE allocation.tenant_account_id = NEW.tenant_account_id
-          AND allocation.reconciliation_run_id = NEW.reconciliation_run_id
           AND allocation.statement_entry_reference = source_row.statement_entry_reference
           AND approved_match.match_status_code = 'approved'
-          AND approved_match.reconciliation_match_id <> NEW.reconciliation_match_id;
+          AND approved_match.reconciliation_match_id <> NEW.reconciliation_match_id
+          AND consuming_run.legal_entity_id = current_legal_entity_id
+          AND consuming_run.accounting_book_id = current_accounting_book_id
+          AND consuming_run.bank_account_assignment_id = current_bank_account_assignment_id
+          AND consuming_run.currency_code = current_currency_code;
 
         IF source_capacity IS NULL
            OR consumed_amount + source_row.allocation_amount > source_capacity THEN
             RAISE EXCEPTION
-                'approving reconciliation match would over-consume statement source amount (reconciliation_allocation_overconsumed)'
+                'approving reconciliation match would over-consume statement source amount across active runs (reconciliation_allocation_overconsumed)'
                 USING ERRCODE = '23514';
         END IF;
     END LOOP;
@@ -349,7 +517,9 @@ BEGIN
             ':',
             'reconciliation-journal',
             NEW.tenant_account_id::text,
-            NEW.reconciliation_run_id::text,
+            current_legal_entity_id::text,
+            current_accounting_book_id::text,
+            current_currency_code,
             source_row.journal_reference
         );
         PERFORM pg_advisory_xact_lock(hashtextextended(conservation_key, 0));
@@ -357,9 +527,14 @@ BEGIN
         SELECT MAX(candidate.journal_amount)
         INTO source_capacity
         FROM accounting_core.reconciliation_candidate AS candidate
+        JOIN accounting_core.reconciliation_run AS candidate_run
+          ON candidate_run.tenant_account_id = candidate.tenant_account_id
+         AND candidate_run.reconciliation_run_id = candidate.reconciliation_run_id
         WHERE candidate.tenant_account_id = NEW.tenant_account_id
-          AND candidate.reconciliation_run_id = NEW.reconciliation_run_id
-          AND candidate.journal_reference = source_row.journal_reference;
+          AND candidate.journal_reference = source_row.journal_reference
+          AND candidate_run.legal_entity_id = current_legal_entity_id
+          AND candidate_run.accounting_book_id = current_accounting_book_id
+          AND candidate_run.currency_code = current_currency_code;
 
         SELECT COALESCE(SUM(allocation.allocated_amount), 0)
         INTO consumed_amount
@@ -368,16 +543,21 @@ BEGIN
           ON approved_match.tenant_account_id = allocation.tenant_account_id
          AND approved_match.reconciliation_run_id = allocation.reconciliation_run_id
          AND approved_match.reconciliation_match_id = allocation.reconciliation_match_id
+        JOIN accounting_core.reconciliation_run AS consuming_run
+          ON consuming_run.tenant_account_id = allocation.tenant_account_id
+         AND consuming_run.reconciliation_run_id = allocation.reconciliation_run_id
         WHERE allocation.tenant_account_id = NEW.tenant_account_id
-          AND allocation.reconciliation_run_id = NEW.reconciliation_run_id
           AND allocation.journal_reference = source_row.journal_reference
           AND approved_match.match_status_code = 'approved'
-          AND approved_match.reconciliation_match_id <> NEW.reconciliation_match_id;
+          AND approved_match.reconciliation_match_id <> NEW.reconciliation_match_id
+          AND consuming_run.legal_entity_id = current_legal_entity_id
+          AND consuming_run.accounting_book_id = current_accounting_book_id
+          AND consuming_run.currency_code = current_currency_code;
 
         IF source_capacity IS NULL
            OR consumed_amount + source_row.allocation_amount > source_capacity THEN
             RAISE EXCEPTION
-                'approving reconciliation match would over-consume journal source amount (reconciliation_allocation_overconsumed)'
+                'approving reconciliation match would over-consume journal source amount across active runs (reconciliation_allocation_overconsumed)'
                 USING ERRCODE = '23514';
         END IF;
     END LOOP;
