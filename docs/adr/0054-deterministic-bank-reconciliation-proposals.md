@@ -39,6 +39,8 @@ A stacked successor adds a second pure projection over already selected immutabl
 2. `book_opening_balance + posted_cash_book_movements = book_closing_balance`;
 3. `reconciled_book_balance + outstanding_book_items - outstanding_bank_items = statement_closing_balance`.
 
+Every monetary component presented to the bridge is runtime accounting evidence, not merely a Python annotation. Before any equation is evaluated, all nine monetary inputs must be finite `Decimal` values. Binary floating-point, `NaN`, and positive or negative infinity fail closed with a stable validation error. Finite zero and negative balances or movements remain valid because bridge populations can be signed; this boundary validates numeric representation and finiteness, not economic direction or positivity.
+
 The bridge returns `statement_balance_mismatch`, `book_balance_mismatch`, or `bridge_difference` before it can return `reconciled`. There is no tolerance rounding: a one-minor-unit difference remains an explicit exception. Every result retains the reconciliation-run, immutable statement-population, and posted-book-population references and names the operator's next action. A reconciled result is close evidence only; it is not a journal command or an approval.
 
 ### Buyer close-review projection
@@ -72,6 +74,8 @@ The close-review RED contract was executed on exact head `051fb233d0af04c6b6208c
 Exact RED head `b1dc468dc42591a4d92dc96957dc905e036d12c1` then ran 404 PostgreSQL-backed behavior/repository tests and failed six new monetary-domain cases before coverage or package evidence could run: binary float, zero, negative, `NaN`, positive infinity, and negative infinity were all accepted by the typed evidence constructors because type annotations were not runtime authority. The narrow repair at `b2fdb5cdaa24e4735e5961e29f0b310bb8560349` rejects every value except a finite, strictly positive `Decimal` at the evidence boundary before matching. Execution evidence belongs only to the exact head that produced it and is not transferred to later documentation heads.
 
 Exact RED head `32eb1c43295967909b2d5835ef6d37a025705a78` then ran 408 PostgreSQL-backed behavior/repository tests and failed exactly the three new invalid-policy cases: boolean, fractional, and negative `date_window_days` values were accepted because the frozen dataclass had no runtime policy-domain validation. The same-day `0` case passed. Coverage, repository-validation, compilation, and package/SBOM/provenance steps were skipped on that RED head. The narrow repair adds construction-time validation only; it does not alter matching precedence, monetary comparison, journal authority, or statement immutability.
+
+Exact bridge-domain RED head `4277f5c5c6c88157fd5e4513c1d58ca2bcc2ef28` then ran 418 PostgreSQL-backed behavior/repository tests. The binary-float case reached bridge arithmetic and escaped as raw `TypeError`, while all 27 non-finite Decimal subcases failed to raise the required stable validation error; the finite negative-balance control passed. Coverage, repository validation, compilation, and package/SBOM/provenance correctly did not run after the RED behavior failure. The narrow repair validates the nine bridge monetary components as finite `Decimal` values before any equation while continuing to allow signed finite balances and movements.
 
 ## References
 
