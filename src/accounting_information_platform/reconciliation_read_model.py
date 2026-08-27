@@ -81,8 +81,8 @@ def build_reconciliation_close_review(
             bridge.outstanding_book_items - preceding.outstanding_book_items
         )
 
-    suitable = bridge.reconciliation_status_code == "reconciled" and not exceptions
-    if bridge.reconciliation_status_code != "reconciled":
+    suitable = bridge.status_code == "reconciled" and not exceptions
+    if bridge.status_code != "reconciled":
         next_action = (
             "Resolve the exact book-to-bank bridge difference "
             f"{bridge.unexplained_difference} {bridge.currency_code}, then rerun close review."
