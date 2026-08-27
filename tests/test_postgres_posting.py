@@ -220,13 +220,17 @@ class FakeBillingHandler(BaseHTTPRequestHandler):
 class PostgresPostingTests(unittest.TestCase):
     """Post, replay, reverse, and reject against a real PostgreSQL 18 catalog."""
 
+    _migration_applied = False
+
     @classmethod
     def setUpClass(cls) -> None:
-        with psycopg.connect(DATABASE_URL, autocommit=True) as connection:
-            connection.execute("DROP SCHEMA IF EXISTS accounting_reporting CASCADE")
-            connection.execute("DROP SCHEMA IF EXISTS accounting_integration CASCADE")
-            connection.execute("DROP SCHEMA IF EXISTS accounting_core CASCADE")
-        apply_foundation_migration(DATABASE_URL, MIGRATION_PATH)
+        if not PostgresPostingTests._migration_applied:
+            with psycopg.connect(DATABASE_URL, autocommit=True) as connection:
+                connection.execute("DROP SCHEMA IF EXISTS accounting_reporting CASCADE")
+                connection.execute("DROP SCHEMA IF EXISTS accounting_integration CASCADE")
+                connection.execute("DROP SCHEMA IF EXISTS accounting_core CASCADE")
+            apply_foundation_migration(DATABASE_URL, MIGRATION_PATH)
+            PostgresPostingTests._migration_applied = True
 
     def setUp(self) -> None:
         suffix = uuid.uuid4().hex[:8]

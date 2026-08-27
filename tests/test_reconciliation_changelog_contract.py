@@ -43,6 +43,29 @@ class ReconciliationChangelogContractTests(unittest.TestCase):
             with self.subTest(required_phrase=required_phrase):
                 self.assertIn(required_phrase, entry)
 
+    def test_unreleased_records_date_window_policy_domain(self) -> None:
+        """The runtime date-window policy hardening must be buyer-auditable."""
+        changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        entries = _unreleased_entries(changelog)
+        matching_entries = [
+            line for line in entries if "date_window_days" in line
+        ]
+        self.assertEqual(
+            len(matching_entries),
+            1,
+            "[Unreleased] must contain one date_window_days policy-domain entry",
+        )
+        entry = matching_entries[0]
+        for required_phrase in (
+            "non-negative integer",
+            "boolean",
+            "fractional",
+            "same-day",
+            "ADR 0054",
+        ):
+            with self.subTest(required_phrase=required_phrase):
+                self.assertIn(required_phrase, entry)
+
     def test_released_history_does_not_count_as_unreleased(self) -> None:
         """A historical duplicate must not make the live Unreleased contract look duplicated."""
         changelog = """# Changelog
