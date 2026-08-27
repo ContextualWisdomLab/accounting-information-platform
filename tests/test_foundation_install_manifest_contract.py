@@ -75,6 +75,22 @@ class FoundationInstallManifestContractTests(unittest.TestCase):
                 self.assertIn(migration_twelve, text)
                 self.assertLess(text.index(migration_eleven), text.index(migration_twelve))
 
+    def test_install_fails_closed_when_reconciliation_control_migration_is_missing(self) -> None:
+        """The public foundation loader may not silently omit migration 0013."""
+        original_is_file = Path.is_file
+
+        def is_file(path: Path) -> bool:
+            if path.name == "0013_reconciliation_run_exception_evidence.sql":
+                return False
+            return original_is_file(path)
+
+        with patch.object(Path, "is_file", is_file):
+            with self.assertRaises(AccountingValidationError):
+                apply_foundation_migration(
+                    "postgresql://unused",
+                    ROOT / "database/migrations/0001_accounting_foundation.sql",
+                )
+
     def test_install_fails_closed_when_assignment_identity_migration_is_missing(self) -> None:
         """The foundation loader may not silently omit migration 0012."""
         original_is_file = Path.is_file
