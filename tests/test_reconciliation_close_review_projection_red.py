@@ -32,6 +32,7 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
         )
         return (
             module.ReconciliationCloseReviewInput,
+            module.ReconciliationCloseReviewScope,
             module.build_reconciliation_close_review,
             module.render_reconciliation_close_review_json,
             module.render_reconciliation_close_review_csv,
@@ -55,6 +56,16 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
         }
         values.update(overrides)
         return compute_book_to_bank_bridge(BookToBankBridgeInput(**values))
+
+    @staticmethod
+    def _scope(Scope):
+        return Scope(
+            tenant_account_reference="tenant-a",
+            legal_entity_reference="entity-a",
+            accounting_book_reference="book-a",
+            bank_account_assignment_reference="bank-assignment-a",
+            currency_code="KRW",
+        )
 
     @staticmethod
     def _match(statement_reference: str = "stmt-001") -> ReconciliationDecision:
@@ -88,7 +99,7 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
 
     def test_projection_exposes_exact_values_provenance_and_unresolved_next_action(self) -> None:
         """A controller can see exact bridge facts and the work still blocking close review."""
-        ProjectionInput, build_projection, _, _ = self._api()
+        ProjectionInput, Scope, build_projection, _, _ = self._api()
         preceding = self._bridge(
             reconciliation_run_reference="run-previous",
             statement_population_reference="statement-previous",
@@ -96,20 +107,25 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
             outstanding_book_items=Decimal("120.00"),
             outstanding_bank_items=Decimal("70.00"),
         )
+        scope = self._scope(Scope)
 
         projection = build_projection(
             ProjectionInput(
                 bridge_result=self._bridge(),
                 decisions=(self._match(), self._exception()),
                 expected_statement_entry_references=("stmt-001", "stmt-002"),
-                reconciliation_scope_reference="scope-tenant-entity-book-assignment-currency",
+                scope=scope,
                 preceding_bridge_result=preceding,
-                preceding_reconciliation_scope_reference=(
-                    "scope-tenant-entity-book-assignment-currency"
-                ),
+                preceding_scope=scope,
             )
         )
 
+        self.assertEqual(projection.tenant_account_reference, "tenant-a")
+        self.assertEqual(projection.legal_entity_reference, "entity-a")
+        self.assertEqual(projection.accounting_book_reference, "book-a")
+        self.assertEqual(
+            projection.bank_account_assignment_reference, "bank-assignment-a"
+        )
         self.assertEqual(projection.reconciliation_run_reference, "run-current")
         self.assertEqual(projection.statement_population_reference, "statement-current")
         self.assertEqual(projection.book_population_reference, "book-current")
@@ -129,32 +145,15 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
         self.assertIn("resolve", projection.next_action.lower())
         self.assertIn("stmt-002", projection.exception_statement_entry_references)
 
-    def test_reconciled_bridge_with_incomplete_decision_population_fails_closed(self) -> None:
-        """A reconciled bridge must not emit suitable close-review evidence from a partial population."""
-        ProjectionInput, build_projection, _, _ = self._api()
-        projection = build_projection(
-            ProjectionInput(
-                bridge_result=self._bridge(),
-                decisions=(self._match(),),
-                expected_statement_entry_references=("stmt-001", "stmt-002"),
-                reconciliation_scope_reference="scope-tenant-entity-book-assignment-currency",
-                preceding_bridge_result=None,
-            )
-        )
-
-        self.assertFalse(projection.suitable_for_period_close_review)
-        self.assertIn("expected statement-entry population", projection.next_action.lower())
-
     def test_fully_reconciled_projection_is_close_review_candidate_not_an_approval(self) -> None:
         """A clean projection may be suitable evidence but must not claim approval or posting."""
-        ProjectionInput, build_projection, _, _ = self._api()
+        ProjectionInput, Scope, build_projection, _, _ = self._api()
         projection = build_projection(
             ProjectionInput(
                 bridge_result=self._bridge(),
                 decisions=(self._match(),),
                 expected_statement_entry_references=("stmt-001",),
-                reconciliation_scope_reference="scope:test",
-                preceding_bridge_result=None,
+                scope=self._scope(Scope),
             )
         )
 
@@ -166,13 +165,13 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
 
     def test_non_tying_bridge_never_emits_success_shaped_close_review_evidence(self) -> None:
         """An exact bridge difference keeps the public projection fail-closed."""
-        ProjectionInput, build_projection, _, _ = self._api()
+        ProjectionInput, Scope, build_projection, _, _ = self._api()
         projection = build_projection(
             ProjectionInput(
                 bridge_result=self._bridge(outstanding_bank_items=Decimal("50.01")),
                 decisions=(self._match(),),
                 expected_statement_entry_references=("stmt-001",),
-                reconciliation_scope_reference="scope:test:test",
+                scope=self._scope(Scope),
                 preceding_bridge_result=None,
             )
         )
@@ -182,9 +181,62 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
         self.assertIn("bridge", projection.next_action.lower())
         self.assertIn("0.01", projection.next_action)
 
-    def test_preceding_run_from_different_scope_never_emits_comparative_change(self) -> None:
-        """A predecessor from another currency/scope cannot produce plausible change values."""
-        ProjectionInput, build_projection, _, _ = self._api()
+    def test_partial_decision_population_fails_closed_before_suitability(self) -> None:
+        """A reconciled bridge must never succeed from an incomplete expected population."""
+        ProjectionInput, Scope, build_projection, _, _ = self._api()
+        with self.assertRaises(ValueError):
+            build_projection(
+                ProjectionInput(
+                    bridge_result=self._bridge(),
+                    decisions=(self._match(),),
+                    expected_statement_entry_references=("stmt-001", "stmt-002"),
+                    scope=self._scope(Scope),
+                    preceding_bridge_result=None,
+                )
+            )
+
+    def test_empty_decision_population_fails_closed_before_suitability(self) -> None:
+        """A reconciled bridge with no decisions must not become suitable close evidence."""
+        ProjectionInput, Scope, build_projection, _, _ = self._api()
+        with self.assertRaises(ValueError):
+            build_projection(
+                ProjectionInput(
+                    bridge_result=self._bridge(),
+                    decisions=(),
+                    expected_statement_entry_references=("stmt-001",),
+                    scope=self._scope(Scope),
+                    preceding_bridge_result=None,
+                )
+            )
+
+    def test_duplicate_or_extraneous_decision_population_fails_closed(self) -> None:
+        """Duplicate or extraneous decision identities are not a complete population."""
+        ProjectionInput, Scope, build_projection, _, _ = self._api()
+        for decisions in (
+            (self._match("stmt-001"), self._match("stmt-001")),
+            (self._match("stmt-001"), self._match("stmt-003")),
+        ):
+            with self.assertRaises(ValueError):
+                build_projection(
+                    ProjectionInput(
+                        bridge_result=self._bridge(),
+                        decisions=decisions,
+                        expected_statement_entry_references=("stmt-001",),
+                        scope=self._scope(Scope),
+                        preceding_bridge_result=None,
+                    )
+                )
+
+    def test_preceding_run_from_different_scope_fails_closed(self) -> None:
+        """A predecessor outside the accounting and bank scope cannot be compared."""
+        ProjectionInput, Scope, build_projection, _, _ = self._api()
+        other_scope = Scope(
+            tenant_account_reference="tenant-a",
+            legal_entity_reference="entity-a",
+            accounting_book_reference="book-a",
+            bank_account_assignment_reference="bank-assignment-a",
+            currency_code="USD",
+        )
         other_currency = self._bridge(
             reconciliation_run_reference="run-previous",
             statement_population_reference="statement-previous",
@@ -193,36 +245,67 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
             outstanding_book_items=Decimal("120.00"),
             outstanding_bank_items=Decimal("70.00"),
         )
-        projection = build_projection(
-            ProjectionInput(
-                bridge_result=self._bridge(),
-                decisions=(self._match(),),
-                expected_statement_entry_references=("stmt-001",),
-                reconciliation_scope_reference="scope:current:statey:bookseoul:usd",
-                preceding_bridge_result=other_currency,
-                preceding_reconciliation_scope_reference="scope:previous:usd",
+        with self.assertRaises(ValueError):
+            build_projection(
+                ProjectionInput(
+                    bridge_result=self._bridge(),
+                    decisions=(self._match(),),
+                    expected_statement_entry_references=("stmt-001",),
+                    scope=self._scope(Scope),
+                    preceding_bridge_result=other_currency,
+                    preceding_scope=other_scope,
+                )
             )
-        )
 
-        self.assertIsNone(projection.unexplained_difference_change)
-        self.assertIsNone(projection.outstanding_bank_items_change)
-        self.assertIsNone(projection.outstanding_book_items_change)
-        self.assertIn("same reconciliation", projection.next_action.lower())
+    def test_preceding_scope_bound_failures_fail_closed(self) -> None:
+        """Preceding bridge and scope must come together and agree with the current scope."""
+        ProjectionInput, Scope, build_projection, _, _ = self._api()
+        preceding = self._bridge(
+            reconciliation_run_reference="run-previous",
+            statement_population_reference="statement-previous",
+            book_population_reference="book-previous",
+            outstanding_book_items=Decimal("120.00"),
+            outstanding_bank_items=Decimal("70.00"),
+        )
+        current_scope = self._scope(Scope)
+        with self.assertRaises(ValueError):
+            build_projection(
+                ProjectionInput(
+                    bridge_result=self._bridge(),
+                    decisions=(self._match(),),
+                    expected_statement_entry_references=("stmt-001",),
+                    scope=current_scope,
+                    preceding_bridge_result=preceding,
+                    preceding_scope=None,
+                )
+            )
+        with self.assertRaises(ValueError):
+            build_projection(
+                ProjectionInput(
+                    bridge_result=self._bridge(),
+                    decisions=(self._match(),),
+                    expected_statement_entry_references=("stmt-001",),
+                    scope=current_scope,
+                    preceding_bridge_result=None,
+                    preceding_scope=current_scope,
+                )
+            )
 
     def test_json_and_csv_exports_preserve_exact_decimal_strings_and_next_action(self) -> None:
         """Exports keep monetary evidence exact and visible without hover-only formatting."""
-        ProjectionInput, build_projection, render_json, render_csv = self._api()
+        ProjectionInput, Scope, build_projection, render_json, render_csv = self._api()
         projection = build_projection(
             ProjectionInput(
                 bridge_result=self._bridge(),
                 decisions=(self._match(),),
                 expected_statement_entry_references=("stmt-001",),
-                reconciliation_scope_reference="scope:test:test",
-                preceding_bridge_result=None,
+                scope=self._scope(Scope),
             )
         )
 
         json_payload = json.loads(render_json(projection))
+        self.assertEqual(json_payload["tenant_account_reference"], "tenant-a")
+        self.assertEqual(json_payload["accounting_book_reference"], "book-a")
         self.assertEqual(json_payload["bank_closing_balance"], "1250.00")
         self.assertEqual(json_payload["posted_book_cash_balance"], "1200.00")
         self.assertEqual(json_payload["unexplained_difference"], "0")
@@ -230,6 +313,8 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
 
         rows = list(csv.DictReader(io.StringIO(render_csv(projection))))
         self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["tenant_account_reference"], "tenant-a")
+        self.assertEqual(rows[0]["bank_account_assignment_reference"], "bank-assignment-a")
         self.assertEqual(rows[0]["bank_closing_balance"], "1250.00")
         self.assertEqual(rows[0]["posted_book_cash_balance"], "1200.00")
         self.assertEqual(rows[0]["unexplained_difference"], "0")
