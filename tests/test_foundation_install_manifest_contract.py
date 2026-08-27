@@ -91,6 +91,27 @@ class FoundationInstallManifestContractTests(unittest.TestCase):
                     ROOT / "database/migrations/0001_accounting_foundation.sql",
                 )
 
+    def test_install_fails_closed_when_reconciliation_control_apply_fails(self) -> None:
+        """Applying migration 0013 inside the authoritative chain keeps an accounting error."""
+        failing_psycopg = type("FailingPsycopg", (), {
+            "connect": staticmethod(
+                lambda *args, **kwargs: (_ for _ in ()).throw(
+                    RuntimeError("postgres connection refused")
+                )
+            ),
+        })
+        with patch(
+            "accounting_information_platform.persistence._import_psycopg",
+            return_value=failing_psycopg,
+        ):
+            with self.assertRaisesRegex(
+                AccountingValidationError, "Foundation migration failed"
+            ):
+                apply_foundation_migration(
+                    "postgresql://unused",
+                    ROOT / "database/migrations/0001_accounting_foundation.sql",
+                )
+
     def test_install_fails_closed_when_assignment_identity_migration_is_missing(self) -> None:
         """The foundation loader may not silently omit migration 0012."""
         original_is_file = Path.is_file
