@@ -45,6 +45,7 @@ REQUIRED_FILES = (
     "database/migrations/0010_soft_close_command_evidence.sql",
     "database/migrations/0011_bank_statement_evidence.sql",
     "database/migrations/0012_bank_assignment_command_identity.sql",
+    "database/migrations/0013_reconciliation_run_exception_evidence.sql",
     "docs/PRD.md",
     "docs/TRD.md",
     "docs/ARCHITECTURE.md",
