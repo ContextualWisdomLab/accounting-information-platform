@@ -37,6 +37,20 @@ The foundation ERD is maintained in [ERD.md](ERD.md). PostgreSQL migrations are 
 - `bank_statement_entry`: normalized entry facts including exact `numeric` amount, ISO currency, credit/debit indicator, source locator, bank-transaction codes, bounded remittance/counterparty projection, and `source_entry_hash`.
 - `bank_statement_entry_detail`: one transaction-detail record when identity, matching, or amount conservation requires it. Those facts are not collapsed into an opaque JSON column.
 
+## Reconciliation control evidence
+
+Migrations `0013_reconciliation_run_exception_evidence.sql` through `0015_reconciliation_multi_match_conservation.sql` persist deterministic reconciliation as accounting control evidence without granting posting, reversal, close, or accounting-policy authority.
+
+- `reconciliation_run`: immutable evaluated scope for one tenant, legal entity, accounting book, bank-account assignment, ISO currency, bank/book cutoffs, matching-policy version, and knowledge cutoff. Only the run status may progress; evaluated scope changes require a new run.
+- `reconciliation_exception`: explicit operator-owned exception with an exception code, next action, effective/system time, and open/resolved/superseded resolution status.
+- `reconciliation_evidence`: normalized evidence reference (and optional SHA-256 payload hash) attached to a run and, when applicable, to an exception.
+- `reconciliation_candidate`: deterministic statement-entry-to-journal candidate with exact positive statement/journal source amounts and the rule that proposed it. Recorded candidates are append-only.
+- `reconciliation_match`: reviewable candidate disposition (`proposed`, `approved`, `rejected`, or `superseded`). Multiple independent matches may be approved within a run when source-level conservation remains satisfied.
+- `statement_match_allocation`: append-only exact amount consumed from an immutable statement source reference by one reconciliation match.
+- `journal_match_allocation`: append-only exact amount consumed from an immutable journal source reference by one reconciliation match.
+
+Approved allocations are conserved by immutable source identity across active reconciliation runs in the same accounting/bank scope. Only matches whose current `match_status_code` is `approved` consume active capacity; `rejected` or `superseded` matches release capacity while their candidate and allocation rows remain durable historical evidence. Cross-run source-amount conflicts and over-consumption fail closed under database-owned guards and transaction-scoped advisory serialization. Reconciliation evidence therefore records and explains matching decisions but cannot itself post, reverse, close, or mutate authoritative journal facts.
+
 Financial-statement, cash-flow, changes-in-equity, aging, account-balance, ledger, rollforward, VAT-register, and period-close-package reads are deterministic projections over authoritative journal, period, catalog, and snapshot facts. They do not create a second statutory ledger.
 
 ## Normalization and integrity rules
@@ -52,7 +66,7 @@ Financial-statement, cash-flow, changes-in-equity, aging, account-balance, ledge
 
 ## Future extensions
 
-Revenue contracts and performance obligations, durable receivable/payable subledgers, cash-application evidence, deterministic bank-statement matching, foreign-exchange rates and remeasurement, fixed assets, intercompany balances and eliminations, consolidation, and reporting-taxonomy mappings are later normalized modules. They will reference, not duplicate, the journal authority and will not let external statement or model output post accounting facts automatically.
+Revenue contracts and performance obligations, durable receivable/payable subledgers, cash-application evidence, foreign-exchange rates and remeasurement, fixed assets, intercompany balances and eliminations, consolidation, and reporting-taxonomy mappings are later normalized modules. They will reference, not duplicate, the journal authority and will not let external statement or model output post accounting facts automatically.
 
 ## Runtime tenant binding
 
