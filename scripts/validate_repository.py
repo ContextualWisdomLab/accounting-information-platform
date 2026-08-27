@@ -46,6 +46,7 @@ REQUIRED_FILES = (
     "database/migrations/0011_bank_statement_evidence.sql",
     "database/migrations/0012_bank_assignment_command_identity.sql",
     "database/migrations/0013_reconciliation_run_exception_evidence.sql",
+    "database/migrations/0014_reconciliation_candidate_allocation.sql",
     "docs/PRD.md",
     "docs/TRD.md",
     "docs/ARCHITECTURE.md",
