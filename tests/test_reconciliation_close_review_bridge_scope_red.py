@@ -2,9 +2,8 @@
 
 Close-review evidence must not let a caller relabel a reconciled bridge from one
 tenant, legal entity, accounting book, or bank-account assignment as another
-same-currency scope.  The bridge itself (or an authoritative immutable run
-identity carried by it) must bind that accounting/bank scope before a close
-review can become suitable evidence.
+same-currency scope.  The bridge itself must bind that accounting/bank scope
+before a close review can become suitable evidence.
 """
 
 from __future__ import annotations
@@ -28,7 +27,14 @@ class ReconciliationCloseReviewBridgeScopeTests(unittest.TestCase):
     """Require close-review scope identity to be authoritative bridge evidence."""
 
     @staticmethod
-    def _bridge(*, run_reference: str = "run-a"):
+    def _bridge(
+        *,
+        run_reference: str = "run-a",
+        tenant: str | None = "tenant-a",
+        entity: str | None = "entity-a",
+        book: str | None = "book-a",
+        bank: str | None = "bank-assignment-a",
+    ):
         return compute_book_to_bank_bridge(
             BookToBankBridgeInput(
                 reconciliation_run_reference=run_reference,
@@ -44,6 +50,10 @@ class ReconciliationCloseReviewBridgeScopeTests(unittest.TestCase):
                 reconciled_book_balance=Decimal("1200.00"),
                 outstanding_book_items=Decimal("100.00"),
                 outstanding_bank_items=Decimal("50.00"),
+                tenant_account_reference=tenant,
+                legal_entity_reference=entity,
+                accounting_book_reference=book,
+                bank_account_assignment_reference=bank,
             )
         )
 
@@ -104,8 +114,37 @@ class ReconciliationCloseReviewBridgeScopeTests(unittest.TestCase):
                     decisions=(self._match(),),
                     expected_statement_entry_references=("stmt-001",),
                     scope=current_scope,
-                    preceding_bridge_result=self._bridge(run_reference="run-foreign"),
+                    preceding_bridge_result=self._bridge(
+                        run_reference="run-foreign",
+                        tenant="tenant-b",
+                        entity="entity-b",
+                        book="book-b",
+                        bank="bank-assignment-b",
+                    ),
                     preceding_scope=current_scope,
+                )
+            )
+
+    def test_unbound_bridge_cannot_enter_close_review(self) -> None:
+        """A legacy or partial bridge without scope identity is not close evidence."""
+        current_scope = self._scope(
+            tenant="tenant-a",
+            entity="entity-a",
+            book="book-a",
+            bank="bank-assignment-a",
+        )
+        with self.assertRaisesRegex(ValueError, "bridge scope identity must be bound"):
+            build_reconciliation_close_review(
+                ReconciliationCloseReviewInput(
+                    bridge_result=self._bridge(
+                        tenant=None,
+                        entity=None,
+                        book=None,
+                        bank=None,
+                    ),
+                    decisions=(self._match(),),
+                    expected_statement_entry_references=("stmt-001",),
+                    scope=current_scope,
                 )
             )
 
