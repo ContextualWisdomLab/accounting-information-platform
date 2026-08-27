@@ -1,6 +1,6 @@
 # Product and technical gap baseline
 
-**Evidence refresh:** 2026-08-26 (Asia/Seoul)
+**Evidence refresh:** 2026-08-27 (Asia/Seoul)
 
 This file is the durable buyer-visible gap queue for `accounting-information-platform`.
 It records authority, dependency order, acceptance evidence, and product gaps that
@@ -68,10 +68,20 @@ that renumbering cannot silently drop a commitment.
 4. **Deterministic reconciliation and exact book-to-bank bridge.** Build on the
    integrated registry; deterministic evidence rules and explicit abstention
    precede any probabilistic/LLM assistance. Split/aggregate matches conserve
-   exact amounts and statement lines never post journals automatically.
+   exact amounts and statement lines never post journals automatically. The exact
+   bridge is integrated protected `develop` fact including its runtime
+   finite-`Decimal` monetary-domain boundary (binary float, `NaN`, and infinities
+   fail closed before bridge arithmetic; finite signed balances and movements
+   remain valid because populations may be signed; ADR 0054).
 5. **Bank-reconciliation buyer-slice close-out.** Close only after the registry,
    matching/exception/approval workflow, exact bridge, close evidence, and
-   provenance are integrated.
+   provenance are integrated. The read-only close-review projection (exact
+   bank/book/reconciled/outstanding/unexplained values, immutable run and
+   population provenance, unresolved statement-entry references, preceding-run
+   deltas, JSON/CSV decimal-string exports, and evidence-eligibility-only
+   `suitable_for_period_close_review`) is integrated as an intermediate buyer
+   slice; the durable run/exception/evidence substrate and the extended exception
+   model remain open.
 6. **Purpose-bound accounting authorization.** Keep tenant identity separate from
    operation authority for posting, reversal, close, tax, outbox, audit, and read
    permissions.
@@ -87,7 +97,8 @@ exact-head gates rather than leaving merge safety to convention alone.
 | P0 | Repository governance does not yet enforce the intended merge/release policy everywhere | A technically green candidate could be integrated without durable control-plane enforcement, and `main` remains outside release-grade protection | Protected `develop`/`main` policy with required accounting CI/security/dependency gates, independent review, thread resolution, no force-push/deletion path, and fresh effective-policy evidence from branch and ruleset surfaces together |
 | P0 | Database authority must remain stronger than application intent on the integrated head | Direct SQL must never rewrite balances, tenant scope, finalized facts, or closed periods | Real PostgreSQL runtime tests for deferred balance, append-only/finalization guards, forced RLS with a restricted runtime login, DB-owned tenant binding, temporal reversal rules, and purpose-limited close authority |
 | P0 | Stateful commands require exact replay identity and immutable source evidence | Retries must not duplicate or mutate posting, reversal, close, tax, or statement-acceptance evidence | Tenant-scoped command keys, immutable source hashes/references, exact replay, changed-evidence conflict, and atomic command/outbox persistence proven in PostgreSQL |
-| P1 | Deterministic reconciliation and book-to-bank bridge are absent | Cash close cannot explain differences or safely abstain from ambiguous matches | Exact split/aggregate conservation, temporal cutoff, concurrency safety, exception/approval workflow, provenance, and bridge equations from bank evidence to posted cash journals |
+| P1 | Deterministic reconciliation and book-to-bank bridge are absent | Cash close cannot explain differences or safely abstain from ambiguous matches | Exact split/aggregate conservation, temporal cutoff, concurrency safety, exception/approval workflow, provenance, and bridge equations from bank evidence to posted cash journals. The bridge and its finite-`Decimal` domain boundary are integrated; the remaining P1 is the durable run/exception/evidence substrate, exception workflow, and exact close-package provenance |
+| P1 | Close-review projection integration is in flight | Controllers cannot yet read an exact, exportable close-review projection from one integrated head | The read-only projection and its authority/export contracts are integrated; it cannot approve or post. Outstanding: close-review opened only from integrated projection and its restacked successors |
 | P1 | Purpose-bound authorization is absent | Tenant authentication alone is too coarse for accounting powers | Versioned operation-to-permission mapping, host identity adapter boundary, fail-closed authorization tests, immutable allow/deny audit evidence, and no caller/model-controlled promotion |
 | P1 | Production operability and release proof remain incomplete | An operator cannot yet deploy, observe, back up, and recover the service with release-grade evidence | Supported deployment boundary, migration/rollback rehearsal, outbox-drain ownership, metrics/alerts, backup/restore exercise, integrated-head signed attestations, release version, artifact/source hashes, and recovery runbook evidence |
 | P2 | No frontend/design-system surface exists | Controllers have no visual close/reconciliation workflow | Introduce Figma source of truth, reusable design tokens, Storybook inventory with scene/edge-case event definitions, exact-value tables/exports, and browser accessibility tests only when a UI is actually added |
@@ -152,8 +163,9 @@ immutable bank statement artifact
 → normalized statement / entry identity          [delivered by the registry slice]
 → bank-account ↔ legal-entity / book assignment  [delivered by the registry slice]
 → deterministic candidate matching               [reconciliation milestone]
-→ reviewed match or explicit exception           [reconciliation milestone]
-→ exact statement/book bridge                    [reconciliation milestone]
+→ exact book-to-bank bridge                      [integrated; finite-Decimal domain boundary in ADR 0054]
+→ close-review projection                        [anonymous read-only slice, evidence eligibility only]
+→ durable run/exception/evidence and exception workflow  [open buyer-slice close-out]
 → close evidence and exportable provenance       [buyer-slice close-out]
 ```
 
