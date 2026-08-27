@@ -151,6 +151,19 @@ class ReconciliationDecisionProvenanceTests(unittest.TestCase):
                         next_action="Review unmatched evidence and record an explicit exception.",
                     )
 
+    def test_direct_construction_rejects_unknown_decision_code(self) -> None:
+        """Only the closed match/abstain decision domain may reach close-review evidence."""
+        with self.assertRaisesRegex(ValueError, "decision_code"):
+            ReconciliationDecision(
+                statement_entry_reference="statement-provenance-1",
+                decision_code="approved",
+                rule_code=None,
+                matched_journal_references=(),
+                allocated_amount=Decimal("0"),
+                exception_code=None,
+                next_action="Do not accept an unknown reconciliation decision state.",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
