@@ -70,6 +70,7 @@ class ReconciliationAllocationMigrationRedTests(unittest.TestCase):
         self.assertIn("reconciliation_allocation_conservation_guard", normalized)
         self.assertIn("reconciliation_match_scope_foreign_key", normalized)
         self.assertIn("reconciliation_candidate_scope_foreign_key", normalized)
+        self.assertIn("reconciliation_match_unbalanced", normalized)
 
 
 @unittest.skipUnless(
@@ -189,7 +190,7 @@ class PostgresReconciliationAllocationRedTests(unittest.TestCase):
             ).fetchone()
         return row[0]
 
-    def _insert_match(self, candidate_id: uuid.UUID, status: str = "approved") -> uuid.UUID:
+    def _insert_match(self, candidate_id: uuid.UUID, status: str = "proposed") -> uuid.UUID:
         with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
             row = connection.execute(
                 """
@@ -211,6 +212,19 @@ class PostgresReconciliationAllocationRedTests(unittest.TestCase):
                 ),
             ).fetchone()
         return row[0]
+
+    def _approve_match(self, match_id: uuid.UUID) -> None:
+        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
+            connection.execute(
+                """
+                UPDATE accounting_core.reconciliation_match
+                SET match_status_code = 'approved', approved_at = clock_timestamp()
+                WHERE tenant_account_id = %s
+                  AND reconciliation_run_id = %s
+                  AND reconciliation_match_id = %s
+                """,
+                (self.scope["tenant_account_id"], self.run_reference, match_id),
+            )
 
     def _insert_allocations(
         self,
@@ -257,6 +271,8 @@ class PostgresReconciliationAllocationRedTests(unittest.TestCase):
         """Candidate and allocation rows remain tenant-scoped with exact money."""
         candidate_id = self._insert_candidate("stmt-001", "journal-a")
         match_id = self._insert_match(candidate_id)
+        self._insert_allocations(match_id, "stmt-001", "journal-a", "1000.00")
+        self._approve_match(match_id)
         with psycopg.connect(posting.DATABASE_URL) as connection:
             rows = connection.execute(
                 """
@@ -297,10 +313,12 @@ class PostgresReconciliationAllocationRedTests(unittest.TestCase):
         first_candidate = self._insert_candidate("stmt-001", "journal-a")
         first_match = self._insert_match(first_candidate)
         self._insert_allocations(first_match, "stmt-001", "journal-a", "1000.00")
+        self._approve_match(first_match)
 
         second_candidate = self._insert_candidate("stmt-002", "journal-b")
         second_match = self._insert_match(second_candidate)
         self._insert_allocations(second_match, "stmt-002", "journal-b", "1000.00")
+        self._approve_match(second_match)
 
         with psycopg.connect(posting.DATABASE_URL) as connection:
             count = connection.execute(
@@ -322,13 +340,15 @@ class PostgresReconciliationAllocationRedTests(unittest.TestCase):
         )
         first_match = self._insert_match(first_candidate)
         self._insert_allocations(first_match, "stmt-shared", "journal-a", "600.00")
+        self._approve_match(first_match)
 
         second_candidate = self._insert_candidate(
             "stmt-shared", "journal-b", statement_amount="1000.00", journal_amount="500.00"
         )
+        second_match = self._insert_match(second_candidate)
+        self._insert_allocations(second_match, "stmt-shared", "journal-b", "500.00")
         with self.assertRaises(psycopg.errors.CheckViolation):
-            second_match = self._insert_match(second_candidate)
-            self._insert_allocations(second_match, "stmt-shared", "journal-b", "500.00")
+            self._approve_match(second_match)
 
 
 if __name__ == "__main__":
