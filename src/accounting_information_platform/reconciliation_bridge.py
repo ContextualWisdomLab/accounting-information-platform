@@ -36,8 +36,15 @@ class BookToBankBridgeResult(NamedTuple):
     statement_population_reference: str
     book_population_reference: str
     currency_code: str
+    statement_opening_balance: Decimal
+    statement_period_movements: Decimal
     statement_closing_balance: Decimal
+    book_opening_balance: Decimal
+    posted_cash_book_movements: Decimal
     book_closing_balance: Decimal
+    reconciled_book_balance: Decimal
+    outstanding_book_items: Decimal
+    outstanding_bank_items: Decimal
     bridge_balance: Decimal
     unexplained_difference: Decimal
     status_code: str
@@ -60,8 +67,15 @@ def _result(
         statement_population_reference=bridge_input.statement_population_reference,
         book_population_reference=bridge_input.book_population_reference,
         currency_code=bridge_input.currency_code,
+        statement_opening_balance=bridge_input.statement_opening_balance,
+        statement_period_movements=bridge_input.statement_period_movements,
         statement_closing_balance=bridge_input.statement_closing_balance,
+        book_opening_balance=bridge_input.book_opening_balance,
+        posted_cash_book_movements=bridge_input.posted_cash_book_movements,
         book_closing_balance=bridge_input.book_closing_balance,
+        reconciled_book_balance=bridge_input.reconciled_book_balance,
+        outstanding_book_items=bridge_input.outstanding_book_items,
+        outstanding_bank_items=bridge_input.outstanding_bank_items,
         bridge_balance=bridge_balance,
         unexplained_difference=unexplained_difference,
         status_code=status_code,
