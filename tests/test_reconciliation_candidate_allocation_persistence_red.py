@@ -5,8 +5,7 @@ from __future__ import annotations
 import re
 import unittest
 import uuid
-from datetime import date, datetime, timezone
-from decimal import Decimal
+from datetime import datetime, timezone
 from pathlib import Path
 
 import psycopg
@@ -20,11 +19,12 @@ from accounting_information_platform import (
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / "database/migrations/0014_reconciliation_candidate_allocation.sql"
+CONSERVATION_MIGRATION = ROOT / "database/migrations/0015_reconciliation_multi_match_conservation.sql"
 VALID_FROM = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
 class ReconciliationAllocationMigrationRedTests(unittest.TestCase):
-    """Require normalized candidate/match/allocation evidence before persistence."""
+    """Require normalized candidate/match/allocation evidence and corrective conservation."""
 
     def test_migration_defines_candidate_match_and_allocation_rows(self) -> None:
         """Conservation tables are 3NF rows, tenant-scoped, with no JSON blobs."""
@@ -58,19 +58,25 @@ class ReconciliationAllocationMigrationRedTests(unittest.TestCase):
         self.assertNotIn("jsonb", normalized)
         self.assertEqual(normalized.count("force row level security"), 4)
 
-    def test_single_approved_match_guard_is_declared(self) -> None:
-        """One active approved reconciliation per run must be enforced relationally."""
-        migration = MIGRATION.read_text(encoding="utf-8")
+    def test_corrective_migration_replaces_run_wide_approval_guard_with_conservation(self) -> None:
+        """A run may approve many independent matches while source amounts remain conserved."""
+        self.assertTrue(
+            CONSERVATION_MIGRATION.exists(),
+            "Add migration 0015 to replace the run-wide approval index with source-allocation conservation.",
+        )
+        migration = CONSERVATION_MIGRATION.read_text(encoding="utf-8")
         normalized = re.sub(r"\s+", " ", migration.lower())
-        self.assertIn("reconciliation_match_approved_single", normalized)
-        self.assertIn("where match_status_code = 'approved'", normalized)
+        self.assertIn("drop index accounting_core.reconciliation_match_approved_single", normalized)
+        self.assertIn("reconciliation_allocation_conservation_guard", normalized)
+        self.assertIn("reconciliation_match_scope_foreign_key", normalized)
+        self.assertIn("reconciliation_candidate_scope_foreign_key", normalized)
 
 
 @unittest.skipUnless(
     MIGRATION.exists(), "RED until durable reconciliation allocation migration exists"
 )
 class PostgresReconciliationAllocationRedTests(unittest.TestCase):
-    """Prove candidate/match schema and single-approval guard in PostgreSQL."""
+    """Prove multi-match conservation and tenant/run provenance in PostgreSQL."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -152,7 +158,14 @@ class PostgresReconciliationAllocationRedTests(unittest.TestCase):
             )
             connection.execute("RESET app.tenant_account_id")
 
-    def _insert_candidate(self, statement_reference: str, journal_reference: str) -> str:
+    def _insert_candidate(
+        self,
+        statement_reference: str,
+        journal_reference: str,
+        *,
+        statement_amount: str = "1000.00",
+        journal_amount: str = "1000.00",
+    ) -> uuid.UUID:
         with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
             row = connection.execute(
                 """
@@ -161,7 +174,7 @@ class PostgresReconciliationAllocationRedTests(unittest.TestCase):
                     statement_entry_reference, journal_reference, statement_amount,
                     journal_amount, rule_code
                 )
-                VALUES (%s, %s, %s, %s, %s, '1000.00', '1000.00', 'provider_reference')
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 'provider_reference')
                 RETURNING reconciliation_candidate_id
                 """,
                 (
@@ -170,11 +183,13 @@ class PostgresReconciliationAllocationRedTests(unittest.TestCase):
                     self.run_reference,
                     statement_reference,
                     journal_reference,
+                    statement_amount,
+                    journal_amount,
                 ),
             ).fetchone()
         return row[0]
 
-    def _approve_match(self, candidate_id: str) -> str:
+    def _insert_match(self, candidate_id: uuid.UUID, status: str = "approved") -> uuid.UUID:
         with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
             row = connection.execute(
                 """
@@ -182,7 +197,8 @@ class PostgresReconciliationAllocationRedTests(unittest.TestCase):
                     reconciliation_match_id, tenant_account_id, reconciliation_run_id,
                     reconciliation_candidate_id, match_status_code, approved_at
                 )
-                VALUES (%s, %s, %s, %s, 'approved', clock_timestamp())
+                VALUES (%s, %s, %s, %s, %s,
+                        CASE WHEN %s = 'approved' THEN clock_timestamp() ELSE NULL END)
                 RETURNING reconciliation_match_id
                 """,
                 (
@@ -190,14 +206,57 @@ class PostgresReconciliationAllocationRedTests(unittest.TestCase):
                     self.scope["tenant_account_id"],
                     self.run_reference,
                     candidate_id,
+                    status,
+                    status,
                 ),
             ).fetchone()
         return row[0]
 
+    def _insert_allocations(
+        self,
+        match_id: uuid.UUID,
+        statement_reference: str,
+        journal_reference: str,
+        amount: str,
+    ) -> None:
+        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
+            connection.execute(
+                """
+                INSERT INTO accounting_core.statement_match_allocation (
+                    tenant_account_id, reconciliation_run_id, reconciliation_match_id,
+                    statement_entry_reference, allocated_amount
+                )
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (
+                    self.scope["tenant_account_id"],
+                    self.run_reference,
+                    match_id,
+                    statement_reference,
+                    amount,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO accounting_core.journal_match_allocation (
+                    tenant_account_id, reconciliation_run_id, reconciliation_match_id,
+                    journal_reference, allocated_amount
+                )
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (
+                    self.scope["tenant_account_id"],
+                    self.run_reference,
+                    match_id,
+                    journal_reference,
+                    amount,
+                ),
+            )
+
     def test_allocation_tables_enforce_tenant_scope_and_rows(self) -> None:
         """Candidate and allocation rows remain tenant-scoped with exact money."""
         candidate_id = self._insert_candidate("stmt-001", "journal-a")
-        match_id = self._approve_match(candidate_id)
+        match_id = self._insert_match(candidate_id)
         with psycopg.connect(posting.DATABASE_URL) as connection:
             rows = connection.execute(
                 """
@@ -231,16 +290,45 @@ class PostgresReconciliationAllocationRedTests(unittest.TestCase):
                     ],
                 ),
             ).fetchall()
-        self.assertEqual(rels[1][1], True)
         self.assertTrue(all(row[1] for row in rels))
 
-    def test_second_approved_match_on_same_run_fails_closed(self) -> None:
-        """At most one approved match per run is enforced by the partial unique index."""
+    def test_two_independent_matches_can_be_approved_in_one_run(self) -> None:
+        """A commercial reconciliation run may approve more than one disjoint safe match."""
         first_candidate = self._insert_candidate("stmt-001", "journal-a")
-        self._approve_match(first_candidate)
+        first_match = self._insert_match(first_candidate)
+        self._insert_allocations(first_match, "stmt-001", "journal-a", "1000.00")
+
         second_candidate = self._insert_candidate("stmt-002", "journal-b")
-        with self.assertRaises(psycopg.errors.UniqueViolation):
-            self._approve_match(second_candidate)
+        second_match = self._insert_match(second_candidate)
+        self._insert_allocations(second_match, "stmt-002", "journal-b", "1000.00")
+
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            count = connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM accounting_core.reconciliation_match
+                WHERE tenant_account_id = %s
+                  AND reconciliation_run_id = %s
+                  AND match_status_code = 'approved'
+                """,
+                (self.scope["tenant_account_id"], self.run_reference),
+            ).fetchone()[0]
+        self.assertEqual(count, 2)
+
+    def test_approved_matches_cannot_overconsume_one_statement(self) -> None:
+        """Multiple approvals stay legal only while exact statement allocation is conserved."""
+        first_candidate = self._insert_candidate(
+            "stmt-shared", "journal-a", statement_amount="1000.00", journal_amount="600.00"
+        )
+        first_match = self._insert_match(first_candidate)
+        self._insert_allocations(first_match, "stmt-shared", "journal-a", "600.00")
+
+        second_candidate = self._insert_candidate(
+            "stmt-shared", "journal-b", statement_amount="1000.00", journal_amount="500.00"
+        )
+        with self.assertRaises(psycopg.errors.CheckViolation):
+            second_match = self._insert_match(second_candidate)
+            self._insert_allocations(second_match, "stmt-shared", "journal-b", "500.00")
 
 
 if __name__ == "__main__":
