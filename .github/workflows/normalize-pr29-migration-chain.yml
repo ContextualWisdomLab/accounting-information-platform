@@ -65,6 +65,8 @@ jobs:
 
       - name: Validate focused install and repository contracts
         shell: bash
+        env:
+          PYTHONPATH: src
         run: |
           set -euo pipefail
           python -m unittest tests.test_foundation_install_manifest_contract
