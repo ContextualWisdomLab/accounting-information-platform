@@ -83,7 +83,11 @@ CREATE TABLE accounting_core.reconciliation_exception (
             tenant_account_id,
             reconciliation_run_id
         ),
-    UNIQUE (tenant_account_id, reconciliation_exception_id)
+    UNIQUE (
+        tenant_account_id,
+        reconciliation_run_id,
+        reconciliation_exception_id
+    )
 );
 
 CREATE TABLE accounting_core.reconciliation_evidence (
@@ -105,9 +109,14 @@ CREATE TABLE accounting_core.reconciliation_evidence (
             tenant_account_id,
             reconciliation_run_id
         ),
-    FOREIGN KEY (tenant_account_id, reconciliation_exception_id)
+    FOREIGN KEY (
+        tenant_account_id,
+        reconciliation_run_id,
+        reconciliation_exception_id
+    )
         REFERENCES accounting_core.reconciliation_exception (
             tenant_account_id,
+            reconciliation_run_id,
             reconciliation_exception_id
         ),
     UNIQUE (
