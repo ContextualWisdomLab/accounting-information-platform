@@ -101,6 +101,45 @@ class ReconciliationDecision:
     exception_code: str | None
     next_action: str
 
+    def __post_init__(self) -> None:
+        """Reject forged success- or exception-shaped reconciliation evidence."""
+        if self.decision_code == "match":
+            if len(self.matched_journal_references) != 1:
+                raise ValueError(
+                    "match decision must reference exactly one journal. Rebuild the deterministic proposal from source evidence."
+                )
+            try:
+                _require_positive_exact_decimal(self.allocated_amount)
+            except ValueError as exc:
+                raise ValueError(
+                    "match decision allocated_amount must be a positive exact Decimal. Rebuild the deterministic proposal from source evidence."
+                ) from exc
+            if self.exception_code is not None:
+                raise ValueError(
+                    "match decision cannot carry an exception_code. Rebuild the deterministic proposal from source evidence."
+                )
+        elif self.decision_code == "abstain":
+            if self.matched_journal_references:
+                raise ValueError(
+                    "abstain decision cannot reference a matched journal. Review unmatched evidence and record an explicit exception."
+                )
+            if (
+                not isinstance(self.allocated_amount, Decimal)
+                or not self.allocated_amount.is_finite()
+                or self.allocated_amount != 0
+            ):
+                raise ValueError(
+                    "abstain decision allocated_amount must be exactly zero Decimal. Review unmatched evidence and record an explicit exception."
+                )
+            if not isinstance(self.exception_code, str) or not self.exception_code.strip():
+                raise ValueError(
+                    "abstain decision requires an exception_code. Review unmatched evidence and record an explicit exception."
+                )
+        else:
+            raise ValueError(
+                "decision_code must be match or abstain. Rebuild the reconciliation decision from deterministic source evidence."
+            )
+
 
 _STRONG_REFERENCE_RULES = (
     ("provider_reference", "provider_reference"),

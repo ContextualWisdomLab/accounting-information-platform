@@ -1,9 +1,11 @@
-"""RED contract for reconciliation-decision source provenance.
+"""RED contracts for reconciliation-decision provenance and structural integrity.
 
 A reviewable deterministic match or abstention must carry the immutable statement
 entry identity that produced it. Call-site context is not durable audit evidence;
 the decision object itself must remain attributable when it is logged, exported,
-or later persisted by the authoritative reconciliation workflow.
+or later persisted by the authoritative reconciliation workflow. Decision objects
+must also fail closed if a caller attempts to construct success-shaped evidence
+that violates the deterministic reconciliation contract.
 """
 
 from __future__ import annotations
@@ -15,13 +17,14 @@ from decimal import Decimal
 from accounting_information_platform.reconciliation import (
     BookJournalEvidence,
     DeterministicMatchPolicy,
+    ReconciliationDecision,
     StatementEntryEvidence,
     propose_deterministic_match,
 )
 
 
 class ReconciliationDecisionProvenanceTests(unittest.TestCase):
-    """Require every proposal decision to retain its source statement identity."""
+    """Require proposal decisions to retain source identity and valid structure."""
 
     def _statement(self) -> StatementEntryEvidence:
         return StatementEntryEvidence(
@@ -73,6 +76,93 @@ class ReconciliationDecisionProvenanceTests(unittest.TestCase):
         self.assertEqual(decision.statement_entry_reference, "statement-provenance-1")
         self.assertEqual(decision.matched_journal_references, ())
         self.assertEqual(decision.allocated_amount, Decimal("0"))
+
+    def test_direct_match_construction_cannot_forge_success_shaped_evidence(self) -> None:
+        """A match must carry one journal, positive exact allocation, and no exception."""
+        invalid_matches = (
+            {
+                "matched_journal_references": (),
+                "allocated_amount": Decimal("125000.00"),
+                "exception_code": None,
+            },
+            {
+                "matched_journal_references": ("journal-provenance-1",),
+                "allocated_amount": Decimal("0"),
+                "exception_code": None,
+            },
+            {
+                "matched_journal_references": ("journal-provenance-1",),
+                "allocated_amount": Decimal("NaN"),
+                "exception_code": None,
+            },
+            {
+                "matched_journal_references": ("journal-provenance-1",),
+                "allocated_amount": Decimal("125000.00"),
+                "exception_code": "fabricated_exception",
+            },
+        )
+
+        for fields in invalid_matches:
+            with self.subTest(fields=fields):
+                with self.assertRaisesRegex(ValueError, "match decision"):
+                    ReconciliationDecision(
+                        statement_entry_reference="statement-provenance-1",
+                        decision_code="match",
+                        rule_code="provider_reference",
+                        matched_journal_references=fields["matched_journal_references"],
+                        allocated_amount=fields["allocated_amount"],
+                        exception_code=fields["exception_code"],
+                        next_action=(
+                            "Review and record this deterministic reconciliation proposal; "
+                            "do not post a journal from it."
+                        ),
+                    )
+
+    def test_direct_abstention_construction_cannot_forge_exception_evidence(self) -> None:
+        """An abstention must consume no journal or money and must name its exception."""
+        invalid_abstentions = (
+            {
+                "matched_journal_references": ("journal-provenance-1",),
+                "allocated_amount": Decimal("0"),
+                "exception_code": "no_candidate",
+            },
+            {
+                "matched_journal_references": (),
+                "allocated_amount": Decimal("1"),
+                "exception_code": "no_candidate",
+            },
+            {
+                "matched_journal_references": (),
+                "allocated_amount": Decimal("0"),
+                "exception_code": None,
+            },
+        )
+
+        for fields in invalid_abstentions:
+            with self.subTest(fields=fields):
+                with self.assertRaisesRegex(ValueError, "abstain decision"):
+                    ReconciliationDecision(
+                        statement_entry_reference="statement-provenance-1",
+                        decision_code="abstain",
+                        rule_code=None,
+                        matched_journal_references=fields["matched_journal_references"],
+                        allocated_amount=fields["allocated_amount"],
+                        exception_code=fields["exception_code"],
+                        next_action="Review unmatched evidence and record an explicit exception.",
+                    )
+
+    def test_direct_construction_rejects_unknown_decision_code(self) -> None:
+        """Only the closed match/abstain decision domain may reach close-review evidence."""
+        with self.assertRaisesRegex(ValueError, "decision_code"):
+            ReconciliationDecision(
+                statement_entry_reference="statement-provenance-1",
+                decision_code="approved",
+                rule_code=None,
+                matched_journal_references=(),
+                allocated_amount=Decimal("0"),
+                exception_code=None,
+                next_action="Do not accept an unknown reconciliation decision state.",
+            )
 
 
 if __name__ == "__main__":

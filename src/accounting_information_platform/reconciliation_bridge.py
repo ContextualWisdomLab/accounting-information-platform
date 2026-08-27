@@ -27,6 +27,10 @@ class BookToBankBridgeInput(NamedTuple):
     reconciled_book_balance: Decimal
     outstanding_book_items: Decimal
     outstanding_bank_items: Decimal
+    tenant_account_reference: str | None = None
+    legal_entity_reference: str | None = None
+    accounting_book_reference: str | None = None
+    bank_account_assignment_reference: str | None = None
 
 
 class BookToBankBridgeResult(NamedTuple):
@@ -50,6 +54,10 @@ class BookToBankBridgeResult(NamedTuple):
     status_code: str
     exception_code: str | None
     next_action: str
+    tenant_account_reference: str | None = None
+    legal_entity_reference: str | None = None
+    accounting_book_reference: str | None = None
+    bank_account_assignment_reference: str | None = None
 
 
 _BRIDGE_MONEY_FIELDS = (
@@ -102,6 +110,10 @@ def _result(
         status_code=status_code,
         exception_code=exception_code,
         next_action=next_action,
+        tenant_account_reference=bridge_input.tenant_account_reference,
+        legal_entity_reference=bridge_input.legal_entity_reference,
+        accounting_book_reference=bridge_input.accounting_book_reference,
+        bank_account_assignment_reference=bridge_input.bank_account_assignment_reference,
     )
 
 
