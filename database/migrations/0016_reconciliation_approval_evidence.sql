@@ -3,9 +3,10 @@ BEGIN;
 -- Durable human reconciliation approval evidence.
 --
 -- An approval is an immutable accounting-control fact bound to one tenant/run/match
--- and one immutable command identity.  Approval evidence never posts, reverses,
--- closes, or changes accounting policy.  A match may become approved only after
--- the corresponding durable approved decision exists.
+-- and one immutable command identity. Approval evidence never posts, reverses,
+-- closes, or changes accounting policy. A reviewed match may enter approved or
+-- rejected only after the corresponding durable decision exists; reviewed terminal
+-- states may only be retired through explicit supersession.
 
 CREATE TABLE accounting_core.reconciliation_approval (
     reconciliation_approval_id uuid PRIMARY KEY DEFAULT uuidv7(),
@@ -109,15 +110,44 @@ CREATE OR REPLACE FUNCTION accounting_core.reconciliation_match_requires_approva
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
+DECLARE
+    required_decision text;
 BEGIN
-    IF NEW.match_status_code <> 'approved'
-       OR (TG_OP = 'UPDATE' AND OLD.match_status_code = 'approved') THEN
+    IF TG_OP = 'UPDATE'
+       AND OLD.match_status_code IN ('approved', 'rejected') THEN
+        IF NEW.match_status_code = OLD.match_status_code THEN
+            IF NEW.approved_at IS DISTINCT FROM OLD.approved_at THEN
+                RAISE EXCEPTION
+                    'reviewed reconciliation match evidence is immutable; supersede the match instead (reconciliation_review_terminal)'
+                    USING ERRCODE = '23514';
+            END IF;
+            RETURN NEW;
+        END IF;
+
+        IF NEW.match_status_code = 'superseded' THEN
+            RETURN NEW;
+        END IF;
+
+        RAISE EXCEPTION
+            'reviewed reconciliation match cannot reopen or change decision; supersede it instead (reconciliation_review_terminal)'
+            USING ERRCODE = '23514';
+    END IF;
+
+    IF NEW.match_status_code NOT IN ('approved', 'rejected') THEN
         RETURN NEW;
     END IF;
 
-    IF NEW.approved_at IS NULL THEN
+    required_decision := NEW.match_status_code;
+
+    IF required_decision = 'approved' AND NEW.approved_at IS NULL THEN
         RAISE EXCEPTION
-            'approved reconciliation match requires approved_at and durable approval evidence (reconciliation_approval_required)'
+            'approved reconciliation match requires approved_at and durable approved evidence (reconciliation_approval_required)'
+            USING ERRCODE = '23514';
+    END IF;
+
+    IF required_decision = 'rejected' AND NEW.approved_at IS NOT NULL THEN
+        RAISE EXCEPTION
+            'rejected reconciliation match cannot carry approved_at (reconciliation_approval_required)'
             USING ERRCODE = '23514';
     END IF;
 
@@ -127,10 +157,10 @@ BEGIN
         WHERE approval.tenant_account_id = NEW.tenant_account_id
           AND approval.reconciliation_run_id = NEW.reconciliation_run_id
           AND approval.reconciliation_match_id = NEW.reconciliation_match_id
-          AND approval.approval_decision_code = 'approved'
+          AND approval.approval_decision_code = required_decision
     ) THEN
         RAISE EXCEPTION
-            'approved reconciliation match requires durable approved evidence (reconciliation_approval_required)'
+            'reviewed reconciliation match requires durable decision-consistent approval evidence (reconciliation_approval_required)'
             USING ERRCODE = '23514';
     END IF;
 
