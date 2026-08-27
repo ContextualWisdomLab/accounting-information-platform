@@ -71,7 +71,8 @@ from .bank_statement import (
 )
 from .http_api import create_journal_proposal_server, run_journal_proposal_server
 from .ingest import ingest_journal_proposal
-from .persistence import PostgresPostingLedger, apply_foundation_migration
+from .persistence import PostgresPostingLedger
+from .migration_install import apply_foundation_migration
 
 __all__ = [
     "AccountBalance",
