@@ -147,6 +147,36 @@ class PostgresReconciliationRunExceptionRedTests(unittest.TestCase):
                 self.assertIn(column_name, columns)
                 self.assertEqual(columns[column_name][1], "NO")
 
+    def test_exception_evidence_cannot_cross_reconciliation_runs(self) -> None:
+        """An evidence row may not reference an exception from a different evaluated run."""
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            definitions = [
+                row[0]
+                for row in connection.execute(
+                    """
+                    SELECT pg_get_constraintdef(con.oid)
+                    FROM pg_constraint AS con
+                    JOIN pg_class AS c ON c.oid = con.conrelid
+                    JOIN pg_namespace AS n ON n.oid = c.relnamespace
+                    WHERE n.nspname = 'accounting_core'
+                      AND c.relname = 'reconciliation_evidence'
+                      AND con.contype = 'f'
+                    ORDER BY con.conname
+                    """
+                ).fetchall()
+            ]
+        normalized = [re.sub(r"\s+", " ", definition.lower()) for definition in definitions]
+        self.assertTrue(
+            any(
+                "foreign key (tenant_account_id, reconciliation_run_id, reconciliation_exception_id)"
+                in definition
+                and "references accounting_core.reconciliation_exception(tenant_account_id, reconciliation_run_id, reconciliation_exception_id)"
+                in definition
+                for definition in normalized
+            ),
+            "Bind reconciliation evidence and its exception to the same reconciliation_run_id; cross-run exception provenance must fail at the database boundary.",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
