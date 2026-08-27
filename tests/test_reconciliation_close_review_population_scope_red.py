@@ -23,7 +23,17 @@ import accounting_information_platform.reconciliation_read_model as read_model
 class ReconciliationCloseReviewPopulationScopeTests(unittest.TestCase):
     """Fail closed on incomplete populations and cross-scope prior-run evidence."""
 
-    def _bridge(self, *, run_reference: str, statement_reference: str, book_reference: str):
+    def _bridge(
+        self,
+        *,
+        run_reference: str,
+        statement_reference: str,
+        book_reference: str,
+        tenant: str = "tenant-a",
+        entity: str = "entity-a",
+        book: str = "book-a",
+        bank: str = "bank-a",
+    ):
         return compute_book_to_bank_bridge(
             BookToBankBridgeInput(
                 reconciliation_run_reference=run_reference,
@@ -39,6 +49,10 @@ class ReconciliationCloseReviewPopulationScopeTests(unittest.TestCase):
                 reconciled_book_balance=Decimal("1200.00"),
                 outstanding_book_items=Decimal("100.00"),
                 outstanding_bank_items=Decimal("50.00"),
+                tenant_account_reference=tenant,
+                legal_entity_reference=entity,
+                accounting_book_reference=book,
+                bank_account_assignment_reference=bank,
             )
         )
 
@@ -176,6 +190,7 @@ class ReconciliationCloseReviewPopulationScopeTests(unittest.TestCase):
             run_reference="run-previous",
             statement_reference="statement-previous",
             book_reference="book-previous",
+            book="book-b",
         )
         with self.assertRaisesRegex(ValueError, "scope"):
             read_model.build_reconciliation_close_review(
