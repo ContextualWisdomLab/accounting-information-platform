@@ -1,0 +1,92 @@
+name: Normalize PR29 migration chain
+
+on:
+  push:
+    branches:
+      - fix/reconciliation-multi-match-conservation
+
+permissions:
+  contents: write
+
+concurrency:
+  group: normalize-pr29-migration-chain
+  cancel-in-progress: true
+
+jobs:
+  normalize:
+    if: github.repository == 'ContextualWisdomLab/accounting-information-platform'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact repair head
+        uses: actions/checkout@631c942040754b6e095e929c1677c07e10ed4f87
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Verify exact repair checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git branch --show-current)" = "fix/reconciliation-multi-match-conservation"
+
+      - name: Apply guarded canonical migration-chain repair
+        run: python scripts/repair_pr29_migration_chain.py
+
+      - name: Verify repair touched only intended canonical files
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git diff --name-only | sort)"
+          expected="$(printf '%s\n' \
+            CHANGELOG.md \
+            docs/ARCHITECTURE.md \
+            docs/OPERABILITY.md \
+            scripts/validate_repository.py \
+            src/accounting_information_platform/migration_install.py \
+            src/accounting_information_platform/persistence.py \
+            tests/test_foundation_install_manifest_contract.py | sort)"
+          diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$actual")
+
+      - name: Install pinned Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-quality.txt
+
+      - name: Install hash-locked validation dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --require-hashes --disable-pip-version-check --only-binary=:all: -r requirements-quality.txt
+
+      - name: Validate focused install and repository contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest tests.test_foundation_install_manifest_contract
+          python scripts/validate_repository.py
+          python -m compileall -q src scripts tests
+
+      - name: Normalize generated repair into canonical product tree
+        shell: bash
+        env:
+          TARGET_BRANCH: fix/reconciliation-multi-match-conservation
+        run: |
+          set -euo pipefail
+          git rm scripts/repair_pr29_migration_chain.py .github/workflows/normalize-pr29-migration-chain.yml
+          test ! -e scripts/repair_pr29_migration_chain.py
+          test ! -e .github/workflows/normalize-pr29-migration-chain.yml
+          git config user.name "seonghobae"
+          git config user.email "8172694+seonghobae@users.noreply.github.com"
+          git add CHANGELOG.md docs/ARCHITECTURE.md docs/OPERABILITY.md \
+            scripts/validate_repository.py \
+            src/accounting_information_platform/migration_install.py \
+            src/accounting_information_platform/persistence.py \
+            tests/test_foundation_install_manifest_contract.py
+          git diff --cached --check
+          git commit -m "fix: unify reconciliation migration install chain"
+          git push origin "HEAD:${TARGET_BRANCH}"
