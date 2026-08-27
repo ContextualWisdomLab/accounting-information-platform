@@ -39,13 +39,21 @@ A stacked successor adds a second pure projection over already selected immutabl
 
 The bridge returns `statement_balance_mismatch`, `book_balance_mismatch`, or `bridge_difference` before it can return `reconciled`. There is no tolerance rounding: a one-minor-unit difference remains an explicit exception. Every result retains the reconciliation-run, immutable statement-population, and posted-book-population references and names the operator's next action. A reconciled result is close evidence only; it is not a journal command or an approval.
 
+### Buyer close-review projection
+
+A further read-only projection may present the deterministic decisions and exact bridge to a controller without creating a new accounting authority. It exposes the bank closing balance, posted-book cash balance, reconciled balance, outstanding bank and book items, unexplained difference, deterministic match count, unresolved exception count and statement-entry references, and exact changes from a preceding bridge run. The projection carries the reconciliation-run, immutable statement-population, and posted-book-population references so exported evidence remains attributable.
+
+`Suitable for period-close review` means only that the exact bridge is `reconciled` and the supplied deterministic decision set contains no unresolved exception. It is not a reconciliation approval, period-close command, journal-posting permission, or accounting-policy decision. Any bridge difference or unresolved exception makes the projection fail closed and produces a customer-facing next action naming what must be resolved before close review is repeated.
+
+JSON and CSV exports preserve monetary values as decimal strings. They do not convert exact accounting evidence to binary floating point or hide values behind presentation-only formatting. A preceding-run delta is informational comparison evidence; it never changes the immutable populations from which either bridge was computed.
+
 ## Consequences and limits
 
 The statement-side direction is the normalized ISO 20022 `CdtDbtInd` evidence already retained by the integrated statement registry. Both statement-side and book-side reconciliation evidence reject any direction code other than `CRDT` or `DBIT` before matching begins, so two equally invalid arbitrary strings can never become a match. Book candidates must expose the corresponding economic cash-movement direction explicitly; amount/reference equality alone cannot reconcile an incoming bank credit to an outgoing book movement or vice versa. A direction conflict fails closed before a proposal is emitted.
 
-This slice still does not claim the complete issue #8 reconciliation vertical. Persistence of immutable reconciliation runs/candidates, many-to-many allocation conservation, explicit approval/exception records, concurrency protection, temporal knowledge cutoffs, close-package integration, and exports remain later bounded work and must be test-first before they can be treated as integrated capability.
+This slice still does not claim the complete issue #8 reconciliation vertical. Persistence of immutable reconciliation runs/candidates, many-to-many allocation conservation, explicit approval/exception records, concurrency protection, temporal knowledge cutoffs, close-package integration, and durable approval evidence remain later bounded work and must be test-first before they can be treated as integrated capability. The close-review projection is a read model/export surface over current immutable evidence, not persistence for those missing controls.
 
-LLM or probabilistic output may later summarize or prioritize an exception, but it cannot invoke a proposal or bridge result as an approval, consume monetary evidence, or post an adjustment.
+LLM or probabilistic output may later summarize or prioritize an exception, but it cannot invoke a proposal, bridge result, or close-review projection as an approval, consume monetary evidence, or post an adjustment.
 
 ## Evidence
 
@@ -54,6 +62,8 @@ The initial RED contract was executed on exact PR head `80ce0eb1cffb4b60199d22ff
 Exact predecessor `73349aeb6973fa26fa97fe7c8f132aa79ced0aca` then failed Accounting Foundation CI `32973939075` at behavior/repository tests after exact-head SAST/security/dependency jobs succeeded; all later coverage/package evidence was skipped. The bounded defect was missing source-statement provenance on `ReconciliationDecision`. The narrow repair makes `statement_entry_reference` mandatory on both match and abstention results. Predecessor execution evidence does not transfer to later heads.
 
 The exact bridge RED contract was executed on head `20af44c663a33a63cb002725fdba8dab9bc83cd3` with PostgreSQL 18.4. Existing reconciliation and foundation behavior passed; all three bridge tests failed at the first causal boundary because `accounting_information_platform.reconciliation_bridge` did not exist, and coverage/package stages were correctly skipped. The narrow successor implementation therefore adds only the pure projection required by those observed failures.
+
+The close-review RED contract was executed on exact head `051fb233d0af04c6b6208c23b341e05c236bd200` in Accounting Foundation CI `33028878208`. PostgreSQL 18.4 initialized and the existing behavior passed until all four new close-review tests reached the same first causal boundary: `accounting_information_platform.reconciliation_read_model` did not exist. Coverage, repository-validation, and package evidence correctly did not become passing evidence for that RED head. The narrow successor adds only the read model and exact-value JSON/CSV exports required by that observed boundary.
 
 ## References
 
