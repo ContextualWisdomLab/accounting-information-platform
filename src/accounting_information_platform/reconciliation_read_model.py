@@ -74,7 +74,7 @@ def _validate_scope(
     *,
     label: str,
 ) -> None:
-    """Require complete immutable scope identity that agrees with bridge currency."""
+    """Require complete scope identity that is immutably bound to bridge evidence."""
 
     identity_fields = (
         scope.tenant_account_reference,
@@ -86,6 +86,17 @@ def _validate_scope(
         raise ValueError(f"{label} reconciliation scope identity must be non-empty")
     if scope.currency_code != bridge.currency_code:
         raise ValueError(f"{label} reconciliation scope currency must match bridge currency")
+
+    bridge_identity = (
+        bridge.tenant_account_reference,
+        bridge.legal_entity_reference,
+        bridge.accounting_book_reference,
+        bridge.bank_account_assignment_reference,
+    )
+    if any(not isinstance(value, str) or not value.strip() for value in bridge_identity):
+        raise ValueError(f"{label} bridge scope identity must be bound")
+    if bridge_identity != identity_fields:
+        raise ValueError(f"{label} bridge scope must match reconciliation scope")
 
 
 def _validate_statement_population(
