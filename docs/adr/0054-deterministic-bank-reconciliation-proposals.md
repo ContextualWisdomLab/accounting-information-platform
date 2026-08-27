@@ -21,7 +21,7 @@ The first bounded precedence is:
 4. only when no strong identity is present, exact amount, currency, CRDT/DBIT economic direction, and the configured booking/accounting-date window;
 5. otherwise abstain.
 
-A higher-confidence identity conflict never falls through to a weaker rule. A strong identity is not sufficient by itself: amount, currency, and credit/debit direction must also agree exactly. Duplicate candidates remain ambiguous even when money and direction agree. The weaker money/date rule is permitted only for one unique same-direction candidate. All monetary values remain `Decimal`; the engine does not round, coerce, or consume evidence on abstention.
+A higher-confidence identity conflict never falls through to a weaker rule. A strong identity is not sufficient by itself: amount, currency, and credit/debit direction must also agree exactly. Duplicate candidates remain ambiguous even when money and direction agree. The weaker money/date rule is permitted only for one unique same-direction candidate. Reconciliation monetary evidence is canonical only when it is a finite, strictly positive `Decimal`; binary floating-point values, zero, negative values, `NaN`, and infinities fail before candidate comparison. CRDT/DBIT carries economic direction separately, so the engine never infers direction from a signed amount or coerces/rounds monetary evidence.
 
 Every abstention carries an exception code and an operator next action. The current bounded codes are `ambiguous_reference`, `amount_mismatch`, `currency_mismatch`, `direction_mismatch`, `date_window_mismatch`, and `no_candidate`.
 
@@ -31,7 +31,7 @@ The decision object is a proposal only. It does not persist a reconciliation app
 
 ## Consequences and limits
 
-The statement-side direction is the normalized ISO 20022 `CdtDbtInd` evidence already retained by the integrated statement registry. Both statement-side and book-side reconciliation evidence reject any direction code other than `CRDT` or `DBIT` before matching begins, so two equally invalid arbitrary strings can never become a match. Book candidates must expose the corresponding economic cash-movement direction explicitly; amount/reference equality alone cannot reconcile an incoming bank credit to an outgoing book movement or vice versa. A direction conflict fails closed before a proposal is emitted.
+The statement-side direction is the normalized ISO 20022 `CdtDbtInd` evidence already retained by the integrated statement registry. Both statement-side and book-side reconciliation evidence reject any direction code other than `CRDT` or `DBIT` before matching begins, so two equally invalid arbitrary strings can never become a match. They also reject non-`Decimal`, non-finite, zero, or negative monetary evidence before matching; direction stays a separate CRDT/DBIT fact rather than being encoded as a sign. Book candidates must expose the corresponding economic cash-movement direction explicitly; amount/reference equality alone cannot reconcile an incoming bank credit to an outgoing book movement or vice versa. A direction conflict fails closed before a proposal is emitted.
 
 This slice intentionally does not claim the complete issue #8 reconciliation vertical. Persistence of immutable reconciliation runs/candidates, many-to-many allocation conservation, explicit approval/exception records, concurrency protection, exact book-to-bank bridge equations, temporal knowledge cutoffs, close evidence, and exports remain later bounded work and must be test-first before they can be treated as integrated capability.
 
@@ -44,6 +44,8 @@ The initial RED contract was executed on exact PR head `80ce0eb1cffb4b60199d22ff
 Exact predecessor `73349aeb6973fa26fa97fe7c8f132aa79ced0aca` then failed Accounting Foundation CI `32973939075` at behavior/repository tests after exact-head SAST/security/dependency jobs succeeded; all later coverage/package evidence was skipped. The bounded defect was missing source-statement provenance on `ReconciliationDecision`. The narrow repair makes `statement_entry_reference` mandatory on both match and abstention results. Predecessor execution evidence does not transfer to later heads.
 
 Current-head review also identified that arbitrary direction strings could be compared as if they were normalized evidence. The regression contract now requires invalid statement and book direction codes to fail before matching; only current-head execution may establish that repair as passing evidence.
+
+Exact RED head `b1dc468dc42591a4d92dc96957dc905e036d12c1` then ran 404 PostgreSQL-backed behavior/repository tests and failed six new monetary-domain cases before coverage or package evidence could run: binary float, zero, negative, `NaN`, positive infinity, and negative infinity were all accepted by the typed evidence constructors because type annotations were not runtime authority. The narrow repair at `b2fdb5cdaa24e4735e5961e29f0b310bb8560349` rejects every value except a finite, strictly positive `Decimal` at the evidence boundary before matching. Execution evidence belongs only to the exact head that produced it and is not transferred to later documentation heads.
 
 ## References
 
