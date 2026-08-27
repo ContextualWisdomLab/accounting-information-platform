@@ -191,6 +191,65 @@ class PostgresCrossRunReconciliationConservationRedTests(unittest.TestCase):
                 "journal-cross-run",
             )
 
+    def test_concurrent_active_runs_serialize_same_statement_source(self) -> None:
+        """Two reviewers cannot concurrently consume the same remaining statement amount."""
+        first_candidate = self.case._insert_candidate("stmt-concurrent", "journal-first")
+        first_match = self.case._insert_match(first_candidate)
+        second_run = self._insert_run()
+        second_candidate = self._insert_candidate(
+            second_run,
+            "stmt-concurrent",
+            "journal-second",
+        )
+        second_match = self._insert_match(second_run, second_candidate)
+        insert_sql = """
+            INSERT INTO accounting_core.statement_match_allocation (
+                tenant_account_id, reconciliation_run_id, reconciliation_match_id,
+                statement_entry_reference, allocated_amount
+            )
+            VALUES (%s, %s, %s, %s, '1000.00')
+        """
+        first_connection = psycopg.connect(posting.DATABASE_URL)
+        second_connection = psycopg.connect(posting.DATABASE_URL)
+        self.addCleanup(first_connection.close)
+        self.addCleanup(second_connection.close)
+
+        first_connection.execute("SET lock_timeout = '5s'")
+        first_connection.execute(
+            insert_sql,
+            (
+                self.case.scope["tenant_account_id"],
+                self.case.run_reference,
+                first_match,
+                "stmt-concurrent",
+            ),
+        )
+        second_connection.execute("SET lock_timeout = '250ms'")
+        with self.assertRaises(psycopg.errors.LockNotAvailable):
+            second_connection.execute(
+                insert_sql,
+                (
+                    self.case.scope["tenant_account_id"],
+                    second_run,
+                    second_match,
+                    "stmt-concurrent",
+                ),
+            )
+        second_connection.rollback()
+        first_connection.commit()
+
+        with self.assertRaises(psycopg.errors.CheckViolation):
+            second_connection.execute(
+                insert_sql,
+                (
+                    self.case.scope["tenant_account_id"],
+                    second_run,
+                    second_match,
+                    "stmt-concurrent",
+                ),
+            )
+        second_connection.rollback()
+
     def test_superseded_match_explicitly_releases_source_consumption(self) -> None:
         """Superseding the old evidence releases capacity without deleting its history."""
         first_candidate = self.case._insert_candidate("stmt-released", "journal-released")
