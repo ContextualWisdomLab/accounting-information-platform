@@ -69,6 +69,46 @@ class PostgresReconciliationApprovalStateMachineRedTests(unittest.TestCase):
                 ),
             )
 
+    def _assert_terminal_supersession_retains_approval(self, decision: str) -> None:
+        _candidate_id, match_id = self.case._proposed_match()
+        self._insert_approval(match_id, decision)
+        self._set_status(match_id, decision)
+        self._set_status(match_id, "superseded")
+
+        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
+            status = connection.execute(
+                """
+                SELECT match_status_code
+                FROM accounting_core.reconciliation_match
+                WHERE tenant_account_id = %s
+                  AND reconciliation_run_id = %s
+                  AND reconciliation_match_id = %s
+                """,
+                (
+                    self.case.case.scope["tenant_account_id"],
+                    self.case.case.run_reference,
+                    match_id,
+                ),
+            ).fetchone()[0]
+            approval_count = connection.execute(
+                """
+                SELECT count(*)
+                FROM accounting_core.reconciliation_approval
+                WHERE tenant_account_id = %s
+                  AND reconciliation_run_id = %s
+                  AND reconciliation_match_id = %s
+                  AND approval_decision_code = %s
+                """,
+                (
+                    self.case.case.scope["tenant_account_id"],
+                    self.case.case.run_reference,
+                    match_id,
+                    decision,
+                ),
+            ).fetchone()[0]
+        self.assertEqual(status, "superseded")
+        self.assertEqual(approval_count, 1)
+
     def test_status_only_rejection_fails_closed(self) -> None:
         """A proposed match cannot become rejected without durable rejected evidence."""
         _candidate_id, match_id = self.case._proposed_match()
@@ -116,48 +156,13 @@ class PostgresReconciliationApprovalStateMachineRedTests(unittest.TestCase):
         with self.assertRaises(psycopg.errors.CheckViolation):
             self._set_status(match_id, "proposed")
 
-    def test_reviewed_terminal_match_may_be_superseded_without_rewriting_evidence(self) -> None:
-        """Approved/rejected evidence may be retired only through explicit supersession."""
-        for decision in ("approved", "rejected"):
-            with self.subTest(decision=decision):
-                _candidate_id, match_id = self.case._proposed_match()
-                self._insert_approval(match_id, decision)
-                self._set_status(match_id, decision)
-                self._set_status(match_id, "superseded")
+    def test_approved_terminal_match_may_be_superseded_without_rewriting_evidence(self) -> None:
+        """Approved evidence remains immutable when its reviewed match is superseded."""
+        self._assert_terminal_supersession_retains_approval("approved")
 
-                with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
-                    status = connection.execute(
-                        """
-                        SELECT match_status_code
-                        FROM accounting_core.reconciliation_match
-                        WHERE tenant_account_id = %s
-                          AND reconciliation_run_id = %s
-                          AND reconciliation_match_id = %s
-                        """,
-                        (
-                            self.case.case.scope["tenant_account_id"],
-                            self.case.case.run_reference,
-                            match_id,
-                        ),
-                    ).fetchone()[0]
-                    approval_count = connection.execute(
-                        """
-                        SELECT count(*)
-                        FROM accounting_core.reconciliation_approval
-                        WHERE tenant_account_id = %s
-                          AND reconciliation_run_id = %s
-                          AND reconciliation_match_id = %s
-                          AND approval_decision_code = %s
-                        """,
-                        (
-                            self.case.case.scope["tenant_account_id"],
-                            self.case.case.run_reference,
-                            match_id,
-                            decision,
-                        ),
-                    ).fetchone()[0]
-                self.assertEqual(status, "superseded")
-                self.assertEqual(approval_count, 1)
+    def test_rejected_terminal_match_may_be_superseded_without_rewriting_evidence(self) -> None:
+        """Rejected evidence remains immutable when its reviewed match is superseded."""
+        self._assert_terminal_supersession_retains_approval("rejected")
 
 
 if __name__ == "__main__":
