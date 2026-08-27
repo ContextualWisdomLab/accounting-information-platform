@@ -6295,6 +6295,15 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             f"{allocation_control_migration_path}. Restore "
             "database/migrations/0014_reconciliation_candidate_allocation.sql, then retry."
         )
+    conservation_migration_path = (
+        migration_path.parent / "0015_reconciliation_multi_match_conservation.sql"
+    )
+    if not conservation_migration_path.is_file():
+        raise AccountingValidationError(
+            "Reconciliation multi-match conservation migration is missing at "
+            f"{conservation_migration_path}. Restore "
+            "database/migrations/0015_reconciliation_multi_match_conservation.sql, then retry."
+        )
     psycopg = _import_psycopg()
     try:
         with psycopg.connect(
@@ -6319,6 +6328,9 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             )
             connection.execute(
                 allocation_control_migration_path.read_text(encoding="utf-8")
+            )
+            connection.execute(
+                conservation_migration_path.read_text(encoding="utf-8")
             )
     except Exception as error:
         raise AccountingValidationError(

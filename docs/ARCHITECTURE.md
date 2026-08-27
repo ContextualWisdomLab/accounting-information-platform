@@ -130,6 +130,7 @@ Shared fiscal-calendar dates do not collapse independent accounting books into o
 12. `database/migrations/0012_bank_assignment_command_identity.sql` — tenant-scoped bank-account-assignment command identity, replay/conflict evidence, and the active book-scope uniqueness guard.
 13. `database/migrations/0013_reconciliation_run_exception_evidence.sql` — durable reconciliation-run and exception evidence required by the installed bank-reconciliation control chain.
 14. `database/migrations/0014_reconciliation_candidate_allocation.sql` — durable reconciliation candidate, single-approved match, and exact statement/journal allocation rows with forced tenant RLS.
+15. `database/migrations/0015_reconciliation_multi_match_conservation.sql` — replaces the run-wide single-approved-match shortcut with tenant/run-scoped match identity and exact statement/journal source-allocation conservation so independent matches may be approved without double-consuming source evidence.
 
 ## Durable soft-close command evidence
 
