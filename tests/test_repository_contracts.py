@@ -30,6 +30,18 @@ from scripts.validate_repository import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+IGNORE_PATTERNS = shutil.ignore_patterns(
+    ".git",
+    ".venv",
+    ".codegraph",
+    "__pycache__",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    "build",
+    "dist",
+    "*.sock",
+)
 
 
 class RepositoryContractTests(unittest.TestCase):
@@ -213,7 +225,7 @@ class RepositoryContractTests(unittest.TestCase):
         """The aggregate validator reports mutable CI, placeholders, and SQL drift."""
         with tempfile.TemporaryDirectory() as temporary_directory:
             copied_root = Path(temporary_directory) / "repository"
-            shutil.copytree(ROOT, copied_root)
+            shutil.copytree(ROOT, copied_root, ignore=IGNORE_PATTERNS)
             readme = copied_root / "README.md"
             readme.write_text(
                 readme.read_text(encoding="utf-8") + "\nTO" + "DO: later.\n",
@@ -438,7 +450,7 @@ class RepositoryContractTests(unittest.TestCase):
         """An UPDATE of general_journal fails the repository validator."""
         with tempfile.TemporaryDirectory() as temporary_directory:
             copied_root = Path(temporary_directory) / "repository"
-            shutil.copytree(ROOT, copied_root)
+            shutil.copytree(ROOT, copied_root, ignore=IGNORE_PATTERNS)
             mutation = copied_root / "database/migrations/0099_update_general_journal.sql"
             mutation.write_text(
                 "UPDATE accounting_core.general_journal "
@@ -456,7 +468,7 @@ class RepositoryContractTests(unittest.TestCase):
         """Unrelated UPDATE or DELETE on other tables still passes the validator."""
         with tempfile.TemporaryDirectory() as temporary_directory:
             copied_root = Path(temporary_directory) / "repository"
-            shutil.copytree(ROOT, copied_root)
+            shutil.copytree(ROOT, copied_root, ignore=IGNORE_PATTERNS)
             mutation = copied_root / "database/migrations/0099_unrelated_mutation.sql"
             mutation.write_text(
                 "UPDATE accounting_core.chart_account "
@@ -471,7 +483,7 @@ class RepositoryContractTests(unittest.TestCase):
         """Destructive journal SQL and mutable quality resolution fail closed."""
         with tempfile.TemporaryDirectory() as temporary_directory:
             copied_root = Path(temporary_directory) / "repository"
-            shutil.copytree(ROOT, copied_root)
+            shutil.copytree(ROOT, copied_root, ignore=IGNORE_PATTERNS)
             migration = copied_root / "database/migrations/0001_accounting_foundation.sql"
             migration.write_text(
                 migration.read_text(encoding="utf-8")

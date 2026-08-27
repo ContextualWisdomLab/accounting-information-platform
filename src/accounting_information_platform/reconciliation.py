@@ -24,6 +24,14 @@ def _require_credit_debit_code(value: str) -> None:
         )
 
 
+def _require_positive_exact_decimal(value: object) -> None:
+    """Reject monetary evidence that is not a finite, strictly positive Decimal."""
+    if not isinstance(value, Decimal) or not value.is_finite() or value <= 0:
+        raise ValueError(
+            "amount must be a positive exact Decimal. Supply a finite Decimal greater than zero before reconciliation."
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class StatementEntryEvidence:
     """Immutable normalized statement evidence considered for reconciliation."""
@@ -39,7 +47,8 @@ class StatementEntryEvidence:
     value_date: date
 
     def __post_init__(self) -> None:
-        """Reject statement evidence outside the normalized CRDT/DBIT direction domain."""
+        """Reject non-canonical money and movement direction before matching."""
+        _require_positive_exact_decimal(self.amount)
         _require_credit_debit_code(self.credit_debit_code)
 
 
@@ -57,7 +66,8 @@ class BookJournalEvidence:
     accounting_date: date
 
     def __post_init__(self) -> None:
-        """Reject book evidence outside the normalized CRDT/DBIT direction domain."""
+        """Reject non-canonical money and movement direction before matching."""
+        _require_positive_exact_decimal(self.amount)
         _require_credit_debit_code(self.credit_debit_code)
 
 
@@ -66,6 +76,17 @@ class DeterministicMatchPolicy:
     """Bound the weak exact-money/date rule used after strong identities fail."""
 
     date_window_days: int
+
+    def __post_init__(self) -> None:
+        """Reject invalid date-window configuration before matching evidence."""
+        if (
+            isinstance(self.date_window_days, bool)
+            or not isinstance(self.date_window_days, int)
+            or self.date_window_days < 0
+        ):
+            raise ValueError(
+                "date_window_days must be a non-negative integer. Supply zero or a whole number of days before reconciliation."
+            )
 
 
 @dataclass(frozen=True, slots=True)
