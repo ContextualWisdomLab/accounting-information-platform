@@ -30,7 +30,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          test "$(git branch --show-current)" = "fix/reconciliation-multi-match-conservation"
+          test "$(git rev-parse refs/remotes/origin/fix/reconciliation-multi-match-conservation)" = "$GITHUB_SHA"
 
       - name: Apply guarded canonical migration-chain repair
         run: python scripts/repair_pr29_migration_chain.py
