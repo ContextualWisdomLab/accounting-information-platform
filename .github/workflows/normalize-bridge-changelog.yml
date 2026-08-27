@@ -1,0 +1,64 @@
+name: Normalize bridge changelog
+
+on:
+  push:
+    branches:
+      - agent/bridge-finite-decimal-domain
+
+permissions:
+  contents: write
+
+concurrency:
+  group: normalize-bridge-changelog-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  normalize:
+    name: Normalize bridge monetary validation changelog
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out exact pushed head
+        uses: actions/checkout@631c942040754b6e095e929c1677c07e10ed4f87
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: true
+          fetch-depth: 1
+
+      - name: Verify exact checkout
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+
+      - name: Insert audited Unreleased entry
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("CHANGELOG.md")
+          text = path.read_text(encoding="utf-8")
+          marker = "- Added the exact book-to-bank reconciliation bridge with exact Decimal equations, fail-closed one minor unit differences, statement-population and book-population provenance, no automatic journal posting, and ADR 0054."
+          entry = "- Book-to-bank bridge monetary inputs now fail closed unless every component is a finite `Decimal`: binary float values, `NaN`, and infinities are rejected before bridge arithmetic, while finite signed balances and movements remain valid accounting evidence. ADR 0054 records the boundary."
+          unreleased, separator, released = text.partition("\n## [0.1.0] - 2026-08-26")
+          if not separator:
+              raise SystemExit("expected 0.1.0 release boundary is missing")
+          if entry in unreleased:
+              raise SystemExit("bridge monetary validation entry already exists")
+          if marker not in unreleased:
+              raise SystemExit("exact bridge changelog marker is missing")
+          unreleased = unreleased.replace(marker, marker + "\n" + entry, 1)
+          path.write_text(unreleased + separator + released, encoding="utf-8")
+          PY
+          python3 -m unittest tests.test_reconciliation_bridge_changelog_contract -v
+
+      - name: Commit normalized changelog only
+        shell: bash
+        run: |
+          set -euo pipefail
+          changed="$(git diff --name-only)"
+          test "$changed" = "CHANGELOG.md"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git commit -m "docs: record bridge monetary validation"
+          git push origin HEAD:agent/bridge-finite-decimal-domain
