@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Added the deterministic bank-reconciliation proposal engine from ADR 0054: stable provider, end-to-end, and account-servicer references take precedence; exact decimal amount and currency evidence must agree; exact-money plus bounded-date fallback is permitted only for one unique candidate; and ambiguity, conflicts, out-of-window evidence, or no candidate produce explicit abstention with an operator next action. Match proposals are read-only evidence with no automatic journal posting; any accounting adjustment must re-enter the existing journal command boundary.
+- Added the exact book-to-bank reconciliation bridge with exact Decimal equations, fail-closed one minor unit differences, statement-population and book-population provenance, no automatic journal posting, and ADR 0054.
 - Reconciliation monetary evidence now fails closed before candidate comparison unless statement and book amounts are finite, strictly positive `Decimal` values. Binary floats, zero, negative values, `NaN`, and infinities are rejected; CRDT/DBIT remains separate movement-direction evidence rather than a signed-amount convention.
 - Deterministic reconciliation policy construction now requires `date_window_days` to be a non-negative integer: boolean, fractional, and negative values fail closed before matching; `0` remains the valid same-day policy. ADR 0054 records the boundary.
 
