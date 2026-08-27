@@ -213,6 +213,22 @@ BEFORE INSERT OR UPDATE OF
 ON accounting_core.reconciliation_candidate
 FOR EACH ROW EXECUTE FUNCTION accounting_core.reconciliation_candidate_capacity_guard();
 
+CREATE OR REPLACE FUNCTION accounting_core.reconciliation_candidate_immutability_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    RAISE EXCEPTION
+        'recorded reconciliation candidates are immutable; record a new candidate instead (reconciliation_candidate_immutable)'
+        USING ERRCODE = '23514';
+END;
+$$;
+
+CREATE TRIGGER reconciliation_candidate_immutability_guard
+BEFORE UPDATE OR DELETE
+ON accounting_core.reconciliation_candidate
+FOR EACH ROW EXECUTE FUNCTION accounting_core.reconciliation_candidate_immutability_guard();
+
 CREATE OR REPLACE FUNCTION accounting_core.reconciliation_allocation_conservation_guard()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -374,23 +390,10 @@ CREATE OR REPLACE FUNCTION accounting_core.reconciliation_approved_allocation_im
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
-DECLARE
-    current_match_status text;
 BEGIN
-    SELECT match.match_status_code
-    INTO current_match_status
-    FROM accounting_core.reconciliation_match AS match
-    WHERE match.tenant_account_id = OLD.tenant_account_id
-      AND match.reconciliation_run_id = OLD.reconciliation_run_id
-      AND match.reconciliation_match_id = OLD.reconciliation_match_id;
-
-    IF current_match_status = 'approved' THEN
-        RAISE EXCEPTION
-            'approved reconciliation allocations are immutable; supersede the match instead (reconciliation_allocation_immutable)'
-            USING ERRCODE = '23514';
-    END IF;
-
-    RETURN OLD;
+    RAISE EXCEPTION
+        'recorded reconciliation allocations are immutable; supersede the match instead (reconciliation_allocation_immutable)'
+        USING ERRCODE = '23514';
 END;
 $$;
 
