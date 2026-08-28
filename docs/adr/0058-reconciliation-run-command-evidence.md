@@ -25,8 +25,10 @@ database-owned.
 hash matches, and its bank-account assignment is active for the requested legal
 entity, book, and bank cutoff. It opens only `evaluating` scope, records one
 `bank_statement` evidence reference, and replays an exact command. Reuse of a key
-with changed evidence fails closed. `GET /reconciliation-runs` returns the same
-tenant-scoped run document.
+with changed evidence fails closed. Every bank, book, and knowledge cutoff must
+carry an explicit zero-offset UTC timezone (`Z` or `+00:00`); timezone-naive or
+non-UTC wall-clock values fail before persistence and canonical command hashing.
+`GET /reconciliation-runs` returns the same tenant-scoped run document.
 
 This slice deliberately does not perform matching, allocate statement or journal
 amounts, approve a match, close a fiscal period, select a final chart account, or
