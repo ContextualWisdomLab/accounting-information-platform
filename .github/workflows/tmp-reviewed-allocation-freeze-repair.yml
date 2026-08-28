@@ -26,50 +26,32 @@ jobs:
 
           migration_path = Path("database/migrations/0015_reconciliation_multi_match_conservation.sql")
           migration = migration_path.read_text()
-          needle = """    IF NOT FOUND THEN
-              RAISE EXCEPTION
-                  'allocation match is outside the tenant reconciliation run (reconciliation_scope_mismatch)'
-                  USING ERRCODE = '23514';
-          END IF;
-
-          IF TG_TABLE_NAME = 'statement_match_allocation' THEN
-          """
-          replacement = """    IF NOT FOUND THEN
-              RAISE EXCEPTION
-                  'allocation match is outside the tenant reconciliation run (reconciliation_scope_mismatch)'
-                  USING ERRCODE = '23514';
-          END IF;
-
-          IF current_match_status <> 'proposed' THEN
+          anchor = "    IF TG_TABLE_NAME = 'statement_match_allocation' THEN\n"
+          guard = """    IF current_match_status <> 'proposed' THEN
               RAISE EXCEPTION
                   'reviewed reconciliation allocation evidence is frozen; supersede the match and create a new proposed match (reconciliation_allocation_frozen)'
                   USING ERRCODE = '23514';
           END IF;
 
-          IF TG_TABLE_NAME = 'statement_match_allocation' THEN
           """
-          if migration.count(needle) != 1:
-              raise SystemExit("expected exactly one allocation-guard insertion point")
-          migration_path.write_text(migration.replace(needle, replacement, 1))
+          if migration.count(anchor) != 1:
+              raise SystemExit(f"expected exactly one allocation insert anchor, got {migration.count(anchor)}")
+          migration_path.write_text(migration.replace(anchor, guard + anchor, 1))
 
           adr_path = Path("docs/adr/0054-deterministic-bank-reconciliation-proposals.md")
           adr = adr_path.read_text()
-          old_adr = """Recorded candidates and statement/journal allocations are append-only. Candidate identity/capacity cannot be updated or deleted; allocation rows cannot be updated or deleted after recording, including after a match is superseded. Corrections therefore use new evidence plus an explicit match-state transition rather than rewriting reconciliation history.
-          """
-          new_adr = """Recorded candidates and statement/journal allocations are append-only. Candidate identity/capacity cannot be updated or deleted; allocation rows cannot be updated or deleted after recording, including after a match is superseded. Allocation rows may be inserted only while their match remains `proposed`; once a match enters `approved`, `rejected`, or `superseded`, its reviewed allocation population is frozen even when unused source capacity remains. Corrections therefore use new evidence plus an explicit match-state transition rather than extending or rewriting reconciliation history.
-          """
+          old_adr = "Recorded candidates and statement/journal allocations are append-only. Candidate identity/capacity cannot be updated or deleted; allocation rows cannot be updated or deleted after recording, including after a match is superseded. Corrections therefore use new evidence plus an explicit match-state transition rather than rewriting reconciliation history."
+          new_adr = "Recorded candidates and statement/journal allocations are append-only. Candidate identity/capacity cannot be updated or deleted; allocation rows cannot be updated or deleted after recording, including after a match is superseded. Allocation rows may be inserted only while their match remains `proposed`; once a match enters `approved`, `rejected`, or `superseded`, its reviewed allocation population is frozen even when unused source capacity remains. Corrections therefore use new evidence plus an explicit match-state transition rather than extending or rewriting reconciliation history."
           if adr.count(old_adr) != 1:
-              raise SystemExit("expected exactly one ADR allocation-history paragraph")
+              raise SystemExit(f"expected exactly one ADR allocation-history paragraph, got {adr.count(old_adr)}")
           adr_path.write_text(adr.replace(old_adr, new_adr, 1))
 
           changelog_path = Path("CHANGELOG.md")
           changelog = changelog_path.read_text()
-          old_changelog = """Approval requires non-empty statement allocations, non-empty journal allocations, and exactly equal approved statement/journal allocation totals. Allocations remain reviewed evidence with no posting, reversal, close, or accounting-policy authority. ADR 0054 records the boundary.
-          """
-          new_changelog = """Approval requires non-empty statement allocations, non-empty journal allocations, and exactly equal approved statement/journal allocation totals. Allocation rows may be inserted only while the match is `proposed`; after `approved`, `rejected`, or `superseded`, the reviewed allocation population is frozen and corrections require new/superseding evidence. Allocations remain reviewed evidence with no posting, reversal, close, or accounting-policy authority. ADR 0054 records the boundary.
-          """
+          old_changelog = "Approval requires non-empty statement allocations, non-empty journal allocations, and exactly equal approved statement/journal allocation totals. Allocations remain reviewed evidence with no posting, reversal, close, or accounting-policy authority. ADR 0054 records the boundary."
+          new_changelog = "Approval requires non-empty statement allocations, non-empty journal allocations, and exactly equal approved statement/journal allocation totals. Allocation rows may be inserted only while the match is `proposed`; after `approved`, `rejected`, or `superseded`, the reviewed allocation population is frozen and corrections require new/superseding evidence. Allocations remain reviewed evidence with no posting, reversal, close, or accounting-policy authority. ADR 0054 records the boundary."
           if changelog.count(old_changelog) != 1:
-              raise SystemExit("expected exactly one migration-0015 changelog sentence")
+              raise SystemExit(f"expected exactly one migration-0015 changelog sentence, got {changelog.count(old_changelog)}")
           changelog_path.write_text(changelog.replace(old_changelog, new_changelog, 1))
 
           Path(".github/workflows/tmp-reviewed-allocation-freeze-repair.yml").unlink()
