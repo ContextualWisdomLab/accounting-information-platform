@@ -12042,6 +12042,23 @@ class PostgresPostingTests(unittest.TestCase):
                 ("publish_outbox", "accounting.publish_outbox", "denied"),
             ],
         )
+        for mutation in (
+            "UPDATE accounting_integration.authorization_decision_record "
+            "SET decision_code = 'allowed' WHERE tenant_account_id = %s",
+            "DELETE FROM accounting_integration.authorization_decision_record "
+            "WHERE tenant_account_id = %s",
+        ):
+            with self.subTest(mutation=mutation.split()[0]):
+                with psycopg.connect(DATABASE_URL) as connection:
+                    connection.execute(
+                        "SELECT set_config('app.tenant_account_id', %s, false)",
+                        (self.tenant_id,),
+                    )
+                    with self.assertRaisesRegex(
+                        psycopg.errors.CheckViolation,
+                        "authorization decision evidence is append-only",
+                    ):
+                        connection.execute(mutation, (self.tenant_id,))
         server.shutdown()
 
     def test_post_proposal_catalog_misses_write_zero_rows(self) -> None:
