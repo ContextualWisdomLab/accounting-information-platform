@@ -141,6 +141,11 @@ into this file.
 - after lawful integration, signed integrated-head provenance/SBOM attestations
   before any version/tag/release claim.
 
+The upstream PostgreSQL release archive now lists 18.6 as the current 18.x minor
+release (18.5 was not released). Repository CI and the local evidence described
+above remain pinned to PostgreSQL 18.4; upgrading that runtime is a separate
+compatibility and security-validation task, not an implicit claim of 18.6 support.
+
 An aggregate workflow conclusion is not enough if a required step is skipped or
 the workflow checked out a synthetic merge ref. Likewise, a local test, model
 review, status context, predecessor head, or old artifact may inform diagnosis but
