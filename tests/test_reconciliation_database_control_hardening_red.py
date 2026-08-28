@@ -63,8 +63,11 @@ class ReconciliationDatabaseControlMigrationRedTests(unittest.TestCase):
                 "accounting_core.bank_account_assignment",
             ),
         ):
-            self.assertIn(f"create policy {policy_name}", normalized)
-            self.assertIn("to current_user", normalized)
+            self.assertRegex(
+                normalized,
+                rf"create policy {re.escape(policy_name)} on {re.escape(table_name)} for select to current_user using \(true\)",
+                f"{policy_name} must grant migration-only SELECT visibility on its own table",
+            )
             self.assertIn(
                 f"drop policy {policy_name} on {table_name}",
                 normalized,
