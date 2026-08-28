@@ -1,0 +1,85 @@
+name: Temporary reviewed allocation freeze repair
+
+on:
+  push:
+    branches:
+      - fix/reconciliation-multi-match-conservation
+    paths:
+      - .github/workflows/tmp-reviewed-allocation-freeze-repair.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          ref: fix/reconciliation-multi-match-conservation
+          fetch-depth: 0
+      - name: Apply narrow reviewed-allocation freeze repair
+        shell: python
+        run: |
+          from pathlib import Path
+
+          migration_path = Path("database/migrations/0015_reconciliation_multi_match_conservation.sql")
+          migration = migration_path.read_text()
+          needle = """    IF NOT FOUND THEN
+              RAISE EXCEPTION
+                  'allocation match is outside the tenant reconciliation run (reconciliation_scope_mismatch)'
+                  USING ERRCODE = '23514';
+          END IF;
+
+          IF TG_TABLE_NAME = 'statement_match_allocation' THEN
+          """
+          replacement = """    IF NOT FOUND THEN
+              RAISE EXCEPTION
+                  'allocation match is outside the tenant reconciliation run (reconciliation_scope_mismatch)'
+                  USING ERRCODE = '23514';
+          END IF;
+
+          IF current_match_status <> 'proposed' THEN
+              RAISE EXCEPTION
+                  'reviewed reconciliation allocation evidence is frozen; supersede the match and create a new proposed match (reconciliation_allocation_frozen)'
+                  USING ERRCODE = '23514';
+          END IF;
+
+          IF TG_TABLE_NAME = 'statement_match_allocation' THEN
+          """
+          if migration.count(needle) != 1:
+              raise SystemExit("expected exactly one allocation-guard insertion point")
+          migration_path.write_text(migration.replace(needle, replacement, 1))
+
+          adr_path = Path("docs/adr/0054-deterministic-bank-reconciliation-proposals.md")
+          adr = adr_path.read_text()
+          old_adr = """Recorded candidates and statement/journal allocations are append-only. Candidate identity/capacity cannot be updated or deleted; allocation rows cannot be updated or deleted after recording, including after a match is superseded. Corrections therefore use new evidence plus an explicit match-state transition rather than rewriting reconciliation history.
+          """
+          new_adr = """Recorded candidates and statement/journal allocations are append-only. Candidate identity/capacity cannot be updated or deleted; allocation rows cannot be updated or deleted after recording, including after a match is superseded. Allocation rows may be inserted only while their match remains `proposed`; once a match enters `approved`, `rejected`, or `superseded`, its reviewed allocation population is frozen even when unused source capacity remains. Corrections therefore use new evidence plus an explicit match-state transition rather than extending or rewriting reconciliation history.
+          """
+          if adr.count(old_adr) != 1:
+              raise SystemExit("expected exactly one ADR allocation-history paragraph")
+          adr_path.write_text(adr.replace(old_adr, new_adr, 1))
+
+          changelog_path = Path("CHANGELOG.md")
+          changelog = changelog_path.read_text()
+          old_changelog = """Approval requires non-empty statement allocations, non-empty journal allocations, and exactly equal approved statement/journal allocation totals. Allocations remain reviewed evidence with no posting, reversal, close, or accounting-policy authority. ADR 0054 records the boundary.
+          """
+          new_changelog = """Approval requires non-empty statement allocations, non-empty journal allocations, and exactly equal approved statement/journal allocation totals. Allocation rows may be inserted only while the match is `proposed`; after `approved`, `rejected`, or `superseded`, the reviewed allocation population is frozen and corrections require new/superseding evidence. Allocations remain reviewed evidence with no posting, reversal, close, or accounting-policy authority. ADR 0054 records the boundary.
+          """
+          if changelog.count(old_changelog) != 1:
+              raise SystemExit("expected exactly one migration-0015 changelog sentence")
+          changelog_path.write_text(changelog.replace(old_changelog, new_changelog, 1))
+
+          Path(".github/workflows/tmp-reviewed-allocation-freeze-repair.yml").unlink()
+      - name: Commit canonical repair and remove helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md database/migrations/0015_reconciliation_multi_match_conservation.sql docs/adr/0054-deterministic-bank-reconciliation-proposals.md .github/workflows/tmp-reviewed-allocation-freeze-repair.yml
+          git diff --cached --check
+          git commit -m "fix: freeze reviewed reconciliation allocations"
+          git push origin HEAD:fix/reconciliation-multi-match-conservation
