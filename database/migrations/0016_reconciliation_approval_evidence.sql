@@ -337,6 +337,15 @@ BEGIN
 
     IF TG_OP = 'UPDATE'
        AND OLD.match_status_code IN ('approved', 'rejected') THEN
+        IF NEW.tenant_account_id IS DISTINCT FROM OLD.tenant_account_id
+           OR NEW.reconciliation_run_id IS DISTINCT FROM OLD.reconciliation_run_id
+           OR NEW.reconciliation_match_id IS DISTINCT FROM OLD.reconciliation_match_id
+           OR NEW.reconciliation_candidate_id IS DISTINCT FROM OLD.reconciliation_candidate_id THEN
+            RAISE EXCEPTION
+                'reviewed reconciliation match identity is immutable; supersede the match instead (reconciliation_match_identity_immutable)'
+                USING ERRCODE = '23514';
+        END IF;
+
         IF NEW.match_status_code = OLD.match_status_code THEN
             IF NEW.approved_at IS DISTINCT FROM OLD.approved_at THEN
                 RAISE EXCEPTION

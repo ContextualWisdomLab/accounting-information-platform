@@ -152,6 +152,41 @@ class PostgresReconciliationApprovalSnapshotRedTests(unittest.TestCase):
                 ),
             )
 
+    def test_approved_match_cannot_be_retargeted_to_another_candidate(self) -> None:
+        """An approved match keeps the candidate identity that was reviewed."""
+        candidate_id = self.fixture._insert_candidate(
+            "stmt-retargeted", "journal-retargeted"
+        )
+        replacement_candidate_id = self.fixture._insert_candidate(
+            "stmt-replacement", "journal-replacement"
+        )
+        match_id = self.fixture._insert_match(candidate_id)
+        self.fixture._insert_allocations(
+            match_id, "stmt-retargeted", "journal-retargeted", "1000.00"
+        )
+        self.fixture._approve_match(match_id)
+
+        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
+            with self.assertRaisesRegex(
+                psycopg.errors.CheckViolation,
+                "reconciliation_match_identity_immutable",
+            ):
+                connection.execute(
+                    """
+                    UPDATE accounting_core.reconciliation_match
+                    SET reconciliation_candidate_id = %s
+                    WHERE tenant_account_id = %s
+                      AND reconciliation_run_id = %s
+                      AND reconciliation_match_id = %s
+                    """,
+                    (
+                        replacement_candidate_id,
+                        self.fixture.scope["tenant_account_id"],
+                        self.fixture.run_reference,
+                        match_id,
+                    ),
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
