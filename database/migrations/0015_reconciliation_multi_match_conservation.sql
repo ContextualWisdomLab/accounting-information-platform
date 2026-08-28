@@ -276,7 +276,8 @@ BEGIN
      AND run_scope.reconciliation_run_id = match.reconciliation_run_id
     WHERE match.tenant_account_id = NEW.tenant_account_id
       AND match.reconciliation_run_id = NEW.reconciliation_run_id
-      AND match.reconciliation_match_id = NEW.reconciliation_match_id;
+      AND match.reconciliation_match_id = NEW.reconciliation_match_id
+    FOR UPDATE OF match;
 
     IF NOT FOUND THEN
         RAISE EXCEPTION

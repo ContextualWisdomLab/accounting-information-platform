@@ -63,7 +63,7 @@ Migration 0015 permits multiple independent, split, or aggregate matches to beco
 
 Source capacity is conserved across active reconciliation runs under immutable tenant/accounting/bank scope. Approval serializes the statement and journal source identities with advisory transaction locks and rejects consumption beyond the authoritative candidate source amount. Only `approved` matches consume active capacity. An explicit transition to `rejected` or `superseded` releases capacity while preserving the historical candidate and allocation evidence.
 
-Recorded candidates and statement/journal allocations are append-only. Candidate identity/capacity cannot be updated or deleted; allocation rows cannot be updated or deleted after recording, including after a match is superseded. Allocation rows may be inserted only while their match remains `proposed`; once a match enters `approved`, `rejected`, or `superseded`, its reviewed allocation population is frozen even when unused source capacity remains. Corrections therefore use new evidence plus an explicit match-state transition rather than extending or rewriting reconciliation history.
+Recorded candidates and statement/journal allocations are append-only. Candidate identity/capacity cannot be updated or deleted; allocation rows cannot be updated or deleted after recording, including after a match is superseded. Allocation rows may be inserted only while their match remains `proposed`; once a match enters `approved`, `rejected`, or `superseded`, its reviewed allocation population is frozen even when unused source capacity remains. Allocation admission locks the parent `reconciliation_match` row, so a concurrent allocation cannot cross an uncommitted `proposed → approved` snapshot boundary: whichever transaction acquires that row first completes before the other re-evaluates the current match state. Corrections therefore use new evidence plus an explicit match-state transition rather than extending or rewriting reconciliation history.
 
 These persistence controls grant no journal-posting, reversal, period-close, or accounting-policy authority. Durable reconciliation approval evidence and its state-machine authority are a separate successor control and must not be inferred merely from allocation conservation.
 
@@ -89,4 +89,4 @@ Execution evidence belongs only to the exact head that produced it and is not tr
 
 ## References
 
-See `docs/doctoring/REFERENCES.md` for APA 7 entries covering ISO 20022-1:2026, ISO 20022-4:2026, ISO 20022-9:2026, and the ISO 20022 Registration Authority `camt.053.001.14` catalogue.
+See `docs/doctoring/REFERENCES.md` for APA 7 entries covering ISO 20022-1:2026, ISO 20022-4:2026, ISO 20022-9:2026, the ISO 20022 Registration Authority `camt.053.001.14` catalogue, and PostgreSQL 18 explicit locking used for the approval/allocation serialization boundary.
