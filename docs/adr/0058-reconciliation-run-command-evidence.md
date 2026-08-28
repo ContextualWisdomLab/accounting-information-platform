@@ -28,6 +28,10 @@ entity, book, and bank cutoff. It opens only `evaluating` scope, records one
 with changed evidence fails closed. Every bank, book, and knowledge cutoff must
 carry an explicit zero-offset UTC timezone (`Z` or `+00:00`); timezone-naive or
 non-UTC wall-clock values fail before persistence and canonical command hashing.
+After the command lock, an existing idempotency key is resolved from its stored
+run evidence before live assignment validation, so an exact retry remains a
+replay even if that assignment later closes or overlaps; changed request fields
+still fail closed.
 `GET /reconciliation-runs` returns the same tenant-scoped run document.
 
 This slice deliberately does not perform matching, allocate statement or journal

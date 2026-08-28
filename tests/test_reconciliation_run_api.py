@@ -129,6 +129,27 @@ class ReconciliationRunApiTests(unittest.TestCase):
         self.assertTrue(replay["replayed"])
         self.assertEqual(first["reconciliation_run_id"], replay["reconciliation_run_id"])
 
+    def test_exact_retry_replays_after_assignment_closes(self) -> None:
+        """An exact retry replays even after the live assignment leaves its cutoff scope."""
+        _statement, command = self._statement_and_command()
+        first = accept_reconciliation_run(
+            command, posting.DATABASE_URL, self.case.policy.tenant_reference
+        )
+        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
+            connection.execute(
+                """
+                UPDATE accounting_core.bank_account_assignment
+                SET valid_to = '2026-08-01T00:00:00Z'
+                WHERE bank_account_assignment_id = %s
+                """,
+                (first["bank_account_assignment_id"],),
+            )
+        replay = accept_reconciliation_run(
+            command, posting.DATABASE_URL, self.case.policy.tenant_reference
+        )
+        self.assertTrue(replay["replayed"])
+        self.assertEqual(first["reconciliation_run_id"], replay["reconciliation_run_id"])
+
     def test_wrong_source_hash_fails_before_run_persistence(self) -> None:
         """A run cannot claim a different immutable bank-statement source."""
         _statement, command = self._statement_and_command()
@@ -206,10 +227,19 @@ class ReconciliationRunApiTests(unittest.TestCase):
         """The application does not silently choose when binding evidence is ambiguous."""
         _statement, command = self._statement_and_command()
         fake_connection = mock.Mock()
-        fake_connection.execute.return_value.fetchall.return_value = [
-            (uuid.uuid4(), None, None, None, None, None, None, None, None, None, None),
-            (uuid.uuid4(), None, None, None, None, None, None, None, None, None, None),
-        ]
+
+        def execute(sql: str, _parameters: object) -> mock.Mock:
+            result = mock.Mock()
+            if "reconciliation_run_command" in sql:
+                result.fetchone.return_value = None
+            else:
+                result.fetchall.return_value = [
+                    (uuid.uuid4(), None, None, None, None, None, None, None, None, None, None),
+                    (uuid.uuid4(), None, None, None, None, None, None, None, None, None, None),
+                ]
+            return result
+
+        fake_connection.execute.side_effect = execute
         fake_ledger = mock.Mock()
         fake_ledger._require_tenant.return_value = uuid.uuid4()
         fake_ledger._session.return_value = nullcontext(fake_connection)

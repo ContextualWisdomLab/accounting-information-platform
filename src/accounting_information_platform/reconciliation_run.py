@@ -83,6 +83,40 @@ def accept_reconciliation_run(
         ledger._acquire_command_lock(
             connection, f"reconciliation_run_key:{idempotency_key}"
         )
+        prior_command = connection.execute(
+            """
+            SELECT reconciliation_run_id, source_payload_hash,
+                   bank_statement_record_id
+            FROM accounting_core.reconciliation_run_command
+            WHERE tenant_account_id = %s
+              AND reconciliation_idempotency_key = %s
+            """,
+            (tenant_id, idempotency_key),
+        ).fetchone()
+        if prior_command is not None:
+            prior_document = _load_reconciliation_run_document(
+                connection,
+                tenant_id,
+                tenant_reference,
+                prior_command[0],
+                replayed=True,
+            )
+            if (
+                prior_command[1] != source_payload_hash
+                or prior_command[2] != statement_id
+                or prior_document["legal_entity_reference"] != legal_entity_reference
+                or prior_document["accounting_book_reference"] != accounting_book_reference
+                or prior_document["bank_cutoff_at"] != _format_timestamp(bank_cutoff_at)
+                or prior_document["book_cutoff_at"] != _format_timestamp(book_cutoff_at)
+                or prior_document["matching_policy_version"] != matching_policy_version
+                or prior_document["knowledge_cutoff_at"]
+                != _format_timestamp(knowledge_cutoff_at)
+            ):
+                raise IdempotencyConflictError(
+                    "reconciliation idempotency key was already used with different run evidence. "
+                    "Supply a new reconciliation_idempotency_key, then retry the run."
+                )
+            return prior_document
         binding_rows = connection.execute(
             """
             SELECT assignment.bank_account_assignment_id,
@@ -166,29 +200,6 @@ def accept_reconciliation_run(
             assignment_id=binding[0],
             normalized_payload_hash=binding[9],
         )
-        prior_command = connection.execute(
-            """
-            SELECT reconciliation_run_id, reconciliation_command_hash,
-                   source_payload_hash
-            FROM accounting_core.reconciliation_run_command
-            WHERE tenant_account_id = %s
-              AND reconciliation_idempotency_key = %s
-            """,
-            (tenant_id, idempotency_key),
-        ).fetchone()
-        if prior_command is not None:
-            if prior_command[1] != command_hash or prior_command[2] != source_payload_hash:
-                raise IdempotencyConflictError(
-                    "reconciliation idempotency key was already used with different run evidence. "
-                    "Supply a new reconciliation_idempotency_key, then retry the run."
-                )
-            return _load_reconciliation_run_document(
-                connection,
-                tenant_id,
-                tenant_reference,
-                prior_command[0],
-                replayed=True,
-            )
         run_id = connection.execute(
             """
             INSERT INTO accounting_core.reconciliation_run (
