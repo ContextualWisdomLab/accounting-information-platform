@@ -79,6 +79,71 @@ class PostgresRuntimeRlsTests(unittest.TestCase):
                     assert row is not None
                     self.assertEqual(row, (True, True))
 
+    def test_non_bypass_migration_role_finishes_upgrade_without_temporary_policies(self) -> None:
+        """A non-bypass migration role sees upgrade rows only until each migration commits."""
+        role_name = f"accounting_upgrade_{uuid.uuid4().hex[:10]}"
+        database_name = f"accounting_upgrade_{uuid.uuid4().hex[:10]}"
+        password = f"AisUpgrade{uuid.uuid4().hex}!"
+        migration_url = self._database_url(database_name, role_name, password)
+
+        try:
+            with psycopg.connect(posting.DATABASE_URL, autocommit=True) as admin:
+                admin.execute(
+                    sql.SQL(
+                        "CREATE ROLE {} LOGIN NOSUPERUSER NOCREATEDB NOREPLICATION "
+                        "NOBYPASSRLS CREATEROLE PASSWORD {}"
+                    ).format(sql.Identifier(role_name), sql.Literal(password))
+                )
+                admin.execute(
+                    sql.SQL(
+                        "GRANT accounting_closing_writer TO {} WITH ADMIN OPTION"
+                    ).format(sql.Identifier(role_name))
+                )
+                admin.execute(
+                    sql.SQL("CREATE DATABASE {} OWNER {}").format(
+                        sql.Identifier(database_name), sql.Identifier(role_name)
+                    )
+                )
+
+            posting.apply_foundation_migration(migration_url, posting.MIGRATION_PATH)
+
+            with psycopg.connect(migration_url) as migration_connection:
+                role_row = migration_connection.execute(
+                    "SELECT rolbypassrls FROM pg_catalog.pg_roles WHERE rolname = current_user"
+                ).fetchone()
+                remaining_policies = migration_connection.execute(
+                    """
+                    SELECT policyname
+                    FROM pg_catalog.pg_policies
+                    WHERE schemaname = 'accounting_core'
+                      AND policyname IN (
+                          'reconciliation_candidate_upgrade_visibility',
+                          'reconciliation_run_upgrade_visibility',
+                          'reconciliation_bank_account_assignment_upgrade_visibility',
+                          'reconciliation_approval_upgrade_visibility'
+                      )
+                    ORDER BY policyname
+                    """
+                ).fetchall()
+
+            self.assertEqual(role_row, (False,))
+            self.assertEqual(remaining_policies, [])
+        finally:
+            with psycopg.connect(posting.DATABASE_URL, autocommit=True) as admin:
+                admin.execute(
+                    sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(
+                        sql.Identifier(database_name)
+                    )
+                )
+                admin.execute(
+                    sql.SQL("REVOKE accounting_closing_writer FROM {}").format(
+                        sql.Identifier(role_name)
+                    )
+                )
+                admin.execute(
+                    sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(role_name))
+                )
+
     def test_restricted_runtime_login_posts_same_tenant_and_cannot_rebind_other_tenant(self) -> None:
         """A least-privilege runtime posts its tenant and cannot self-authorize another tenant."""
         other = posting.PostgresPostingTests("setUp")
@@ -173,6 +238,15 @@ class PostgresRuntimeRlsTests(unittest.TestCase):
     def _runtime_database_url(role_name: str, password: str) -> str:
         """Return the CI database DSN with only the runtime login replaced."""
         settings = conninfo_to_dict(posting.DATABASE_URL)
+        settings["user"] = role_name
+        settings["password"] = password
+        return make_conninfo(**settings)
+
+    @staticmethod
+    def _database_url(database_name: str, role_name: str, password: str) -> str:
+        """Return the CI database DSN with the selected login and database."""
+        settings = conninfo_to_dict(posting.DATABASE_URL)
+        settings["dbname"] = database_name
         settings["user"] = role_name
         settings["password"] = password
         return make_conninfo(**settings)
