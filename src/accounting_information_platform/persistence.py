@@ -6304,6 +6304,15 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             f"{conservation_migration_path}. Restore "
             "database/migrations/0015_reconciliation_multi_match_conservation.sql, then retry."
         )
+    approval_migration_path = (
+        migration_path.parent / "0016_reconciliation_approval_evidence.sql"
+    )
+    if not approval_migration_path.is_file():
+        raise AccountingValidationError(
+            "Reconciliation approval-evidence migration is missing at "
+            f"{approval_migration_path}. Restore "
+            "database/migrations/0016_reconciliation_approval_evidence.sql, then retry."
+        )
     psycopg = _import_psycopg()
     try:
         with psycopg.connect(
@@ -6332,6 +6341,7 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             connection.execute(
                 conservation_migration_path.read_text(encoding="utf-8")
             )
+            connection.execute(approval_migration_path.read_text(encoding="utf-8"))
     except Exception as error:
         raise AccountingValidationError(
             "Foundation migration failed. Inspect the PostgreSQL error, restore a clean "

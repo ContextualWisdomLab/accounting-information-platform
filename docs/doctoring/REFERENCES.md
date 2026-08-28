@@ -72,6 +72,12 @@ PostgreSQL Global Development Group. (2026h). *PostgreSQL 18 documentation: Cons
 
 PostgreSQL Global Development Group. (2026i). *PostgreSQL 18 documentation: Errors and messages*. https://www.postgresql.org/docs/18/plpgsql-errors-and-messages.html
 
+PostgreSQL Global Development Group. (2026j). *PostgreSQL 18 documentation: Binary string functions and operators*. https://www.postgresql.org/docs/18/functions-binarystring.html
+
+PostgreSQL Global Development Group. (2026k). *PostgreSQL 18 documentation: CREATE TRIGGER*. https://www.postgresql.org/docs/18/sql-createtrigger.html
+
+PostgreSQL Global Development Group. (2026l). *PostgreSQL 18 documentation: Transaction isolation*. https://www.postgresql.org/docs/18/transaction-iso.html
+
 SPDX Workgroup. (n.d.). *SPDX specifications*. https://spdx.dev/use/specifications/
 
 Supply-chain Levels for Software Artifacts. (2026). *SLSA specification, version 1.2*. https://slsa.dev/spec/v1.2/

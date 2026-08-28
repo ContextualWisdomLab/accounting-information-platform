@@ -23,6 +23,12 @@ The next bounded accounting path is:
 7. produce an exact book-to-bank bridge that explains statement closing balance versus posted book cash balance using reproducible outstanding-item populations;
 8. emit close evidence and exportable provenance without automatically posting from statement lines.
 
+The durable review successor records one immutable human decision per tenant,
+run, and match. PostgreSQL computes the approval snapshot from the candidate and
+allocation rows, locks the match identity across approval/allocation races, and
+rejects terminal transition when the reviewed snapshot is no longer current.
+This is review evidence only; it never becomes journal-posting authority.
+
 Any approved adjusting-journal proposal must re-enter the existing accounting command boundary with its own idempotency key, immutable source evidence, open-period checks, policy resolution, purpose-bound authorization, and authoritative posting receipt.
 
 ## Later commercial increments
