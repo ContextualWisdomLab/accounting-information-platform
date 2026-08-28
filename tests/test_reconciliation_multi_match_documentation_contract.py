@@ -75,6 +75,28 @@ class ReconciliationMultiMatchDocumentationContractTests(unittest.TestCase):
         ):
             self.assertIn(phrase, entry)
 
+    def test_unreleased_changelog_records_close_package_provenance(self) -> None:
+        """The close-package API must have an unreleased provenance entry."""
+        text = CHANGELOG.read_text(encoding="utf-8")
+        unreleased = re.search(
+            r"(?ms)^## \[Unreleased\]\s*(.*?)(?=^## )",
+            text,
+        )
+        self.assertIsNotNone(unreleased)
+        current = unreleased.group(1)
+        entry = next(
+            (
+                line
+                for line in current.splitlines()
+                if "ReconciliationClosePackage" in line
+            ),
+            "",
+        )
+        self.assertTrue(entry, "record the close-package API in [Unreleased]")
+        self.assertIn("SHA-256", entry)
+        self.assertIn("exact Decimal", entry)
+        self.assertIn("ADR 0056", entry)
+
 
 if __name__ == "__main__":
     unittest.main()
