@@ -2,7 +2,7 @@
 
 ## Deployment preconditions
 
-Use PostgreSQL 18 and keep the migration owner, application runtime login and administrative / break-glass identities separate. Apply migrations in numeric order through `0018_bank_statement_balance_evidence.sql` before starting the service. Do not run the application with a table-owner, superuser or `BYPASSRLS` login.
+Use PostgreSQL 18 and keep the migration owner, application runtime login and administrative / break-glass identities separate. Apply migrations in numeric order through `0019_reconciliation_run_command_evidence.sql` before starting the service. Do not run the application with a table-owner, superuser or `BYPASSRLS` login.
 
 Required environment values are deployment-specific. At minimum, configure the accounting database URL and bind this AIS process to exactly one tenant reference. Secrets belong in an approved secret store; do not place database passwords, NTS credentials, bearer tokens or provider secrets in journal payloads, logs or outbox events.
 
@@ -31,6 +31,7 @@ database/migrations/0015_reconciliation_multi_match_conservation.sql
 database/migrations/0016_reconciliation_approval_evidence.sql
 database/migrations/0017_reconciliation_approval_lock_order.sql
 database/migrations/0018_bank_statement_balance_evidence.sql
+database/migrations/0019_reconciliation_run_command_evidence.sql
 ```
 
 Migration `0015_reconciliation_multi_match_conservation.sql` replaces the run-wide single-approved-match shortcut from `0014` with tenant/run-scoped match identity plus exact statement/journal allocation conservation. It permits multiple independently approved matches only when no authoritative source amount is over-consumed and grants no journal-posting authority.
@@ -40,6 +41,8 @@ Migration `0016_reconciliation_approval_evidence.sql` adds immutable tenant/run/
 Migration `0017_reconciliation_approval_lock_order.sql` is a forward repair for databases that already applied `0016`. It makes approval-evidence insertion lock the proposed `reconciliation_match` row before taking the per-match snapshot advisory lock, matching allocation insertion and terminal match transitions. This prevents a row/advisory deadlock under concurrent approval and allocation attempts.
 
 Migration `0018_bank_statement_balance_evidence.sql` preserves the exact numeric amount, currency, credit/debit direction, sequence, locator, and source hash for every camt.053 balance. Existing balance hashes remain on the statement row for compatibility; the numeric rows are immutable, forced-RLS evidence that a reconciliation bridge may read but that cannot post, reverse, or mutate a journal.
+
+Migration `0019_reconciliation_run_command_evidence.sql` records the immutable command identity that opens a reconciliation run from one persisted bank statement and active bank-account assignment. The tenant-scoped idempotency key, command hash, source hash, and object-store reference are forced-RLS evidence; the public run API opens only `evaluating` scope and does not match, approve, close, or post journals.
 
 Migration `0007_runtime_tenant_binding.sql` replaces caller-selected tenant authority with owner-controlled runtime-login binding. Migration `0008_fiscal_period_open_command.sql` adds forced-RLS, append-only command evidence so fiscal-period-open retries are bound to the original tenant key and source hash. Both must be installed before runtime database privileges are treated as production-ready.
 

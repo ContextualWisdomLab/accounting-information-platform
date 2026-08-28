@@ -44,6 +44,7 @@ _RLS_TABLES = (
     ("accounting_core", "statement_match_allocation"),
     ("accounting_core", "journal_match_allocation"),
     ("accounting_core", "reconciliation_approval"),
+    ("accounting_core", "reconciliation_run_command"),
 )
 
 
