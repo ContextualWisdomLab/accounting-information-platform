@@ -68,6 +68,16 @@ CREATE POLICY reconciliation_approval_isolation
 
 REVOKE ALL ON accounting_core.reconciliation_approval FROM PUBLIC;
 
+-- The prior migration forces RLS on reconciliation_match. Grant this one
+-- transactional upgrade check visibility of all existing rows, then remove the
+-- policy before the migration commits so the durable runtime policy remains
+-- tenant-scoped and fail-closed.
+CREATE POLICY reconciliation_approval_upgrade_visibility
+    ON accounting_core.reconciliation_match
+    FOR SELECT
+    TO current_user
+    USING (true);
+
 CREATE OR REPLACE FUNCTION accounting_core.reconciliation_approval_upgrade_guard()
 RETURNS void
 LANGUAGE plpgsql
@@ -94,6 +104,8 @@ $$;
 
 SELECT accounting_core.reconciliation_approval_upgrade_guard();
 DROP FUNCTION accounting_core.reconciliation_approval_upgrade_guard();
+DROP POLICY reconciliation_approval_upgrade_visibility
+    ON accounting_core.reconciliation_match;
 
 CREATE OR REPLACE FUNCTION accounting_core.reconciliation_snapshot_value(
     snapshot_value text
@@ -373,21 +385,39 @@ BEGIN
            OR NEW.reconciliation_run_id IS DISTINCT FROM OLD.reconciliation_run_id
            OR NEW.reconciliation_match_id IS DISTINCT FROM OLD.reconciliation_match_id
            OR NEW.reconciliation_candidate_id IS DISTINCT FROM OLD.reconciliation_candidate_id
-       )
-       AND EXISTS (
-           SELECT 1
-           FROM accounting_core.reconciliation_approval AS approval
-           WHERE approval.tenant_account_id = OLD.tenant_account_id
-             AND approval.reconciliation_run_id = OLD.reconciliation_run_id
-             AND approval.reconciliation_match_id = OLD.reconciliation_match_id
        ) THEN
-        RAISE EXCEPTION
-            'reviewed reconciliation match identity is immutable; supersede the match instead (reconciliation_match_identity_immutable)'
-            USING ERRCODE = '23514';
+        PERFORM accounting_core.reconciliation_match_snapshot_lock(
+            OLD.tenant_account_id,
+            OLD.reconciliation_run_id,
+            OLD.reconciliation_match_id
+        );
+        IF EXISTS (
+            SELECT 1
+            FROM accounting_core.reconciliation_approval AS approval
+            WHERE approval.tenant_account_id = OLD.tenant_account_id
+              AND approval.reconciliation_run_id = OLD.reconciliation_run_id
+              AND approval.reconciliation_match_id = OLD.reconciliation_match_id
+        ) OR EXISTS (
+            SELECT 1
+            FROM accounting_core.statement_match_allocation AS allocation
+            WHERE allocation.tenant_account_id = OLD.tenant_account_id
+              AND allocation.reconciliation_run_id = OLD.reconciliation_run_id
+              AND allocation.reconciliation_match_id = OLD.reconciliation_match_id
+        ) OR EXISTS (
+            SELECT 1
+            FROM accounting_core.journal_match_allocation AS allocation
+            WHERE allocation.tenant_account_id = OLD.tenant_account_id
+              AND allocation.reconciliation_run_id = OLD.reconciliation_run_id
+              AND allocation.reconciliation_match_id = OLD.reconciliation_match_id
+        ) THEN
+            RAISE EXCEPTION
+                'reviewed reconciliation match identity is immutable; supersede the match instead (reconciliation_match_identity_immutable)'
+                USING ERRCODE = '23514';
+        END IF;
     END IF;
 
     IF TG_OP = 'UPDATE'
-       AND OLD.match_status_code IN ('approved', 'rejected') THEN
+       AND OLD.match_status_code IN ('approved', 'rejected', 'superseded') THEN
         IF NEW.approved_at IS DISTINCT FROM OLD.approved_at THEN
             RAISE EXCEPTION
                 'reviewed reconciliation match evidence is immutable; supersede the match instead (reconciliation_review_terminal)'
@@ -397,7 +427,8 @@ BEGIN
             RETURN NEW;
         END IF;
 
-        IF NEW.match_status_code = 'superseded' THEN
+        IF OLD.match_status_code IN ('approved', 'rejected')
+           AND NEW.match_status_code = 'superseded' THEN
             RETURN NEW;
         END IF;
 

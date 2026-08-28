@@ -94,11 +94,14 @@ BEGIN
         JOIN accounting_core.reconciliation_run AS run_scope
           ON run_scope.tenant_account_id = candidate.tenant_account_id
          AND run_scope.reconciliation_run_id = candidate.reconciliation_run_id
+        JOIN accounting_core.bank_account_assignment AS run_assignment
+          ON run_assignment.tenant_account_id = run_scope.tenant_account_id
+         AND run_assignment.bank_account_assignment_id = run_scope.bank_account_assignment_id
         GROUP BY
             candidate.tenant_account_id,
             run_scope.legal_entity_id,
             run_scope.accounting_book_id,
-            run_scope.bank_account_assignment_id,
+            run_assignment.bank_account_record_id,
             run_scope.currency_code,
             candidate.statement_entry_reference
         HAVING MIN(candidate.statement_amount) <> MAX(candidate.statement_amount)
@@ -136,20 +139,24 @@ AS $$
 DECLARE
     current_legal_entity_id uuid;
     current_accounting_book_id uuid;
-    current_bank_account_assignment_id uuid;
+    current_bank_account_record_id uuid;
     current_currency_code text;
+    conservation_key text;
 BEGIN
     SELECT
         run_scope.legal_entity_id,
         run_scope.accounting_book_id,
-        run_scope.bank_account_assignment_id,
+        bank_assignment.bank_account_record_id,
         run_scope.currency_code
     INTO
         current_legal_entity_id,
         current_accounting_book_id,
-        current_bank_account_assignment_id,
+        current_bank_account_record_id,
         current_currency_code
     FROM accounting_core.reconciliation_run AS run_scope
+    JOIN accounting_core.bank_account_assignment AS bank_assignment
+      ON bank_assignment.tenant_account_id = run_scope.tenant_account_id
+     AND bank_assignment.bank_account_assignment_id = run_scope.bank_account_assignment_id
     WHERE run_scope.tenant_account_id = NEW.tenant_account_id
       AND run_scope.reconciliation_run_id = NEW.reconciliation_run_id;
 
@@ -159,18 +166,33 @@ BEGIN
             USING ERRCODE = '23514';
     END IF;
 
+    conservation_key := concat_ws(
+        ':',
+        'reconciliation-candidate-statement',
+        NEW.tenant_account_id::text,
+        current_legal_entity_id::text,
+        current_accounting_book_id::text,
+        current_bank_account_record_id::text,
+        current_currency_code,
+        NEW.statement_entry_reference
+    );
+    PERFORM pg_advisory_xact_lock(hashtextextended(conservation_key, 0));
+
     IF EXISTS (
         SELECT 1
         FROM accounting_core.reconciliation_candidate AS candidate
         JOIN accounting_core.reconciliation_run AS candidate_run
           ON candidate_run.tenant_account_id = candidate.tenant_account_id
          AND candidate_run.reconciliation_run_id = candidate.reconciliation_run_id
+        JOIN accounting_core.bank_account_assignment AS candidate_assignment
+          ON candidate_assignment.tenant_account_id = candidate_run.tenant_account_id
+         AND candidate_assignment.bank_account_assignment_id = candidate_run.bank_account_assignment_id
         WHERE candidate.tenant_account_id = NEW.tenant_account_id
           AND candidate.statement_entry_reference = NEW.statement_entry_reference
           AND candidate.reconciliation_candidate_id <> NEW.reconciliation_candidate_id
           AND candidate_run.legal_entity_id = current_legal_entity_id
           AND candidate_run.accounting_book_id = current_accounting_book_id
-          AND candidate_run.bank_account_assignment_id = current_bank_account_assignment_id
+          AND candidate_assignment.bank_account_record_id = current_bank_account_record_id
           AND candidate_run.currency_code = current_currency_code
           AND candidate.statement_amount <> NEW.statement_amount
     ) THEN
@@ -178,6 +200,17 @@ BEGIN
             'statement source amount differs across reconciliation runs (reconciliation_source_amount_conflict)'
             USING ERRCODE = '23514';
     END IF;
+
+    conservation_key := concat_ws(
+        ':',
+        'reconciliation-candidate-journal',
+        NEW.tenant_account_id::text,
+        current_legal_entity_id::text,
+        current_accounting_book_id::text,
+        current_currency_code,
+        NEW.journal_reference
+    );
+    PERFORM pg_advisory_xact_lock(hashtextextended(conservation_key, 0));
 
     IF EXISTS (
         SELECT 1
@@ -332,7 +365,7 @@ DECLARE
     conservation_key text;
     current_legal_entity_id uuid;
     current_accounting_book_id uuid;
-    current_bank_account_assignment_id uuid;
+    current_bank_account_record_id uuid;
     current_currency_code text;
     statement_allocation_count bigint;
     journal_allocation_count bigint;
@@ -347,14 +380,17 @@ BEGIN
     SELECT
         run_scope.legal_entity_id,
         run_scope.accounting_book_id,
-        run_scope.bank_account_assignment_id,
+        bank_assignment.bank_account_record_id,
         run_scope.currency_code
     INTO
         current_legal_entity_id,
         current_accounting_book_id,
-        current_bank_account_assignment_id,
+        current_bank_account_record_id,
         current_currency_code
     FROM accounting_core.reconciliation_run AS run_scope
+    JOIN accounting_core.bank_account_assignment AS bank_assignment
+      ON bank_assignment.tenant_account_id = run_scope.tenant_account_id
+     AND bank_assignment.bank_account_assignment_id = run_scope.bank_account_assignment_id
     WHERE run_scope.tenant_account_id = NEW.tenant_account_id
       AND run_scope.reconciliation_run_id = NEW.reconciliation_run_id;
 
@@ -401,7 +437,7 @@ BEGIN
             NEW.tenant_account_id::text,
             current_legal_entity_id::text,
             current_accounting_book_id::text,
-            current_bank_account_assignment_id::text,
+            current_bank_account_record_id::text,
             current_currency_code,
             source_row.statement_entry_reference
         );
@@ -413,11 +449,14 @@ BEGIN
         JOIN accounting_core.reconciliation_run AS candidate_run
           ON candidate_run.tenant_account_id = candidate.tenant_account_id
          AND candidate_run.reconciliation_run_id = candidate.reconciliation_run_id
+        JOIN accounting_core.bank_account_assignment AS candidate_assignment
+          ON candidate_assignment.tenant_account_id = candidate_run.tenant_account_id
+         AND candidate_assignment.bank_account_assignment_id = candidate_run.bank_account_assignment_id
         WHERE candidate.tenant_account_id = NEW.tenant_account_id
           AND candidate.statement_entry_reference = source_row.statement_entry_reference
           AND candidate_run.legal_entity_id = current_legal_entity_id
           AND candidate_run.accounting_book_id = current_accounting_book_id
-          AND candidate_run.bank_account_assignment_id = current_bank_account_assignment_id
+          AND candidate_assignment.bank_account_record_id = current_bank_account_record_id
           AND candidate_run.currency_code = current_currency_code;
 
         SELECT COALESCE(SUM(allocation.allocated_amount), 0)
@@ -430,13 +469,16 @@ BEGIN
         JOIN accounting_core.reconciliation_run AS consuming_run
           ON consuming_run.tenant_account_id = allocation.tenant_account_id
          AND consuming_run.reconciliation_run_id = allocation.reconciliation_run_id
+        JOIN accounting_core.bank_account_assignment AS consuming_assignment
+          ON consuming_assignment.tenant_account_id = consuming_run.tenant_account_id
+         AND consuming_assignment.bank_account_assignment_id = consuming_run.bank_account_assignment_id
         WHERE allocation.tenant_account_id = NEW.tenant_account_id
           AND allocation.statement_entry_reference = source_row.statement_entry_reference
           AND approved_match.match_status_code = 'approved'
           AND approved_match.reconciliation_match_id <> NEW.reconciliation_match_id
           AND consuming_run.legal_entity_id = current_legal_entity_id
           AND consuming_run.accounting_book_id = current_accounting_book_id
-          AND consuming_run.bank_account_assignment_id = current_bank_account_assignment_id
+          AND consuming_assignment.bank_account_record_id = current_bank_account_record_id
           AND consuming_run.currency_code = current_currency_code;
 
         IF source_capacity IS NULL
