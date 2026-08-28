@@ -1943,7 +1943,11 @@ def _authorization_correlation(path: str, raw_body: bytes) -> str:
             "ingestion_idempotency_key",
         ):
             value = payload.get(field)
-            if isinstance(value, str) and 0 < len(value) <= 512:
+            if (
+                isinstance(value, str)
+                and 0 < len(value)
+                and len(f"{field}:{value}") <= 512
+            ):
                 return f"{field}:{value}"
     return path
 

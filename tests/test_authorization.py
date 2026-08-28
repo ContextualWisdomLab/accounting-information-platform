@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 from email.message import Message
 from types import SimpleNamespace
@@ -183,6 +184,22 @@ class AuthorizationContractTests(unittest.TestCase):
         self.assertEqual(_authorization_correlation("/journal-proposals", b"[]"), "/journal-proposals")
         self.assertEqual(
             _authorization_correlation("/journal-proposals", b'{"idempotency_key":""}'),
+            "/journal-proposals",
+        )
+        long_key = "x" * (512 - len("idempotency_key:"))
+        self.assertEqual(
+            _authorization_correlation(
+                "/journal-proposals",
+                json.dumps({"idempotency_key": long_key}).encode("utf-8"),
+            ),
+            f"idempotency_key:{long_key}",
+        )
+        too_long_key = "x" * (513 - len("idempotency_key:"))
+        self.assertEqual(
+            _authorization_correlation(
+                "/journal-proposals",
+                json.dumps({"idempotency_key": too_long_key}).encode("utf-8"),
+            ),
             "/journal-proposals",
         )
 

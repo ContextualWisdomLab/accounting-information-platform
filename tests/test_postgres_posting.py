@@ -12061,6 +12061,44 @@ class PostgresPostingTests(unittest.TestCase):
                         connection.execute(mutation, (self.tenant_id,))
         server.shutdown()
 
+    def test_http_accepts_maximum_length_command_identity(self) -> None:
+        """A command key at the evidence limit remains executable after correlation tagging."""
+        context = AuthenticatedPrincipal(
+            principal_reference="urn:cwl:principal:posting-reader",
+            tenant_reference=self.policy.tenant_reference,
+            authentication_context_reference="urn:cwl:authentication:posting-reader",
+            granted_permission_codes=frozenset(
+                {"accounting.read_catalog", "accounting.post_proposal"}
+            ),
+            purpose_code="posting_control",
+            credential_evidence_reference="urn:cwl:auth-evidence:posting-reader",
+        )
+        server = self._start_http_server(authorization_context=context)
+        payload = self._billing_validated_payload(
+            idempotency_key="x" * (512 - len("idempotency_key:")),
+            proposal_id=str(uuid.uuid4()),
+        )
+
+        status, _body = self._http_json("POST", "/journal-proposals", payload)
+
+        self.assertEqual(status, 200)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), 1)
+        with psycopg.connect(DATABASE_URL) as connection:
+            connection.execute(
+                "SELECT set_config('app.tenant_account_id', %s, false)",
+                (self.tenant_id,),
+            )
+            correlation_length = connection.execute(
+                """
+                SELECT length(correlation_reference)
+                FROM accounting_integration.authorization_decision_record
+                WHERE tenant_account_id = %s
+                """,
+                (self.tenant_id,),
+            ).fetchone()[0]
+        self.assertEqual(correlation_length, 512)
+        server.shutdown()
+
     def test_post_proposal_catalog_misses_write_zero_rows(self) -> None:
         """Unmapped roles, missing books, and closed periods write no durable rows."""
         self._delete_role_mapping("tax_payable")
