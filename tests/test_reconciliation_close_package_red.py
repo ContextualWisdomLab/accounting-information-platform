@@ -58,12 +58,12 @@ class ReconciliationClosePackageTests(unittest.TestCase):
             ReconciliationEvidenceReference(
                 evidence_kind_code="statement_artifact",
                 evidence_reference="statement-artifact-1",
-                sha256_digest="a" * 64,
+                sha256_digest="sha256:" + "a" * 64,
             ),
             ReconciliationEvidenceReference(
                 evidence_kind_code="book_population",
                 evidence_reference="book-population-2026-08",
-                sha256_digest="b" * 64,
+                sha256_digest="sha256:" + "b" * 64,
             ),
         )
 
@@ -76,7 +76,7 @@ class ReconciliationClosePackageTests(unittest.TestCase):
         return ReconciliationClosePackageInput(
             projection=self._projection(suitable=suitable),
             approval_evidence_reference="approval-evidence-1",
-            approval_snapshot_sha256="c" * 64,
+            approval_snapshot_sha256="sha256:" + "c" * 64,
             knowledge_cutoff="2026-08-28T08:41:54Z",
             evidence_references=self._evidence() if evidence is None else evidence,
         )
@@ -87,6 +87,7 @@ class ReconciliationClosePackageTests(unittest.TestCase):
             self._input(evidence=tuple(reversed(self._evidence())))
         )
 
+        self.assertRegex(first.package_sha256, r"^sha256:[0-9a-f]{64}$")
         self.assertEqual(first.package_sha256, second.package_sha256)
         self.assertEqual(
             render_reconciliation_close_package_json(first),
@@ -132,7 +133,7 @@ class ReconciliationClosePackageTests(unittest.TestCase):
             ReconciliationClosePackageInput(
                 projection=self._projection(),
                 approval_evidence_reference="approval-evidence-1",
-                approval_snapshot_sha256="d" * 64,
+                approval_snapshot_sha256="sha256:" + "d" * 64,
                 knowledge_cutoff="2026-08-28T08:41:54Z",
                 evidence_references=self._evidence(),
             )
@@ -143,7 +144,7 @@ class ReconciliationClosePackageTests(unittest.TestCase):
                     ReconciliationEvidenceReference(
                         evidence_kind_code="statement_artifact",
                         evidence_reference="statement-artifact-1",
-                        sha256_digest="e" * 64,
+                        sha256_digest="sha256:" + "e" * 64,
                     ),
                     self._evidence()[1],
                 )
