@@ -29,6 +29,18 @@ class ProductGapBaselineContractTests(unittest.TestCase):
         self.assertNotRegex(text, re.compile(r"\bworkflow run\s+\d{6,}\b", re.IGNORECASE))
         self.assertNotIn("checks are currently queued", text.lower())
         self.assertNotIn("production candidate is exact commit", text.lower())
+        self.assertNotRegex(text, re.compile(r"(?<!\w)#\d+\b"))
+
+    def test_postgres_reference_is_consistent_across_bibliographies(self) -> None:
+        """The README and doctoring bibliography must cite the same release notes."""
+        expected = "PostgreSQL 18.6 release notes"
+        expected_url = "https://www.postgresql.org/docs/release/18.6/"
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        references = (ROOT / "docs" / "doctoring" / "REFERENCES.md").read_text(encoding="utf-8")
+        self.assertIn(expected, readme)
+        self.assertIn(expected_url, readme)
+        self.assertIn(expected, references)
+        self.assertIn(expected_url, references)
 
 
 if __name__ == "__main__":

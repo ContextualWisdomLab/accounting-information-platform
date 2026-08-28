@@ -192,7 +192,7 @@ International Organization for Standardization. (2022). *ISO/IEC/IEEE 42010:2022
 
 Internet Engineering Task Force. (2024). *Universally unique IDentifiers (UUIDs)* (RFC 9562). https://www.rfc-editor.org/rfc/rfc9562
 
-PostgreSQL Global Development Group. (2026). *PostgreSQL 18.4 release notes*. https://www.postgresql.org/docs/release/18.4/
+PostgreSQL Global Development Group. (2026). *PostgreSQL 18.6 release notes*. https://www.postgresql.org/docs/release/18.6/
 
 World Wide Web Consortium. (2013). *PROV-O: The PROV ontology*. https://www.w3.org/TR/prov-o/
 

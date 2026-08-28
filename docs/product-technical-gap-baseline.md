@@ -56,10 +56,10 @@ scope, not implied successes.
 Issue numbering belongs to live tracker state; this table records durable roles so
 that renumbering cannot silently drop a commitment.
 
-At this refresh, the live successor sequence is multi-match conservation and
-approval (#29), close-package provenance (#32), exact statement-balance and run
-command evidence (#35/#36), and purpose-bound authorization (#34). Their exact
-heads, review decisions, workflow conclusions, and stack ancestry remain live
+The live tracker owns the current successor sequence: multi-match conservation
+and approval, close-package provenance, exact statement-balance and run-command
+evidence, and purpose-bound authorization. Their issue numbers, exact heads,
+review decisions, workflow conclusions, and stack ancestry remain live
 integration evidence and are intentionally not copied into this durable baseline.
 
 ## Dependency-root order
