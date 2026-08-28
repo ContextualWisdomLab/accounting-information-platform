@@ -325,7 +325,7 @@ BEGIN
 
     IF current_match_status <> 'proposed' THEN
         RAISE EXCEPTION
-            'reviewed reconciliation allocation evidence is frozen; supersede the match and create a new proposed match (reconciliation_allocation_frozen)'
+            'reviewed reconciliation allocation evidence is frozen; supersede the reviewed match, then create a new reconciliation run with a new candidate and proposed match (reconciliation_allocation_frozen)'
             USING ERRCODE = '23514';
     END IF;
 
