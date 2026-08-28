@@ -21,8 +21,9 @@ period, select a chart account, or change accounting policy.
 Migration `0016_reconciliation_approval_evidence.sql` stores two distinct
 identities:
 
-- `source_payload_hash` is the immutable SHA-256 hash of the approval command
-  evidence supplied by the caller;
+- `source_payload_hash` and `source_payload_reference` identify the immutable
+  approval command evidence supplied by the caller and retained in object
+  storage;
 - `reconciliation_snapshot_hash` and version `1` are computed by PostgreSQL
   from the tenant, run, match, candidate, and ordered statement/journal
   allocation rows.
@@ -35,11 +36,14 @@ snapshot and fails when the candidate cannot be found.
 
 Approval, allocation, and terminal match transitions take the same
 transaction-level advisory lock for the tenant/run/match identity. Once an
-approval row exists, later allocation inserts fail closed. A proposed match
-may become `approved` or `rejected` only when a same-decision immutable approval
-row exists and its stored snapshot hash equals the current database snapshot.
-Reviewed terminal states cannot reopen or switch decision; supersession remains
-the explicit historical retirement path.
+approval row exists, later candidate retargeting and allocation inserts fail
+closed. A proposed match may become `approved` or `rejected` only when a
+same-decision immutable approval row exists and its stored snapshot hash equals
+the current database snapshot. Reviewed terminal states cannot rewrite their
+identity or approval timestamp, reopen, or switch decision; supersession
+remains the explicit historical retirement path. The migration refuses to
+install when pre-existing non-proposed matches have no durable approval row,
+because their original review cannot be reconstructed safely.
 
 ## Consequences
 

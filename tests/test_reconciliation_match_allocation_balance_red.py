@@ -182,10 +182,11 @@ class PostgresReconciliationMatchAllocationBalanceRedTests(unittest.TestCase):
                 """
                 INSERT INTO accounting_core.reconciliation_approval (
                     tenant_account_id, reconciliation_run_id, reconciliation_match_id,
-                    approval_command_key, source_payload_hash, approver_reference,
+                    approval_command_key, source_payload_hash, source_payload_reference,
+                    approver_reference,
                     approval_purpose_code, approval_decision_code, effective_at
                 )
-                VALUES (%s, %s, %s, %s, %s, 'balance-reviewer',
+                VALUES (%s, %s, %s, %s, %s, 'urn:cwl:object:approval-command', 'balance-reviewer',
                         'reconciliation_review', 'approved', %s)
                 """,
                 (

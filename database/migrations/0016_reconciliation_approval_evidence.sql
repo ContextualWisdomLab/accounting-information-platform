@@ -2,10 +2,11 @@ BEGIN;
 
 -- Durable human reconciliation approval evidence.
 --
--- Approval is an immutable control fact. Its source_payload_hash identifies the
--- command evidence supplied by the caller, while reconciliation_snapshot_hash
--- is always computed by PostgreSQL from the candidate and allocation rows that
--- the decision reviews. Neither field grants journal, close, or policy authority.
+-- Approval is an immutable control fact. Its source_payload_hash and
+-- source_payload_reference identify the immutable command evidence supplied by
+-- the caller, while reconciliation_snapshot_hash is always computed by
+-- PostgreSQL from the candidate and allocation rows that the decision reviews.
+-- Neither field grants journal, close, or policy authority.
 
 CREATE TABLE accounting_core.reconciliation_approval (
     reconciliation_approval_id uuid PRIMARY KEY DEFAULT uuidv7(),
@@ -16,6 +17,8 @@ CREATE TABLE accounting_core.reconciliation_approval (
         CHECK (btrim(approval_command_key) <> ''),
     source_payload_hash text NOT NULL
         CHECK (source_payload_hash ~ '^sha256:[0-9a-f]{64}$'),
+    source_payload_reference text NOT NULL
+        CHECK (btrim(source_payload_reference) <> ''),
     reconciliation_snapshot_version integer NOT NULL DEFAULT 1
         CHECK (reconciliation_snapshot_version = 1),
     reconciliation_snapshot_hash text NOT NULL
@@ -64,6 +67,33 @@ CREATE POLICY reconciliation_approval_isolation
     WITH CHECK (tenant_account_id = accounting_core.current_tenant_account_id());
 
 REVOKE ALL ON accounting_core.reconciliation_approval FROM PUBLIC;
+
+CREATE OR REPLACE FUNCTION accounting_core.reconciliation_approval_upgrade_guard()
+RETURNS void
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM accounting_core.reconciliation_match AS reviewed_match
+        WHERE reviewed_match.match_status_code <> 'proposed'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM accounting_core.reconciliation_approval AS approval
+              WHERE approval.tenant_account_id = reviewed_match.tenant_account_id
+                AND approval.reconciliation_run_id = reviewed_match.reconciliation_run_id
+                AND approval.reconciliation_match_id = reviewed_match.reconciliation_match_id
+          )
+    ) THEN
+        RAISE EXCEPTION
+            'migration 0016 requires durable approval evidence for existing terminal reconciliation matches; resolve reviewed history before retrying (reconciliation_approval_upgrade_required)'
+            USING ERRCODE = '23514';
+    END IF;
+END;
+$$;
+
+SELECT accounting_core.reconciliation_approval_upgrade_guard();
+DROP FUNCTION accounting_core.reconciliation_approval_upgrade_guard();
 
 CREATE OR REPLACE FUNCTION accounting_core.reconciliation_snapshot_value(
     snapshot_value text
@@ -312,12 +342,14 @@ BEGIN
 END;
 $$;
 
-CREATE TRIGGER reconciliation_statement_allocation_snapshot_lock
+-- Prefix these triggers so PostgreSQL acquires the match snapshot lock before
+-- migration 0015's conservation triggers inspect match status.
+CREATE TRIGGER a_reconciliation_statement_allocation_snapshot_lock
 BEFORE INSERT
 ON accounting_core.statement_match_allocation
 FOR EACH ROW EXECUTE FUNCTION accounting_core.reconciliation_approval_allocation_lock();
 
-CREATE TRIGGER reconciliation_journal_allocation_snapshot_lock
+CREATE TRIGGER a_reconciliation_journal_allocation_snapshot_lock
 BEFORE INSERT
 ON accounting_core.journal_match_allocation
 FOR EACH ROW EXECUTE FUNCTION accounting_core.reconciliation_approval_allocation_lock();
@@ -336,22 +368,32 @@ BEGIN
     );
 
     IF TG_OP = 'UPDATE'
-       AND OLD.match_status_code IN ('approved', 'rejected') THEN
-        IF NEW.tenant_account_id IS DISTINCT FROM OLD.tenant_account_id
+       AND (
+           NEW.tenant_account_id IS DISTINCT FROM OLD.tenant_account_id
            OR NEW.reconciliation_run_id IS DISTINCT FROM OLD.reconciliation_run_id
            OR NEW.reconciliation_match_id IS DISTINCT FROM OLD.reconciliation_match_id
-           OR NEW.reconciliation_candidate_id IS DISTINCT FROM OLD.reconciliation_candidate_id THEN
+           OR NEW.reconciliation_candidate_id IS DISTINCT FROM OLD.reconciliation_candidate_id
+       )
+       AND EXISTS (
+           SELECT 1
+           FROM accounting_core.reconciliation_approval AS approval
+           WHERE approval.tenant_account_id = OLD.tenant_account_id
+             AND approval.reconciliation_run_id = OLD.reconciliation_run_id
+             AND approval.reconciliation_match_id = OLD.reconciliation_match_id
+       ) THEN
+        RAISE EXCEPTION
+            'reviewed reconciliation match identity is immutable; supersede the match instead (reconciliation_match_identity_immutable)'
+            USING ERRCODE = '23514';
+    END IF;
+
+    IF TG_OP = 'UPDATE'
+       AND OLD.match_status_code IN ('approved', 'rejected') THEN
+        IF NEW.approved_at IS DISTINCT FROM OLD.approved_at THEN
             RAISE EXCEPTION
-                'reviewed reconciliation match identity is immutable; supersede the match instead (reconciliation_match_identity_immutable)'
+                'reviewed reconciliation match evidence is immutable; supersede the match instead (reconciliation_review_terminal)'
                 USING ERRCODE = '23514';
         END IF;
-
         IF NEW.match_status_code = OLD.match_status_code THEN
-            IF NEW.approved_at IS DISTINCT FROM OLD.approved_at THEN
-                RAISE EXCEPTION
-                    'reviewed reconciliation match evidence is immutable; supersede the match instead (reconciliation_review_terminal)'
-                    USING ERRCODE = '23514';
-            END IF;
             RETURN NEW;
         END IF;
 

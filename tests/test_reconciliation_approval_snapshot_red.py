@@ -34,6 +34,10 @@ class ReconciliationApprovalSnapshotMigrationRedTests(unittest.TestCase):
             "reconciliation_snapshot_hash",
             "reconciliation_match_snapshot_hash",
             "reconciliation_match_snapshot_lock",
+            "source_payload_reference",
+            "reconciliation_approval_upgrade_guard",
+            "a_reconciliation_statement_allocation_snapshot_lock",
+            "a_reconciliation_journal_allocation_snapshot_lock",
             "sha256(",
         ):
             self.assertIn(contract, normalized)
@@ -71,10 +75,11 @@ class PostgresReconciliationApprovalSnapshotRedTests(unittest.TestCase):
                 INSERT INTO accounting_core.reconciliation_approval (
                     tenant_account_id, reconciliation_run_id, reconciliation_match_id,
                     approval_command_key, source_payload_hash,
+                    source_payload_reference,
                     reconciliation_snapshot_hash, approver_reference,
                     approval_purpose_code, approval_decision_code, effective_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, 'operator-1',
+                VALUES (%s, %s, %s, %s, %s, 'urn:cwl:object:approval-command', %s, 'operator-1',
                         'bank-close-review', 'approved', %s)
                 RETURNING reconciliation_snapshot_hash
                 """,
@@ -186,6 +191,107 @@ class PostgresReconciliationApprovalSnapshotRedTests(unittest.TestCase):
                         match_id,
                     ),
                 )
+
+    def test_approval_evidence_freezes_candidate_before_terminal_transition(self) -> None:
+        """A pending terminal transition cannot outlive a retargeted approval."""
+        candidate_id = self.fixture._insert_candidate(
+            "stmt-pending-retarget", "journal-pending-retarget"
+        )
+        replacement_candidate_id = self.fixture._insert_candidate(
+            "stmt-pending-replacement", "journal-pending-replacement"
+        )
+        match_id = self.fixture._insert_match(candidate_id)
+        self.fixture._insert_allocations(
+            match_id, "stmt-pending-retarget", "journal-pending-retarget", "1000.00"
+        )
+        self._insert_approval(match_id)
+
+        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
+            with self.assertRaisesRegex(
+                psycopg.errors.CheckViolation,
+                "reconciliation_match_identity_immutable",
+            ):
+                connection.execute(
+                    """
+                    UPDATE accounting_core.reconciliation_match
+                    SET reconciliation_candidate_id = %s
+                    WHERE tenant_account_id = %s
+                      AND reconciliation_run_id = %s
+                      AND reconciliation_match_id = %s
+                    """,
+                    (
+                        replacement_candidate_id,
+                        self.fixture.scope["tenant_account_id"],
+                        self.fixture.run_reference,
+                        match_id,
+                    ),
+                )
+
+    def test_approved_match_preserves_approval_time_when_superseded(self) -> None:
+        """Supersession retires a match without rewriting its approval timestamp."""
+        candidate_id = self.fixture._insert_candidate(
+            "stmt-supersede-time", "journal-supersede-time"
+        )
+        match_id = self.fixture._insert_match(candidate_id)
+        self.fixture._insert_allocations(
+            match_id, "stmt-supersede-time", "journal-supersede-time", "1000.00"
+        )
+        self.fixture._approve_match(match_id)
+
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            approved_at = connection.execute(
+                """
+                SELECT approved_at
+                FROM accounting_core.reconciliation_match
+                WHERE tenant_account_id = %s
+                  AND reconciliation_run_id = %s
+                  AND reconciliation_match_id = %s
+                """,
+                (
+                    self.fixture.scope["tenant_account_id"],
+                    self.fixture.run_reference,
+                    match_id,
+                ),
+            ).fetchone()[0]
+
+        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
+            with self.assertRaisesRegex(
+                psycopg.errors.CheckViolation,
+                "reconciliation_review_terminal",
+            ):
+                connection.execute(
+                    """
+                    UPDATE accounting_core.reconciliation_match
+                    SET match_status_code = 'superseded', approved_at = NULL
+                    WHERE tenant_account_id = %s
+                      AND reconciliation_run_id = %s
+                      AND reconciliation_match_id = %s
+                    """,
+                    (
+                        self.fixture.scope["tenant_account_id"],
+                        self.fixture.run_reference,
+                        match_id,
+                    ),
+                )
+
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            self.assertEqual(
+                connection.execute(
+                    """
+                    SELECT match_status_code, approved_at
+                    FROM accounting_core.reconciliation_match
+                    WHERE tenant_account_id = %s
+                      AND reconciliation_run_id = %s
+                      AND reconciliation_match_id = %s
+                    """,
+                    (
+                        self.fixture.scope["tenant_account_id"],
+                        self.fixture.run_reference,
+                        match_id,
+                    ),
+                ).fetchone(),
+                ("approved", approved_at),
+            )
 
 
 if __name__ == "__main__":
