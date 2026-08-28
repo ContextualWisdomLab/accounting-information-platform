@@ -136,11 +136,6 @@ class PostgresRuntimeRlsTests(unittest.TestCase):
                     )
                 )
                 admin.execute(
-                    sql.SQL("REVOKE accounting_closing_writer FROM {}").format(
-                        sql.Identifier(role_name)
-                    )
-                )
-                admin.execute(
                     sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(role_name))
                 )
 
