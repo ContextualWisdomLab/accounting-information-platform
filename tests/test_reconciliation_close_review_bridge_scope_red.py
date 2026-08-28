@@ -94,6 +94,7 @@ class ReconciliationCloseReviewBridgeScopeTests(unittest.TestCase):
                     bridge_result=self._bridge(),
                     decisions=(self._match(),),
                     expected_statement_entry_references=("stmt-001",),
+                    reviewed_match_references=("reconciliation-match-001",),
                     scope=foreign_scope,
                 )
             )
@@ -113,6 +114,7 @@ class ReconciliationCloseReviewBridgeScopeTests(unittest.TestCase):
                     bridge_result=self._bridge(run_reference="run-current"),
                     decisions=(self._match(),),
                     expected_statement_entry_references=("stmt-001",),
+                    reviewed_match_references=("reconciliation-match-001",),
                     scope=current_scope,
                     preceding_bridge_result=self._bridge(
                         run_reference="run-foreign",
@@ -144,6 +146,7 @@ class ReconciliationCloseReviewBridgeScopeTests(unittest.TestCase):
                     ),
                     decisions=(self._match(),),
                     expected_statement_entry_references=("stmt-001",),
+                    reviewed_match_references=("reconciliation-match-001",),
                     scope=current_scope,
                 )
             )

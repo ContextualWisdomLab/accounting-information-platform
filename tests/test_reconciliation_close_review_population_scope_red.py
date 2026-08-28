@@ -91,6 +91,7 @@ class ReconciliationCloseReviewPopulationScopeTests(unittest.TestCase):
         *,
         decisions: tuple[ReconciliationDecision, ...],
         expected: tuple[str, ...],
+        reviewed_match_references=None,
         preceding=None,
         current_scope=None,
         preceding_scope=None,
@@ -103,6 +104,15 @@ class ReconciliationCloseReviewPopulationScopeTests(unittest.TestCase):
             ),
             decisions=decisions,
             expected_statement_entry_references=expected,
+            reviewed_match_references=(
+                tuple(
+                    f"reconciliation-match-{index:03d}"
+                    for index, decision in enumerate(decisions, start=1)
+                    if decision.decision_code == "match"
+                )
+                if reviewed_match_references is None
+                else reviewed_match_references
+            ),
             scope=current_scope or self._scope(),
             preceding_bridge_result=preceding,
             preceding_scope=preceding_scope,
@@ -117,6 +127,34 @@ class ReconciliationCloseReviewPopulationScopeTests(unittest.TestCase):
                     expected=("stmt-001", "stmt-002"),
                 )
             )
+
+    def test_reviewed_match_identity_container_must_be_canonical(self) -> None:
+        with self.assertRaisesRegex(ValueError, "reviewed match identities must be a tuple"):
+            read_model.build_reconciliation_close_review(
+                self._input(
+                    decisions=(self._match("stmt-001"),),
+                    expected=("stmt-001",),
+                    # type: ignore[arg-type]
+                    reviewed_match_references=["reconciliation-match-001"],
+                )
+            )
+
+    def test_reviewed_match_identity_population_must_be_complete_and_unique(self) -> None:
+        cases = (
+            (("",), "reviewed match identities must be non-empty"),
+            (("duplicate", "duplicate"), "reviewed match identities must be unique"),
+            ((), "reviewed match identities must exactly cover"),
+        )
+        for references, expected_error in cases:
+            with self.subTest(expected_error=expected_error):
+                with self.assertRaisesRegex(ValueError, expected_error):
+                    read_model.build_reconciliation_close_review(
+                        self._input(
+                            decisions=(self._match("stmt-001"),),
+                            expected=("stmt-001",),
+                            reviewed_match_references=references,
+                        )
+                    )
 
     def test_duplicate_or_extraneous_decision_identity_fails_closed(self) -> None:
         """One immutable statement entry must contribute exactly one decision."""

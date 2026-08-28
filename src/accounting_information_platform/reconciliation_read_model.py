@@ -35,6 +35,7 @@ class ReconciliationCloseReviewInput:
     bridge_result: BookToBankBridgeResult
     decisions: tuple[ReconciliationDecision, ...]
     expected_statement_entry_references: tuple[str, ...]
+    reviewed_match_references: tuple[str, ...]
     scope: ReconciliationCloseReviewScope
     preceding_bridge_result: BookToBankBridgeResult | None = None
     preceding_scope: ReconciliationCloseReviewScope | None = None
@@ -59,6 +60,7 @@ class ReconciliationCloseReviewProjection:
     outstanding_book_items: Decimal
     unexplained_difference: Decimal
     safely_matchable_candidate_count: int
+    reviewed_match_references: tuple[str, ...]
     exception_count: int
     exception_statement_entry_references: tuple[str, ...]
     unexplained_difference_change: Decimal | None
@@ -127,6 +129,25 @@ def _validate_statement_population(
         )
 
 
+def _validate_reviewed_match_population(
+    projection_input: ReconciliationCloseReviewInput,
+    *,
+    match_count: int,
+) -> None:
+    """Require durable match identities for every safely matchable proposal."""
+    references = projection_input.reviewed_match_references
+    if not isinstance(references, tuple):
+        raise ValueError("reviewed match identities must be a tuple")
+    if any(not isinstance(value, str) or not value.strip() for value in references):
+        raise ValueError("reviewed match identities must be non-empty")
+    if len(set(references)) != len(references):
+        raise ValueError("reviewed match identities must be unique")
+    if len(references) != match_count:
+        raise ValueError(
+            "reviewed match identities must exactly cover the safely matchable proposals"
+        )
+
+
 def build_reconciliation_close_review(
     projection_input: ReconciliationCloseReviewInput,
 ) -> ReconciliationCloseReviewProjection:
@@ -144,6 +165,7 @@ def build_reconciliation_close_review(
     match_count = sum(
         1 for decision in projection_input.decisions if decision.decision_code == "match"
     )
+    _validate_reviewed_match_population(projection_input, match_count=match_count)
 
     preceding = projection_input.preceding_bridge_result
     preceding_scope = projection_input.preceding_scope
@@ -210,6 +232,7 @@ def build_reconciliation_close_review(
         outstanding_book_items=bridge.outstanding_book_items,
         unexplained_difference=bridge.unexplained_difference,
         safely_matchable_candidate_count=match_count,
+        reviewed_match_references=projection_input.reviewed_match_references,
         exception_count=len(exceptions),
         exception_statement_entry_references=tuple(
             decision.statement_entry_reference for decision in exceptions
@@ -284,6 +307,7 @@ def _projection_mapping(
         "outstanding_book_items": str(projection.outstanding_book_items),
         "unexplained_difference": str(projection.unexplained_difference),
         "safely_matchable_candidate_count": projection.safely_matchable_candidate_count,
+        "reviewed_match_references": projection.reviewed_match_references,
         "exception_count": projection.exception_count,
         "exception_statement_entry_references": (
             projection.exception_statement_entry_references

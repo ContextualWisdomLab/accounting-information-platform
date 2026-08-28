@@ -118,6 +118,7 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
                 bridge_result=self._bridge(),
                 decisions=(self._match(), self._exception()),
                 expected_statement_entry_references=("stmt-001", "stmt-002"),
+                reviewed_match_references=("reconciliation-match-001",),
                 scope=scope,
                 preceding_bridge_result=preceding,
                 preceding_scope=scope,
@@ -157,6 +158,7 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
                 bridge_result=self._bridge(),
                 decisions=(self._match(),),
                 expected_statement_entry_references=("stmt-001",),
+                reviewed_match_references=("reconciliation-match-001",),
                 scope=self._scope(Scope),
             )
         )
@@ -175,6 +177,7 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
                 bridge_result=self._bridge(outstanding_bank_items=Decimal("50.01")),
                 decisions=(self._match(),),
                 expected_statement_entry_references=("stmt-001",),
+                reviewed_match_references=("reconciliation-match-001",),
                 scope=self._scope(Scope),
             )
         )
@@ -192,6 +195,7 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
                 bridge_result=self._bridge(),
                 decisions=(self._match(),),
                 expected_statement_entry_references=("stmt-001",),
+                reviewed_match_references=("reconciliation-match-001",),
                 scope=self._scope(Scope),
             )
         )

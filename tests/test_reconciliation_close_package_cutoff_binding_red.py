@@ -7,6 +7,7 @@ from dataclasses import replace
 from decimal import Decimal
 
 from accounting_information_platform.reconciliation_close_package import (
+    ReconciliationApprovalEvidence,
     ReconciliationClosePackageInput,
     ReconciliationEvidenceReference,
     build_reconciliation_close_package,
@@ -38,6 +39,9 @@ class ReconciliationClosePackageCutoffBindingTests(unittest.TestCase):
             safely_matchable_candidate_count=8,
             exception_count=0,
             exception_statement_entry_references=(),
+            reviewed_match_references=tuple(
+                f"reconciliation-match-{index:02d}" for index in range(1, 9)
+            ),
             unexplained_difference_change=Decimal("-500.00"),
             outstanding_bank_items_change=Decimal("0.00"),
             outstanding_book_items_change=Decimal("500.00"),
@@ -46,6 +50,19 @@ class ReconciliationClosePackageCutoffBindingTests(unittest.TestCase):
                 "Attach this exact reconciliation evidence to the period-close review; "
                 "the authorized reconciliation review remains a separate control."
             ),
+        )
+
+    def _approval_evidence(self) -> tuple[ReconciliationApprovalEvidence, ...]:
+        return tuple(
+            ReconciliationApprovalEvidence(
+                tenant_account_reference="tenant-1",
+                reconciliation_run_reference="run-2026-08",
+                reconciliation_match_reference=f"reconciliation-match-{index:02d}",
+                approval_decision_code="approved",
+                reconciliation_snapshot_sha256="sha256:" + "abcdef12"[index - 1] * 64,
+                evidence_reference=f"approval-evidence-{index}",
+            )
+            for index in range(1, 9)
         )
 
     def _evidence(self) -> tuple[ReconciliationEvidenceReference, ...]:
@@ -76,8 +93,7 @@ class ReconciliationClosePackageCutoffBindingTests(unittest.TestCase):
     def test_package_rejects_cutoff_not_equal_to_immutable_run_evidence(self) -> None:
         package_input = ReconciliationClosePackageInput(
             projection=self._projection(),
-            approval_evidence_reference="approval-evidence-1",
-            approval_snapshot_sha256="sha256:" + "c" * 64,
+            approval_evidence=self._approval_evidence(),
             knowledge_cutoff="2026-08-28T08:41:54Z",
             evidence_references=self._evidence(),
         )

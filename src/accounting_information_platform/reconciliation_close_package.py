@@ -1,7 +1,7 @@
 """Tamper-evident reconciliation evidence packages for period-close review.
 
-The package binds an already read-only close-review projection to immutable
-approval and source-evidence hashes. It is an evidence manifest only: creating,
+The package binds an already read-only close-review projection to a complete
+structured approval-evidence population and source-evidence hashes. It is an evidence manifest only: creating,
 verifying, or rendering it cannot approve reconciliation, mutate accounting
 facts, close a period, or post a journal.
 """
@@ -109,12 +109,47 @@ class ReconciliationEvidenceReference:
 
 
 @dataclass(frozen=True, slots=True)
+class ReconciliationApprovalEvidence:
+    """Immutable database-owned approval evidence for one reconciliation match."""
+
+    tenant_account_reference: str
+    reconciliation_run_reference: str
+    reconciliation_match_reference: str
+    approval_decision_code: str
+    reconciliation_snapshot_sha256: str
+    evidence_reference: str
+
+    def __post_init__(self) -> None:
+        """Reject non-canonical approval scope, decision, digest, or evidence identity."""
+        _require_identifier(
+            self.tenant_account_reference,
+            field_name="approval tenant_account_reference",
+        )
+        _require_identifier(
+            self.reconciliation_run_reference,
+            field_name="approval reconciliation_run_reference",
+        )
+        _require_identifier(
+            self.reconciliation_match_reference,
+            field_name="approval reconciliation_match_reference",
+        )
+        if self.approval_decision_code not in {"approved", "rejected"}:
+            raise ValueError(
+                "approval_decision_code must be approved or rejected"
+            )
+        _require_sha256(
+            self.reconciliation_snapshot_sha256,
+            field_name="reconciliation_snapshot_sha256",
+        )
+        _require_identifier(self.evidence_reference, field_name="approval evidence_reference")
+
+
+@dataclass(frozen=True, slots=True)
 class ReconciliationClosePackageInput:
     """Evidence required to bind one eligible close-review projection into a package."""
 
     projection: ReconciliationCloseReviewProjection
-    approval_evidence_reference: str
-    approval_snapshot_sha256: str
+    approval_evidence: tuple[ReconciliationApprovalEvidence, ...]
     knowledge_cutoff: str
     evidence_references: tuple[ReconciliationEvidenceReference, ...]
 
@@ -124,8 +159,7 @@ class ReconciliationClosePackage:
     """Canonical tamper-evident period-close reconciliation evidence package."""
 
     projection: ReconciliationCloseReviewProjection
-    approval_evidence_reference: str
-    approval_snapshot_sha256: str
+    approval_evidence: tuple[ReconciliationApprovalEvidence, ...]
     knowledge_cutoff: str
     evidence_references: tuple[ReconciliationEvidenceReference, ...]
     package_sha256: str
@@ -158,6 +192,21 @@ def _validate_projection(projection: object) -> ReconciliationCloseReviewProject
         or projection.safely_matchable_candidate_count < 0
     ):
         raise ValueError("safely_matchable_candidate_count must be a non-negative integer")
+    if not isinstance(projection.reviewed_match_references, tuple):
+        raise ValueError("reviewed match identities must be a tuple")
+    if any(
+        not isinstance(reference, str) or not reference or reference.strip() != reference
+        for reference in projection.reviewed_match_references
+    ):
+        raise ValueError("reviewed match identities must be canonical strings")
+    if len(set(projection.reviewed_match_references)) != len(
+        projection.reviewed_match_references
+    ):
+        raise ValueError("reviewed match identities must be unique")
+    if len(projection.reviewed_match_references) != projection.safely_matchable_candidate_count:
+        raise ValueError(
+            "reviewed match identities must exactly cover the safely matchable proposals"
+        )
     if (
         not isinstance(projection.exception_count, int)
         or isinstance(projection.exception_count, bool)
@@ -279,6 +328,69 @@ def _validate_and_order_evidence(
     )
 
 
+def _approval_mapping(
+    approval: ReconciliationApprovalEvidence,
+) -> dict[str, str]:
+    """Return one deterministic structured approval-evidence mapping."""
+    return {
+        "tenant_account_reference": approval.tenant_account_reference,
+        "reconciliation_run_reference": approval.reconciliation_run_reference,
+        "reconciliation_match_reference": approval.reconciliation_match_reference,
+        "approval_decision_code": approval.approval_decision_code,
+        "reconciliation_snapshot_sha256": approval.reconciliation_snapshot_sha256,
+        "evidence_reference": approval.evidence_reference,
+    }
+
+
+def _validate_approval_evidence(
+    approval_evidence: object,
+    *,
+    projection: ReconciliationCloseReviewProjection,
+) -> tuple[ReconciliationApprovalEvidence, ...]:
+    """Bind complete approved match evidence to the projection's immutable scope."""
+    if not isinstance(approval_evidence, tuple) or not approval_evidence:
+        raise ValueError("approval evidence must be a non-empty tuple")
+    if any(
+        not isinstance(approval, ReconciliationApprovalEvidence)
+        for approval in approval_evidence
+    ):
+        raise ValueError("approval evidence must contain structured evidence objects")
+    if len(approval_evidence) != projection.safely_matchable_candidate_count:
+        raise ValueError(
+            "approval evidence must exactly cover the safely matchable reviewed population"
+        )
+    match_references = tuple(
+        approval.reconciliation_match_reference for approval in approval_evidence
+    )
+    if len(set(match_references)) != len(match_references):
+        raise ValueError("approval evidence match identities must be unique")
+    if set(match_references) != set(projection.reviewed_match_references):
+        raise ValueError(
+            "approval evidence must exactly cover the projection's reviewed match population"
+        )
+    for approval in approval_evidence:
+        if (
+            approval.tenant_account_reference != projection.tenant_account_reference
+            or approval.reconciliation_run_reference
+            != projection.reconciliation_run_reference
+        ):
+            raise ValueError("approval evidence must remain in the same tenant and run scope")
+        if approval.approval_decision_code != "approved":
+            raise ValueError("close-package approval evidence must be approved")
+    return tuple(
+        sorted(
+            approval_evidence,
+            key=lambda approval: (
+                approval.tenant_account_reference,
+                approval.reconciliation_run_reference,
+                approval.reconciliation_match_reference,
+                approval.evidence_reference,
+                approval.reconciliation_snapshot_sha256,
+            ),
+        )
+    )
+
+
 def _evidence_mapping(
     evidence: ReconciliationEvidenceReference,
 ) -> dict[str, object]:
@@ -296,17 +408,17 @@ def _evidence_mapping(
 def _package_unsigned_mapping(
     *,
     projection: ReconciliationCloseReviewProjection,
-    approval_evidence_reference: str,
-    approval_snapshot_sha256: str,
+    approval_evidence: tuple[ReconciliationApprovalEvidence, ...],
     knowledge_cutoff: str,
     evidence_references: tuple[ReconciliationEvidenceReference, ...],
 ) -> dict[str, object]:
     """Return the canonical payload committed by ``package_sha256``."""
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "projection": json.loads(render_reconciliation_close_review_json(projection)),
-        "approval_evidence_reference": approval_evidence_reference,
-        "approval_snapshot_sha256": approval_snapshot_sha256,
+        "approval_evidence": [
+            _approval_mapping(approval) for approval in approval_evidence
+        ],
         "knowledge_cutoff": knowledge_cutoff,
         "evidence_references": [
             _evidence_mapping(evidence) for evidence in evidence_references
@@ -330,13 +442,9 @@ def build_reconciliation_close_package(
 ) -> ReconciliationClosePackage:
     """Build a deterministic package only from close-review-eligible evidence."""
     projection = _validate_projection(package_input.projection)
-    approval_reference = _require_identifier(
-        package_input.approval_evidence_reference,
-        field_name="approval_evidence_reference",
-    )
-    approval_hash = _require_sha256(
-        package_input.approval_snapshot_sha256,
-        field_name="approval_snapshot_sha256",
+    approval_evidence = _validate_approval_evidence(
+        package_input.approval_evidence,
+        projection=projection,
     )
     knowledge_cutoff = _require_knowledge_cutoff(package_input.knowledge_cutoff)
     ordered_evidence = _validate_and_order_evidence(
@@ -355,8 +463,7 @@ def build_reconciliation_close_package(
 
     unsigned_payload = _package_unsigned_mapping(
         projection=projection,
-        approval_evidence_reference=approval_reference,
-        approval_snapshot_sha256=approval_hash,
+        approval_evidence=approval_evidence,
         knowledge_cutoff=knowledge_cutoff,
         evidence_references=ordered_evidence,
     )
@@ -365,8 +472,7 @@ def build_reconciliation_close_package(
     ).hexdigest()
     return ReconciliationClosePackage(
         projection=projection,
-        approval_evidence_reference=approval_reference,
-        approval_snapshot_sha256=approval_hash,
+        approval_evidence=approval_evidence,
         knowledge_cutoff=knowledge_cutoff,
         evidence_references=ordered_evidence,
         package_sha256=package_sha256,
@@ -383,8 +489,7 @@ def verify_reconciliation_close_package(package: ReconciliationClosePackage) -> 
         rebuilt = build_reconciliation_close_package(
             ReconciliationClosePackageInput(
                 projection=package.projection,
-                approval_evidence_reference=package.approval_evidence_reference,
-                approval_snapshot_sha256=package.approval_snapshot_sha256,
+                approval_evidence=package.approval_evidence,
                 knowledge_cutoff=package.knowledge_cutoff,
                 evidence_references=package.evidence_references,
             )
@@ -410,8 +515,7 @@ def render_reconciliation_close_package_json(
     verify_reconciliation_close_package(package)
     payload = _package_unsigned_mapping(
         projection=package.projection,
-        approval_evidence_reference=package.approval_evidence_reference,
-        approval_snapshot_sha256=package.approval_snapshot_sha256,
+        approval_evidence=package.approval_evidence,
         knowledge_cutoff=package.knowledge_cutoff,
         evidence_references=package.evidence_references,
     )

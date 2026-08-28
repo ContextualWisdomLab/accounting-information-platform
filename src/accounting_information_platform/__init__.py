@@ -74,6 +74,7 @@ from .ingest import ingest_journal_proposal
 from .migration_install import apply_foundation_migration
 from .persistence import PostgresPostingLedger
 from .reconciliation_close_package import (
+    ReconciliationApprovalEvidence,
     ReconciliationClosePackage,
     ReconciliationClosePackageInput,
     ReconciliationEvidenceReference,
@@ -100,6 +101,7 @@ __all__ = [
     "MemoryArtifactStore",
     "ReconciliationClosePackage",
     "ReconciliationClosePackageInput",
+    "ReconciliationApprovalEvidence",
     "ReconciliationEvidenceReference",
     "accept_adjusting_journal",
     "accept_bank_account_assignment",
