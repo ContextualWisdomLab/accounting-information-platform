@@ -8,10 +8,12 @@ from dataclasses import replace
 from decimal import Decimal
 
 from accounting_information_platform.reconciliation_close_package import (
+    ReconciliationClosePackage,
     ReconciliationClosePackageInput,
     ReconciliationEvidenceReference,
     build_reconciliation_close_package,
     render_reconciliation_close_package_json,
+    verify_reconciliation_close_package,
 )
 from accounting_information_platform.reconciliation_read_model import (
     ReconciliationCloseReviewProjection,
@@ -191,34 +193,39 @@ class ReconciliationClosePackageTests(unittest.TestCase):
 
     def test_package_binds_population_evidence_to_projection_identities(self) -> None:
         wrong_statement_population = tuple(
-            replace(
-                evidence,
-                evidence_reference="statement-population-other",
-            )
+            replace(evidence, evidence_reference="statement-population-other")
             if evidence.evidence_kind_code == "statement_population"
             else evidence
             for evidence in self._evidence()
         )
         wrong_book_population = tuple(
-            replace(
-                evidence,
-                evidence_reference="book-population-other",
-            )
+            replace(evidence, evidence_reference="book-population-other")
             if evidence.evidence_kind_code == "book_population"
             else evidence
             for evidence in self._evidence()
+        )
+        duplicate_statement_population = self._evidence() + (
+            ReconciliationEvidenceReference(
+                evidence_kind_code="statement_population",
+                evidence_reference="statement-population-other",
+                sha256_digest="sha256:" + "e" * 64,
+            ),
         )
         duplicate_book_population = self._evidence() + (
             ReconciliationEvidenceReference(
                 evidence_kind_code="book_population",
                 evidence_reference="book-population-other",
-                sha256_digest="sha256:" + "e" * 64,
+                sha256_digest="sha256:" + "f" * 64,
             ),
         )
 
         cases = (
             (wrong_statement_population, "statement_population evidence must bind"),
             (wrong_book_population, "book_population evidence must bind"),
+            (
+                duplicate_statement_population,
+                "exactly one statement_population evidence",
+            ),
             (duplicate_book_population, "exactly one book_population evidence"),
         )
         for evidence, expected_error in cases:
@@ -230,14 +237,37 @@ class ReconciliationClosePackageTests(unittest.TestCase):
         projections = (
             replace(self._projection(), bank_closing_balance=Decimal("NaN")),
             replace(self._projection(), posted_book_cash_balance=Decimal("Infinity")),
+            replace(self._projection(), reconciled_balance=1.0),
+            replace(
+                self._projection(),
+                unexplained_difference_change=Decimal("NaN"),
+            ),
             replace(self._projection(), reconciliation_run_reference=" run-2026-08"),
             replace(self._projection(), currency_code=""),
+            replace(self._projection(), safely_matchable_candidate_count=True),
+            replace(self._projection(), safely_matchable_candidate_count=-1),
+            replace(self._projection(), exception_count=True),
+            replace(
+                self._projection(),
+                exception_statement_entry_references=(" bad-reference",),
+            ),
+            replace(
+                self._projection(),
+                exception_statement_entry_references=("duplicate", "duplicate"),
+            ),
         )
         expected_errors = (
             "bank_closing_balance must be a finite Decimal",
             "posted_book_cash_balance must be a finite Decimal",
+            "reconciled_balance must be a finite Decimal",
+            "unexplained_difference_change must be None or a finite Decimal",
             "reconciliation_run_reference",
             "currency_code",
+            "safely_matchable_candidate_count",
+            "safely_matchable_candidate_count",
+            "exception_count",
+            "exception_statement_entry_references must contain canonical",
+            "exception_statement_entry_references must be unique",
         )
         for projection, expected_error in zip(projections, expected_errors, strict=True):
             with self.subTest(expected_error=expected_error):
@@ -246,12 +276,40 @@ class ReconciliationClosePackageTests(unittest.TestCase):
                         replace(self._input(), projection=projection)
                     )
 
+        with self.assertRaisesRegex(ValueError, "ReconciliationCloseReviewProjection"):
+            build_reconciliation_close_package(
+                replace(self._input(), projection=object())  # type: ignore[arg-type]
+            )
+
+    def test_package_rejects_noncanonical_evidence_container_or_member(self) -> None:
+        with self.assertRaisesRegex(ValueError, "include immutable statement and book"):
+            build_reconciliation_close_package(
+                replace(self._input(), evidence_references=[])  # type: ignore[arg-type]
+            )
+        with self.assertRaisesRegex(ValueError, "evidence reference objects"):
+            build_reconciliation_close_package(
+                replace(
+                    self._input(),
+                    evidence_references=(object(),),  # type: ignore[arg-type]
+                )
+            )
+        without_artifact = tuple(
+            evidence
+            for evidence in self._evidence()
+            if evidence.evidence_kind_code != "statement_artifact"
+        )
+        with self.assertRaisesRegex(
+            ValueError, "statement_artifact, statement_population, and book_population"
+        ):
+            build_reconciliation_close_package(self._input(evidence=without_artifact))
+
     def test_render_fails_closed_when_package_digest_or_payload_is_tampered(self) -> None:
         baseline = build_reconciliation_close_package(self._input())
         tampered_digest = replace(
             baseline,
             package_sha256="sha256:" + "f" * 64,
         )
+        malformed_digest = replace(baseline, package_sha256="not-a-digest")
         tampered_projection = replace(
             baseline,
             projection=replace(
@@ -259,10 +317,25 @@ class ReconciliationClosePackageTests(unittest.TestCase):
                 bank_closing_balance=Decimal("1250000.01"),
             ),
         )
+        tampered_next_action = replace(baseline, next_action="Archive somewhere else.")
+        tampered_order = replace(
+            baseline,
+            evidence_references=tuple(reversed(baseline.evidence_references)),
+        )
 
-        for package in (tampered_digest, tampered_projection):
-            with self.assertRaisesRegex(ValueError, "package_sha256"):
-                render_reconciliation_close_package_json(package)
+        for package in (
+            tampered_digest,
+            malformed_digest,
+            tampered_projection,
+            tampered_next_action,
+            tampered_order,
+        ):
+            with self.subTest(package=package):
+                with self.assertRaisesRegex(ValueError, "package_sha256"):
+                    render_reconciliation_close_package_json(package)
+
+        with self.assertRaisesRegex(ValueError, "ReconciliationClosePackage"):
+            verify_reconciliation_close_package(object())  # type: ignore[arg-type]
 
     def test_any_approval_or_source_hash_change_changes_package_digest(self) -> None:
         baseline = build_reconciliation_close_package(self._input())
@@ -290,6 +363,19 @@ class ReconciliationClosePackageTests(unittest.TestCase):
 
         self.assertNotEqual(baseline.package_sha256, changed_approval.package_sha256)
         self.assertNotEqual(baseline.package_sha256, changed_source.package_sha256)
+
+    def test_direct_package_construction_still_requires_canonical_integrity(self) -> None:
+        baseline = build_reconciliation_close_package(self._input())
+        direct = ReconciliationClosePackage(
+            projection=baseline.projection,
+            approval_evidence_reference=baseline.approval_evidence_reference,
+            approval_snapshot_sha256=baseline.approval_snapshot_sha256,
+            knowledge_cutoff=baseline.knowledge_cutoff,
+            evidence_references=baseline.evidence_references,
+            package_sha256=baseline.package_sha256,
+            next_action=baseline.next_action,
+        )
+        verify_reconciliation_close_package(direct)
 
 
 if __name__ == "__main__":
