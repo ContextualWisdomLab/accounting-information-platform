@@ -12078,25 +12078,34 @@ class PostgresPostingTests(unittest.TestCase):
             idempotency_key="x" * (512 - len("idempotency_key:")),
             proposal_id=str(uuid.uuid4()),
         )
+        fallback_payload = self._billing_validated_payload(
+            idempotency_key="x" * 512,
+            proposal_id=str(uuid.uuid4()),
+        )
 
         status, _body = self._http_json("POST", "/journal-proposals", payload)
+        fallback_status, _fallback_body = self._http_json(
+            "POST", "/journal-proposals", fallback_payload
+        )
 
         self.assertEqual(status, 200)
-        self.assertEqual(self._count_table("accounting_core.general_journal"), 1)
+        self.assertEqual(fallback_status, 200)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), 2)
         with psycopg.connect(DATABASE_URL) as connection:
             connection.execute(
                 "SELECT set_config('app.tenant_account_id', %s, false)",
                 (self.tenant_id,),
             )
-            correlation_length = connection.execute(
+            correlation_lengths = connection.execute(
                 """
                 SELECT length(correlation_reference)
                 FROM accounting_integration.authorization_decision_record
                 WHERE tenant_account_id = %s
+                ORDER BY recorded_at, authorization_decision_record_id
                 """,
                 (self.tenant_id,),
-            ).fetchone()[0]
-        self.assertEqual(correlation_length, 512)
+            ).fetchall()
+        self.assertEqual([row[0] for row in correlation_lengths], [512, len("/journal-proposals")])
         server.shutdown()
 
     def test_post_proposal_catalog_misses_write_zero_rows(self) -> None:
