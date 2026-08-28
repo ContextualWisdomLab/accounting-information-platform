@@ -288,6 +288,10 @@ LANGUAGE plpgsql
 AS $$
 DECLARE
     current_status text;
+    statement_allocation_count bigint;
+    journal_allocation_count bigint;
+    statement_allocation_total numeric(30, 6);
+    journal_allocation_total numeric(30, 6);
 BEGIN
     PERFORM accounting_core.reconciliation_match_snapshot_lock(
         NEW.tenant_account_id,
@@ -306,6 +310,30 @@ BEGIN
         RAISE EXCEPTION
             'reconciliation approval evidence requires a proposed match in the same tenant/run scope (reconciliation_approval_scope_mismatch)'
             USING ERRCODE = '23514';
+    END IF;
+
+    IF NEW.approval_decision_code = 'approved' THEN
+        SELECT COUNT(*), COALESCE(SUM(allocation.allocated_amount), 0)
+        INTO statement_allocation_count, statement_allocation_total
+        FROM accounting_core.statement_match_allocation AS allocation
+        WHERE allocation.tenant_account_id = NEW.tenant_account_id
+          AND allocation.reconciliation_run_id = NEW.reconciliation_run_id
+          AND allocation.reconciliation_match_id = NEW.reconciliation_match_id;
+
+        SELECT COUNT(*), COALESCE(SUM(allocation.allocated_amount), 0)
+        INTO journal_allocation_count, journal_allocation_total
+        FROM accounting_core.journal_match_allocation AS allocation
+        WHERE allocation.tenant_account_id = NEW.tenant_account_id
+          AND allocation.reconciliation_run_id = NEW.reconciliation_run_id
+          AND allocation.reconciliation_match_id = NEW.reconciliation_match_id;
+
+        IF statement_allocation_count = 0
+           OR journal_allocation_count = 0
+           OR statement_allocation_total <> journal_allocation_total THEN
+            RAISE EXCEPTION
+                'approved reconciliation evidence requires non-empty equal statement and journal allocation totals; add or correct allocations before recording approval evidence (reconciliation_match_unbalanced)'
+                USING ERRCODE = '23514';
+        END IF;
     END IF;
 
     NEW.reconciliation_snapshot_version := 1;
