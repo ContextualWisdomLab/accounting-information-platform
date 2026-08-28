@@ -365,6 +365,13 @@ class ReconciliationClosePackageTests(unittest.TestCase):
                 bank_closing_balance=Decimal("1250000.01"),
             ),
         )
+        equation_tampered = replace(
+            baseline,
+            projection=replace(
+                baseline.projection,
+                reconciled_balance=Decimal("1239999.99"),
+            ),
+        )
         tampered_next_action = replace(baseline, next_action="Archive somewhere else.")
         tampered_order = replace(
             baseline,
@@ -375,6 +382,7 @@ class ReconciliationClosePackageTests(unittest.TestCase):
             tampered_digest,
             malformed_digest,
             tampered_projection,
+            equation_tampered,
             tampered_next_action,
             tampered_order,
         ):
@@ -384,6 +392,10 @@ class ReconciliationClosePackageTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "ReconciliationClosePackage"):
             verify_reconciliation_close_package(object())  # type: ignore[arg-type]
+
+        invalid_cutoff = replace(baseline, knowledge_cutoff="not-a-cutoff")
+        with self.assertRaisesRegex(ValueError, "canonical UTC RFC 3339"):
+            verify_reconciliation_close_package(invalid_cutoff)
 
     def test_any_approval_or_source_hash_change_changes_package_digest(self) -> None:
         baseline = build_reconciliation_close_package(self._input())
