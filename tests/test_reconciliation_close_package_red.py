@@ -489,6 +489,10 @@ class ReconciliationClosePackageTests(unittest.TestCase):
             baseline,
             evidence_references=tuple(reversed(baseline.evidence_references)),
         )
+        tampered_approval_order = replace(
+            baseline,
+            approval_evidence=tuple(reversed(baseline.approval_evidence)),
+        )
 
         for package in (
             tampered_digest,
@@ -498,6 +502,7 @@ class ReconciliationClosePackageTests(unittest.TestCase):
             tampered_next_action,
             tampered_approval,
             tampered_order,
+            tampered_approval_order,
         ):
             with self.subTest(package=package):
                 with self.assertRaisesRegex(ValueError, "package_sha256"):
