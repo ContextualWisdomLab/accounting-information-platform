@@ -15,7 +15,7 @@ Every behavior change follows RED → GREEN: reproduce the defect with the small
 5. **Reversal behavior** — equal-and-opposite lines, original preservation, temporal order, occupied-reference protection and command replay/conflict evidence.
 6. **Close behavior** — open, soft-close and hard-close state transitions, close idempotency and period-owned database guards.
 7. **PostgreSQL invariants** — commit-boundary balance, immutable facts, RLS, tenant binding and restricted runtime roles.
-8. **Read models** — trial balance, journals, ledgers, balances, rollforwards, aging, statements, close package, VAT register, bank-statement entries, and audit/outbox views tie to the authoritative population.
+8. **Read models** — trial balance, journals, ledgers, balances, rollforwards, aging, statements, close package, VAT register, bank-statement entries, reconciliation-run evidence, and audit/outbox views tie to the authoritative population.
 9. **Integration contracts** — Billing proposal GET/pull envelopes, idempotent retry, origin allowlist and fail-closed remote errors.
 10. **Security / abuse** — cross-tenant references, malformed origins, oversized bodies, hostile parser inputs, privilege escalation and replay storms.
 11. **Packaging / release** — clean install, wheel install, typing marker, migration install / upgrade, deterministic exact-source provenance, SBOM, protected-head attestations and recovery rehearsals.
@@ -32,6 +32,7 @@ Required regressions include:
 - direct update/delete of finalized journal, line, source-reference, reversal, receipt and proposal-source facts fails at the database boundary;
 - after an authoritative posting receipt exists, a late journal-line or source-reference insert into that finalized journal fails before it can extend the monetary/evidence population;
 - hard-closed periods reject later inserts;
+- reconciliation-run command evidence is forced-RLS and immutable, and exact retries replay while changed command evidence conflicts;
 - a login that merely sets `accounting_core.journal_write_role` cannot insert into a soft-closed period;
 - a purpose-limited session login that is a member of `accounting_closing_writer` can exercise the supported soft-close exception path;
 - migration `0005` changes a pre-existing LOGIN `accounting_closing_writer` back to `NOLOGIN`;

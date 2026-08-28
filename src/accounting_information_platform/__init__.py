@@ -82,6 +82,7 @@ from .reconciliation_close_package import (
     render_reconciliation_close_package_json,
     verify_reconciliation_close_package,
 )
+from .reconciliation_run import accept_reconciliation_run, lookup_reconciliation_run
 
 __all__ = [
     "AccountBalance",
@@ -113,6 +114,7 @@ __all__ = [
     "accept_journal_reversal",
     "accept_period_close",
     "accept_period_open",
+    "accept_reconciliation_run",
     "accept_pulled_proposals",
     "apply_foundation_migration",
     "build_reconciliation_close_package",
@@ -143,6 +145,7 @@ __all__ = [
     "lookup_period_journals",
     "lookup_posted_journal",
     "lookup_published_receipt",
+    "lookup_reconciliation_run",
     "lookup_receivable_aging",
     "lookup_trial_balance",
     "lookup_home_tax_submissions",

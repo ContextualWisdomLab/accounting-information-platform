@@ -6331,6 +6331,15 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             f"{balance_evidence_migration_path}. Restore "
             "database/migrations/0018_bank_statement_balance_evidence.sql, then retry."
         )
+    run_command_migration_path = (
+        migration_path.parent / "0019_reconciliation_run_command_evidence.sql"
+    )
+    if not run_command_migration_path.is_file():
+        raise AccountingValidationError(
+            "Reconciliation run-command evidence migration is missing at "
+            f"{run_command_migration_path}. Restore "
+            "database/migrations/0019_reconciliation_run_command_evidence.sql, then retry."
+        )
     psycopg = _import_psycopg()
     try:
         with psycopg.connect(
@@ -6365,6 +6374,9 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             )
             connection.execute(
                 balance_evidence_migration_path.read_text(encoding="utf-8")
+            )
+            connection.execute(
+                run_command_migration_path.read_text(encoding="utf-8")
             )
     except Exception as error:
         raise AccountingValidationError(

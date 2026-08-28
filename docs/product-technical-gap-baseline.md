@@ -172,11 +172,11 @@ The first buyer-visible reconciliation vertical is deliberately bounded:
 
 ```text
 immutable bank statement artifact
-→ normalized statement / entry / balance identity [delivered by the registry slice; numeric balance candidate in current tree]
+→ normalized statement / entry / balance identity [delivered by the registry slice; exact numeric balances and run-command source identity in current tree]
 → bank-account ↔ legal-entity / book assignment  [delivered by the registry slice]
 → deterministic candidate matching               [delivered: proposal engine]
 → exact book-to-bank bridge                      [delivered; finite-Decimal boundary + bridge scope in ADR 0054]
-→ durable run / exception / evidence rows        [delivered; forced RLS + run-scope guard]
+→ durable run / exception / evidence rows        [delivered; forced RLS + run-scope guard + immutable run-command idempotency/source evidence in current tree]
 → close-review projection                        [delivered; evidence eligibility only, same-scope deltas]
 → candidate/match allocation conservation        [delivered in current tree; migration 0015]
 → reconciliation approval and close package      [approval snapshot delivered; structured close-package candidate in PR #32]
