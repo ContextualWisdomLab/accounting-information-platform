@@ -30,9 +30,9 @@ class ReconciliationAllocationGuardContractRedTests(unittest.TestCase):
         """Proposed-only allocation inserts must not advertise dead approved-state checks."""
         body = self._function_body("reconciliation_allocation_conservation_guard")
         self.assertIn("if current_match_status <> 'proposed' then", body)
-        self.assertNotIn(
-            "if current_match_status = 'approved' then",
+        self.assertNotRegex(
             body,
+            r"\bif\s+\(?\s*current_match_status\s*(?:=\s*'approved'|in\s*\(\s*'approved'\s*\))",
             "The insert guard rejects every non-proposed match first, so approved-state branches are dead code. Keep source-capacity enforcement at the terminal approval guard instead of retaining unreachable controls.",
         )
 
