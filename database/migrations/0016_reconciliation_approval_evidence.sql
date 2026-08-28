@@ -362,6 +362,22 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 BEGIN
+    -- Terminal match UPDATE owns this row before its approval trigger takes
+    -- the snapshot advisory lock. Allocation inserts must use the same
+    -- row -> advisory order so the two paths cannot form a wait cycle.
+    PERFORM 1
+    FROM accounting_core.reconciliation_match AS match
+    WHERE match.tenant_account_id = NEW.tenant_account_id
+      AND match.reconciliation_run_id = NEW.reconciliation_run_id
+      AND match.reconciliation_match_id = NEW.reconciliation_match_id
+    FOR UPDATE OF match;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION
+            'reconciliation allocation match is outside the tenant reconciliation run; refresh the run and retry with its current match (reconciliation_scope_mismatch)'
+            USING ERRCODE = '23514';
+    END IF;
+
     PERFORM accounting_core.reconciliation_match_snapshot_lock(
         NEW.tenant_account_id,
         NEW.reconciliation_run_id,
@@ -375,15 +391,17 @@ BEGIN
           AND approval.reconciliation_match_id = NEW.reconciliation_match_id
     ) THEN
         RAISE EXCEPTION
-            'reconciliation allocations are frozen after approval evidence; create a new proposed match instead (reconciliation_snapshot_frozen)'
+            'reconciliation allocations are frozen after approval evidence; supersede the reviewed match, then create a new reconciliation run with a new candidate and proposed match (reconciliation_snapshot_frozen)'
             USING ERRCODE = '23514';
     END IF;
     RETURN NEW;
 END;
 $$;
 
--- Prefix these triggers so PostgreSQL acquires the match snapshot lock before
--- migration 0015's conservation triggers inspect match status.
+-- Prefix these triggers so allocation inserts acquire the parent match row
+-- before the per-match snapshot advisory lock; migration 0015 then reuses that
+-- row lock. Terminal match UPDATE owns the same row before taking the snapshot
+-- lock, keeping every path on the same row -> advisory lock order.
 CREATE TRIGGER a_reconciliation_statement_allocation_snapshot_lock
 BEFORE INSERT
 ON accounting_core.statement_match_allocation
