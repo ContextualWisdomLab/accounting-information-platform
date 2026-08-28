@@ -12,6 +12,14 @@ evidence and then acquire additional allocation rows before its terminal state
 transition. That would make a valid-looking approval authorize a different
 monetary population.
 
+There is a second ordering hazard: if `approved` evidence is recorded before
+any statement/journal allocations exist, the immutable approval row freezes
+later allocation insertion while the terminal approval guard still requires a
+non-empty balanced allocation population. That strands the proposed match from
+ever reaching `approved` under the reviewed snapshot. Rejection is different:
+it consumes no source capacity and may legitimately record why an operator
+rejected a candidate before allocating it.
+
 Reconciliation evidence remains separate from the statutory journal authority.
 It may explain a bank-to-book decision, but it may not post, reverse, close a
 period, select a chart account, or change accounting policy.
@@ -35,24 +43,36 @@ trigger overwrites any caller-supplied snapshot value with the current database
 snapshot and fails when the candidate cannot be found.
 
 Approval, allocation, and terminal match transitions take the same
-transaction-level advisory lock for the tenant/run/match identity. Once an
-approval row exists, later candidate retargeting and allocation inserts fail
-closed. A proposed match may become `approved` or `rejected` only when a
+transaction-level advisory lock for the tenant/run/match identity. Before an
+`approved` decision row can be recorded, PostgreSQL requires at least one
+statement allocation, at least one journal allocation, and exact equality of
+their Decimal totals. The check runs while holding the same snapshot lock, so a
+concurrent allocation command cannot cross the approval-evidence boundary. A
+`rejected` decision row may be recorded without allocations because it does not
+consume source capacity and the terminal rejected transition has no balanced
+allocation requirement.
+
+Once an approval row exists, later candidate retargeting and allocation inserts
+fail closed. A proposed match may become `approved` or `rejected` only when a
 same-decision immutable approval row exists and its stored snapshot hash equals
 the current database snapshot. Reviewed terminal states cannot rewrite their
 identity or approval timestamp, reopen, or switch decision; supersession
 remains the explicit historical retirement path. The migration refuses to
 install when pre-existing non-proposed matches have no durable approval row,
-because their original review cannot be reconstructed safely.
+because their original review cannot be reconstructed safely; it does not
+manufacture historical approval evidence during upgrade.
 
 ## Consequences
 
 The approval evidence cannot silently drift away from the monetary population
 reviewed by the operator, including when approval and allocation commands race
-in separate PostgreSQL transactions. Reconciliation allocation evidence stays
-append-only and tenant-scoped. A rejected or superseded match preserves its
-historical evidence and releases active source capacity according to the
-existing conservation controls.
+in separate PostgreSQL transactions. An operator who attempts to record
+`approved` evidence too early receives the next action: add or correct the
+statement/journal allocations, then record the approval evidence again. A
+rejected candidate can still retain durable review evidence before allocation.
+Reconciliation allocation evidence stays append-only and tenant-scoped. A
+rejected or superseded match preserves its historical evidence and releases
+active source capacity according to the existing conservation controls.
 
 The design intentionally does not add an application-side hash calculator or a
 new approval service. The database is the authority for the persisted snapshot;
@@ -67,6 +87,11 @@ did not exist. The PostgreSQL 18 regression then proved that a forged snapshot
 value is overwritten, the stored hash equals the live database function, late
 allocation fails closed, and the valid reviewed match can still become
 `approved` after its allocation population is fixed.
+
+A later regression covers the operator-ordering boundary directly: `approved`
+evidence fails closed before a complete balanced allocation population exists,
+then succeeds after balanced statement/journal allocations are recorded; the
+same regression proves `rejected` evidence remains valid without allocations.
 
 ## References
 
