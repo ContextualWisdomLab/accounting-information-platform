@@ -73,6 +73,7 @@ class PostgresReviewedAllocationFreezeRedTests(unittest.TestCase):
 
     def _assert_approval_serializes_with_concurrent_allocation(self, allocation_kind: str) -> None:
         match_id = self._proposed_partial_match()
+        self.case._record_approval(match_id)
         allocation_sql, source_reference = self._allocation_insert(allocation_kind)
         start_barrier = threading.Barrier(2)
         outcome: queue.Queue[str] = queue.Queue()

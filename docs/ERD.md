@@ -63,6 +63,7 @@ erDiagram
     reconciliation_run ||--o{ reconciliation_match : records
     reconciliation_match ||--o{ statement_match_allocation : consumes
     reconciliation_match ||--o{ journal_match_allocation : consumes
+    reconciliation_match ||--o| reconciliation_approval : reviewed_by
 ```
 
 ## Integrity boundaries
@@ -78,6 +79,8 @@ erDiagram
 `reconciliation_run` binds one evaluated reconciliation to tenant, legal entity, accounting book, bank-account assignment, currency, bank/book cutoffs, matching-policy version, and knowledge cutoff. Its evaluated scope is immutable. `reconciliation_exception` and `reconciliation_evidence` retain explicit exception ownership, next action, effective/system time, evidence references, and optional hashes rather than hiding unresolved items in derived status text.
 
 `reconciliation_candidate` records a deterministic statement/journal candidate and its exact source amounts; after INSERT it is append-only. `reconciliation_match` records the reviewable disposition. `statement_match_allocation` and `journal_match_allocation` preserve exact many-to-many consumption and are append-only regardless of later match status. Database-owned conservation guards serialize by immutable source identity and reject cross-run source-amount conflicts or over-consumption. Only an `approved` match consumes active source capacity; changing that match to `rejected` or `superseded` releases active capacity without deleting or rewriting the historical candidate/allocation evidence. These reconciliation relations provide audit and operator-control evidence only: they do not post, reverse, close, approve accounting policy, or mutate authoritative journals.
+
+`reconciliation_approval` records one immutable human decision for a proposed match. PostgreSQL computes its versioned SHA-256 snapshot from the candidate and allocation rows, serializes approval/allocation transitions with a match-level advisory lock, and rejects status-only or stale-snapshot terminal transitions. The row remains control evidence only and cannot post, reverse, close, or alter accounting policy.
 
 ## Temporal and tenant scope
 

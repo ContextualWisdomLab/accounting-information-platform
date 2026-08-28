@@ -108,6 +108,7 @@ class PostgresCrossRunReconciliationConservationRedTests(unittest.TestCase):
         return row[0]
 
     def _approve_match(self, run_reference: uuid.UUID, match_id: uuid.UUID) -> None:
+        self.case._record_approval(match_id, run_reference=run_reference)
         with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
             connection.execute(
                 """
@@ -233,6 +234,8 @@ class PostgresCrossRunReconciliationConservationRedTests(unittest.TestCase):
         self._insert_balanced_allocations(
             second_run, second_match, "stmt-concurrent", "journal-second"
         )
+        self.case._record_approval(first_match)
+        self.case._record_approval(second_match, run_reference=second_run)
         approval_sql = """
             UPDATE accounting_core.reconciliation_match
             SET match_status_code = 'approved', approved_at = clock_timestamp()

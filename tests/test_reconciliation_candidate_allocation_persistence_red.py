@@ -214,6 +214,7 @@ class PostgresReconciliationAllocationRedTests(unittest.TestCase):
         return row[0]
 
     def _approve_match(self, match_id: uuid.UUID) -> None:
+        self._record_approval(match_id)
         with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
             connection.execute(
                 """
@@ -224,6 +225,35 @@ class PostgresReconciliationAllocationRedTests(unittest.TestCase):
                   AND reconciliation_match_id = %s
                 """,
                 (self.scope["tenant_account_id"], self.run_reference, match_id),
+            )
+
+    def _record_approval(
+        self,
+        match_id: uuid.UUID,
+        *,
+        run_reference: uuid.UUID | None = None,
+    ) -> None:
+        """Record valid durable review evidence before a terminal match transition."""
+        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
+            connection.execute(
+                """
+                INSERT INTO accounting_core.reconciliation_approval (
+                    tenant_account_id, reconciliation_run_id, reconciliation_match_id,
+                    approval_command_key, source_payload_hash, source_payload_reference,
+                    approver_reference,
+                    approval_purpose_code, approval_decision_code, effective_at
+                )
+                VALUES (%s, %s, %s, %s, %s, 'urn:cwl:object:approval-command', 'test-reviewer',
+                        'reconciliation_review', 'approved', %s)
+                """,
+                (
+                    self.scope["tenant_account_id"],
+                    run_reference or self.run_reference,
+                    match_id,
+                    f"approve-{match_id}",
+                    "sha256:" + "0" * 64,
+                    VALID_FROM,
+                ),
             )
 
     def _insert_allocations(
