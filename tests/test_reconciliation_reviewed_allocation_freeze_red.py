@@ -46,51 +46,34 @@ class PostgresReviewedAllocationFreezeRedTests(unittest.TestCase):
         self.case._approve_match(match_id)
         return match_id
 
-    def test_approved_match_rejects_late_statement_allocation(self) -> None:
-        """Approval freezes statement allocations even when unused source capacity remains."""
-        match_id = self._approved_partial_match()
-        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
-            with self.assertRaises(psycopg.errors.CheckViolation):
-                connection.execute(
-                    """
-                    INSERT INTO accounting_core.statement_match_allocation (
-                        tenant_account_id, reconciliation_run_id, reconciliation_match_id,
-                        statement_entry_reference, allocated_amount
-                    )
-                    VALUES (%s, %s, %s, %s, '250.00')
-                    """,
-                    (
-                        self.case.scope["tenant_account_id"],
-                        self.case.run_reference,
-                        match_id,
-                        "stmt-reviewed-freeze",
-                    ),
+    def _allocation_insert(self, allocation_kind: str) -> tuple[str, str]:
+        if allocation_kind == "statement":
+            return (
+                """
+                INSERT INTO accounting_core.statement_match_allocation (
+                    tenant_account_id, reconciliation_run_id, reconciliation_match_id,
+                    statement_entry_reference, allocated_amount
                 )
-
-    def test_approved_match_rejects_late_journal_allocation(self) -> None:
-        """Approval freezes journal allocations even when unused source capacity remains."""
-        match_id = self._approved_partial_match()
-        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
-            with self.assertRaises(psycopg.errors.CheckViolation):
-                connection.execute(
-                    """
-                    INSERT INTO accounting_core.journal_match_allocation (
-                        tenant_account_id, reconciliation_run_id, reconciliation_match_id,
-                        journal_reference, allocated_amount
-                    )
-                    VALUES (%s, %s, %s, %s, '250.00')
-                    """,
-                    (
-                        self.case.scope["tenant_account_id"],
-                        self.case.run_reference,
-                        match_id,
-                        "journal-reviewed-freeze",
-                    ),
+                VALUES (%s, %s, %s, %s, '250.00')
+                """,
+                "stmt-reviewed-freeze",
+            )
+        if allocation_kind == "journal":
+            return (
+                """
+                INSERT INTO accounting_core.journal_match_allocation (
+                    tenant_account_id, reconciliation_run_id, reconciliation_match_id,
+                    journal_reference, allocated_amount
                 )
+                VALUES (%s, %s, %s, %s, '250.00')
+                """,
+                "journal-reviewed-freeze",
+            )
+        raise AssertionError(f"unsupported allocation kind: {allocation_kind}")
 
-    def test_approval_serializes_with_concurrent_statement_allocation(self) -> None:
-        """An allocation cannot cross the database-owned approval snapshot boundary."""
+    def _assert_approval_serializes_with_concurrent_allocation(self, allocation_kind: str) -> None:
         match_id = self._proposed_partial_match()
+        allocation_sql, source_reference = self._allocation_insert(allocation_kind)
         start_barrier = threading.Barrier(2)
         outcome: queue.Queue[str] = queue.Queue()
 
@@ -100,18 +83,12 @@ class PostgresReviewedAllocationFreezeRedTests(unittest.TestCase):
                 start_barrier.wait()
                 try:
                     allocation_connection.execute(
-                        """
-                        INSERT INTO accounting_core.statement_match_allocation (
-                            tenant_account_id, reconciliation_run_id, reconciliation_match_id,
-                            statement_entry_reference, allocated_amount
-                        )
-                        VALUES (%s, %s, %s, %s, '250.00')
-                        """,
+                        allocation_sql,
                         (
                             self.case.scope["tenant_account_id"],
                             self.case.run_reference,
                             match_id,
-                            "stmt-reviewed-freeze",
+                            source_reference,
                         ),
                     )
                     allocation_connection.commit()
@@ -137,7 +114,7 @@ class PostgresReviewedAllocationFreezeRedTests(unittest.TestCase):
             )
             worker = threading.Thread(
                 target=insert_while_approval_is_uncommitted,
-                name="concurrent-reconciliation-allocation",
+                name=f"concurrent-reconciliation-{allocation_kind}-allocation",
             )
             worker.start()
             start_barrier.wait()
@@ -153,20 +130,54 @@ class PostgresReviewedAllocationFreezeRedTests(unittest.TestCase):
         with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
             with self.assertRaises(psycopg.errors.CheckViolation):
                 connection.execute(
-                    """
-                    INSERT INTO accounting_core.statement_match_allocation (
-                        tenant_account_id, reconciliation_run_id, reconciliation_match_id,
-                        statement_entry_reference, allocated_amount
-                    )
-                    VALUES (%s, %s, %s, %s, '250.00')
-                    """,
+                    allocation_sql,
                     (
                         self.case.scope["tenant_account_id"],
                         self.case.run_reference,
                         match_id,
-                        "stmt-reviewed-freeze",
+                        source_reference,
                     ),
                 )
+
+    def test_approved_match_rejects_late_statement_allocation(self) -> None:
+        """Approval freezes statement allocations even when unused source capacity remains."""
+        match_id = self._approved_partial_match()
+        allocation_sql, source_reference = self._allocation_insert("statement")
+        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
+            with self.assertRaises(psycopg.errors.CheckViolation):
+                connection.execute(
+                    allocation_sql,
+                    (
+                        self.case.scope["tenant_account_id"],
+                        self.case.run_reference,
+                        match_id,
+                        source_reference,
+                    ),
+                )
+
+    def test_approved_match_rejects_late_journal_allocation(self) -> None:
+        """Approval freezes journal allocations even when unused source capacity remains."""
+        match_id = self._approved_partial_match()
+        allocation_sql, source_reference = self._allocation_insert("journal")
+        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
+            with self.assertRaises(psycopg.errors.CheckViolation):
+                connection.execute(
+                    allocation_sql,
+                    (
+                        self.case.scope["tenant_account_id"],
+                        self.case.run_reference,
+                        match_id,
+                        source_reference,
+                    ),
+                )
+
+    def test_approval_serializes_with_concurrent_statement_allocation(self) -> None:
+        """Statement allocation cannot cross the database-owned approval snapshot boundary."""
+        self._assert_approval_serializes_with_concurrent_allocation("statement")
+
+    def test_approval_serializes_with_concurrent_journal_allocation(self) -> None:
+        """Journal allocation cannot cross the database-owned approval snapshot boundary."""
+        self._assert_approval_serializes_with_concurrent_allocation("journal")
 
 
 if __name__ == "__main__":
