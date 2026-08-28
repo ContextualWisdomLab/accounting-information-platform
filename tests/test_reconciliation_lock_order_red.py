@@ -1,7 +1,8 @@
-"""RED PostgreSQL contracts for reconciliation review lock ordering."""
+"""PostgreSQL contracts for reconciliation review lock ordering and recovery copy."""
 
 from __future__ import annotations
 
+from pathlib import Path
 import queue
 import threading
 import time
@@ -155,6 +156,29 @@ class PostgresReconciliationLockOrderRedTests(unittest.TestCase):
             "inserted",
             "The valid proposed allocation should continue after the rejected terminal transition.",
         )
+
+
+class ReconciliationRecoveryCopyContractTests(unittest.TestCase):
+    """Keep reviewed-allocation recovery instructions executable by operators."""
+
+    def test_frozen_allocation_errors_require_a_new_reconciliation_run(self) -> None:
+        """Both database-owned freeze errors name the viable immutable-history recovery."""
+        expected_action = "create a new reconciliation run with a new candidate and proposed match"
+        migration_contracts = (
+            (
+                "database/migrations/0015_reconciliation_multi_match_conservation.sql",
+                "reconciliation_allocation_frozen",
+            ),
+            (
+                "database/migrations/0016_reconciliation_approval_evidence.sql",
+                "reconciliation_snapshot_frozen",
+            ),
+        )
+        for migration_path, stable_error in migration_contracts:
+            sql = Path(migration_path).read_text()
+            matching_lines = [line for line in sql.splitlines() if stable_error in line]
+            self.assertEqual(len(matching_lines), 1, f"Expected one {stable_error} operator message.")
+            self.assertIn(expected_action, matching_lines[0])
 
 
 if __name__ == "__main__":
