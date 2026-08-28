@@ -1,0 +1,158 @@
+"""RED contracts for deterministic reconciliation close-package provenance."""
+
+from __future__ import annotations
+
+import json
+import unittest
+from decimal import Decimal
+
+from accounting_information_platform.reconciliation_close_package import (
+    ReconciliationClosePackageInput,
+    ReconciliationEvidenceReference,
+    build_reconciliation_close_package,
+    render_reconciliation_close_package_json,
+)
+from accounting_information_platform.reconciliation_read_model import (
+    ReconciliationCloseReviewProjection,
+)
+
+
+class ReconciliationClosePackageTests(unittest.TestCase):
+    """Require tamper-evident, exact-value close evidence without posting authority."""
+
+    def _projection(
+        self,
+        *,
+        suitable: bool = True,
+    ) -> ReconciliationCloseReviewProjection:
+        return ReconciliationCloseReviewProjection(
+            tenant_account_reference="tenant-1",
+            legal_entity_reference="entity-1",
+            accounting_book_reference="book-1",
+            bank_account_assignment_reference="bank-assignment-1",
+            reconciliation_run_reference="run-2026-08",
+            statement_population_reference="statement-population-2026-08",
+            book_population_reference="book-population-2026-08",
+            currency_code="KRW",
+            bank_closing_balance=Decimal("1250000.00"),
+            posted_book_cash_balance=Decimal("1240000.00"),
+            reconciled_balance=Decimal("1240000.00"),
+            outstanding_bank_items=Decimal("0.00"),
+            outstanding_book_items=Decimal("10000.00"),
+            unexplained_difference=Decimal("0.00"),
+            safely_matchable_candidate_count=8,
+            exception_count=0,
+            exception_statement_entry_references=(),
+            unexplained_difference_change=Decimal("-500.00"),
+            outstanding_bank_items_change=Decimal("0.00"),
+            outstanding_book_items_change=Decimal("500.00"),
+            suitable_for_period_close_review=suitable,
+            next_action=(
+                "Attach this exact reconciliation evidence to the period-close review; "
+                "the authorized reconciliation review remains a separate control."
+            ),
+        )
+
+    def _evidence(self) -> tuple[ReconciliationEvidenceReference, ...]:
+        return (
+            ReconciliationEvidenceReference(
+                evidence_kind_code="statement_artifact",
+                evidence_reference="statement-artifact-1",
+                sha256_digest="a" * 64,
+            ),
+            ReconciliationEvidenceReference(
+                evidence_kind_code="book_population",
+                evidence_reference="book-population-2026-08",
+                sha256_digest="b" * 64,
+            ),
+        )
+
+    def _input(
+        self,
+        *,
+        suitable: bool = True,
+        evidence: tuple[ReconciliationEvidenceReference, ...] | None = None,
+    ) -> ReconciliationClosePackageInput:
+        return ReconciliationClosePackageInput(
+            projection=self._projection(suitable=suitable),
+            approval_evidence_reference="approval-evidence-1",
+            approval_snapshot_sha256="c" * 64,
+            knowledge_cutoff="2026-08-28T08:41:54Z",
+            evidence_references=self._evidence() if evidence is None else evidence,
+        )
+
+    def test_package_is_order_independent_and_preserves_exact_values(self) -> None:
+        first = build_reconciliation_close_package(self._input())
+        second = build_reconciliation_close_package(
+            self._input(evidence=tuple(reversed(self._evidence())))
+        )
+
+        self.assertEqual(first.package_sha256, second.package_sha256)
+        self.assertEqual(
+            render_reconciliation_close_package_json(first),
+            render_reconciliation_close_package_json(second),
+        )
+        payload = json.loads(render_reconciliation_close_package_json(first))
+        self.assertEqual(payload["package_sha256"], first.package_sha256)
+        self.assertEqual(payload["projection"]["bank_closing_balance"], "1250000.00")
+        self.assertEqual(payload["projection"]["unexplained_difference"], "0.00")
+        self.assertEqual(
+            [item["evidence_kind_code"] for item in payload["evidence_references"]],
+            ["book_population", "statement_artifact"],
+        )
+        self.assertIn("period-close", payload["next_action"])
+
+    def test_package_fails_closed_when_projection_is_not_close_review_eligible(self) -> None:
+        with self.assertRaisesRegex(ValueError, "not suitable for period-close review"):
+            build_reconciliation_close_package(self._input(suitable=False))
+
+    def test_package_fails_closed_for_invalid_or_duplicate_evidence_identity(self) -> None:
+        with self.assertRaisesRegex(ValueError, "sha256_digest"):
+            build_reconciliation_close_package(
+                self._input(
+                    evidence=(
+                        ReconciliationEvidenceReference(
+                            evidence_kind_code="statement_artifact",
+                            evidence_reference="statement-artifact-1",
+                            sha256_digest="not-a-digest",
+                        ),
+                    )
+                )
+            )
+
+        duplicate = self._evidence()[0]
+        with self.assertRaisesRegex(ValueError, "unique"):
+            build_reconciliation_close_package(
+                self._input(evidence=(duplicate, duplicate))
+            )
+
+    def test_any_approval_or_source_hash_change_changes_package_digest(self) -> None:
+        baseline = build_reconciliation_close_package(self._input())
+        changed_approval = build_reconciliation_close_package(
+            ReconciliationClosePackageInput(
+                projection=self._projection(),
+                approval_evidence_reference="approval-evidence-1",
+                approval_snapshot_sha256="d" * 64,
+                knowledge_cutoff="2026-08-28T08:41:54Z",
+                evidence_references=self._evidence(),
+            )
+        )
+        changed_source = build_reconciliation_close_package(
+            self._input(
+                evidence=(
+                    ReconciliationEvidenceReference(
+                        evidence_kind_code="statement_artifact",
+                        evidence_reference="statement-artifact-1",
+                        sha256_digest="e" * 64,
+                    ),
+                    self._evidence()[1],
+                )
+            )
+        )
+
+        self.assertNotEqual(baseline.package_sha256, changed_approval.package_sha256)
+        self.assertNotEqual(baseline.package_sha256, changed_source.package_sha256)
+
+
+if __name__ == "__main__":
+    unittest.main()
