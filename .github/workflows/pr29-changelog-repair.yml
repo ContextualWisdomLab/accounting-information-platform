@@ -12,7 +12,6 @@ permissions:
 
 jobs:
   repair:
-    if: github.sha == '9ce884b85a856aba13da741e604e3a398973b302'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout exact repair head
