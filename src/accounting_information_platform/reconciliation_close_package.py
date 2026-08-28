@@ -502,6 +502,7 @@ def verify_reconciliation_close_package(package: ReconciliationClosePackage) -> 
         raise
     if (
         package.next_action != rebuilt.next_action
+        or package.approval_evidence != rebuilt.approval_evidence
         or package.evidence_references != rebuilt.evidence_references
         or not hmac.compare_digest(package.package_sha256, rebuilt.package_sha256)
     ):
