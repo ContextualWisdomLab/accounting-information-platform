@@ -78,7 +78,7 @@ Exact replay returns the original receipt. Reuse of an idempotency key with chan
 
 ## Reversal boundary
 
-A reversal never updates or deletes the original journal. It posts an equal-and-opposite journal linked to the original and subject to period policy. The release contract requires replay to be bound to tenant, reversal command idempotency identity, original journal reference and immutable reversal-command evidence hash. Any changed command under the same identity must fail closed. PR #2 remains non-release-ready until exact-current-head tests and PostgreSQL persistence prove that contract together.
+A reversal never updates or deletes the original journal. It posts an equal-and-opposite journal linked to the original and subject to period policy. The integrated release contract binds replay to tenant, reversal command idempotency identity, original journal reference and immutable reversal-command evidence hash. Any changed command under the same identity must fail closed. Current release evidence must prove that durable PostgreSQL contract on one unchanged exact integrated protected head; cache-only or predecessor-head evidence is insufficient.
 
 A reversal accounting date may not precede the original accounting date. Soft-closed periods may admit an authorized reversal through the purpose-limited closing-writer capability. Hard-closed periods reject a new reversal into the locked period.
 
