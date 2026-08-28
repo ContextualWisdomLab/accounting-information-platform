@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import unittest
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from pathlib import Path
 
 import psycopg

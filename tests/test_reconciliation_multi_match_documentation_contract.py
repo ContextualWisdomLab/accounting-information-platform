@@ -9,6 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ADR = ROOT / "docs/adr/0054-deterministic-bank-reconciliation-proposals.md"
+BASELINE = ROOT / "docs/product-technical-gap-baseline.md"
 CHANGELOG = ROOT / "CHANGELOG.md"
 
 
@@ -24,12 +25,29 @@ class ReconciliationMultiMatchDocumentationContractTests(unittest.TestCase):
         self.assertIn("multiple", text)
         self.assertIn("approved", text)
         self.assertIn("active reconciliation runs", text)
+        self.assertIn("Migration 0016 now adds", text)
+        self.assertIn("durable reconciliation approval evidence", text)
         self.assertIn("non-empty", text)
         self.assertIn("statement", text)
         self.assertIn("journal", text)
         self.assertIn("equal", text)
         self.assertIn("superseded", text)
         self.assertIn("append-only", text)
+        self.assertNotIn(
+            "Remaining bounded work includes explicit durable approval evidence/state transitions",
+            text,
+        )
+
+    def test_product_baseline_distinguishes_current_tree_from_remaining_close_package(self) -> None:
+        """The product gap queue must not call delivered 0015/0016 controls future work."""
+        text = BASELINE.read_text(encoding="utf-8")
+        self.assertIn("migrations `0015` and `0016`", text)
+        self.assertIn("close-package provenance remains open", text)
+        self.assertIn("[delivered in current tree; migration 0015]", text)
+        self.assertNotIn(
+            "candidate/match allocation conservation        [open M2 slice]",
+            text,
+        )
 
     def test_unreleased_changelog_records_balanced_approval_invariant(self) -> None:
         """The current change record names both non-empty sides and exact total equality."""
