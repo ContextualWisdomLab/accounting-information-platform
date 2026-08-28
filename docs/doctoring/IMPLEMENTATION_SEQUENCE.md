@@ -25,7 +25,8 @@ The next bounded accounting path is:
 
 The durable review successor records one immutable human decision per tenant,
 run, and match. PostgreSQL computes the approval snapshot from the candidate and
-allocation rows, locks the match identity across approval/allocation races, and
+allocation rows, locks the parent match row before the snapshot advisory lock
+across approval/allocation races, and
 rejects terminal transition when the reviewed snapshot is no longer current.
 This is review evidence only; it never becomes journal-posting authority.
 
