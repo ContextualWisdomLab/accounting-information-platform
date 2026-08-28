@@ -284,6 +284,12 @@ BEGIN
             USING ERRCODE = '23514';
     END IF;
 
+    IF current_match_status <> 'proposed' THEN
+    RAISE EXCEPTION
+        'reviewed reconciliation allocation evidence is frozen; supersede the match and create a new proposed match (reconciliation_allocation_frozen)'
+        USING ERRCODE = '23514';
+END IF;
+
     IF TG_TABLE_NAME = 'statement_match_allocation' THEN
         IF NEW.statement_entry_reference <> candidate_statement_reference THEN
             RAISE EXCEPTION
