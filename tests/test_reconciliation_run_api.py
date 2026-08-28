@@ -165,10 +165,10 @@ class ReconciliationRunApiTests(unittest.TestCase):
             _parse_uuid("not-a-uuid", "reconciliation_run_id")
         with self.assertRaises(AccountingValidationError):
             _parse_timestamp("not-a-timestamp", "bank_cutoff_at")
-        self.assertEqual(
-            _parse_timestamp("2026-08-24T23:59:59", "bank_cutoff_at").tzinfo,
-            _parse_timestamp("2026-08-24T23:59:59Z", "bank_cutoff_at").tzinfo,
-        )
+        with self.assertRaisesRegex(AccountingValidationError, "explicit UTC"):
+            _parse_timestamp("2026-08-24T23:59:59", "bank_cutoff_at")
+        with self.assertRaisesRegex(AccountingValidationError, "explicit UTC"):
+            _parse_timestamp("2026-08-24T23:59:59+09:00", "bank_cutoff_at")
 
     def test_statement_period_must_be_covered_by_bank_cutoff(self) -> None:
         """A run cannot use a bank cutoff before the statement period or period end."""

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Mapping
 from uuid import UUID
 
@@ -387,8 +387,11 @@ def _parse_timestamp(value: str, label: str) -> datetime:
         raise AccountingValidationError(
             f"{label} must be an ISO-8601 timestamp. Supply a UTC timestamp, then retry the run."
         ) from error
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise AccountingValidationError(
+            f"{label} must include an explicit UTC timezone (Z or +00:00). "
+            "Supply an unambiguous UTC timestamp, then retry the run."
+        )
     return parsed.astimezone(timezone.utc)
 
 
