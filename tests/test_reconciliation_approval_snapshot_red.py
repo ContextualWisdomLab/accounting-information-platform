@@ -68,19 +68,18 @@ class PostgresReconciliationApprovalSnapshotRedTests(unittest.TestCase):
         self.addCleanup(self.fixture.doCleanups)
         self.addCleanup(self.fixture.tearDown)
 
-    def _insert_approval(self, match_id: uuid.UUID) -> str:
+    def _insert_approval(self, match_id: uuid.UUID, decision_code: str = "approved") -> str:
         with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
             row = connection.execute(
                 """
                 INSERT INTO accounting_core.reconciliation_approval (
                     tenant_account_id, reconciliation_run_id, reconciliation_match_id,
                     approval_command_key, source_payload_hash,
-                    source_payload_reference,
-                    reconciliation_snapshot_hash, approver_reference,
+                    source_payload_reference, reconciliation_snapshot_hash, approver_reference,
                     approval_purpose_code, approval_decision_code, effective_at
                 )
                 VALUES (%s, %s, %s, %s, %s, 'urn:cwl:object:approval-command', %s, 'operator-1',
-                        'bank-close-review', 'approved', %s)
+                        'bank-close-review', %s, %s)
                 RETURNING reconciliation_snapshot_hash
                 """,
                 (
@@ -90,10 +89,56 @@ class PostgresReconciliationApprovalSnapshotRedTests(unittest.TestCase):
                     f"approval-{uuid.uuid4().hex}",
                     "sha256:" + "0" * 64,
                     "sha256:" + "f" * 64,
+                    decision_code,
                     datetime.now(timezone.utc),
                 ),
             ).fetchone()
         return row[0]
+
+    def test_approved_evidence_requires_complete_balanced_allocation_snapshot(self) -> None:
+        """Approval evidence cannot freeze an empty population that can never be approved."""
+        candidate_id = self.fixture._insert_candidate(
+            "stmt-approval-order", "journal-approval-order"
+        )
+        match_id = self.fixture._insert_match(candidate_id)
+
+        with self.assertRaisesRegex(
+            psycopg.errors.CheckViolation,
+            "reconciliation_match_unbalanced",
+        ):
+            self._insert_approval(match_id)
+
+        self.fixture._insert_allocations(
+            match_id, "stmt-approval-order", "journal-approval-order", "1000.00"
+        )
+        stored_hash = self._insert_approval(match_id)
+        self.assertRegex(stored_hash, r"^sha256:[0-9a-f]{64}$")
+
+    def test_rejected_evidence_can_snapshot_a_candidate_without_allocations(self) -> None:
+        """Rejection remains possible before allocation because it consumes no source capacity."""
+        candidate_id = self.fixture._insert_candidate(
+            "stmt-rejected-empty", "journal-rejected-empty"
+        )
+        match_id = self.fixture._insert_match(candidate_id)
+
+        stored_hash = self._insert_approval(match_id, "rejected")
+        self.assertRegex(stored_hash, r"^sha256:[0-9a-f]{64}$")
+
+        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
+            connection.execute(
+                """
+                UPDATE accounting_core.reconciliation_match
+                SET match_status_code = 'rejected'
+                WHERE tenant_account_id = %s
+                  AND reconciliation_run_id = %s
+                  AND reconciliation_match_id = %s
+                """,
+                (
+                    self.fixture.scope["tenant_account_id"],
+                    self.fixture.run_reference,
+                    match_id,
+                ),
+            )
 
     def test_approval_snapshot_is_database_owned_and_late_allocations_fail_closed(
         self,
