@@ -178,17 +178,6 @@ def _validate_projection(projection: object) -> ReconciliationCloseReviewProject
     ):
         raise ValueError("exception_statement_entry_references must be unique")
 
-    bridge_unexplained_difference = (
-        projection.reconciled_balance
-        + projection.outstanding_book_items
-        - projection.outstanding_bank_items
-        - projection.bank_closing_balance
-    )
-    if bridge_unexplained_difference != projection.unexplained_difference:
-        raise ValueError(
-            "reconciliation projection must preserve the exact book-to-bank bridge equation"
-        )
-
     if (
         projection.suitable_for_period_close_review is not True
         or projection.exception_count != 0
@@ -198,6 +187,17 @@ def _validate_projection(projection: object) -> ReconciliationCloseReviewProject
         raise ValueError(
             "reconciliation projection is not suitable for period-close review; "
             "resolve the exact bridge or reconciliation exceptions first"
+        )
+
+    bridge_unexplained_difference = (
+        projection.reconciled_balance
+        + projection.outstanding_book_items
+        - projection.outstanding_bank_items
+        - projection.bank_closing_balance
+    )
+    if bridge_unexplained_difference != projection.unexplained_difference:
+        raise ValueError(
+            "reconciliation projection must preserve the exact book-to-bank bridge equation"
         )
     return projection
 
@@ -379,15 +379,22 @@ def verify_reconciliation_close_package(package: ReconciliationClosePackage) -> 
     if not isinstance(package, ReconciliationClosePackage):
         raise ValueError("package must be a ReconciliationClosePackage")
     _require_sha256(package.package_sha256, field_name="package_sha256")
-    rebuilt = build_reconciliation_close_package(
-        ReconciliationClosePackageInput(
-            projection=package.projection,
-            approval_evidence_reference=package.approval_evidence_reference,
-            approval_snapshot_sha256=package.approval_snapshot_sha256,
-            knowledge_cutoff=package.knowledge_cutoff,
-            evidence_references=package.evidence_references,
+    try:
+        rebuilt = build_reconciliation_close_package(
+            ReconciliationClosePackageInput(
+                projection=package.projection,
+                approval_evidence_reference=package.approval_evidence_reference,
+                approval_snapshot_sha256=package.approval_snapshot_sha256,
+                knowledge_cutoff=package.knowledge_cutoff,
+                evidence_references=package.evidence_references,
+            )
         )
-    )
+    except ValueError as exc:
+        if "exact book-to-bank bridge equation" in str(exc):
+            raise ValueError(
+                "package_sha256 does not match the canonical close-package payload"
+            ) from exc
+        raise
     if (
         package.next_action != rebuilt.next_action
         or package.evidence_references != rebuilt.evidence_references
