@@ -44,6 +44,32 @@ class ReconciliationDatabaseControlMigrationRedTests(unittest.TestCase):
             normalized,
         )
 
+    def test_candidate_upgrade_scan_has_transactional_migration_visibility(self) -> None:
+        """Forced RLS must not make the migration-0015 amount scan vacuous."""
+        normalized = re.sub(
+            r"\s+", " ", CONSERVATION_MIGRATION.read_text(encoding="utf-8").lower()
+        )
+        for policy_name, table_name in (
+            (
+                "reconciliation_candidate_upgrade_visibility",
+                "accounting_core.reconciliation_candidate",
+            ),
+            (
+                "reconciliation_run_upgrade_visibility",
+                "accounting_core.reconciliation_run",
+            ),
+            (
+                "reconciliation_bank_account_assignment_upgrade_visibility",
+                "accounting_core.bank_account_assignment",
+            ),
+        ):
+            self.assertIn(f"create policy {policy_name}", normalized)
+            self.assertIn("to current_user", normalized)
+            self.assertIn(
+                f"drop policy {policy_name} on {table_name}",
+                normalized,
+            )
+
 
 @unittest.skipUnless(
     APPROVAL_MIGRATION.exists(), "RED until reconciliation approval controls exist"

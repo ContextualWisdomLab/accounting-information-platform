@@ -86,6 +86,27 @@ CREATE INDEX journal_allocation_source_index
         reconciliation_match_id
     );
 
+-- Migrations run without an application tenant. Expose the legacy rows needed
+-- by this preflight only for the current migration user, then remove the
+-- visibility policies before the transaction commits.
+CREATE POLICY reconciliation_candidate_upgrade_visibility
+    ON accounting_core.reconciliation_candidate
+    FOR SELECT
+    TO current_user
+    USING (true);
+
+CREATE POLICY reconciliation_run_upgrade_visibility
+    ON accounting_core.reconciliation_run
+    FOR SELECT
+    TO current_user
+    USING (true);
+
+CREATE POLICY reconciliation_bank_account_assignment_upgrade_visibility
+    ON accounting_core.bank_account_assignment
+    FOR SELECT
+    TO current_user
+    USING (true);
+
 DO $$
 BEGIN
     IF EXISTS (
@@ -131,6 +152,13 @@ BEGIN
     END IF;
 END;
 $$;
+
+DROP POLICY reconciliation_candidate_upgrade_visibility
+    ON accounting_core.reconciliation_candidate;
+DROP POLICY reconciliation_run_upgrade_visibility
+    ON accounting_core.reconciliation_run;
+DROP POLICY reconciliation_bank_account_assignment_upgrade_visibility
+    ON accounting_core.bank_account_assignment;
 
 CREATE OR REPLACE FUNCTION accounting_core.reconciliation_candidate_capacity_guard()
 RETURNS trigger
