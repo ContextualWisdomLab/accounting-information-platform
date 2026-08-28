@@ -178,6 +178,17 @@ def _validate_projection(projection: object) -> ReconciliationCloseReviewProject
     ):
         raise ValueError("exception_statement_entry_references must be unique")
 
+    bridge_unexplained_difference = (
+        projection.reconciled_balance
+        + projection.outstanding_book_items
+        - projection.outstanding_bank_items
+        - projection.bank_closing_balance
+    )
+    if bridge_unexplained_difference != projection.unexplained_difference:
+        raise ValueError(
+            "reconciliation projection must preserve the exact book-to-bank bridge equation"
+        )
+
     if (
         projection.suitable_for_period_close_review is not True
         or projection.exception_count != 0
