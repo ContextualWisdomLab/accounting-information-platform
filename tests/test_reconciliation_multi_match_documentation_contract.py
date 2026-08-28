@@ -39,9 +39,9 @@ class ReconciliationMultiMatchDocumentationContractTests(unittest.TestCase):
         )
 
     def test_product_baseline_distinguishes_current_tree_from_remaining_close_package(self) -> None:
-        """The product gap queue must not call delivered 0015/0016 controls future work."""
+        """The product gap queue must not call delivered 0015-0017 controls future work."""
         text = BASELINE.read_text(encoding="utf-8")
-        self.assertIn("migrations `0015` and `0016`", text)
+        self.assertIn("from migrations `0015` through `0017`", text)
         self.assertIn("close-package provenance remains open", text)
         self.assertIn("[delivered in current tree; migration 0015]", text)
         self.assertNotRegex(

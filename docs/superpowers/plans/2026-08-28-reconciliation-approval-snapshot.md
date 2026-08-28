@@ -10,6 +10,7 @@
 
 - [x] Add a static RED contract for migration 0016's database-owned snapshot hash/version and locking boundary.
 - [x] Add migration 0016 and loader support with the existing approval/state controls preserved.
+- [x] Add forward migration 0017 and loader support for the approval/allocation parent-row-first lock order.
 - [x] Add PostgreSQL RED regressions that attempt to change proposed allocations or retarget an approved match after approval evidence and prove the mutations fail closed.
 - [x] Implement canonical SHA-256 snapshot computation, approval binding, and shared advisory serialization for approval/allocation transitions.
 - [x] Run focused, full, coverage, repository-contract, and migration-chain checks; update exact-head evidence and documentation.

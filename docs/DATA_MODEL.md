@@ -39,7 +39,7 @@ The foundation ERD is maintained in [ERD.md](ERD.md). PostgreSQL migrations are 
 
 ## Reconciliation control evidence
 
-Migrations `0013_reconciliation_run_exception_evidence.sql` through `0016_reconciliation_approval_evidence.sql` persist deterministic reconciliation as accounting control evidence without granting posting, reversal, close, or accounting-policy authority.
+Migrations `0013_reconciliation_run_exception_evidence.sql` through `0017_reconciliation_approval_lock_order.sql` persist deterministic reconciliation as accounting control evidence without granting posting, reversal, close, or accounting-policy authority.
 
 - `reconciliation_run`: immutable evaluated scope for one tenant, legal entity, accounting book, bank-account assignment, ISO currency, bank/book cutoffs, matching-policy version, and knowledge cutoff. Only the run status may progress; evaluated scope changes require a new run.
 - `reconciliation_exception`: explicit operator-owned exception with an exception code, next action, effective/system time, and open/resolved/superseded resolution status.
