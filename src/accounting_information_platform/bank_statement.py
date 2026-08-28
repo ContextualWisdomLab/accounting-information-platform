@@ -129,6 +129,19 @@ class NormalizedStatementEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class NormalizedStatementBalance:
+    """One exact camt.053 balance fact with its source locator and hash."""
+
+    balance_sequence_number: int
+    balance_type_code: str | None
+    balance_amount: Decimal
+    balance_currency_code: str
+    credit_debit_code: str
+    source_locator_path: str
+    source_balance_hash: str
+
+
+@dataclass(frozen=True, slots=True)
 class NormalizedBankStatement:
     """One accepted camt.053.001.14 statement after fail-closed parse."""
 
@@ -144,6 +157,7 @@ class NormalizedBankStatement:
     account_identifier_hash: str
     source_artifact_hash: str
     normalized_payload_hash: str
+    balances: tuple[NormalizedStatementBalance, ...]
     entries: tuple[NormalizedStatementEntry, ...]
 
 
@@ -547,7 +561,7 @@ def accept_bank_statement_evidence(
                 "statement account identifier does not match the registered bank account. "
                 "Register the matching account identifier, then retry ingest."
             )
-        _require_entry_currencies(statement)
+        _require_statement_currencies(statement)
         ledger._acquire_command_lock(
             connection,
             f"bank_statement_identity:{account_row[0]}:{statement.statement_identity_reference}",
@@ -643,6 +657,29 @@ def accept_bank_statement_evidence(
                 idempotency_key,
             ),
         ).fetchone()[0]
+        for balance in statement.balances:
+            connection.execute(
+                """
+                INSERT INTO accounting_integration.bank_statement_balance (
+                    tenant_account_id, bank_statement_record_id,
+                    balance_sequence_number, balance_type_code, balance_amount,
+                    balance_currency_code, credit_debit_code, source_locator_path,
+                    source_balance_hash
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    tenant_id,
+                    statement_id,
+                    balance.balance_sequence_number,
+                    balance.balance_type_code,
+                    balance.balance_amount,
+                    balance.balance_currency_code,
+                    balance.credit_debit_code,
+                    balance.source_locator_path,
+                    balance.source_balance_hash,
+                ),
+            )
         for entry in statement.entries:
             entry_id = connection.execute(
                 """
@@ -985,6 +1022,17 @@ def _load_statement_document(
         """,
         (tenant_id, statement_id),
     ).fetchone()
+    balance_rows = connection.execute(
+        """
+        SELECT balance_sequence_number, balance_type_code, balance_amount,
+               balance_currency_code, credit_debit_code, source_locator_path,
+               source_balance_hash
+        FROM accounting_integration.bank_statement_balance
+        WHERE tenant_account_id = %s AND bank_statement_record_id = %s
+        ORDER BY balance_sequence_number ASC
+        """,
+        (tenant_id, statement_id),
+    ).fetchall()
     return {
         "tenant_reference": tenant_reference,
         "bank_account_reference": row[12],
@@ -1000,6 +1048,18 @@ def _load_statement_document(
         "opening_balance_hash": row[9],
         "closing_balance_hash": row[10],
         "artifact_store_reference": row[11],
+        "balances": [
+            {
+                "balance_sequence_number": int(balance[0]),
+                "balance_type_code": balance[1],
+                "balance_amount": _decimal_text(balance[2]),
+                "balance_currency_code": balance[3],
+                "credit_debit_code": balance[4],
+                "source_locator_path": balance[5],
+                "source_balance_hash": balance[6],
+            }
+            for balance in balance_rows
+        ],
         "entry_count": int(totals[0]),
         "credit_total_amount": _decimal_text(totals[1]),
         "debit_total_amount": _decimal_text(totals[2]),
@@ -1235,9 +1295,18 @@ def _normalize_statement(statement: "_XmlElement", payload: bytes) -> Normalized
             "statement contains no Ntry elements. "
             "Supply at least one entry, then retry ingest."
         )
-    balances = [_normalize_balance(node) for node in _direct_children(statement, "Bal")]
-    opening = next((item[1] for item in balances if item[0] == "OPBD"), None)
-    closing = next((item[1] for item in balances if item[0] == "CLBD"), None)
+    balances = [
+        _normalize_balance(node, index)
+        for index, node in enumerate(_direct_children(statement, "Bal"), start=1)
+    ]
+    opening = next(
+        (item.source_balance_hash for item in balances if item.balance_type_code == "OPBD"),
+        None,
+    )
+    closing = next(
+        (item.source_balance_hash for item in balances if item.balance_type_code == "CLBD"),
+        None,
+    )
     period = _required_child(statement, "FrToDt", "statement period") if _direct_children(statement, "FrToDt") else None
     normalized = NormalizedBankStatement(
         message_definition_identifier=CAMT053_MESSAGE_DEFINITION,
@@ -1252,6 +1321,7 @@ def _normalize_statement(statement: "_XmlElement", payload: bytes) -> Normalized
         account_identifier_hash=_sha256_digest(account_id_text.encode("utf-8")),
         source_artifact_hash=_sha256_digest(payload),
         normalized_payload_hash="",
+        balances=tuple(balances),
         entries=tuple(entries),
     )
     digest = _sha256_digest(
@@ -1272,18 +1342,27 @@ def _normalize_statement(statement: "_XmlElement", payload: bytes) -> Normalized
         account_identifier_hash=normalized.account_identifier_hash,
         source_artifact_hash=normalized.source_artifact_hash,
         normalized_payload_hash=digest,
+        balances=normalized.balances,
         entries=normalized.entries,
     )
 
 
-def _require_entry_currencies(statement: NormalizedBankStatement) -> None:
-    """Fail closed when an entry currency leaves the registered account scope.
+def _require_statement_currencies(statement: NormalizedBankStatement) -> None:
+    """Fail closed when statement facts leave the registered account scope.
 
     Foreign-exchange accounting is explicitly rejected until rate source, rate
     type, rounding, remeasurement, and translation policy exist (TRD), so every
     entry on an accepted statement must carry the statement's own currency.
     """
 
+    for balance in statement.balances:
+        if balance.balance_currency_code != statement.account_currency_code:
+            raise AccountingValidationError(
+                f"statement balance {balance.balance_sequence_number} uses currency "
+                f"{balance.balance_currency_code}, but this registry accepts only "
+                f"{statement.account_currency_code} evidence. Register a matching-currency "
+                "account or correct the statement, then retry ingest."
+            )
     for entry in statement.entries:
         if entry.entry_currency_code != statement.account_currency_code:
             raise AccountingValidationError(
@@ -1442,11 +1521,18 @@ def _normalize_detail(
     )
 
 
-def _normalize_balance(node: "_XmlElement") -> tuple[str | None, str]:
+def _normalize_balance(
+    node: "_XmlElement", sequence: int
+) -> NormalizedStatementBalance:
     code = _first_text(node, ("Tp", "CdOrPrtry", "Cd"))
     amount, currency = _required_amount(node, "Bal/Amt", allow_zero=True)
     indicator = _required_text(node, ("CdtDbtInd",), "balance credit/debit indicator")
-    return code, _sha256_digest(
+    if indicator not in {"CRDT", "DBIT"}:
+        raise AccountingValidationError(
+            "balance credit/debit indicator must be CRDT or DBIT. "
+            "Correct Bal/CdtDbtInd, then retry ingest."
+        )
+    source_hash = _sha256_digest(
         json.dumps(
             {
                 "code": code,
@@ -1457,6 +1543,15 @@ def _normalize_balance(node: "_XmlElement") -> tuple[str | None, str]:
             separators=(",", ":"),
             sort_keys=True,
         ).encode("utf-8")
+    )
+    return NormalizedStatementBalance(
+        balance_sequence_number=sequence,
+        balance_type_code=code,
+        balance_amount=amount,
+        balance_currency_code=currency,
+        credit_debit_code=indicator,
+        source_locator_path=f"Document/BkToCstmrStmt/Stmt/Bal[{sequence}]",
+        source_balance_hash=source_hash,
     )
 
 
@@ -1475,7 +1570,20 @@ def _normalized_payload(statement: NormalizedBankStatement) -> dict[str, object]
         "opening_balance_hash": statement.opening_balance_hash,
         "closing_balance_hash": statement.closing_balance_hash,
         "account_currency_code": statement.account_currency_code,
+        "balances": [_balance_payload(balance) for balance in statement.balances],
         "entries": [_entry_payload(entry) for entry in statement.entries],
+    }
+
+
+def _balance_payload(balance: NormalizedStatementBalance) -> dict[str, object]:
+    return {
+        "balance_sequence_number": balance.balance_sequence_number,
+        "balance_type_code": balance.balance_type_code,
+        "balance_amount": _decimal_text(balance.balance_amount),
+        "balance_currency_code": balance.balance_currency_code,
+        "credit_debit_code": balance.credit_debit_code,
+        "source_locator_path": balance.source_locator_path,
+        "source_balance_hash": balance.source_balance_hash,
     }
 
 

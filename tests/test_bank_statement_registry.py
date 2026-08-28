@@ -77,6 +77,29 @@ class BankStatementRegistryTests(unittest.TestCase):
         self.assertEqual(document["entry_count"], 2)
         self.assertEqual(document["credit_total_amount"], "25000")
         self.assertEqual(document["debit_total_amount"], "10000")
+        self.assertEqual(
+            document["balances"],
+            [
+                {
+                    "balance_sequence_number": 1,
+                    "balance_type_code": "OPBD",
+                    "balance_amount": "100000",
+                    "balance_currency_code": "KRW",
+                    "credit_debit_code": "CRDT",
+                    "source_locator_path": "Document/BkToCstmrStmt/Stmt/Bal[1]",
+                    "source_balance_hash": document["balances"][0]["source_balance_hash"],
+                },
+                {
+                    "balance_sequence_number": 2,
+                    "balance_type_code": "CLBD",
+                    "balance_amount": "115000",
+                    "balance_currency_code": "KRW",
+                    "credit_debit_code": "CRDT",
+                    "source_locator_path": "Document/BkToCstmrStmt/Stmt/Bal[2]",
+                    "source_balance_hash": document["balances"][1]["source_balance_hash"],
+                },
+            ],
+        )
         self.assertTrue(document["artifact_store_reference"].startswith("memory:"))
         entries = lookup_bank_statement_entries(
             posting.DATABASE_URL,
@@ -101,6 +124,7 @@ class BankStatementRegistryTests(unittest.TestCase):
         self.assertEqual(first["bank_statement_record_id"], third["bank_statement_record_id"])
         self.assertEqual(self._count("accounting_integration.bank_statement_record"), 1)
         self.assertEqual(self._count("accounting_integration.bank_statement_entry"), 2)
+        self.assertEqual(self._count("accounting_integration.bank_statement_balance"), 2)
 
     def test_same_key_changed_bytes_writes_nothing(self) -> None:
         """Same idempotency key with changed bytes conflicts and writes nothing."""
@@ -121,6 +145,16 @@ class BankStatementRegistryTests(unittest.TestCase):
             self._ingest(changed, key="second-identity")
         self.assertEqual(self._count("accounting_integration.bank_statement_record"), 1)
 
+    def test_balance_currency_mismatch_fails_closed_before_persist(self) -> None:
+        """A balance outside the registered account currency cannot enter evidence."""
+        payload = load_canonical_statement_fixture().replace(
+            b'<Amt Ccy="KRW">100000.00</Amt>', b'<Amt Ccy="USD">100000.00</Amt>', 1
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "statement balance"):
+            self._ingest(payload, key="balance-currency-mismatch")
+        self.assertEqual(self._count("accounting_integration.bank_statement_record"), 0)
+        self.assertEqual(self._count("accounting_integration.bank_statement_balance"), 0)
+
     def test_parser_failures_write_no_partial_population(self) -> None:
         """Revision, DTD, bound, and decimal failures persist zero rows."""
         original = load_canonical_statement_fixture().decode("utf-8")
@@ -138,6 +172,7 @@ class BankStatementRegistryTests(unittest.TestCase):
                     self._ingest(payload, key=f"fail-{index}")
         self.assertEqual(self._count("accounting_integration.bank_statement_record"), 0)
         self.assertEqual(self._count("accounting_integration.bank_statement_entry"), 0)
+        self.assertEqual(self._count("accounting_integration.bank_statement_balance"), 0)
         self.assertEqual(self._count("accounting_integration.bank_statement_artifact"), 0)
 
     def test_debit_credit_survives_persist_read_round_trip(self) -> None:
@@ -537,6 +572,21 @@ class BankStatementRegistryTests(unittest.TestCase):
                     """
                     UPDATE accounting_integration.bank_statement_record
                     SET statement_identity_reference = 'mutated'
+                    WHERE bank_statement_record_id = %s
+                    """,
+                    (document["bank_statement_record_id"],),
+                )
+                connection.commit()
+
+    def test_balance_rows_are_immutable(self) -> None:
+        """UPDATE or DELETE of persisted numeric balance evidence fails at PostgreSQL."""
+        document = self._ingest(load_canonical_statement_fixture())
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            with self.assertRaises(psycopg.Error):
+                connection.execute(
+                    """
+                    UPDATE accounting_integration.bank_statement_balance
+                    SET balance_amount = 1
                     WHERE bank_statement_record_id = %s
                     """,
                     (document["bank_statement_record_id"],),
