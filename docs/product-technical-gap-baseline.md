@@ -19,7 +19,8 @@ commercial and operational systems. It owns legal entities, accounting books, ch
 accounts and mappings, fiscal periods, authoritative balanced journals, reversal
 lineage, close, trial balance, statutory/management projections, posting receipts,
 accounting transactional-outbox evidence, and accepted immutable bank-statement
-evidence with its normalized entries.
+evidence with its normalized entries and exact
+numeric balance facts.
 
 Metering/billing remains authoritative for usage, pricing, invoice intent, payment,
 refund, dispute, provider-settlement, and other commercial evidence. It may publish
@@ -171,7 +172,7 @@ The first buyer-visible reconciliation vertical is deliberately bounded:
 
 ```text
 immutable bank statement artifact
-→ normalized statement / entry identity          [delivered by the registry slice]
+→ normalized statement / entry / balance identity [delivered by the registry slice; numeric balance candidate in current tree]
 → bank-account ↔ legal-entity / book assignment  [delivered by the registry slice]
 → deterministic candidate matching               [delivered: proposal engine]
 → exact book-to-bank bridge                      [delivered; finite-Decimal boundary + bridge scope in ADR 0054]

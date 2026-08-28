@@ -402,6 +402,35 @@ class BankStatementAdapterTests(unittest.TestCase):
         self.assertEqual(statement.statement_identity_reference, "BANK-STMT-2026-08-24")
         self.assertIsNotNone(statement.opening_balance_hash)
 
+    def test_statement_preserves_exact_balance_evidence(self) -> None:
+        """Opening and closing balances remain exact evidence for reconciliation."""
+        statement = parse_bank_statement_payload(
+            load_canonical_statement_fixture(), CAMT053_MESSAGE_DEFINITION
+        )
+        self.assertEqual(
+            [
+                (
+                    balance.balance_type_code,
+                    balance.balance_amount,
+                    balance.balance_currency_code,
+                    balance.credit_debit_code,
+                )
+                for balance in statement.balances
+            ],
+            [
+                ("OPBD", Decimal("100000.00"), "KRW", "CRDT"),
+                ("CLBD", Decimal("115000.00"), "KRW", "CRDT"),
+            ],
+        )
+
+    def test_invalid_balance_direction_fails_closed(self) -> None:
+        """A balance with an unknown economic direction is not accepted as evidence."""
+        payload = FIXTURE.read_text(encoding="utf-8").replace(
+            "<CdtDbtInd>CRDT</CdtDbtInd>", "<CdtDbtInd>UNKNOWN</CdtDbtInd>", 1
+        ).encode("utf-8")
+        with self.assertRaisesRegex(AccountingValidationError, "balance credit/debit"):
+            parse_bank_statement_payload(payload, CAMT053_MESSAGE_DEFINITION)
+
     def test_helper_boundaries_fail_closed(self) -> None:
         """List cursors, hashes, and foreign-key detection stay fail-closed."""
         self.assertEqual(_page_limit(None), 50)

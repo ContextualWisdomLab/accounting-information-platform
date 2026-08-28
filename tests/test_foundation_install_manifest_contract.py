@@ -123,6 +123,18 @@ class FoundationInstallManifestContractTests(unittest.TestCase):
                 self.assertIn(migration_seventeen, text)
                 self.assertLess(text.index(migration_sixteen), text.index(migration_seventeen))
 
+    def test_required_files_and_install_docs_include_balance_evidence(self) -> None:
+        """Numeric bank-statement balance evidence follows the reconciliation controls."""
+        migration_seventeen = "database/migrations/0017_reconciliation_approval_lock_order.sql"
+        migration_eighteen = "database/migrations/0018_bank_statement_balance_evidence.sql"
+        self.assertIn(migration_eighteen, set(REQUIRED_FILES))
+        for relative_path in ("docs/OPERABILITY.md", "docs/ARCHITECTURE.md"):
+            with self.subTest(relative_path=relative_path):
+                text = (ROOT / relative_path).read_text(encoding="utf-8")
+                self.assertIn(migration_seventeen, text)
+                self.assertIn(migration_eighteen, text)
+                self.assertLess(text.index(migration_seventeen), text.index(migration_eighteen))
+
     def test_install_fails_closed_when_approval_snapshot_migration_is_missing(self) -> None:
         """The canonical loader may not silently stop before database-owned approval evidence."""
         original_is_file = Path.is_file
@@ -145,6 +157,22 @@ class FoundationInstallManifestContractTests(unittest.TestCase):
 
         def is_file(path: Path) -> bool:
             if path.name == "0017_reconciliation_approval_lock_order.sql":
+                return False
+            return original_is_file(path)
+
+        with patch.object(Path, "is_file", is_file):
+            with self.assertRaises(AccountingValidationError):
+                apply_foundation_migration(
+                    "postgresql://unused",
+                    ROOT / "database/migrations/0001_accounting_foundation.sql",
+                )
+
+    def test_install_fails_closed_when_balance_evidence_migration_is_missing(self) -> None:
+        """The canonical loader may not install reconciliation without numeric balance facts."""
+        original_is_file = Path.is_file
+
+        def is_file(path: Path) -> bool:
+            if path.name == "0018_bank_statement_balance_evidence.sql":
                 return False
             return original_is_file(path)
 
