@@ -24,7 +24,12 @@ from .reconciliation_read_model import (
 _SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _UTC_SECOND_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 _REQUIRED_EVIDENCE_KINDS = frozenset(
-    {"statement_artifact", "statement_population", "book_population"}
+    {
+        "reconciliation_run",
+        "statement_artifact",
+        "statement_population",
+        "book_population",
+    }
 )
 _PROJECTION_IDENTITY_FIELDS = (
     "tenant_account_reference",
@@ -83,17 +88,24 @@ def _require_knowledge_cutoff(value: object) -> str:
 
 @dataclass(frozen=True, slots=True)
 class ReconciliationEvidenceReference:
-    """Immutable source-evidence identity and SHA-256 digest included in a package."""
+    """Immutable source-evidence identity, digest, and optional run cutoff."""
 
     evidence_kind_code: str
     evidence_reference: str
     sha256_digest: str
+    knowledge_cutoff: str | None = None
 
     def __post_init__(self) -> None:
-        """Reject ambiguous identities and non-canonical evidence digests."""
+        """Reject ambiguous identities, digests, and cutoff provenance."""
         _require_identifier(self.evidence_kind_code, field_name="evidence_kind_code")
         _require_identifier(self.evidence_reference, field_name="evidence_reference")
         _require_sha256(self.sha256_digest, field_name="sha256_digest")
+        if self.evidence_kind_code == "reconciliation_run":
+            _require_knowledge_cutoff(self.knowledge_cutoff)
+        elif self.knowledge_cutoff is not None:
+            raise ValueError(
+                "knowledge_cutoff is permitted only on reconciliation_run evidence"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,10 +196,10 @@ def _validate_and_order_evidence(
     *,
     projection: ReconciliationCloseReviewProjection,
 ) -> tuple[ReconciliationEvidenceReference, ...]:
-    """Bind canonical source evidence to the projection population identities."""
+    """Bind canonical source evidence to run and projection population identities."""
     if not isinstance(evidence_references, tuple) or not evidence_references:
         raise ValueError(
-            "evidence_references must include immutable statement and book populations"
+            "evidence_references must include immutable reconciliation run, statement, and book evidence"
         )
     if any(
         not isinstance(evidence, ReconciliationEvidenceReference)
@@ -205,10 +217,15 @@ def _validate_and_order_evidence(
     evidence_kinds = {evidence.evidence_kind_code for evidence in evidence_references}
     if not _REQUIRED_EVIDENCE_KINDS.issubset(evidence_kinds):
         raise ValueError(
-            "evidence_references must include statement_artifact, statement_population, "
-            "and book_population evidence"
+            "evidence_references must include reconciliation_run, statement_artifact, "
+            "statement_population, and book_population evidence"
         )
 
+    reconciliation_runs = tuple(
+        evidence
+        for evidence in evidence_references
+        if evidence.evidence_kind_code == "reconciliation_run"
+    )
     statement_populations = tuple(
         evidence
         for evidence in evidence_references
@@ -219,10 +236,16 @@ def _validate_and_order_evidence(
         for evidence in evidence_references
         if evidence.evidence_kind_code == "book_population"
     )
+    if len(reconciliation_runs) != 1:
+        raise ValueError("evidence_references must include exactly one reconciliation_run evidence")
     if len(statement_populations) != 1:
         raise ValueError("evidence_references must include exactly one statement_population evidence")
     if len(book_populations) != 1:
         raise ValueError("evidence_references must include exactly one book_population evidence")
+    if reconciliation_runs[0].evidence_reference != projection.reconciliation_run_reference:
+        raise ValueError(
+            "reconciliation_run evidence must bind projection.reconciliation_run_reference"
+        )
     if (
         statement_populations[0].evidence_reference
         != projection.statement_population_reference
@@ -247,13 +270,16 @@ def _validate_and_order_evidence(
 
 def _evidence_mapping(
     evidence: ReconciliationEvidenceReference,
-) -> dict[str, str]:
+) -> dict[str, object]:
     """Return one deterministic evidence-reference mapping."""
-    return {
+    mapping: dict[str, object] = {
         "evidence_kind_code": evidence.evidence_kind_code,
         "evidence_reference": evidence.evidence_reference,
         "sha256_digest": evidence.sha256_digest,
     }
+    if evidence.knowledge_cutoff is not None:
+        mapping["knowledge_cutoff"] = evidence.knowledge_cutoff
+    return mapping
 
 
 def _package_unsigned_mapping(
@@ -266,7 +292,7 @@ def _package_unsigned_mapping(
 ) -> dict[str, object]:
     """Return the canonical payload committed by ``package_sha256``."""
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "projection": json.loads(render_reconciliation_close_review_json(projection)),
         "approval_evidence_reference": approval_evidence_reference,
         "approval_snapshot_sha256": approval_snapshot_sha256,
@@ -306,6 +332,15 @@ def build_reconciliation_close_package(
         package_input.evidence_references,
         projection=projection,
     )
+    run_evidence = next(
+        evidence
+        for evidence in ordered_evidence
+        if evidence.evidence_kind_code == "reconciliation_run"
+    )
+    if run_evidence.knowledge_cutoff != knowledge_cutoff:
+        raise ValueError(
+            "knowledge_cutoff must match immutable reconciliation_run evidence"
+        )
 
     unsigned_payload = _package_unsigned_mapping(
         projection=projection,
