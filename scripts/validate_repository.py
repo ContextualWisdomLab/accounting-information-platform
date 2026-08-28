@@ -49,6 +49,7 @@ REQUIRED_FILES = (
     "database/migrations/0014_reconciliation_candidate_allocation.sql",
     "database/migrations/0015_reconciliation_multi_match_conservation.sql",
     "database/migrations/0016_reconciliation_approval_evidence.sql",
+    "database/migrations/0017_reconciliation_approval_lock_order.sql",
     "docs/PRD.md",
     "docs/TRD.md",
     "docs/ARCHITECTURE.md",

@@ -21,10 +21,12 @@ it consumes no source capacity and may legitimately record why an operator
 rejected a candidate before allocating it.
 
 There is also a lock-order hazard at the PostgreSQL boundary. A terminal match
-`UPDATE` owns its `reconciliation_match` row before review triggers execute. An
-allocation `INSERT` must not acquire the per-match snapshot advisory lock first
-and then wait for that parent row, because the terminal transaction can then
-wait for the advisory lock and complete a row/advisory deadlock cycle.
+`UPDATE`, an allocation `INSERT`, and an approval-evidence `INSERT` all touch
+the same match row and per-match snapshot advisory lock. Each path must acquire
+the parent `reconciliation_match` row first and the advisory lock second. An
+approval insert that takes the advisory lock first can then wait on the
+composite foreign-key parent lock while an allocation insert holds that row and
+waits on the advisory lock, completing a row/advisory deadlock cycle.
 
 Reconciliation evidence remains separate from the statutory journal authority.
 It may explain a bank-to-book decision, but it may not post, reverse, close a
@@ -49,19 +51,18 @@ trigger overwrites any caller-supplied snapshot value with the current database
 snapshot and fails when the candidate cannot be found.
 
 Approval, allocation, and terminal match transitions share the same
-transaction-level advisory lock for the tenant/run/match identity. Allocation
-inserts and terminal match updates additionally serialize on the parent
-`reconciliation_match` row and acquire those locks in one database-owned order:
-parent row first, snapshot advisory lock second. Approval-evidence insertion
-takes only the snapshot advisory lock and never subsequently waits on the parent
-row, so it cannot complete a row/advisory wait cycle. Before an `approved`
-decision row can be recorded, PostgreSQL requires at least one statement
-allocation, at least one journal allocation, and exact equality of their
-Decimal totals. The check runs while holding the same snapshot lock, so a
-concurrent allocation command cannot cross the approval-evidence boundary. A
-`rejected` decision row may be recorded without allocations because it does not
-consume source capacity and the terminal rejected transition has no balanced
-allocation requirement.
+transaction-level advisory lock for the tenant/run/match identity and acquire
+the locks in one database-owned order: parent `reconciliation_match` row first,
+snapshot advisory lock second. Approval-evidence insertion locks and validates
+the proposed parent row before taking the advisory lock; this also prevents the
+approval row's composite foreign key from waiting behind an allocation row that
+is waiting on the advisory lock. Before an `approved` decision row can be
+recorded, PostgreSQL requires at least one statement allocation, at least one
+journal allocation, and exact equality of their Decimal totals. The check runs
+while holding the same snapshot lock, so a concurrent allocation command cannot
+cross the approval-evidence boundary. A `rejected` decision row may be recorded
+without allocations because it does not consume source capacity and the
+terminal rejected transition has no balanced allocation requirement.
 
 Once an approval row exists, later candidate retargeting and allocation inserts
 fail closed. A proposed match may become `approved` or `rejected` only when a
@@ -114,13 +115,13 @@ evidence fails closed before a complete balanced allocation population exists,
 then succeeds after balanced statement/journal allocations are recorded; the
 same regression proves `rejected` evidence remains valid without allocations.
 
-The lock-order regression uses two real PostgreSQL connections and
-`pg_blocking_pids()` as a barrier rather than a timing sleep. It first reproduced
-the row/advisory deadlock when allocation insertion acquired the snapshot lock
-before the parent row. The repaired allocation path acquires the parent match
-row before the snapshot advisory lock, so an invalid terminal transition fails
-with the stable accounting-control error and the waiting valid allocation then
-continues instead of receiving `deadlock detected`.
+The lock-order regressions use real PostgreSQL connections and
+`pg_blocking_pids()` as barriers rather than timing sleeps. They reproduce both
+the terminal-transition/allocation and approval-insert/allocation row/advisory
+cycles. The repaired paths acquire the parent match row before the snapshot
+advisory lock, so invalid terminal evidence fails with a stable
+accounting-control error and waiting valid allocation evidence continues
+instead of receiving `deadlock detected`.
 
 ## References
 

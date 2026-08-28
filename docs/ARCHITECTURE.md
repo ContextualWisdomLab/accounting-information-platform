@@ -132,6 +132,7 @@ Shared fiscal-calendar dates do not collapse independent accounting books into o
 14. `database/migrations/0014_reconciliation_candidate_allocation.sql` — durable reconciliation candidate, single-approved match, and exact statement/journal allocation rows with forced tenant RLS.
 15. `database/migrations/0015_reconciliation_multi_match_conservation.sql` — replaces the run-wide single-approved-match shortcut with tenant/run-scoped match identity and exact statement/journal source-allocation conservation so independent matches may be approved without double-consuming source evidence.
 16. `database/migrations/0016_reconciliation_approval_evidence.sql` — records immutable human reconciliation decisions and object-storage source-payload provenance, binds them to a database-computed candidate/allocation snapshot before a match can become terminal, and refuses unbound legacy terminal rows during upgrade.
+17. `database/migrations/0017_reconciliation_approval_lock_order.sql` — repairs the approval-evidence trigger to acquire the parent match row before its snapshot advisory lock, closing the approval/allocation row-advisory deadlock cycle.
 
 ## Durable soft-close command evidence
 
