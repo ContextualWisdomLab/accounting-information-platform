@@ -44,9 +44,9 @@ class ReconciliationMultiMatchDocumentationContractTests(unittest.TestCase):
         self.assertIn("migrations `0015` and `0016`", text)
         self.assertIn("close-package provenance remains open", text)
         self.assertIn("[delivered in current tree; migration 0015]", text)
-        self.assertNotIn(
-            "candidate/match allocation conservation        [open M2 slice]",
-            text,
+        self.assertNotRegex(
+            text.lower(),
+            r"candidate/match\s+allocation\s+conservation\s+\[open\s+m2\s+slice\]",
         )
 
     def test_unreleased_changelog_records_balanced_approval_invariant(self) -> None:
