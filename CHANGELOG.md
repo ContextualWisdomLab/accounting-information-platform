@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+- Added purpose-bound application authorization at the HTTP boundary: a trusted host adapter must
+  supply validated opaque principal/purpose evidence and every accounting route maps to an explicit
+  permission before domain work. Missing, unknown, tenant-mismatched, insufficient, and
+  agent-originated high-impact decisions fail closed; immutable tenant-scoped decision evidence is
+  retained by migration 0015. The tenant header remains identity binding, not caller authority.
 - Added the deterministic bank-reconciliation proposal engine from ADR 0054: stable provider, end-to-end, and account-servicer references take precedence; exact decimal amount and currency evidence must agree; exact-money plus bounded-date fallback is permitted only for one unique candidate; and ambiguity, conflicts, out-of-window evidence, or no candidate produce explicit abstention with an operator next action. Match proposals are read-only evidence with no automatic journal posting; any accounting adjustment must re-enter the existing journal command boundary.
 - Added the exact book-to-bank reconciliation bridge with exact Decimal equations, fail-closed one minor unit differences, statement-population and book-population provenance, no automatic journal posting, and ADR 0054.
 - Added a read-only reconciliation close-review projection over deterministic decisions and the exact bridge: controllers receive exact bank/book/reconciled/outstanding/unexplained Decimal values, immutable run and population provenance, preceding-run deltas, unresolved statement-entry references, and an explicit next action. JSON and CSV exports preserve money as decimal strings. `suitable_for_period_close_review` is evidence eligibility only; the projection cannot approve reconciliation, close a period, or post a journal. ADR 0054 records the authority boundary.
@@ -15,7 +20,7 @@
 
 ## [0.1.0] - 2026-08-26
 
-First tagged release of the accounting system of record foundation: exact-decimal proposal validation, idempotent posting, append-only reversal, trial balance, financial statements, fiscal-period close control, VAT/HomeTax fail-closed evidence, durable outbox, tenant-scoped row-level security, immutable ISO 20022 camt.053.001.14 bank-statement evidence registry, and action-guiding caller-facing copy. Pre-Alpha (Development Status :: 3 - Alpha planned next); foreign exchange, deterministic reconciliation matching, purpose-bound authorization, and live NTS transmission remain explicit future scope.
+First tagged release of the accounting system of record foundation: exact-decimal proposal validation, idempotent posting, append-only reversal, trial balance, financial statements, fiscal-period close control, VAT/HomeTax fail-closed evidence, durable outbox, tenant-scoped row-level security, immutable ISO 20022 camt.053.001.14 bank-statement evidence registry, and action-guiding caller-facing copy. Pre-Alpha (Development Status :: 3 - Alpha planned next); foreign exchange, deterministic reconciliation matching, and live NTS transmission remain explicit future scope.
 
 - Hardened every caller-facing message against the two product-writing rules: no internal implementation boundary (driver module, internal class or schema-object names) reaches a customer-visible error, and every failure names the customer's next action ("Supply …, then retry …"). The database-driver absence path now routes to the platform operator instead of naming internals; tenant-scope and runtime-binding failures describe the deployment fact rather than internal objects; unmapped account roles, unbalanced proposals, reversal conflicts, and close-key reuse all carry explicit next-action guidance.
 

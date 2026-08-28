@@ -70,6 +70,16 @@ from .bank_statement import (
     parse_bank_statement_payload,
 )
 from .http_api import create_journal_proposal_server, run_journal_proposal_server
+from .authorization import (
+    AUTHORIZATION_POLICY_VERSION,
+    AuthenticatedPrincipal,
+    AuthorizationDecision,
+    authorize,
+    period_close_operation,
+    permission_for_operation,
+    record_authorization_decision,
+    require_authorization,
+)
 from .ingest import ingest_journal_proposal
 from .persistence import PostgresPostingLedger
 from .migration_install import apply_foundation_migration
@@ -78,6 +88,9 @@ __all__ = [
     "AccountBalance",
     "AccountingPolicy",
     "AccountingValidationError",
+    "AUTHORIZATION_POLICY_VERSION",
+    "AuthenticatedPrincipal",
+    "AuthorizationDecision",
     "IdempotencyConflictError",
     "JournalLineProposal",
     "JournalProposal",
@@ -102,6 +115,7 @@ __all__ = [
     "accept_period_open",
     "accept_pulled_proposals",
     "apply_foundation_migration",
+    "authorize",
     "create_journal_proposal_server",
     "ingest_journal_proposal",
     "load_adapter_manifest",
@@ -137,8 +151,12 @@ __all__ = [
     "load_accounting_policy",
     "load_chart_account_mapping",
     "parse_bank_statement_payload",
+    "period_close_operation",
+    "permission_for_operation",
     "publish_outbox_event",
     "pull_journal_proposal",
     "pull_validated_journal_proposals",
     "run_journal_proposal_server",
+    "record_authorization_decision",
+    "require_authorization",
 ]

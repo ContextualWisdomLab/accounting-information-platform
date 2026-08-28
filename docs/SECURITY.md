@@ -25,6 +25,15 @@ Database administration is not business posting authority. Migration owners and 
 
 Purpose-bound application authorization is a separate control from PostgreSQL privileges. Request-body fields, model text, headers supplied by an untrusted client and database GUC values cannot grant posting, reversal, close or tax authority.
 
+The trusted host identity adapter must validate issuer, audience, expiry, signature, and token binding
+before passing an `AuthenticatedPrincipal` to AIS. The HTTP boundary maps each route to a stable
+operation and requires the corresponding versioned permission; soft-close and hard-close are
+independent permissions. Missing, unknown, tenant-mismatched, insufficient, or agent-originated
+high-impact decisions fail closed before `accept` or `lookup` executes. Each decision is appended
+to tenant-scoped forced-RLS `accounting_integration.authorization_decision_record` without raw
+tokens or full policy documents. The standalone runner has no principal by default and denies all
+accounting routes except health status.
+
 ## PostgreSQL runtime identities
 
 Production runtime access uses a non-owner, non-superuser, non-`BYPASSRLS` login with only the table / schema privileges required by supported application paths. Tenant-scoped authoritative tables both enable and `FORCE ROW LEVEL SECURITY`; the runtime identity is still deliberately non-owner so ordinary service access never depends on owner-bypass semantics. Real PostgreSQL integration tests must prove an actual restricted login can execute a supported same-tenant posting/read path while cross-tenant rows remain invisible and the login is neither owner, superuser nor `BYPASSRLS`.

@@ -12,6 +12,7 @@ HOME_TAX_MIGRATION = ROOT / "database/migrations/0003_home_tax_submission.sql"
 CLOSE_IDEMPOTENCY_MIGRATION = ROOT / "database/migrations/0004_close_idempotency_key.sql"
 PERIOD_GUARD_MIGRATION = ROOT / "database/migrations/0005_closed_period_guard.sql"
 CONCURRENCY_MIGRATION = ROOT / "database/migrations/0006_concurrency_hot_partition.sql"
+AUTHORIZATION_MIGRATION = ROOT / "database/migrations/0015_authorization_decision_evidence.sql"
 
 
 class DatabaseInvariantMigrationContracts(unittest.TestCase):
@@ -127,6 +128,22 @@ class DatabaseInvariantMigrationContracts(unittest.TestCase):
         migration = CONCURRENCY_MIGRATION.read_text(encoding="utf-8")
         self.assertIn("tenant-leading", migration)
         self.assertIn("partition", migration.lower())
+
+    def test_authorization_decisions_are_forced_rls_and_append_only(self) -> None:
+        """Authorization evidence must remain tenant-scoped and immutable in PostgreSQL."""
+        migration = AUTHORIZATION_MIGRATION.read_text(encoding="utf-8")
+        self.assertIn(
+            "CREATE TABLE accounting_integration.authorization_decision_record",
+            migration,
+        )
+        self.assertIn(
+            "ALTER TABLE accounting_integration.authorization_decision_record FORCE ROW LEVEL SECURITY",
+            migration,
+        )
+        self.assertIn("CREATE POLICY authorization_decision_tenant_isolation", migration)
+        self.assertIn("BEFORE UPDATE OR DELETE", migration)
+        self.assertIn("authorization_evidence_immutable", migration)
+        self.assertIn("REVOKE ALL ON accounting_integration.authorization_decision_record FROM PUBLIC", migration)
 
 
 if __name__ == "__main__":
