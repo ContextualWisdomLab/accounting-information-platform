@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 from email.message import Message
 from types import SimpleNamespace
-from unittest import mock
+import unittest.mock as mock
 
 from accounting_information_platform import AccountingValidationError
 from accounting_information_platform.authorization import (
