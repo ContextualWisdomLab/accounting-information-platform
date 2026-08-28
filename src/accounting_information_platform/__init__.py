@@ -79,6 +79,7 @@ from .reconciliation_close_package import (
     ReconciliationEvidenceReference,
     build_reconciliation_close_package,
     render_reconciliation_close_package_json,
+    verify_reconciliation_close_package,
 )
 
 __all__ = [
@@ -153,4 +154,5 @@ __all__ = [
     "pull_validated_journal_proposals",
     "render_reconciliation_close_package_json",
     "run_journal_proposal_server",
+    "verify_reconciliation_close_package",
 ]
