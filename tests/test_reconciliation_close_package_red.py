@@ -62,6 +62,11 @@ class ReconciliationClosePackageTests(unittest.TestCase):
                 sha256_digest="sha256:" + "a" * 64,
             ),
             ReconciliationEvidenceReference(
+                evidence_kind_code="statement_population",
+                evidence_reference="statement-population-2026-08",
+                sha256_digest="sha256:" + "d" * 64,
+            ),
+            ReconciliationEvidenceReference(
                 evidence_kind_code="book_population",
                 evidence_reference="book-population-2026-08",
                 sha256_digest="sha256:" + "b" * 64,
@@ -100,7 +105,7 @@ class ReconciliationClosePackageTests(unittest.TestCase):
         self.assertEqual(payload["projection"]["unexplained_difference"], "0.00")
         self.assertEqual(
             [item["evidence_kind_code"] for item in payload["evidence_references"]],
-            ["book_population", "statement_artifact"],
+            ["book_population", "statement_artifact", "statement_population"],
         )
         self.assertIn("period-close", payload["next_action"])
 
@@ -109,6 +114,10 @@ class ReconciliationClosePackageTests(unittest.TestCase):
             self._projection(suitable=False),
             replace(self._projection(), exception_count=1),
             replace(self._projection(), unexplained_difference=Decimal("0.01")),
+            replace(
+                self._projection(),
+                exception_statement_entry_references=("statement-entry-exception",),
+            ),
         )
         for projection in projections:
             with self.subTest(projection=projection):
@@ -133,22 +142,16 @@ class ReconciliationClosePackageTests(unittest.TestCase):
                 sha256_digest="sha256:" + "a" * 64,
             )
         with self.assertRaisesRegex(ValueError, "sha256_digest"):
-            build_reconciliation_close_package(
-                self._input(
-                    evidence=(
-                        ReconciliationEvidenceReference(
-                            evidence_kind_code="statement_artifact",
-                            evidence_reference="statement-artifact-1",
-                            sha256_digest="not-a-digest",
-                        ),
-                    )
-                )
+            ReconciliationEvidenceReference(
+                evidence_kind_code="statement_artifact",
+                evidence_reference="statement-artifact-1",
+                sha256_digest="not-a-digest",
             )
 
         duplicate = self._evidence()[0]
         with self.assertRaisesRegex(ValueError, "unique"):
             build_reconciliation_close_package(
-                self._input(evidence=(duplicate, duplicate))
+                self._input(evidence=(duplicate, duplicate, *self._evidence()[1:]))
             )
 
     def test_package_validates_approval_cutoff_and_required_evidence(self) -> None:
@@ -178,7 +181,7 @@ class ReconciliationClosePackageTests(unittest.TestCase):
             ),
             (
                 replace(self._input(), evidence_references=(self._evidence()[0],)),
-                "statement_artifact and book_population",
+                "statement_artifact, statement_population, and book_population",
             ),
         )
         for package_input, expected_error in cases:
@@ -186,13 +189,88 @@ class ReconciliationClosePackageTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, expected_error):
                     build_reconciliation_close_package(package_input)
 
+    def test_package_binds_population_evidence_to_projection_identities(self) -> None:
+        wrong_statement_population = tuple(
+            replace(
+                evidence,
+                evidence_reference="statement-population-other",
+            )
+            if evidence.evidence_kind_code == "statement_population"
+            else evidence
+            for evidence in self._evidence()
+        )
+        wrong_book_population = tuple(
+            replace(
+                evidence,
+                evidence_reference="book-population-other",
+            )
+            if evidence.evidence_kind_code == "book_population"
+            else evidence
+            for evidence in self._evidence()
+        )
+        duplicate_book_population = self._evidence() + (
+            ReconciliationEvidenceReference(
+                evidence_kind_code="book_population",
+                evidence_reference="book-population-other",
+                sha256_digest="sha256:" + "e" * 64,
+            ),
+        )
+
+        cases = (
+            (wrong_statement_population, "statement_population evidence must bind"),
+            (wrong_book_population, "book_population evidence must bind"),
+            (duplicate_book_population, "exactly one book_population evidence"),
+        )
+        for evidence, expected_error in cases:
+            with self.subTest(expected_error=expected_error):
+                with self.assertRaisesRegex(ValueError, expected_error):
+                    build_reconciliation_close_package(self._input(evidence=evidence))
+
+    def test_package_rejects_non_finite_or_unbound_projection_evidence(self) -> None:
+        projections = (
+            replace(self._projection(), bank_closing_balance=Decimal("NaN")),
+            replace(self._projection(), posted_book_cash_balance=Decimal("Infinity")),
+            replace(self._projection(), reconciliation_run_reference=" run-2026-08"),
+            replace(self._projection(), currency_code=""),
+        )
+        expected_errors = (
+            "bank_closing_balance must be a finite Decimal",
+            "posted_book_cash_balance must be a finite Decimal",
+            "reconciliation_run_reference",
+            "currency_code",
+        )
+        for projection, expected_error in zip(projections, expected_errors, strict=True):
+            with self.subTest(expected_error=expected_error):
+                with self.assertRaisesRegex(ValueError, expected_error):
+                    build_reconciliation_close_package(
+                        replace(self._input(), projection=projection)
+                    )
+
+    def test_render_fails_closed_when_package_digest_or_payload_is_tampered(self) -> None:
+        baseline = build_reconciliation_close_package(self._input())
+        tampered_digest = replace(
+            baseline,
+            package_sha256="sha256:" + "f" * 64,
+        )
+        tampered_projection = replace(
+            baseline,
+            projection=replace(
+                baseline.projection,
+                bank_closing_balance=Decimal("1250000.01"),
+            ),
+        )
+
+        for package in (tampered_digest, tampered_projection):
+            with self.assertRaisesRegex(ValueError, "package_sha256"):
+                render_reconciliation_close_package_json(package)
+
     def test_any_approval_or_source_hash_change_changes_package_digest(self) -> None:
         baseline = build_reconciliation_close_package(self._input())
         changed_approval = build_reconciliation_close_package(
             ReconciliationClosePackageInput(
                 projection=self._projection(),
                 approval_evidence_reference="approval-evidence-1",
-                approval_snapshot_sha256="sha256:" + "d" * 64,
+                approval_snapshot_sha256="sha256:" + "e" * 64,
                 knowledge_cutoff="2026-08-28T08:41:54Z",
                 evidence_references=self._evidence(),
             )
@@ -203,9 +281,9 @@ class ReconciliationClosePackageTests(unittest.TestCase):
                     ReconciliationEvidenceReference(
                         evidence_kind_code="statement_artifact",
                         evidence_reference="statement-artifact-1",
-                        sha256_digest="sha256:" + "e" * 64,
+                        sha256_digest="sha256:" + "f" * 64,
                     ),
-                    self._evidence()[1],
+                    *self._evidence()[1:],
                 )
             )
         )
