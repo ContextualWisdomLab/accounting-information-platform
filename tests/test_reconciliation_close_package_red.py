@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from dataclasses import replace
 from decimal import Decimal
 
 from accounting_information_platform.reconciliation_close_package import (
@@ -103,11 +104,34 @@ class ReconciliationClosePackageTests(unittest.TestCase):
         )
         self.assertIn("period-close", payload["next_action"])
 
-    def test_package_fails_closed_when_projection_is_not_close_review_eligible(self) -> None:
-        with self.assertRaisesRegex(ValueError, "not suitable for period-close review"):
-            build_reconciliation_close_package(self._input(suitable=False))
+    def test_package_fails_closed_for_every_close_review_ineligibility_signal(self) -> None:
+        projections = (
+            self._projection(suitable=False),
+            replace(self._projection(), exception_count=1),
+            replace(self._projection(), unexplained_difference=Decimal("0.01")),
+        )
+        for projection in projections:
+            with self.subTest(projection=projection):
+                with self.assertRaisesRegex(
+                    ValueError, "not suitable for period-close review"
+                ):
+                    build_reconciliation_close_package(
+                        replace(self._input(), projection=projection)
+                    )
 
     def test_package_fails_closed_for_invalid_or_duplicate_evidence_identity(self) -> None:
+        with self.assertRaisesRegex(ValueError, "evidence_kind_code"):
+            ReconciliationEvidenceReference(
+                evidence_kind_code=" statement_artifact",
+                evidence_reference="statement-artifact-1",
+                sha256_digest="sha256:" + "a" * 64,
+            )
+        with self.assertRaisesRegex(ValueError, "evidence_reference"):
+            ReconciliationEvidenceReference(
+                evidence_kind_code="statement_artifact",
+                evidence_reference="",
+                sha256_digest="sha256:" + "a" * 64,
+            )
         with self.assertRaisesRegex(ValueError, "sha256_digest"):
             build_reconciliation_close_package(
                 self._input(
@@ -126,6 +150,41 @@ class ReconciliationClosePackageTests(unittest.TestCase):
             build_reconciliation_close_package(
                 self._input(evidence=(duplicate, duplicate))
             )
+
+    def test_package_validates_approval_cutoff_and_required_evidence(self) -> None:
+        cases = (
+            (
+                replace(self._input(), approval_evidence_reference=" approval-evidence-1"),
+                "approval_evidence_reference",
+            ),
+            (
+                replace(
+                    self._input(),
+                    approval_snapshot_sha256="sha256:" + "A" * 64,
+                ),
+                "approval_snapshot_sha256",
+            ),
+            (
+                replace(self._input(), knowledge_cutoff="2026-08-28 08:41:54"),
+                "canonical UTC RFC 3339",
+            ),
+            (
+                replace(self._input(), knowledge_cutoff="2026-02-30T08:41:54Z"),
+                "real UTC calendar instant",
+            ),
+            (
+                replace(self._input(), evidence_references=()),
+                "include immutable statement and book populations",
+            ),
+            (
+                replace(self._input(), evidence_references=(self._evidence()[0],)),
+                "statement_artifact and book_population",
+            ),
+        )
+        for package_input, expected_error in cases:
+            with self.subTest(expected_error=expected_error):
+                with self.assertRaisesRegex(ValueError, expected_error):
+                    build_reconciliation_close_package(package_input)
 
     def test_any_approval_or_source_hash_change_changes_package_digest(self) -> None:
         baseline = build_reconciliation_close_package(self._input())
