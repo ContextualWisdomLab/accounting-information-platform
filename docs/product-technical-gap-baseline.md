@@ -1,6 +1,6 @@
 # Product and technical gap baseline
 
-**Evidence refresh:** 2026-08-27 (Asia/Seoul)
+**Evidence refresh:** 2026-08-29 (Asia/Seoul)
 
 This file is the durable buyer-visible gap queue for `accounting-information-platform`.
 It records authority, dependency order, acceptance evidence, and product gaps that
@@ -45,7 +45,7 @@ successes.
 | Documentation successor | Customer/operator README plus ADR enrichment rebuilt from the integrated foundation | Reconstructed from the exact integrated tree after the dependency roots land; stale ancestry must not merge |
 | Deterministic reconciliation and book-to-bank bridge | Second bounded reconciliation slice | Delivered on protected `develop`: deterministic proposal engine, exact bridge with finite-`Decimal` boundary, immutable-scope close-review projection, and the durable `reconciliation_run`/`reconciliation_exception`/`reconciliation_evidence` substrate with forced tenant RLS and immutable run scope |
 | Bank-reconciliation buyer slice | Close-out of the reconciliation vertical | Closed only after candidate/match allocation conservation, exception/approval workflow, and close-package provenance are integrated on top of the delivered substrate |
-| Purpose-bound accounting authorization | Least-privilege operation authority | Versioned permission model with fail-closed decisions and immutable audit evidence |
+| Purpose-bound accounting authorization | Least-privilege operation authority | Candidate implementation is under PR #34 with versioned permission model, explicit caller kind, fail-closed decisions, principal/requested-tenant provenance, and immutable audit evidence; remains open until integrated on protected `develop` |
 | Branch/release governance | Integration and release control plane | Protected `develop`/`main` effective policy including repository-owned exact-head accounting CI, independent reviews, and no normal force-push/deletion/bypass path |
 
 Issue numbering belongs to live tracker state; this table records durable roles so
@@ -88,7 +88,9 @@ that renumbering cannot silently drop a commitment.
    provenance.
 6. **Purpose-bound accounting authorization.** Keep tenant identity separate from
    operation authority for posting, reversal, close, tax, outbox, audit, and read
-   permissions.
+   permissions. PR #34 is the current implementation candidate; its exact-head
+   local and PostgreSQL evidence does not close this dependency until the protected
+   `develop` integration gates and approval pass together.
 
 Repository-governance work is an integration/release prerequisite running across
 all of the above: the protected branch policy must enforce the intended review and
@@ -103,7 +105,7 @@ exact-head gates rather than leaving merge safety to convention alone.
 | P0 | Stateful commands require exact replay identity and immutable source evidence | Retries must not duplicate or mutate posting, reversal, close, tax, or statement-acceptance evidence | Tenant-scoped command keys, immutable source hashes/references, exact replay, changed-evidence conflict, and atomic command/outbox persistence proven in PostgreSQL |
 | P1 | Deterministic reconciliation and candidate/match allocation are partially delivered | Cash close can now explain differences and safely abstain, but approved candidates with exact split/aggregate conservation are not yet persistent across runs | Exact split/aggregate conservation with many-to-many allocation rows, temporal cutoff, concurrency safety, exception/approval workflow, provenance, and bridge equations from bank evidence to posted cash journals. Delivered so far: deterministic proposal engine, finite-Decimal bridge, immutable-scope close-review projection, and the durable run/exception/evidence substrate on protected `develop` |
 | P1 | Close-review projection integration is in flight | Controllers cannot yet read an exact, exportable close-review projection from one integrated head | The read-only projection and its authority/export contracts are integrated; it cannot approve or post. Outstanding: close-review opened only from integrated projection and its restacked successors |
-| P1 | Purpose-bound authorization is absent | Tenant authentication alone is too coarse for accounting powers | Versioned operation-to-permission mapping, host identity adapter boundary, fail-closed authorization tests, immutable allow/deny audit evidence, and no caller/model-controlled promotion |
+| P1 | Purpose-bound authorization is not yet integrated on protected `develop` | Tenant authentication alone is too coarse for accounting powers | PR #34 currently supplies versioned operation-to-permission mapping, explicit `human`/`service`/`agent` caller kind, host identity adapter boundary, fail-closed authorization tests, principal/requested-tenant audit provenance, immutable allow/deny evidence, and no caller/model-controlled promotion; protected integration and release gates remain outstanding |
 | P1 | Production operability and release proof remain incomplete | An operator cannot yet deploy, observe, back up, and recover the service with release-grade evidence | Supported deployment boundary, migration/rollback rehearsal, outbox-drain ownership, metrics/alerts, backup/restore exercise, integrated-head signed attestations, release version, artifact/source hashes, and recovery runbook evidence |
 | P2 | No frontend/design-system surface exists | Controllers have no visual close/reconciliation workflow | Introduce Figma source of truth, reusable design tokens, Storybook inventory with scene/edge-case event definitions, exact-value tables/exports, and browser accessibility tests only when a UI is actually added |
 
