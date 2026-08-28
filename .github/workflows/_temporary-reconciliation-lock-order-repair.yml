@@ -1,0 +1,211 @@
+name: Temporary reconciliation lock-order repair
+
+on:
+  push:
+    branches:
+      - fix/reconciliation-multi-match-conservation
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out triggering head
+        uses: actions/checkout@631c942b53fe873fce8a5d1ea9c5c55717f3e9e1 # v4.2.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Apply bounded lock-order and recovery-copy repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          migration_0015 = Path("database/migrations/0015_reconciliation_multi_match_conservation.sql")
+          sql_0015 = migration_0015.read_text()
+          old_0015 = "reviewed reconciliation allocation evidence is frozen; supersede the match and create a new proposed match (reconciliation_allocation_frozen)"
+          new_0015 = "reviewed reconciliation allocation evidence is frozen; supersede the reviewed match, then create a new reconciliation run with a new candidate and proposed match (reconciliation_allocation_frozen)"
+          assert sql_0015.count(old_0015) == 1, "unexpected migration 0015 recovery-copy shape"
+          migration_0015.write_text(sql_0015.replace(old_0015, new_0015))
+
+          migration_0016 = Path("database/migrations/0016_reconciliation_approval_evidence.sql")
+          sql_0016 = migration_0016.read_text()
+          old_lock = """CREATE OR REPLACE FUNCTION accounting_core.reconciliation_approval_allocation_lock()
+          RETURNS trigger
+          LANGUAGE plpgsql
+          AS $$
+          BEGIN
+              PERFORM accounting_core.reconciliation_match_snapshot_lock(
+                  NEW.tenant_account_id,
+                  NEW.reconciliation_run_id,
+                  NEW.reconciliation_match_id
+              );
+              IF EXISTS (
+                  SELECT 1
+                  FROM accounting_core.reconciliation_approval AS approval
+                  WHERE approval.tenant_account_id = NEW.tenant_account_id
+                    AND approval.reconciliation_run_id = NEW.reconciliation_run_id
+                    AND approval.reconciliation_match_id = NEW.reconciliation_match_id
+              ) THEN
+                  RAISE EXCEPTION
+                      'reconciliation allocations are frozen after approval evidence; create a new proposed match instead (reconciliation_snapshot_frozen)'
+                      USING ERRCODE = '23514';
+              END IF;
+              RETURN NEW;
+          END;
+          $$;
+
+          -- Prefix these triggers so PostgreSQL acquires the match snapshot lock before
+          -- migration 0015's conservation triggers inspect match status.
+          """
+          new_lock = """CREATE OR REPLACE FUNCTION accounting_core.reconciliation_approval_allocation_lock()
+          RETURNS trigger
+          LANGUAGE plpgsql
+          AS $$
+          BEGIN
+              -- Terminal match UPDATE owns this row before its approval trigger takes
+              -- the snapshot advisory lock. Allocation inserts must use the same
+              -- row -> advisory order so the two paths cannot form a wait cycle.
+              PERFORM 1
+              FROM accounting_core.reconciliation_match AS match
+              WHERE match.tenant_account_id = NEW.tenant_account_id
+                AND match.reconciliation_run_id = NEW.reconciliation_run_id
+                AND match.reconciliation_match_id = NEW.reconciliation_match_id
+              FOR UPDATE OF match;
+
+              IF NOT FOUND THEN
+                  RAISE EXCEPTION
+                      'reconciliation allocation match is outside the tenant reconciliation run; refresh the run and retry with its current match (reconciliation_scope_mismatch)'
+                      USING ERRCODE = '23514';
+              END IF;
+
+              PERFORM accounting_core.reconciliation_match_snapshot_lock(
+                  NEW.tenant_account_id,
+                  NEW.reconciliation_run_id,
+                  NEW.reconciliation_match_id
+              );
+              IF EXISTS (
+                  SELECT 1
+                  FROM accounting_core.reconciliation_approval AS approval
+                  WHERE approval.tenant_account_id = NEW.tenant_account_id
+                    AND approval.reconciliation_run_id = NEW.reconciliation_run_id
+                    AND approval.reconciliation_match_id = NEW.reconciliation_match_id
+              ) THEN
+                  RAISE EXCEPTION
+                      'reconciliation allocations are frozen after approval evidence; supersede the reviewed match, then create a new reconciliation run with a new candidate and proposed match (reconciliation_snapshot_frozen)'
+                      USING ERRCODE = '23514';
+              END IF;
+              RETURN NEW;
+          END;
+          $$;
+
+          -- Prefix these triggers so allocation inserts acquire the parent match row
+          -- before the per-match snapshot advisory lock; migration 0015 then reuses that
+          -- row lock. Terminal match UPDATE owns the same row before taking the snapshot
+          -- lock, keeping every path on the same row -> advisory lock order.
+          """
+          assert sql_0016.count(old_lock) == 1, "unexpected migration 0016 lock function shape"
+          migration_0016.write_text(sql_0016.replace(old_lock, new_lock))
+
+          test_path = Path("tests/test_reconciliation_lock_order_red.py")
+          test_text = test_path.read_text()
+          assert "from pathlib import Path\n" not in test_text
+          test_text = test_text.replace("import queue\n", "from pathlib import Path\nimport queue\n", 1)
+          marker = "\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+          addition = '''
+
+class ReconciliationRecoveryCopyContractTests(unittest.TestCase):
+    """Keep reviewed-allocation recovery instructions executable by operators."""
+
+    def test_frozen_allocation_errors_require_a_new_reconciliation_run(self) -> None:
+        """Both migration-owned freeze errors name the viable immutable-history recovery."""
+        expected_action = "create a new reconciliation run with a new candidate and proposed match"
+        migration_contracts = (
+            (
+                "database/migrations/0015_reconciliation_multi_match_conservation.sql",
+                "reconciliation_allocation_frozen",
+            ),
+            (
+                "database/migrations/0016_reconciliation_approval_evidence.sql",
+                "reconciliation_snapshot_frozen",
+            ),
+        )
+        for migration_path, stable_error in migration_contracts:
+            sql = Path(migration_path).read_text()
+            matching_lines = [line for line in sql.splitlines() if stable_error in line]
+            self.assertEqual(len(matching_lines), 1, f"Expected one {stable_error} operator message.")
+            self.assertIn(expected_action, matching_lines[0])
+'''
+          assert test_text.count(marker) == 1, "unexpected lock-order RED test tail"
+          test_path.write_text(test_text.replace(marker, addition + marker))
+
+          adr_path = Path("docs/adr/0055-reconciliation-approval-snapshot-binding.md")
+          adr = adr_path.read_text()
+          old_decision = """Approval, allocation, and terminal match transitions take the same
+          transaction-level advisory lock for the tenant/run/match identity. Before an
+          `approved` decision row can be recorded, PostgreSQL requires at least one
+          statement allocation, at least one journal allocation, and exact equality of
+          their Decimal totals. The check runs while holding the same snapshot lock, so a
+          concurrent allocation command cannot cross the approval-evidence boundary. A
+          `rejected` decision row may be recorded without allocations because it does not
+          consume source capacity and the terminal rejected transition has no balanced
+          allocation requirement.
+          """
+          new_decision = """Approval, allocation, and terminal match transitions share the same
+          transaction-level advisory lock for the tenant/run/match identity. Allocation
+          inserts and terminal match updates additionally serialize on the parent
+          `reconciliation_match` row and acquire those locks in one database-owned order:
+          parent row first, snapshot advisory lock second. Approval-evidence insertion
+          takes only the snapshot advisory lock and never waits on the parent row, so it
+          cannot complete a row/advisory wait cycle. Before an `approved` decision row can
+          be recorded, PostgreSQL requires at least one statement allocation, at least one
+          journal allocation, and exact equality of their Decimal totals. The check runs
+          while holding the same snapshot lock, so a concurrent allocation command cannot
+          cross the approval-evidence boundary. A `rejected` decision row may be recorded
+          without allocations because it does not consume source capacity and the terminal
+          rejected transition has no balanced allocation requirement.
+          """
+          assert adr.count(old_decision) == 1, "unexpected ADR lock-order paragraph"
+          adr = adr.replace(old_decision, new_decision)
+          old_consequence = """A
+          rejected candidate can still retain durable review evidence before allocation.
+          Reconciliation allocation evidence stays append-only and tenant-scoped. A
+          rejected or superseded match preserves its historical evidence and releases
+          active source capacity according to the existing conservation controls.
+          """
+          new_consequence = """A
+          rejected candidate can still retain durable review evidence before allocation.
+          If a later terminal transition fails a source-capacity check after approval
+          evidence committed, that immutable decision remains audit evidence rather than
+          being rewritten or silently reused: supersede the reviewed match, start a new
+          reconciliation run with a new candidate and proposed match, and review the new
+          snapshot. Reconciliation allocation evidence stays append-only and tenant-scoped.
+          A rejected or superseded match preserves its historical evidence and releases
+          active source capacity according to the existing conservation controls.
+          """
+          assert adr.count(old_consequence) == 1, "unexpected ADR recovery paragraph"
+          adr_path.write_text(adr.replace(old_consequence, new_consequence))
+          PY
+
+          rm .github/workflows/_temporary-reconciliation-lock-order-repair.yml
+          git diff --check
+          git status --short
+
+      - name: Normalize repaired tree onto the canonical PR branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add database/migrations/0015_reconciliation_multi_match_conservation.sql \
+                  database/migrations/0016_reconciliation_approval_evidence.sql \
+                  docs/adr/0055-reconciliation-approval-snapshot-binding.md \
+                  tests/test_reconciliation_lock_order_red.py \
+                  .github/workflows/_temporary-reconciliation-lock-order-repair.yml
+          git commit -m "fix: serialize reconciliation review lock ordering"
+          git push origin HEAD:fix/reconciliation-multi-match-conservation
