@@ -6,6 +6,7 @@ CREATE TABLE accounting_integration.authorization_decision_record (
     authorization_decision_record_id uuid PRIMARY KEY DEFAULT uuidv7(),
     tenant_account_id uuid NOT NULL,
     principal_reference text NOT NULL CHECK (btrim(principal_reference) <> ''),
+    principal_tenant_reference text NOT NULL CHECK (btrim(principal_tenant_reference) <> ''),
     requested_tenant_reference text NOT NULL CHECK (btrim(requested_tenant_reference) <> ''),
     authentication_context_reference text NOT NULL
         CHECK (btrim(authentication_context_reference) <> ''),

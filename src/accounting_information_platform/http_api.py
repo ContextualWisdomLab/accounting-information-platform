@@ -1789,6 +1789,9 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
                 decision,
                 correlation_reference,
             )
+        except AccountingValidationError as error:
+            self._write_error(503, str(error))
+            return False
         except Exception:
             self._write_error(
                 503,

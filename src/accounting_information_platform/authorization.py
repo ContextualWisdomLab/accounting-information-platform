@@ -60,7 +60,7 @@ _HIGH_IMPACT_OPERATIONS = frozenset(
 
 @dataclass(frozen=True, slots=True)
 class AuthenticatedPrincipal:
-    """Validated opaque identity claims supplied by a trusted host adapter."""
+    """Validated opaque identity claims with an explicit human, service, or agent kind."""
 
     principal_reference: str
     tenant_reference: str
@@ -68,7 +68,7 @@ class AuthenticatedPrincipal:
     granted_permission_codes: frozenset[str]
     purpose_code: str
     credential_evidence_reference: str
-    principal_kind: str = "human"
+    principal_kind: str
 
     def __post_init__(self) -> None:
         """Reject malformed identity evidence before it reaches route authorization."""
@@ -198,16 +198,18 @@ def record_authorization_decision(
         connection.execute(
             """
             INSERT INTO accounting_integration.authorization_decision_record (
-                tenant_account_id, principal_reference, requested_tenant_reference,
+                tenant_account_id, principal_reference, principal_tenant_reference,
+                requested_tenant_reference,
                 authentication_context_reference, credential_evidence_reference,
                 operation_code, permission_code, purpose_code, policy_version,
                 decision_code, correlation_reference
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 tenant_id,
                 decision.principal_reference,
+                decision.tenant_reference,
                 decision.requested_tenant_reference,
                 decision.authentication_context_reference,
                 decision.credential_evidence_reference,

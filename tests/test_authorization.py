@@ -123,6 +123,19 @@ class AuthorizationContractTests(unittest.TestCase):
                 granted_permission_codes=frozenset(),
                 purpose_code="month_end_control",
                 credential_evidence_reference="urn:cwl:auth-evidence:test",
+                principal_kind="human",
+            )
+
+    def test_principal_kind_must_be_explicit_at_the_trust_boundary(self) -> None:
+        """Omitting caller kind cannot silently elevate an agent to a human principal."""
+        with self.assertRaises(TypeError):
+            AuthenticatedPrincipal(
+                principal_reference="urn:cwl:principal:missing-kind",
+                tenant_reference=TENANT,
+                authentication_context_reference="urn:cwl:authentication:test",
+                granted_permission_codes=frozenset(),
+                purpose_code="month_end_control",
+                credential_evidence_reference="urn:cwl:auth-evidence:test",
             )
 
     def test_http_authorization_evidence_failure_is_fail_closed(self) -> None:
@@ -148,6 +161,22 @@ class AuthorizationContractTests(unittest.TestCase):
             )
         handler._write_error.assert_called_once()
         self.assertEqual(handler._write_error.call_args.args[0], 503)
+        handler._write_error.reset_mock()
+        with mock.patch(
+            "accounting_information_platform.http_api.record_authorization_decision",
+            side_effect=AccountingValidationError(
+                "Tenant urn:cwl:tenant_missing is not recorded. Create the tenant_account row, then retry posting."
+            ),
+        ):
+            self.assertFalse(
+                JournalProposalHandler._authorize_request(
+                    handler, "read_catalog", "/account-role-mappings"
+                )
+            )
+        handler._write_error.assert_called_once()
+        self.assertEqual(handler._write_error.call_args.args[0], 503)
+        self.assertIn("tenant_account row", handler._write_error.call_args.args[1])
+        self.assertNotIn("audit store", handler._write_error.call_args.args[1])
         handler._write_error.reset_mock()
         with mock.patch(
             "accounting_information_platform.http_api.record_authorization_decision"

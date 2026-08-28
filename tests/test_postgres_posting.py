@@ -68,7 +68,11 @@ from accounting_information_platform import (
 )
 import psycopg
 
-from accounting_information_platform.authorization import AuthenticatedPrincipal
+from accounting_information_platform.authorization import (
+    AuthenticatedPrincipal,
+    authorize,
+    record_authorization_decision,
+)
 from accounting_information_platform.persistence import (
     _fiscal_year_identity,
     apply_foundation_migration,
@@ -11998,6 +12002,7 @@ class PostgresPostingTests(unittest.TestCase):
             granted_permission_codes=frozenset({"accounting.read_catalog"}),
             purpose_code="catalog_read",
             credential_evidence_reference="urn:cwl:auth-evidence:catalog-reader",
+            principal_kind="human",
         )
         server = self._start_http_server(authorization_context=context)
 
@@ -12027,7 +12032,7 @@ class PostgresPostingTests(unittest.TestCase):
             )
             decisions = connection.execute(
                 """
-                SELECT operation_code, permission_code, decision_code
+                SELECT operation_code, permission_code, decision_code, principal_tenant_reference
                 FROM accounting_integration.authorization_decision_record
                 WHERE tenant_account_id = %s
                 ORDER BY recorded_at, authorization_decision_record_id
@@ -12037,9 +12042,9 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(
             decisions,
             [
-                ("read_catalog", "accounting.read_catalog", "allowed"),
-                ("post_proposal", "accounting.post_proposal", "denied"),
-                ("publish_outbox", "accounting.publish_outbox", "denied"),
+                ("read_catalog", "accounting.read_catalog", "allowed", self.policy.tenant_reference),
+                ("post_proposal", "accounting.post_proposal", "denied", self.policy.tenant_reference),
+                ("publish_outbox", "accounting.publish_outbox", "denied", self.policy.tenant_reference),
             ],
         )
         for mutation in (
@@ -12061,6 +12066,41 @@ class PostgresPostingTests(unittest.TestCase):
                         connection.execute(mutation, (self.tenant_id,))
         server.shutdown()
 
+    def test_authorization_evidence_retains_principal_and_requested_tenants(self) -> None:
+        """A cross-tenant denial retains both sides of the attempted scope."""
+        principal_tenant = "urn:cwl:tenant_principal_other"
+        context = AuthenticatedPrincipal(
+            principal_reference="urn:cwl:principal:cross-tenant",
+            tenant_reference=principal_tenant,
+            authentication_context_reference="urn:cwl:authentication:cross-tenant",
+            granted_permission_codes=frozenset({"accounting.read_catalog"}),
+            purpose_code="catalog_read",
+            credential_evidence_reference="urn:cwl:auth-evidence:cross-tenant",
+            principal_kind="human",
+        )
+        decision = authorize(context, self.policy.tenant_reference, "read_catalog")
+        record_authorization_decision(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            decision,
+            "cross-tenant-test",
+        )
+
+        with psycopg.connect(DATABASE_URL) as connection:
+            connection.execute(
+                "SELECT set_config('app.tenant_account_id', %s, false)",
+                (self.tenant_id,),
+            )
+            tenants = connection.execute(
+                """
+                SELECT principal_tenant_reference, requested_tenant_reference
+                FROM accounting_integration.authorization_decision_record
+                WHERE tenant_account_id = %s AND correlation_reference = 'cross-tenant-test'
+                """,
+                (self.tenant_id,),
+            ).fetchone()
+        self.assertEqual(tenants, (principal_tenant, self.policy.tenant_reference))
+
     def test_http_accepts_maximum_length_command_identity(self) -> None:
         """A command key at the evidence limit remains executable after correlation tagging."""
         context = AuthenticatedPrincipal(
@@ -12072,6 +12112,7 @@ class PostgresPostingTests(unittest.TestCase):
             ),
             purpose_code="posting_control",
             credential_evidence_reference="urn:cwl:auth-evidence:posting-reader",
+            principal_kind="human",
         )
         server = self._start_http_server(authorization_context=context)
         payload = self._billing_validated_payload(
@@ -13335,6 +13376,7 @@ class PostgresPostingTests(unittest.TestCase):
                 ),
                 purpose_code="test_control",
                 credential_evidence_reference="urn:cwl:auth-evidence:test-suite",
+                principal_kind="human",
             )
         server = create_journal_proposal_server(
             DATABASE_URL,

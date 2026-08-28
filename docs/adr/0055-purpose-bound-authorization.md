@@ -15,7 +15,9 @@ but they do not replace an application decision made before a route invokes doma
 
 The trusted host identity adapter supplies an immutable `AuthenticatedPrincipal` containing only
 validated opaque principal, tenant, authentication-context, purpose, permission, and credential-
-evidence references. It does not pass bearer tokens, policy documents, or model output into AIS.
+evidence references plus an explicit `principal_kind`. `principal_kind` must be one of `human`,
+`service`, or `agent`; it has no implicit default, so an adapter omission fails before route
+authorization. It does not pass bearer tokens, policy documents, or model output into AIS.
 
 The HTTP boundary maps every accounting route to a stable operation code before invoking `accept`
 or `lookup`. A missing, unknown, tenant-mismatched, agent-originated high-impact, or insufficient
@@ -25,9 +27,9 @@ text cannot grant authority.
 
 Every routed decision is appended to the tenant-scoped, forced-RLS
 `accounting_integration.authorization_decision_record` table. The record keeps the policy version,
-decision, principal/purpose evidence, operation, required permission, request tenant, and bounded
-correlation identity. It never stores raw credentials. Database mutation triggers make the evidence
-append-only.
+decision, principal/purpose evidence, principal tenant, requested tenant, operation, required
+permission, and bounded correlation identity. It never stores raw credentials. Database mutation
+triggers make the evidence append-only.
 
 The standalone runner has no authenticated principal by default and therefore exposes only health
 status until a trusted host adapter supplies a validated context to

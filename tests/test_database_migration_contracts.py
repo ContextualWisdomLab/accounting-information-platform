@@ -141,6 +141,7 @@ class DatabaseInvariantMigrationContracts(unittest.TestCase):
             migration,
         )
         self.assertIn("CREATE POLICY authorization_decision_tenant_isolation", migration)
+        self.assertIn("principal_tenant_reference text NOT NULL", migration)
         self.assertIn("BEFORE UPDATE OR DELETE", migration)
         self.assertIn("authorization_evidence_immutable", migration)
         self.assertIn("REVOKE ALL ON accounting_integration.authorization_decision_record FROM PUBLIC", migration)

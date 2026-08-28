@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- Authorization principals now require an explicit `principal_kind` (`human`, `service`, or
+  `agent`) so omitted host identity classification cannot silently receive human high-impact
+  authority. Authorization evidence retains both principal and requested tenant references, and
+  unprovisioned tenant diagnostics remain fail-closed without being mislabeled as audit-store loss.
 - Added purpose-bound application authorization at the HTTP boundary: a trusted host adapter must
   supply validated opaque principal/purpose evidence and every accounting route maps to an explicit
   permission before domain work. Missing, unknown, tenant-mismatched, insufficient, and
