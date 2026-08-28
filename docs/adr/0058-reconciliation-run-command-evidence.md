@@ -17,9 +17,10 @@ idempotency claim to drift away from the statement evidence.
 Migration `0019_reconciliation_run_command_evidence.sql` adds the immutable,
 tenant-scoped `accounting_core.reconciliation_run_command` row. The command stores
 the run and statement identities, a tenant-scoped idempotency key, canonical command
-hash, source-payload hash, and immutable object-storage reference. Composite foreign
-keys, forced RLS, exact hash checks, and an immutable trigger make the evidence
-database-owned.
+hash, raw bank-statement artifact payload hash, and immutable object-storage
+reference. The raw artifact hash is distinct from the normalized statement hash;
+the caller must supply the former. Composite foreign keys, forced RLS, exact hash
+checks, and an immutable trigger make the evidence database-owned.
 
 `POST /reconciliation-runs` validates that the statement is persisted, its source
 hash matches, and its bank-account assignment is active for the requested legal
@@ -33,6 +34,10 @@ run evidence before live assignment validation, so an exact retry remains a
 replay even if that assignment later closes or overlaps; changed request fields
 still fail closed.
 `GET /reconciliation-runs` returns the same tenant-scoped run document.
+
+Distinct idempotency keys may open distinct immutable runs for the same statement
+and scope. This permits a later policy or cutoff evaluation to remain separately
+auditable; only reuse of one key is an idempotency conflict.
 
 This slice deliberately does not perform matching, allocate statement or journal
 amounts, approve a match, close a fiscal period, select a final chart account, or
