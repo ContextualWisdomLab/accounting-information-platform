@@ -12,6 +12,7 @@ from accounting_information_platform import AccountingValidationError
 from accounting_information_platform.authorization import (
     AUTHORIZATION_POLICY_VERSION,
     AuthenticatedPrincipal,
+    AuthorizationDecision,
     authorize,
     period_close_operation,
     record_authorization_decision,
@@ -248,6 +249,27 @@ class AuthorizationContractTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "tenant scope"):
             record_authorization_decision("postgresql://unused", TENANT, decision, "/account-role-mappings")
+
+    def test_authorization_evidence_rejects_caller_constructed_allow(self) -> None:
+        """Audit persistence cannot promote a caller-constructed decision to allowed evidence."""
+        decision = AuthorizationDecision(
+            principal_reference="urn:cwl:principal:forged",
+            tenant_reference=TENANT,
+            requested_tenant_reference=TENANT,
+            authentication_context_reference="urn:cwl:authentication:forged",
+            credential_evidence_reference="urn:cwl:auth-evidence:forged",
+            operation_code="read_catalog",
+            permission_code="accounting.read_catalog",
+            purpose_code="catalog_read",
+            policy_version=AUTHORIZATION_POLICY_VERSION,
+            decision_code="allowed",
+            allowed=True,
+        )
+
+        with self.assertRaisesRegex(ValueError, "issued by authorize"):
+            record_authorization_decision(
+                "postgresql://unused", TENANT, decision, "forged-decision"
+            )
 
     def test_internal_handlers_keep_their_missing_header_guard(self) -> None:
         """Direct handler dispatch remains fail-closed even outside the normal router."""

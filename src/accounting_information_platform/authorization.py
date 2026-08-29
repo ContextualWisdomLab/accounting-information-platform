@@ -8,7 +8,7 @@ module or the accounting domain.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Mapping
 
@@ -18,6 +18,7 @@ from .core import _require_code, _require_reference
 AUTHORIZATION_POLICY_VERSION = "accounting-authorization-v1"
 _PERMISSION_PATTERN = re.compile(r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$")
 _PRINCIPAL_KINDS = frozenset(("human", "service", "agent"))
+_AUTHORIZATION_ISSUANCE_TOKEN = object()
 
 _OPERATION_PERMISSIONS: Mapping[str, str] = MappingProxyType(
     {
@@ -103,6 +104,14 @@ class AuthorizationDecision:
     policy_version: str
     decision_code: str
     allowed: bool
+    _issuance_token: object = field(default=None, init=False, repr=False, compare=False)
+
+
+def _issue_authorization_decision(**values: object) -> AuthorizationDecision:
+    """Create decision evidence only through the policy evaluator."""
+    decision = AuthorizationDecision(**values)
+    object.__setattr__(decision, "_issuance_token", _AUTHORIZATION_ISSUANCE_TOKEN)
+    return decision
 
 
 def permission_for_operation(operation_code: str) -> str | None:
@@ -119,7 +128,7 @@ def authorize(
     _require_reference(requested_tenant_reference, "requested tenant reference")
     permission_code = permission_for_operation(operation_code) or ""
     if principal is None:
-        return AuthorizationDecision(
+        return _issue_authorization_decision(
             principal_reference="urn:cwl:principal:unauthenticated",
             tenant_reference=requested_tenant_reference,
             requested_tenant_reference=requested_tenant_reference,
@@ -140,7 +149,7 @@ def authorize(
         and not agent_restricted
         and permission_code in principal.granted_permission_codes
     )
-    return AuthorizationDecision(
+    return _issue_authorization_decision(
         principal_reference=principal.principal_reference,
         tenant_reference=principal.tenant_reference,
         requested_tenant_reference=requested_tenant_reference,
@@ -190,6 +199,8 @@ def record_authorization_decision(
     """Append one decision to the tenant-scoped PostgreSQL authorization evidence table."""
     if not correlation_reference or len(correlation_reference) > 512:
         raise ValueError("authorization correlation reference must contain 1 to 512 characters")
+    if decision._issuance_token is not _AUTHORIZATION_ISSUANCE_TOKEN:
+        raise ValueError("authorization decision must be issued by authorize")
     if decision.requested_tenant_reference != tenant_reference:
         raise ValueError("authorization decision tenant scope must match requested tenant reference")
     from .persistence import PostgresPostingLedger

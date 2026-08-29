@@ -35,7 +35,9 @@ Every routed decision is appended to the tenant-scoped, forced-RLS
 decision, principal/purpose evidence, principal tenant, requested tenant, operation, required
 permission, and bounded correlation identity. It never stores raw credentials. Database mutation
 triggers make the evidence append-only, and the persistence boundary rejects evidence whose
-requested tenant differs from the tenant scope used to store it.
+requested tenant differs from the tenant scope used to store it. The persistence boundary also
+accepts only decisions issued by the `authorize` evaluator, so a caller cannot construct an
+`allowed` decision and promote it into durable evidence.
 
 The standalone runner has no authenticated principal by default and therefore exposes only health
 status until a trusted host adapter supplies a validated context to
