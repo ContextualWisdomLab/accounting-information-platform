@@ -98,43 +98,47 @@ class PostgresReadinessTriggerContractTests(unittest.TestCase):
 
     def test_update_of_column_contract_drift_is_not_accepted(self) -> None:
         """A broader soft-close trigger is drift, even when its function remains attached."""
-        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as admin:
-            admin.execute(
-                "DROP TRIGGER soft_close_evidence_immutable_guard "
-                "ON accounting_core.accounting_book_period_control"
-            )
-            admin.execute(
-                """
-                CREATE TRIGGER soft_close_evidence_immutable_guard
-                    BEFORE UPDATE
-                    ON accounting_core.accounting_book_period_control
-                    FOR EACH ROW
-                    EXECUTE FUNCTION accounting_core.guard_soft_close_evidence_update()
-                """
-            )
+        self.runtime_ledger.check_readiness()
+        trigger_dropped = False
         try:
+            with psycopg.connect(posting.DATABASE_URL, autocommit=True) as admin:
+                admin.execute(
+                    "DROP TRIGGER soft_close_evidence_immutable_guard "
+                    "ON accounting_core.accounting_book_period_control"
+                )
+                trigger_dropped = True
+                admin.execute(
+                    """
+                    CREATE TRIGGER soft_close_evidence_immutable_guard
+                        BEFORE UPDATE
+                        ON accounting_core.accounting_book_period_control
+                        FOR EACH ROW
+                        EXECUTE FUNCTION accounting_core.guard_soft_close_evidence_update()
+                    """
+                )
             with self.assertRaisesRegex(
                 AccountingValidationError,
                 "accounting database schema is incomplete",
             ):
                 self.runtime_ledger.check_readiness()
         finally:
-            with psycopg.connect(posting.DATABASE_URL, autocommit=True) as admin:
-                admin.execute(
-                    "DROP TRIGGER soft_close_evidence_immutable_guard "
-                    "ON accounting_core.accounting_book_period_control"
-                )
-                admin.execute(
-                    """
-                    CREATE TRIGGER soft_close_evidence_immutable_guard
-                        BEFORE UPDATE OF soft_close_idempotency_key,
-                                         soft_close_source_payload_hash,
-                                         soft_close_source_journal_count
-                        ON accounting_core.accounting_book_period_control
-                        FOR EACH ROW
-                        EXECUTE FUNCTION accounting_core.guard_soft_close_evidence_update()
-                    """
-                )
+            if trigger_dropped:
+                with psycopg.connect(posting.DATABASE_URL, autocommit=True) as admin:
+                    admin.execute(
+                        "DROP TRIGGER IF EXISTS soft_close_evidence_immutable_guard "
+                        "ON accounting_core.accounting_book_period_control"
+                    )
+                    admin.execute(
+                        """
+                        CREATE TRIGGER soft_close_evidence_immutable_guard
+                            BEFORE UPDATE OF soft_close_idempotency_key,
+                                             soft_close_source_payload_hash,
+                                             soft_close_source_journal_count
+                            ON accounting_core.accounting_book_period_control
+                            FOR EACH ROW
+                            EXECUTE FUNCTION accounting_core.guard_soft_close_evidence_update()
+                        """
+                    )
         self.runtime_ledger.check_readiness()
 
 
