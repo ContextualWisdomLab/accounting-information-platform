@@ -8,9 +8,11 @@ module or the accounting domain.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import re
 from dataclasses import dataclass, field
 from enum import Enum
+from secrets import token_bytes
 from types import MappingProxyType
 from typing import Mapping
 
@@ -29,6 +31,7 @@ class _AuthorizationIssuance(Enum):
 
 
 _AUTHORIZATION_ISSUANCE_TOKEN = _AuthorizationIssuance.ISSUED
+_AUTHORIZATION_DECISION_SEAL_KEY = token_bytes(32)
 _DECISION_VALUE_NAMES = (
     "principal_reference",
     "tenant_reference",
@@ -127,14 +130,18 @@ class AuthorizationDecision:
     policy_version: str
     decision_code: str
     allowed: bool
-    _issuance_token: object = field(default=None, init=False, repr=False, compare=False)
-    _decision_fingerprint: str = field(default="", init=False, repr=False, compare=False)
+    _issuance_token: object = field(default=None, repr=False, compare=False)
+    _decision_fingerprint: str = field(default="", repr=False, compare=False)
 
 
 def _decision_fingerprint(decision: AuthorizationDecision) -> str:
     """Fingerprint decision values so post-issuance mutation fails closed."""
     values = tuple(getattr(decision, name) for name in _DECISION_VALUE_NAMES)
-    return hashlib.sha256(repr(values).encode("utf-8")).hexdigest()
+    return hmac.new(
+        _AUTHORIZATION_DECISION_SEAL_KEY,
+        repr(values).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
 
 
 def _issue_authorization_decision(**values: object) -> AuthorizationDecision:

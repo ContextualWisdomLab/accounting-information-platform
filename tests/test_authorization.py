@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import unittest
+from dataclasses import replace
 from email.message import Message
 from types import SimpleNamespace
 import unittest.mock as mock
@@ -288,6 +289,25 @@ class AuthorizationContractTests(unittest.TestCase):
         ):
             record_authorization_decision(
                 "postgresql://unused", TENANT, decision, "copied-decision"
+            )
+        ledger._require_tenant.assert_called_once()
+
+    def test_authorization_evidence_accepts_an_unchanged_replacement(self) -> None:
+        """Replacing an evaluator decision without changing values preserves its provenance."""
+        decision = replace(
+            authorize(principal("accounting.read_catalog"), TENANT, "read_catalog")
+        )
+        ledger = mock.Mock()
+        session = mock.MagicMock()
+        session.__enter__.return_value = mock.Mock()
+        ledger._session.return_value = session
+        ledger._require_tenant.return_value = "tenant-id"
+        with mock.patch(
+            "accounting_information_platform.persistence.PostgresPostingLedger",
+            return_value=ledger,
+        ):
+            record_authorization_decision(
+                "postgresql://unused", TENANT, decision, "replacement-decision"
             )
         ledger._require_tenant.assert_called_once()
 
