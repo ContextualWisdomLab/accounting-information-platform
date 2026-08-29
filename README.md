@@ -33,7 +33,8 @@ What is present:
 - a stdlib HTTP surface for proposal acceptance, posting receipts, journals,
   reversals, period close/open, trial balances, financial statements, ledgers,
   aging, VAT/HomeTax rejection receipts, outbox, audit, catalog reads, and
-  tenant-scoped evaluating reconciliation-run creation/lookup;
+  tenant-scoped evaluating reconciliation-run and proposed reconciliation-match
+  creation/lookup;
 - product, architecture, security, and standards documents listed below.
 
 What is not present: an automatically started listener, gRPC or live event
@@ -121,7 +122,7 @@ factory/runner and provide the tenant-bound host boundary explicitly.
 `unittest` discovery also runs `tests/test_postgres_posting.py`, which needs a
 reachable PostgreSQL 18 instance and `ACCOUNTING_DATABASE_URL` (CI uses
 `postgresql://postgres:postgres@127.0.0.1:5432/accounting_test` and applies
-the checked-in migration chain through `database/migrations/0019_reconciliation_run_command_evidence.sql`). Persistence is still
+the checked-in migration chain through `database/migrations/0020_reconciliation_match_command_evidence.sql`). Persistence is still
 local to this repository; it is not a Naruon or sibling checkout.
 
 Optional import smoke after the editable install above:
@@ -174,6 +175,9 @@ in the PostgreSQL posting transaction; nothing in this tree publishes those
 events onto a live bus. The same boundary exposes `POST /journals` for
 AIS-owned adjustments and `GET /financial-statements`, `GET /trial-balances`,
 `GET /account-ledgers`, and the aging/reporting routes for buyer-facing reads.
+The reconciliation boundary also exposes `POST /reconciliation-matches` and
+`GET /reconciliation-matches?reconciliation_match_id=` for one exact 1:1
+proposed match; it records review evidence only and cannot approve or post.
 
 ## Standards already cited
 

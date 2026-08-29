@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReconciliationDataModelDocumentationContractTests(unittest.TestCase):
-    """Keep diligence-facing data-model documents aligned with migrations 0013-0015."""
+    """Keep diligence-facing data-model documents aligned with reconciliation migrations."""
 
     def test_data_model_names_durable_reconciliation_relations(self) -> None:
         """The normalized reconciliation run/match/allocation facts must be explicit."""
@@ -21,6 +21,7 @@ class ReconciliationDataModelDocumentationContractTests(unittest.TestCase):
             "`reconciliation_match`",
             "`statement_match_allocation`",
             "`journal_match_allocation`",
+            "`reconciliation_match_command`",
         ):
             with self.subTest(relation=relation):
                 self.assertIn(relation, text)

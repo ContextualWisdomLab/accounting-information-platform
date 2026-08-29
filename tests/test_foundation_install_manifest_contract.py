@@ -147,6 +147,18 @@ class FoundationInstallManifestContractTests(unittest.TestCase):
                 self.assertIn(migration_nineteen, text)
                 self.assertLess(text.index(migration_eighteen), text.index(migration_nineteen))
 
+    def test_required_files_and_install_docs_include_match_command_evidence(self) -> None:
+        """Proposed-match command evidence follows the immutable run command chain."""
+        migration_nineteen = "database/migrations/0019_reconciliation_run_command_evidence.sql"
+        migration_twenty = "database/migrations/0020_reconciliation_match_command_evidence.sql"
+        self.assertIn(migration_twenty, set(REQUIRED_FILES))
+        for relative_path in ("docs/OPERABILITY.md", "docs/ARCHITECTURE.md"):
+            with self.subTest(relative_path=relative_path):
+                text = (ROOT / relative_path).read_text(encoding="utf-8")
+                self.assertIn(migration_nineteen, text)
+                self.assertIn(migration_twenty, text)
+                self.assertLess(text.index(migration_nineteen), text.index(migration_twenty))
+
     def test_install_fails_closed_when_approval_snapshot_migration_is_missing(self) -> None:
         """The canonical loader may not silently stop before database-owned approval evidence."""
         original_is_file = Path.is_file
@@ -201,6 +213,22 @@ class FoundationInstallManifestContractTests(unittest.TestCase):
 
         def is_file(path: Path) -> bool:
             if path.name == "0019_reconciliation_run_command_evidence.sql":
+                return False
+            return original_is_file(path)
+
+        with patch.object(Path, "is_file", is_file):
+            with self.assertRaises(AccountingValidationError):
+                apply_foundation_migration(
+                    "postgresql://unused",
+                    ROOT / "database/migrations/0001_accounting_foundation.sql",
+                )
+
+    def test_install_fails_closed_when_match_command_migration_is_missing(self) -> None:
+        """The canonical loader may not persist proposed matches without command evidence."""
+        original_is_file = Path.is_file
+
+        def is_file(path: Path) -> bool:
+            if path.name == "0020_reconciliation_match_command_evidence.sql":
                 return False
             return original_is_file(path)
 

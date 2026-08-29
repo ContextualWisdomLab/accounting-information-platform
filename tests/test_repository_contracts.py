@@ -17,6 +17,7 @@ from scripts.validate_repository import (
     APPEND_ONLY_JOURNAL_MUTATION_ERROR,
     COVERAGE_CP313_MANYLINUX_X86_64_WHEEL_HASH,
     COVERAGE_UNIVERSAL_WHEEL_HASH,
+    PSYCOPG_BINARY_CP314_MANYLINUX_X86_64_WHEEL_HASH,
     main,
     find_mutable_action_references,
     find_placeholder_tokens,
@@ -367,6 +368,14 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertEqual(
             universal_only,
             ("coverage must pin the CPython 3.13 manylinux x86_64 wheel hash",),
+        )
+
+        quality_requirements = (ROOT / "requirements-quality.txt").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            f"--hash=sha256:{PSYCOPG_BINARY_CP314_MANYLINUX_X86_64_WHEEL_HASH}",
+            quality_requirements,
         )
 
         orphan_and_unpinned = validate_quality_requirements(

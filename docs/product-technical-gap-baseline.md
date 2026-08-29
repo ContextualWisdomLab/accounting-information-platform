@@ -33,8 +33,9 @@ persistence and database-owned invariants, a bounded stdlib HTTP surface, versio
 JSON contracts, and a durable outbox. The accounting posting foundation and the
 immutable `camt.053.001.14` bank-statement evidence registry are integrated protected
 `develop` facts. The current integration tree also includes database-owned
-candidate/match/allocation conservation and durable human approval snapshot controls
-from migrations `0015` through `0017`; protected `develop` remains the release authority
+  candidate/match/allocation conservation, durable human approval snapshot controls,
+  and the proposed-match command boundary from migrations `0015` through `0020`;
+  protected `develop` remains the release authority
 until this exact integration candidate passes its live gates. It does not transmit HomeTax/NTS
 filings, enforce purpose-bound application authorization, or provide a controller
 UI. Those omissions are explicit product scope, not implied successes.
@@ -89,8 +90,9 @@ that renumbering cannot silently drop a commitment.
    durable `reconciliation_run`/`reconciliation_exception`/
    `reconciliation_evidence` rows with forced tenant RLS and the immutable
    evaluated-run scope guard. Delivered in the current integration tree:
-   candidate/match persistence, many-to-many exact allocation conservation, and
-   database-owned approval snapshot binding. Candidate: close-package provenance
+   candidate/match persistence, many-to-many exact allocation conservation, database-owned
+   approval snapshot binding, and the exact 1:1 proposed-match command/HTTP boundary.
+   Candidate: close-package provenance
    with complete approved match evidence, exact scope, and immutable run cutoff in
    PR #32; close-package provenance remains open until this candidate is integrated
    on the protected branch and revalidated.
@@ -179,6 +181,7 @@ immutable bank statement artifact
 → durable run / exception / evidence rows        [delivered; forced RLS + run-scope guard + immutable run-command idempotency/source evidence in current tree]
 → close-review projection                        [delivered; evidence eligibility only, same-scope deltas]
 → candidate/match allocation conservation        [delivered in current tree; migration 0015]
+→ proposed-match command evidence                [delivered in current candidate; migration 0020; proposed only]
 → reconciliation approval and close package      [approval snapshot delivered; structured close-package candidate in PR #32]
 ```
 

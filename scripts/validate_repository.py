@@ -30,6 +30,7 @@ REQUIRED_FILES = (
     "src/accounting_information_platform/ingest.py",
     "src/accounting_information_platform/persistence.py",
     "src/accounting_information_platform/reconciliation_run.py",
+    "src/accounting_information_platform/reconciliation_match.py",
     "src/accounting_information_platform/py.typed",
     "schemas/accounting-journal-proposal.schema.json",
     "schemas/accounting-posting-receipt.schema.json",
@@ -53,6 +54,7 @@ REQUIRED_FILES = (
     "database/migrations/0017_reconciliation_approval_lock_order.sql",
     "database/migrations/0018_bank_statement_balance_evidence.sql",
     "database/migrations/0019_reconciliation_run_command_evidence.sql",
+    "database/migrations/0020_reconciliation_match_command_evidence.sql",
     "docs/PRD.md",
     "docs/TRD.md",
     "docs/ARCHITECTURE.md",
@@ -116,6 +118,7 @@ REQUIRED_FILES = (
     "docs/adr/0052-bank-statement-evidence-registry.md",
     "docs/adr/0057-bank-statement-balance-evidence.md",
     "docs/adr/0058-reconciliation-run-command-evidence.md",
+    "docs/adr/0059-reconciliation-match-command-evidence.md",
     "docs/doctoring/REFERENCES.md",
     "docs/doctoring/STANDARD_TRACEABILITY.md",
     "docs/superpowers/specs/2026-08-16-accounting-information-platform-design.md",
@@ -136,6 +139,9 @@ COVERAGE_UNIVERSAL_WHEEL_HASH = (
 )
 COVERAGE_CP313_MANYLINUX_X86_64_WHEEL_HASH = (
     "12b59c90084e3234fb11184886bf4a40f4f16a8c8f867be2e087b81f8e8868d4"
+)
+PSYCOPG_BINARY_CP314_MANYLINUX_X86_64_WHEEL_HASH = (
+    "8c0056529e68dbe9184cd4019a1f3d8f3a4ead2f6fc7a5afcf27d3314edd1277"
 )
 SCHEMA_NAME_PATTERN = re.compile(
     r"\bCREATE\s+SCHEMA(?:\s+IF\s+NOT\s+EXISTS)?\s+([A-Za-z_][A-Za-z0-9_]*)",
