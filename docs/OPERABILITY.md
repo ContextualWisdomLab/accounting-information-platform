@@ -2,7 +2,7 @@
 
 ## Deployment preconditions
 
-Use PostgreSQL 18 and keep the migration owner, application runtime login and administrative / break-glass identities separate. Apply migrations in numeric order through `0021_reconciliation_run_command_provenance_repair.sql` before starting the service. Do not run the application with a table-owner, superuser or `BYPASSRLS` login.
+Use PostgreSQL 18 and keep the migration owner, application runtime login and administrative / break-glass identities separate. Apply migrations in numeric order through `0022_reconciliation_amount_precision.sql` before starting the service. Do not run the application with a table-owner, superuser or `BYPASSRLS` login.
 
 Required environment values are deployment-specific. At minimum, configure the accounting database URL and bind this AIS process to exactly one tenant reference. Secrets belong in an approved secret store; do not place database passwords, NTS credentials, bearer tokens or provider secrets in journal payloads, logs or outbox events.
 
@@ -34,6 +34,7 @@ database/migrations/0018_bank_statement_balance_evidence.sql
 database/migrations/0019_reconciliation_run_command_evidence.sql
 database/migrations/0020_reconciliation_match_command_evidence.sql
 database/migrations/0021_reconciliation_run_command_provenance_repair.sql
+database/migrations/0022_reconciliation_amount_precision.sql
 ```
 
 Migration `0015_reconciliation_multi_match_conservation.sql` replaces the run-wide single-approved-match shortcut from `0014` with tenant/run-scoped match identity plus exact statement/journal allocation conservation. It permits multiple independently approved matches only when no authoritative source amount is over-consumed and grants no journal-posting authority.
@@ -47,6 +48,8 @@ Migration `0018_bank_statement_balance_evidence.sql` preserves the exact numeric
 Migration `0019_reconciliation_run_command_evidence.sql` records the immutable command identity that opens a reconciliation run from one persisted bank statement and active bank-account assignment. The tenant-scoped idempotency key, command hash, source hash, and object-store reference are forced-RLS evidence; new runs exclude source facts recorded after `knowledge_cutoff_at`, and both the deferred run guard and command INSERT guard require one command per run with statement-to-assignment bank-account provenance, including when a legacy run receives its command later. The public run API opens only `evaluating` scope and does not match, approve, close, or post journals.
 
 Migration `0021_reconciliation_run_command_provenance_repair.sql` is a forward-compatible upgrade for installations that already applied `0019` before the command-insert provenance guard existed. Its migration-only preflight scans existing immutable command evidence and fails closed on cross-bank provenance; it then recreates both the deferred run guard and immediate command-insert guard without changing evidence rows. Apply it after `0020` and before runtime traffic.
+
+Migration `0022_reconciliation_amount_precision.sql` widens reconciliation candidate and allocation amounts from the historical `numeric(30, 6)` domain to the platform-wide `numeric(38, 6)` domain. It also replaces the conservation and command-allocation trigger functions with unconstrained exact aggregate variables, so valid boundary-sized amounts are compared before rejection rather than overflowing during `SUM`. Apply it after `0021`; the migration changes no evidence values and runtime parsing rejects amounts outside the same domain before persistence.
 
 Migration `0020_reconciliation_match_command_evidence.sql` records the immutable command identity for one exact 1:1 proposed match. `POST /reconciliation-matches` locks the evaluating run and writes the candidate, proposed match, statement/journal allocations, idempotency key, canonical command hash, and source-payload provenance in one transaction; exact retries replay and changed evidence conflicts. The route accepts only a bound bank-statement entry whose booking/value timestamps and `recorded_at` respect the bank and knowledge cutoffs, and a posted journal whose accounting date and `posted_at` respect the book and knowledge cutoffs; its amount must be on the run assignment's cash chart line, with CRDT requiring cash debit and DBIT requiring cash credit. Database guards lock the parent match while requiring exactly one equal allocation on each side matching candidate amounts at command insert and reject later allocations. Source-conservation violations fail as stable HTTP 422 validation errors rather than raw driver failures. Malformed identifiers are 400, absent source evidence is 404, state conflicts are 409, and source-content validation is 422. `GET /reconciliation-matches` reads the tenant-scoped evidence. This command does not select chart accounts, approve a match, close a period, or post a journal.
 

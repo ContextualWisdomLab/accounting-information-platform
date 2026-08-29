@@ -173,6 +173,20 @@ class FoundationInstallManifestContractTests(unittest.TestCase):
                 self.assertIn(migration_twenty_one, text)
                 self.assertLess(text.index(migration_twenty), text.index(migration_twenty_one))
 
+    def test_required_files_and_install_docs_include_amount_precision_repair(self) -> None:
+        """Existing installations receive the reconciliation precision repair."""
+        migration_twenty_one = (
+            "database/migrations/0021_reconciliation_run_command_provenance_repair.sql"
+        )
+        migration_twenty_two = "database/migrations/0022_reconciliation_amount_precision.sql"
+        self.assertIn(migration_twenty_two, set(REQUIRED_FILES))
+        for relative_path in ("docs/OPERABILITY.md", "docs/ARCHITECTURE.md"):
+            with self.subTest(relative_path=relative_path):
+                text = (ROOT / relative_path).read_text(encoding="utf-8")
+                self.assertIn(migration_twenty_one, text)
+                self.assertIn(migration_twenty_two, text)
+                self.assertLess(text.index(migration_twenty_one), text.index(migration_twenty_two))
+
     def test_run_provenance_repair_rejects_existing_mismatches(self) -> None:
         """The upgrade must fail closed on already stored cross-bank commands."""
         migration = (
@@ -290,6 +304,22 @@ class FoundationInstallManifestContractTests(unittest.TestCase):
 
         with patch.object(Path, "is_file", is_file):
             with self.assertRaisesRegex(AccountingValidationError, "provenance repair"):
+                apply_foundation_migration(
+                    "postgresql://unused",
+                    ROOT / "database/migrations/0001_accounting_foundation.sql",
+                )
+
+    def test_install_fails_closed_when_amount_precision_migration_is_missing(self) -> None:
+        """The canonical loader must apply the reconciliation precision repair."""
+        original_is_file = Path.is_file
+
+        def is_file(path: Path) -> bool:
+            if path.name == "0022_reconciliation_amount_precision.sql":
+                return False
+            return original_is_file(path)
+
+        with patch.object(Path, "is_file", is_file):
+            with self.assertRaisesRegex(AccountingValidationError, "amount-precision"):
                 apply_foundation_migration(
                     "postgresql://unused",
                     ROOT / "database/migrations/0001_accounting_foundation.sql",

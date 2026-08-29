@@ -56,6 +56,7 @@ REQUIRED_FILES = (
     "database/migrations/0019_reconciliation_run_command_evidence.sql",
     "database/migrations/0020_reconciliation_match_command_evidence.sql",
     "database/migrations/0021_reconciliation_run_command_provenance_repair.sql",
+    "database/migrations/0022_reconciliation_amount_precision.sql",
     "docs/PRD.md",
     "docs/TRD.md",
     "docs/ARCHITECTURE.md",

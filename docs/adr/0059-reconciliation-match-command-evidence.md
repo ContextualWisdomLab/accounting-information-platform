@@ -73,6 +73,14 @@ before the command-insert provenance guard existed. It recreates the deferred
 run guard and immediate command-insert guard without changing existing
 evidence rows.
 
+Migration `0022_reconciliation_amount_precision.sql` widens the candidate and
+allocation amount columns from the historical `numeric(30, 6)` definition to
+the platform-wide `numeric(38, 6)` definition. It also uses unconstrained
+PostgreSQL numeric variables in the conservation and command-allocation
+triggers, preventing aggregate overflow from masking an exact conservation
+rejection. The shared amount parser rejects values outside that same storage
+domain before a command reaches the database.
+
 Historical match admission also requires the posted journal fact to be known by
 the run's `knowledge_cutoff_at`; a backdated accounting date alone is not
 enough. The source database driver is loaded only inside the database command

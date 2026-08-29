@@ -46,6 +46,28 @@ class ReconciliationDataModelDocumentationContractTests(unittest.TestCase):
         self.assertIn("active", text.lower())
         self.assertIn("approved", text.lower())
 
+    def test_reconciliation_amounts_use_platform_numeric_precision(self) -> None:
+        """Forward migration widens reconciliation amounts to the platform precision contract."""
+        migration_path = (
+            ROOT
+            / "database/migrations/0022_reconciliation_amount_precision.sql"
+        )
+        if not migration_path.is_file():
+            self.fail("reconciliation amount precision migration is missing")
+        migration = migration_path.read_text(encoding="utf-8")
+        self.assertNotIn("numeric(30, 6)", migration)
+        for table_name, column_name in (
+            ("reconciliation_candidate", "statement_amount"),
+            ("reconciliation_candidate", "journal_amount"),
+            ("statement_match_allocation", "allocated_amount"),
+            ("journal_match_allocation", "allocated_amount"),
+        ):
+            with self.subTest(table_name=table_name, column_name=column_name):
+                self.assertIn(
+                    f"ALTER COLUMN {column_name} TYPE numeric(38, 6)",
+                    migration,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

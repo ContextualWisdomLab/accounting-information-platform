@@ -145,6 +145,7 @@ Shared fiscal-calendar dates do not collapse independent accounting books into o
 19. `database/migrations/0019_reconciliation_run_command_evidence.sql` — records immutable tenant-scoped run-command idempotency, source hash/reference, and the statement bound to an evaluating reconciliation scope.
 20. `database/migrations/0020_reconciliation_match_command_evidence.sql` — records immutable tenant-scoped exact 1:1 proposed-match command identity, source hash/reference, and the candidate/match allocation chain.
 21. `database/migrations/0021_reconciliation_run_command_provenance_repair.sql` — preflights existing immutable command evidence and fails closed on cross-bank provenance before reapplying run-command guards to installations that already executed migration 0019 before its command-insert guard was added.
+22. `database/migrations/0022_reconciliation_amount_precision.sql` — widens reconciliation candidate/allocation monetary facts to the platform `numeric(38, 6)` domain and keeps exact conservation aggregates from overflowing before validation.
 
 ## Durable soft-close command evidence
 
