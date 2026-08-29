@@ -6,6 +6,7 @@ import hashlib
 import unittest
 import uuid
 from contextlib import nullcontext
+from pathlib import Path
 from unittest import mock
 
 import psycopg
@@ -337,7 +338,16 @@ class ReconciliationRunApiTests(unittest.TestCase):
         )
         scope = self._assignment_scope()
         assert scope is not None
+        provenance_repair = (
+            Path(__file__).resolve().parents[1]
+            / "database/migrations/0021_reconciliation_run_command_provenance_repair.sql"
+        )
         with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
+            connection.execute(
+                "DROP TRIGGER IF EXISTS reconciliation_run_command_provenance_insert_guard "
+                "ON accounting_core.reconciliation_run_command"
+            )
+            connection.execute(provenance_repair.read_text(encoding="utf-8"))
             connection.execute(
                 "ALTER TABLE accounting_core.reconciliation_run "
                 "DISABLE TRIGGER reconciliation_run_command_provenance_guard"

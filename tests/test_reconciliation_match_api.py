@@ -6,6 +6,7 @@ import hashlib
 import os
 import subprocess
 import sys
+import threading
 import unittest
 import uuid
 from datetime import date, datetime, timezone
@@ -438,6 +439,151 @@ import accounting_information_platform
                     ),
                 )
 
+    def test_match_command_serializes_concurrent_allocation_inserts(self) -> None:
+        """A concurrent allocation cannot commit around the command freeze."""
+        command = self._command()
+        tenant_id = self.case.tenant_id
+        with psycopg.connect(posting.DATABASE_URL) as setup:
+            candidate_id = setup.execute(
+                """
+                INSERT INTO accounting_core.reconciliation_candidate (
+                    tenant_account_id, reconciliation_run_id,
+                    statement_entry_reference, journal_reference,
+                    statement_amount, journal_amount, rule_code
+                )
+                VALUES (%s, %s, %s, %s, '25000', '25000', 'concurrency')
+                RETURNING reconciliation_candidate_id
+                """,
+                (
+                    tenant_id,
+                    command["reconciliation_run_id"],
+                    command["statement_entry_reference"],
+                    command["journal_reference"],
+                ),
+            ).fetchone()[0]
+            match_id = setup.execute(
+                """
+                INSERT INTO accounting_core.reconciliation_match (
+                    tenant_account_id, reconciliation_run_id,
+                    reconciliation_candidate_id, match_status_code
+                )
+                VALUES (%s, %s, %s, 'proposed')
+                RETURNING reconciliation_match_id
+                """,
+                (tenant_id, command["reconciliation_run_id"], candidate_id),
+            ).fetchone()[0]
+            setup.execute(
+                """
+                INSERT INTO accounting_core.statement_match_allocation (
+                    tenant_account_id, reconciliation_run_id,
+                    reconciliation_match_id, statement_entry_reference,
+                    allocated_amount
+                )
+                VALUES (%s, %s, %s, %s, '25000')
+                """,
+                (
+                    tenant_id,
+                    command["reconciliation_run_id"],
+                    match_id,
+                    command["statement_entry_reference"],
+                ),
+            )
+            setup.execute(
+                """
+                INSERT INTO accounting_core.journal_match_allocation (
+                    tenant_account_id, reconciliation_run_id,
+                    reconciliation_match_id, journal_reference,
+                    allocated_amount
+                )
+                VALUES (%s, %s, %s, %s, '25000')
+                """,
+                (
+                    tenant_id,
+                    command["reconciliation_run_id"],
+                    match_id,
+                    command["journal_reference"],
+                ),
+            )
+
+        command_connection = psycopg.connect(posting.DATABASE_URL)
+        late_insert_started = threading.Event()
+        late_insert_finished = threading.Event()
+        late_insert_error: list[BaseException] = []
+
+        def insert_late_allocation() -> None:
+            try:
+                with psycopg.connect(posting.DATABASE_URL) as connection:
+                    late_insert_started.set()
+                    connection.execute(
+                        """
+                        INSERT INTO accounting_core.statement_match_allocation (
+                            tenant_account_id, reconciliation_run_id,
+                            reconciliation_match_id, statement_entry_reference,
+                            allocated_amount
+                        )
+                        VALUES (%s, %s, %s, 'concurrent-extra', '1')
+                        """,
+                        (tenant_id, command["reconciliation_run_id"], match_id),
+                    )
+                    connection.commit()
+            except BaseException as error:  # pragma: no cover - asserted below
+                late_insert_error.append(error)
+            finally:
+                late_insert_finished.set()
+
+        try:
+            command_connection.execute(
+                """
+                INSERT INTO accounting_core.reconciliation_match_command (
+                    tenant_account_id, reconciliation_run_id,
+                    reconciliation_candidate_id, reconciliation_match_id,
+                    candidate_idempotency_key, candidate_command_hash,
+                    source_payload_hash, source_payload_reference
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    tenant_id,
+                    command["reconciliation_run_id"],
+                    candidate_id,
+                    match_id,
+                    f"concurrent-command-{uuid.uuid4().hex}",
+                    "sha256:" + "7" * 64,
+                    command["source_payload_hash"],
+                    command["source_payload_reference"],
+                ),
+            )
+            thread = threading.Thread(target=insert_late_allocation)
+            thread.start()
+            self.assertTrue(late_insert_started.wait(2))
+            self.assertFalse(late_insert_finished.wait(0.5))
+            command_connection.commit()
+            thread.join(timeout=5)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(len(late_insert_error), 1)
+            self.assertIsInstance(late_insert_error[0], psycopg.errors.CheckViolation)
+        finally:
+            command_connection.rollback()
+            command_connection.close()
+
+    def test_match_command_allocation_guard_locks_match_before_counting(self) -> None:
+        """The command-side allocation check owns the same match lock as allocations."""
+        migration = (
+            Path(__file__).resolve().parents[1]
+            / "database/migrations/0020_reconciliation_match_command_evidence.sql"
+        ).read_text(encoding="utf-8")
+        function = migration.split(
+            "CREATE OR REPLACE FUNCTION accounting_core.enforce_reconciliation_match_command_allocations()",
+            1,
+        )[1].split(
+            "CREATE TRIGGER z_reconciliation_match_command_allocation_guard",
+            1,
+        )[0]
+        self.assertRegex(
+            function,
+            r"(?s)FROM accounting_core\.reconciliation_match.*?FOR UPDATE",
+        )
+
     def test_match_command_rejects_allocation_amount_different_from_candidate(self) -> None:
         """Command evidence cannot preserve allocations that disagree with its candidate."""
         command = self._command()
@@ -580,6 +726,41 @@ import accounting_information_platform
                 statement_amount=Decimal("25000"),
                 journal_amount=Decimal("25000"),
             )
+
+    def test_match_source_guard_applies_statement_knowledge_cutoff(self) -> None:
+        """Historical matches exclude statement entries recorded after the snapshot."""
+        connection = mock.Mock()
+        statement_result = mock.Mock()
+        statement_result.fetchall.return_value = [(Decimal("25000"), "KRW", "CRDT")]
+        journal_result = mock.Mock()
+        journal_result.fetchone.return_value = (
+            "posted",
+            "KRW",
+            Decimal("25000"),
+            Decimal("25000"),
+            Decimal("25000"),
+            Decimal("0"),
+        )
+        connection.execute.side_effect = [statement_result, journal_result]
+        knowledge_cutoff = datetime(2026, 8, 25, tzinfo=timezone.utc)
+        _require_recorded_source_amounts(
+            connection,
+            tenant_id=uuid.uuid4(),
+            reconciliation_run_id=uuid.uuid4(),
+            accounting_book_id=uuid.uuid4(),
+            currency_code="KRW",
+            bank_account_assignment_id=uuid.uuid4(),
+            bank_cutoff_at=datetime(2026, 8, 24, 23, 59, 59, tzinfo=timezone.utc),
+            book_cutoff_at=datetime(2026, 8, 24, 23, 59, 59, tzinfo=timezone.utc),
+            knowledge_cutoff_at=knowledge_cutoff,
+            statement_reference="statement-entry",
+            journal_reference="journal-reference",
+            statement_amount=Decimal("25000"),
+            journal_amount=Decimal("25000"),
+        )
+        statement_sql, statement_parameters = connection.execute.call_args_list[0].args
+        self.assertIn("entry.recorded_at <= %s", statement_sql)
+        self.assertEqual(statement_parameters[-1], knowledge_cutoff)
 
     def test_match_source_guard_applies_journal_knowledge_cutoff(self) -> None:
         """Historical runs cannot admit journals posted after their knowledge cutoff."""

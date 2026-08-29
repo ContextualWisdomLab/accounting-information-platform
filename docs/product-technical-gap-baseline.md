@@ -34,7 +34,8 @@ JSON contracts, and a durable outbox. The accounting posting foundation and the
 immutable `camt.053.001.14` bank-statement evidence registry are integrated protected
 `develop` facts. The current integration tree also includes database-owned
   candidate/match/allocation conservation, durable human approval snapshot controls,
-  and the proposed-match command boundary from migrations `0015` through `0020`;
+  the proposed-match command boundary from migrations `0015` through `0020`, and
+  the existing-installation provenance repair in migration `0021`;
   protected `develop` remains the release authority
 until this exact integration candidate passes its live gates. It does not transmit HomeTax/NTS
 filings, enforce purpose-bound application authorization, or provide a controller

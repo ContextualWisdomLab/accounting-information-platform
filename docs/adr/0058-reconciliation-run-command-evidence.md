@@ -37,7 +37,9 @@ For a new run, every selected statement, artifact, bank account, assignment,
 legal-entity, and accounting-book fact must have been recorded no later than
 `knowledge_cutoff_at`. A deferred database trigger also requires exactly one
 command row at commit and verifies that its statement belongs to the run's
-assigned bank account.
+assigned bank account. Migration `0021_reconciliation_run_command_provenance_repair.sql`
+reapplies the deferred run trigger and adds the immediate command-insert guard
+for installations that already applied migration 0019.
 `GET /reconciliation-runs` returns the same tenant-scoped run document.
 
 Distinct idempotency keys may open distinct immutable runs for the same statement

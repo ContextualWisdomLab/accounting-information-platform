@@ -55,6 +55,7 @@ REQUIRED_FILES = (
     "database/migrations/0018_bank_statement_balance_evidence.sql",
     "database/migrations/0019_reconciliation_run_command_evidence.sql",
     "database/migrations/0020_reconciliation_match_command_evidence.sql",
+    "database/migrations/0021_reconciliation_run_command_provenance_repair.sql",
     "docs/PRD.md",
     "docs/TRD.md",
     "docs/ARCHITECTURE.md",

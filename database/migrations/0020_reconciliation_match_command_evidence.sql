@@ -101,6 +101,15 @@ DECLARE
     candidate_statement_amount numeric(30, 6);
     candidate_journal_amount numeric(30, 6);
 BEGIN
+    -- Share the parent match lock with the allocation conservation trigger so
+    -- command insertion and a concurrent allocation cannot both commit.
+    PERFORM 1
+    FROM accounting_core.reconciliation_match AS match
+    WHERE match.tenant_account_id = NEW.tenant_account_id
+      AND match.reconciliation_run_id = NEW.reconciliation_run_id
+      AND match.reconciliation_match_id = NEW.reconciliation_match_id
+    FOR UPDATE;
+
     SELECT candidate.statement_amount, candidate.journal_amount
     INTO candidate_statement_amount, candidate_journal_amount
     FROM accounting_core.reconciliation_candidate AS candidate

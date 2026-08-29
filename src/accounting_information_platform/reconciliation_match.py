@@ -382,6 +382,7 @@ def _require_recorded_source_amounts(
           AND run_scope.currency_code = entry.entry_currency_code
           AND (entry.booking_occurred_at IS NULL OR entry.booking_occurred_at <= %s)
           AND (entry.value_occurred_at IS NULL OR entry.value_occurred_at <= %s)
+          AND entry.recorded_at <= %s
         """,
         (
             tenant_id,
@@ -390,6 +391,7 @@ def _require_recorded_source_amounts(
             statement_reference,
             bank_cutoff_at,
             bank_cutoff_at,
+            knowledge_cutoff_at,
         ),
     ).fetchall()
     if len(statement_rows) != 1:

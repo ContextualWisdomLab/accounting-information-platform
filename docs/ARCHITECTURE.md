@@ -144,6 +144,7 @@ Shared fiscal-calendar dates do not collapse independent accounting books into o
 18. `database/migrations/0018_bank_statement_balance_evidence.sql` — preserves exact numeric camt.053 balance facts, including typed effective date/time distinct from statement period and system recording time, as immutable, tenant-scoped evidence for reconciliation bridge reads.
 19. `database/migrations/0019_reconciliation_run_command_evidence.sql` — records immutable tenant-scoped run-command idempotency, source hash/reference, and the statement bound to an evaluating reconciliation scope.
 20. `database/migrations/0020_reconciliation_match_command_evidence.sql` — records immutable tenant-scoped exact 1:1 proposed-match command identity, source hash/reference, and the candidate/match allocation chain.
+21. `database/migrations/0021_reconciliation_run_command_provenance_repair.sql` — reapplies run-command provenance guards to installations that already executed migration 0019 before its command-insert guard was added.
 
 ## Durable soft-close command evidence
 

@@ -35,13 +35,17 @@ with a different valid match from the same run. Uniqueness rules additionally
 prevent duplicate command or match identities.
 
 The command also binds source admission to the run snapshot: statement booking
-and value timestamps must be no later than the bank cutoff, and journal
-accounting date must be no later than the book cutoff. The journal amount is
+and value timestamps must be no later than the bank cutoff, statement
+`recorded_at` must be no later than the knowledge cutoff, and journal
+accounting date plus `posted_at` must be no later than the book and knowledge
+cutoffs. The journal amount is
 read from the run assignment's cash chart account rather than the journal-wide
 total; a `CRDT` statement requires that line on the debit side and a `DBIT`
 statement requires it on the credit side. The run row is locked through the
 candidate and allocation writes so a concurrent run transition cannot race the
-match.
+match. The command-evidence allocation guard also locks the parent match row
+before counting allocations, sharing the allocation trigger's serialization
+boundary.
 
 `accept_reconciliation_match` is the smallest durable command boundary: it
 accepts one exact 1:1 proposed match, requires quoted positive equal decimal
@@ -62,6 +66,12 @@ The database requires command insertion to observe exactly one statement and
 one journal allocation with equal exact amounts, and rejects allocation rows
 inserted after command evidence. These are evidence-integrity controls only;
 they do not turn a proposed match into an approved accounting fact.
+
+Migration `0021_reconciliation_run_command_provenance_repair.sql` is a
+forward-only upgrade for installations that already applied migration 0019
+before the command-insert provenance guard existed. It recreates the deferred
+run guard and immediate command-insert guard without changing existing
+evidence rows.
 
 Historical match admission also requires the posted journal fact to be known by
 the run's `knowledge_cutoff_at`; a backdated accounting date alone is not
