@@ -26,7 +26,11 @@ enabled state, row/event mask, unrestricted `WHEN` predicate, and canonical
 `UPDATE OF` column contract. The two deferred
 journal-balance constraint triggers retain the stricter constraint/deferrable
 checks and the canonical stored `assert_journal_balance()` definition
-fingerprint. The probe requires an active binding even for privileged sessions
+fingerprint. Required constraints are also bound to their relation, type,
+validated/enforced and non-deferrable state, and canonical
+`pg_get_constraintdef()` fingerprint. Required indexes are bound to their
+owning relation, valid/ready and uniqueness state, predicate, and canonical
+`pg_get_indexdef()` fingerprint. The probe requires an active binding even for privileged sessions
 and caps connection establishment at five seconds while preserving a stricter
 configured timeout. Return `200` with `{"status":"ready"}` only after all checks
 pass. Return `503` with stable operator guidance when a check fails; do not
@@ -48,7 +52,7 @@ reasonable interval. The endpoint does not apply migrations or repair tenant
 provisioning. A missing, disabled, detached, conditionally narrowed, or
 column-scope-drifted accounting-control trigger is treated as schema drift and
 fails readiness closed rather than silently reducing database-owned accounting
-enforcement.
+enforcement. A same-name weakened constraint or index is likewise schema drift.
 
 ## Evidence
 
@@ -71,3 +75,7 @@ soft-close evidence, bank-statement evidence, and reconciliation-scope guards—
 and requires readiness to fail closed. It separately replaces the soft-close
 `UPDATE OF` registration with a broader `UPDATE` trigger and requires the same
 fail-closed result before restoring the checked-in definition.
+The definition-contract regression replaces every required constraint with a
+same-name `CHECK (true)` and every required index with a same-name single-column
+non-unique index; each altered catalog object returns `503` before its canonical
+definition is restored.
