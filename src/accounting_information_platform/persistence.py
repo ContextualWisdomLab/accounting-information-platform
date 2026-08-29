@@ -147,6 +147,8 @@ _READINESS_INDEXES = (
     "accounting_core.reconciliation_candidate_run_reference_index",
 )
 _READINESS_BALANCE_TRIGGERS = (
+    # MD5 fingerprints are generated from PostgreSQL 18 pg_get_functiondef() for
+    # the checked-in 0005_closed_period_guard.sql definition.
     (
         "accounting_core",
         "general_journal",
@@ -154,6 +156,7 @@ _READINESS_BALANCE_TRIGGERS = (
         "accounting_core",
         "assert_journal_balance",
         21,
+        "3747f99334249a1ee8cfdb286f4a2691",
     ),
     (
         "accounting_core",
@@ -162,6 +165,7 @@ _READINESS_BALANCE_TRIGGERS = (
         "accounting_core",
         "assert_journal_balance",
         29,
+        "3747f99334249a1ee8cfdb286f4a2691",
     ),
 )
 
@@ -4498,10 +4502,12 @@ class PostgresPostingLedger:
                             SELECT 1
                             FROM unnest(
                                 %s::text[], %s::text[], %s::text[],
-                                %s::text[], %s::text[], %s::smallint[]
+                                %s::text[], %s::text[], %s::smallint[],
+                                %s::text[]
                             ) AS required(
                                 schema_name, table_name, trigger_name,
-                                function_schema, function_name, trigger_type
+                                function_schema, function_name, trigger_type,
+                                function_fingerprint
                             )
                             LEFT JOIN pg_catalog.pg_namespace AS trigger_namespace
                               ON trigger_namespace.nspname = required.schema_name
@@ -4528,6 +4534,8 @@ class PostgresPostingLedger:
                                OR NOT trigger.tginitdeferred
                                OR trigger.tgqual IS NOT NULL
                                OR pg_catalog.cardinality(trigger.tgattr) <> 0
+                               OR pg_catalog.md5(pg_catalog.pg_get_functiondef(function.oid))
+                                  <> required.function_fingerprint
                         ),
                         NOT EXISTS (
                             SELECT 1
@@ -4550,6 +4558,7 @@ class PostgresPostingLedger:
                         [item[3] for item in _READINESS_BALANCE_TRIGGERS],
                         [item[4] for item in _READINESS_BALANCE_TRIGGERS],
                         [item[5] for item in _READINESS_BALANCE_TRIGGERS],
+                        [item[6] for item in _READINESS_BALANCE_TRIGGERS],
                         list(_READINESS_INDEXES),
                     ),
                 ).fetchone()

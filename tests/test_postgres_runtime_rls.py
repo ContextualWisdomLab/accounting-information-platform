@@ -228,6 +228,46 @@ class PostgresRuntimeRlsTests(unittest.TestCase):
                             "",
                         )
 
+    def test_readiness_rejects_same_signature_balance_function_drift(self) -> None:
+        """Readiness rejects a balance guard whose body was replaced in place."""
+        role_name = f"accounting_runtime_{uuid.uuid4().hex[:10]}"
+        password = f"AisRuntime{uuid.uuid4().hex}"
+        self._create_runtime_role(role_name, password, self.case.tenant_id)
+        self.addCleanup(self._drop_runtime_role, role_name)
+        runtime_ledger = PostgresPostingLedger(
+            self._runtime_database_url(role_name, password),
+            self.case.policy.tenant_reference,
+        )
+        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as admin:
+            canonical_definition = admin.execute(
+                """
+                SELECT pg_get_functiondef(
+                    'accounting_core.assert_journal_balance()'::regprocedure
+                )
+                """
+            ).fetchone()[0]
+            admin.execute(
+                """
+                CREATE OR REPLACE FUNCTION accounting_core.assert_journal_balance()
+                RETURNS trigger
+                LANGUAGE plpgsql
+                AS $drift$
+                BEGIN
+                    RETURN NULL;
+                END;
+                $drift$
+                """
+            )
+        try:
+            with self.assertRaisesRegex(
+                AccountingValidationError,
+                "accounting database schema is incomplete",
+            ):
+                runtime_ledger.check_readiness()
+        finally:
+            with psycopg.connect(posting.DATABASE_URL, autocommit=True) as admin:
+                admin.execute(canonical_definition)
+
     def test_restricted_runtime_login_posts_same_tenant_and_cannot_rebind_other_tenant(self) -> None:
         """A least-privilege runtime posts its tenant and cannot self-authorize another tenant."""
         other = posting.PostgresPostingTests("setUp")

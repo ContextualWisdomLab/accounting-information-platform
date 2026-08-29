@@ -52,4 +52,7 @@ driver or connection error. A third regression verifies that disabling either
 required journal-balance trigger returns `503` for a bound runtime login. A
 fourth regression recreates each trigger with a `WHEN (false)` predicate and
 an `UPDATE OF` column filter in turn; each altered definition returns `503` and
-the canonical migration definition is restored after the check.
+the canonical migration definition is restored after the check. A fifth
+regression replaces `assert_journal_balance()` in place with the same signature;
+the readiness probe rejects the changed function definition even though the
+trigger OID and relation/event registration remain unchanged.
