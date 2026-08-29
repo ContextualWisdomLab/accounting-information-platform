@@ -66,6 +66,9 @@ class ReconciliationCloseReviewPopulationScopeTests(unittest.TestCase):
             allocated_amount=Decimal("100.00"),
             exception_code=None,
             next_action="Review the deterministic proposal; do not post a journal.",
+            reconciliation_match_reference=(
+                f"reconciliation-match-{statement_reference.rsplit('-', 1)[-1]}"
+            ),
         )
 
     @staticmethod
@@ -155,6 +158,28 @@ class ReconciliationCloseReviewPopulationScopeTests(unittest.TestCase):
                             reviewed_match_references=references,
                         )
                     )
+
+    def test_reviewed_match_identity_must_bind_to_its_matching_decision(self) -> None:
+        """A durable match reference cannot be substituted across same-run decisions."""
+        decision = ReconciliationDecision(
+            statement_entry_reference="stmt-001",
+            decision_code="match",
+            rule_code="provider_reference",
+            matched_journal_references=("journal-001",),
+            allocated_amount=Decimal("100.00"),
+            exception_code=None,
+            next_action="Review the deterministic proposal; do not post a journal.",
+            reconciliation_match_reference="reconciliation-match-actual",
+        )
+
+        with self.assertRaisesRegex(ValueError, "bind.*decision|decision.*bind"):
+            read_model.build_reconciliation_close_review(
+                self._input(
+                    decisions=(decision,),
+                    expected=("stmt-001",),
+                    reviewed_match_references=("reconciliation-match-substitute",),
+                )
+            )
 
     def test_duplicate_or_extraneous_decision_identity_fails_closed(self) -> None:
         """One immutable statement entry must contribute exactly one decision."""

@@ -84,6 +84,7 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
                 "Review and record this deterministic reconciliation proposal; "
                 "do not post a journal from it."
             ),
+            reconciliation_match_reference="reconciliation-match-001",
         )
 
     @staticmethod

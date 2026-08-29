@@ -15,6 +15,7 @@ from decimal import Decimal
 
 from .reconciliation import ReconciliationDecision
 from .reconciliation_bridge import BookToBankBridgeResult
+from .reconciliation_bridge import _exact_decimal_sum
 
 
 _RECONCILED_CLOSE_REVIEW_NEXT_ACTION = (
@@ -139,6 +140,7 @@ def _validate_reviewed_match_population(
     projection_input: ReconciliationCloseReviewInput,
     *,
     match_count: int,
+    match_decisions: tuple[ReconciliationDecision, ...],
 ) -> None:
     """Require durable match identities for every safely matchable proposal."""
     references = projection_input.reviewed_match_references
@@ -151,6 +153,16 @@ def _validate_reviewed_match_population(
     if len(references) != match_count:
         raise ValueError(
             "reviewed match identities must exactly cover the safely matchable proposals"
+        )
+    decision_references = tuple(
+        decision.reconciliation_match_reference for decision in match_decisions
+    )
+    if any(
+        not isinstance(reference, str) or not reference.strip()
+        for reference in decision_references
+    ) or decision_references != references:
+        raise ValueError(
+            "reviewed match identities must bind to their matching decisions"
         )
 
 
@@ -171,7 +183,16 @@ def build_reconciliation_close_review(
     match_count = sum(
         1 for decision in projection_input.decisions if decision.decision_code == "match"
     )
-    _validate_reviewed_match_population(projection_input, match_count=match_count)
+    match_decisions = tuple(
+        decision
+        for decision in projection_input.decisions
+        if decision.decision_code == "match"
+    )
+    _validate_reviewed_match_population(
+        projection_input,
+        match_count=match_count,
+        match_decisions=match_decisions,
+    )
 
     preceding = projection_input.preceding_bridge_result
     preceding_scope = projection_input.preceding_scope
@@ -193,14 +214,17 @@ def build_reconciliation_close_review(
             raise ValueError(
                 "preceding reconciliation scope must match the current accounting and bank scope"
             )
-        unexplained_change = (
-            bridge.unexplained_difference - preceding.unexplained_difference
+        unexplained_change = _exact_decimal_sum(
+            bridge.unexplained_difference,
+            -preceding.unexplained_difference,
         )
-        outstanding_bank_change = (
-            bridge.outstanding_bank_items - preceding.outstanding_bank_items
+        outstanding_bank_change = _exact_decimal_sum(
+            bridge.outstanding_bank_items,
+            -preceding.outstanding_bank_items,
         )
-        outstanding_book_change = (
-            bridge.outstanding_book_items - preceding.outstanding_book_items
+        outstanding_book_change = _exact_decimal_sum(
+            bridge.outstanding_book_items,
+            -preceding.outstanding_book_items,
         )
 
     suitable = bridge.status_code == "reconciled" and not exceptions

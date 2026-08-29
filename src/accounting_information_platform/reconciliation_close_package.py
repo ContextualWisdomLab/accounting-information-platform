@@ -21,6 +21,7 @@ from .reconciliation_read_model import (
     ReconciliationCloseReviewProjection,
     render_reconciliation_close_review_json,
 )
+from .reconciliation_bridge import _exact_decimal_sum
 
 _SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _UTC_SECOND_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
@@ -241,11 +242,11 @@ def _validate_projection(projection: object) -> ReconciliationCloseReviewProject
             "resolve the exact bridge or reconciliation exceptions first"
         )
 
-    bridge_unexplained_difference = (
-        projection.reconciled_balance
-        + projection.outstanding_book_items
-        - projection.outstanding_bank_items
-        - projection.bank_closing_balance
+    bridge_unexplained_difference = _exact_decimal_sum(
+        projection.reconciled_balance,
+        projection.outstanding_book_items,
+        -projection.outstanding_bank_items,
+        -projection.bank_closing_balance,
     )
     if bridge_unexplained_difference != projection.unexplained_difference:
         raise ValueError(
@@ -444,6 +445,8 @@ def build_reconciliation_close_package(
     package_input: ReconciliationClosePackageInput,
 ) -> ReconciliationClosePackage:
     """Build a deterministic package only from close-review-eligible evidence."""
+    if not isinstance(package_input, ReconciliationClosePackageInput):
+        raise ValueError("package_input must be a ReconciliationClosePackageInput")
     projection = _validate_projection(package_input.projection)
     approval_evidence = _validate_approval_evidence(
         package_input.approval_evidence,

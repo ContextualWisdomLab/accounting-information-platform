@@ -100,6 +100,7 @@ class ReconciliationDecision:
     allocated_amount: Decimal
     exception_code: str | None
     next_action: str
+    reconciliation_match_reference: str | None = None
 
     def __post_init__(self) -> None:
         """Reject forged success- or exception-shaped reconciliation evidence."""

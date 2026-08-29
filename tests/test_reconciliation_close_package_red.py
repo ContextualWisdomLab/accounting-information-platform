@@ -437,6 +437,27 @@ class ReconciliationClosePackageTests(unittest.TestCase):
                 replace(self._input(), projection=object())  # type: ignore[arg-type]
             )
 
+    def test_package_rejects_malformed_public_input_with_value_error(self) -> None:
+        with self.assertRaisesRegex(ValueError, "ReconciliationClosePackageInput"):
+            build_reconciliation_close_package(object())  # type: ignore[arg-type]
+
+    def test_package_revalidates_large_decimal_bridge_without_rounding(self) -> None:
+        huge_balance = Decimal("100000000000000000000000.000000")
+        projection = replace(
+            self._projection(),
+            bank_closing_balance=huge_balance,
+            posted_book_cash_balance=huge_balance,
+            reconciled_balance=huge_balance,
+            outstanding_bank_items=Decimal("0.000000"),
+            outstanding_book_items=Decimal("0.000001"),
+            unexplained_difference=Decimal("0.000000"),
+        )
+
+        with self.assertRaisesRegex(ValueError, "exact book-to-bank bridge equation"):
+            build_reconciliation_close_package(
+                replace(self._input(), projection=projection)
+            )
+
     def test_package_rejects_noncanonical_evidence_container_or_member(self) -> None:
         with self.assertRaisesRegex(ValueError, "immutable reconciliation run, statement, and book"):
             build_reconciliation_close_package(

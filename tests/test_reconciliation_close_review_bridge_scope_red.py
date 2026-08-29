@@ -76,7 +76,8 @@ class ReconciliationCloseReviewBridgeScopeTests(unittest.TestCase):
             matched_journal_references=("journal-001",),
             allocated_amount=Decimal("100.00"),
             exception_code=None,
-            next_action="Review the deterministic proposal; do not post a journal from it.",
+            next_action="Review the deterministic proposal; do not post a journal.",
+            reconciliation_match_reference="reconciliation-match-001",
         )
 
     def test_current_bridge_cannot_be_relabelled_to_another_same_currency_scope(self) -> None:
