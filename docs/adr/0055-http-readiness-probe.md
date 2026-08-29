@@ -19,20 +19,25 @@ database-controlled runtime tenant binding, and checks the complete current
 schema contract through migration `0014_reconciliation_candidate_allocation.sql`.
 Because the repository has no durable schema-version table, this contract is
 represented by the current tables, functions, mutated columns, constraints,
-and migration indexes. Readiness additionally binds each checked-in
-behavior-defining accounting trigger to its exact table, trigger name,
-zero-argument function and canonical stored-function definition fingerprint,
-enabled state, row/event mask, unrestricted `WHEN` predicate, and canonical
-`UPDATE OF` column contract. The two deferred
-journal-balance constraint triggers retain the stricter constraint/deferrable
-checks and the canonical stored `assert_journal_balance()` definition
-fingerprint. The probe requires an active binding even for privileged sessions
-and caps connection establishment at five seconds while preserving a stricter
-configured timeout. Return `200` with `{"status":"ready"}` only after all checks
-pass. Return `503` with stable operator guidance when a check fails; do not
-return driver, connection, or database-object details to the caller. Both
-readiness responses carry `Cache-Control: no-store` so an intermediary cannot
-reuse a stale readiness result.
+and migration indexes. Required named constraints must resolve on the expected
+relation with their canonical PostgreSQL-18 type and rendered definition and
+must remain validated and enforced. Required explicit indexes must resolve to
+an actual `pg_index` entry that is valid, ready, and live and whose canonical
+PostgreSQL-18 `pg_get_indexdef()` fingerprint preserves the checked-in relation,
+keys/expressions, uniqueness, and predicate semantics. Readiness additionally
+binds each checked-in behavior-defining accounting trigger to its exact table,
+trigger name, zero-argument function and canonical stored-function definition
+fingerprint, enabled state, row/event mask, unrestricted `WHEN` predicate, and
+canonical `UPDATE OF` column contract. The two deferred journal-balance
+constraint triggers retain the stricter constraint/deferrable checks and the
+canonical stored `assert_journal_balance()` definition fingerprint. The probe
+requires an active binding even for privileged sessions and caps connection
+establishment at five seconds while preserving a stricter configured timeout.
+Return `200` with `{"status":"ready"}` only after all checks pass. Return `503`
+with stable operator guidance when a check fails; do not return driver,
+connection, or database-object details to the caller. Both readiness responses
+carry `Cache-Control: no-store` so an intermediary cannot reuse a stale
+readiness result.
 
 The probes are operational signals only. They do not authenticate callers,
 authorize accounting commands, or replace exact-head CI, security, package,
@@ -46,9 +51,10 @@ continue to use the cheaper liveness probe. Readiness checks add one bounded
 database session per probe and should therefore be polled at an operationally
 reasonable interval. The endpoint does not apply migrations or repair tenant
 provisioning. A missing, disabled, detached, conditionally narrowed, or
-column-scope-drifted accounting-control trigger is treated as schema drift and
-fails readiness closed rather than silently reducing database-owned accounting
-enforcement.
+column-scope-drifted accounting-control trigger, a weakened same-name
+constraint, or a redefined same-name migration index is treated as schema drift
+and fails readiness closed rather than silently reducing database-owned
+accounting enforcement.
 
 ## Evidence
 
@@ -70,4 +76,10 @@ accounting control trigger—including period, finalized-ledger, period-open,
 soft-close evidence, bank-statement evidence, and reconciliation-scope guards—
 and requires readiness to fail closed. It separately replaces the soft-close
 `UPDATE OF` registration with a broader `UPDATE` trigger and requires the same
-fail-closed result before restoring the checked-in definition.
+fail-closed result before restoring the checked-in definition. Definition-drift
+regressions additionally replace a required constraint with a weaker same-name
+`CHECK (true) NOT VALID` control and replace a required index with a same-name
+constant-expression index; both must fail readiness, and cleanup restores the
+canonical schema even when replacement setup itself fails. Static repository
+contracts keep the constraint/index fingerprint maps aligned with their
+readiness inventories.
