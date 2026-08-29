@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Mapping
 from uuid import UUID
@@ -18,6 +19,9 @@ from .persistence import PostgresPostingLedger, _format_timestamp
 
 _RUN_NEXT_ACTION = (
     "Run deterministic matching and review candidates before producing close evidence."
+)
+_CANONICAL_UTC_TIMESTAMP_PATTERN = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|\+00:00)$"
 )
 
 
@@ -404,6 +408,11 @@ def _parse_uuid(value: str, label: str) -> UUID:
 
 
 def _parse_timestamp(value: str, label: str) -> datetime:
+    if _CANONICAL_UTC_TIMESTAMP_PATTERN.fullmatch(value) is None:
+        raise AccountingValidationError(
+            f"{label} must be a canonical UTC timestamp with an explicit UTC timezone "
+            "(Z or +00:00). Supply an unambiguous canonical UTC timestamp, then retry the run."
+        )
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as error:
