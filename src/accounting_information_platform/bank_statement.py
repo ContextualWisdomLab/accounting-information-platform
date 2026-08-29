@@ -616,7 +616,13 @@ def accept_bank_statement_evidence(
             )
         prior_identity = connection.execute(
             """
-            SELECT bank_statement_record_id, normalized_payload_hash
+            SELECT bank_statement_record_id, normalized_payload_hash,
+                   EXISTS (
+                       SELECT 1
+                       FROM accounting_integration.bank_statement_balance AS balance
+                       WHERE balance.tenant_account_id = bank_statement_record.tenant_account_id
+                         AND balance.bank_statement_record_id = bank_statement_record.bank_statement_record_id
+                   ) AS has_balance_evidence
             FROM accounting_integration.bank_statement_record
             WHERE tenant_account_id = %s
               AND bank_account_record_id = %s
@@ -625,7 +631,14 @@ def accept_bank_statement_evidence(
             (tenant_id, account_row[0], statement.statement_identity_reference),
         ).fetchone()
         if prior_identity is not None:
-            if prior_identity[1] != statement.normalized_payload_hash:
+            normalized_hash_matches = (
+                prior_identity[1] == statement.normalized_payload_hash
+                or (
+                    not prior_identity[2]
+                    and prior_identity[1] == _legacy_normalized_payload_hash(statement)
+                )
+            )
+            if not normalized_hash_matches:
                 raise AccountingValidationError(
                     "statement identity already exists with different entry evidence. "
                     "Use an explicit correction contract, then retry ingest."

@@ -184,6 +184,56 @@ class BankStatementRegistryTests(unittest.TestCase):
         self.assertEqual(same_key["balances"], [])
         self.assertEqual(different_key["balances"], [])
 
+    def test_legacy_normalized_hash_replays_through_statement_identity(self) -> None:
+        """Legacy identity replays accept unchanged evidence without inventing balances."""
+        original = load_canonical_statement_fixture()
+        first = self._ingest(original, key="legacy-identity-replay")
+        normalized = bank_statement.parse_bank_statement_payload(
+            original, CAMT053_MESSAGE_DEFINITION
+        )
+        legacy_payload = bank_statement._normalized_payload(normalized)
+        legacy_payload.pop("balances")
+        legacy_hash = "sha256:" + hashlib.sha256(
+            json.dumps(
+                legacy_payload, separators=(",", ":"), sort_keys=True
+            ).encode("utf-8")
+        ).hexdigest()
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            connection.execute(
+                "ALTER TABLE accounting_integration.bank_statement_record "
+                "DISABLE TRIGGER bank_statement_record_immutable_guard"
+            )
+            connection.execute(
+                "ALTER TABLE accounting_integration.bank_statement_balance "
+                "DISABLE TRIGGER bank_statement_balance_immutable_guard"
+            )
+            connection.execute(
+                "DELETE FROM accounting_integration.bank_statement_balance "
+                "WHERE bank_statement_record_id = %s",
+                (first["bank_statement_record_id"],),
+            )
+            connection.execute(
+                "UPDATE accounting_integration.bank_statement_record "
+                "SET normalized_payload_hash = %s "
+                "WHERE bank_statement_record_id = %s",
+                (legacy_hash, first["bank_statement_record_id"]),
+            )
+            connection.execute(
+                "ALTER TABLE accounting_integration.bank_statement_balance "
+                "ENABLE TRIGGER bank_statement_balance_immutable_guard"
+            )
+            connection.execute(
+                "ALTER TABLE accounting_integration.bank_statement_record "
+                "ENABLE TRIGGER bank_statement_record_immutable_guard"
+            )
+            connection.commit()
+
+        changed_bytes = original.replace(b"  <Ntry>", b"   <Ntry>", 1)
+        replayed = self._ingest(changed_bytes, key="legacy-identity-replay-other")
+        self.assertTrue(replayed["replayed"])
+        self.assertEqual(replayed["bank_statement_record_id"], first["bank_statement_record_id"])
+        self.assertEqual(replayed["balances"], [])
+
     def test_same_key_changed_bytes_writes_nothing(self) -> None:
         """Same idempotency key with changed bytes conflicts and writes nothing."""
         original = load_canonical_statement_fixture()
