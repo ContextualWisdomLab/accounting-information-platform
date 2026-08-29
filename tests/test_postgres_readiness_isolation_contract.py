@@ -279,6 +279,15 @@ class PostgresReadinessIsolationContractTests(unittest.TestCase):
             )
         )
 
+    def test_readiness_parses_compact_statement_timeout_options(self) -> None:
+        """Compact libpq -c syntax still preserves a stricter timeout."""
+        self.assertEqual(
+            persistence_module._readiness_statement_timeout_milliseconds(
+                "-cstatement_timeout=100ms"
+            ),
+            100,
+        )
+
     def test_readiness_uses_remaining_total_time_budget(self) -> None:
         """Each readiness statement receives the remaining request budget."""
         connection = mock.MagicMock()

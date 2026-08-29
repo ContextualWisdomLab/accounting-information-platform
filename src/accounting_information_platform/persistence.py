@@ -7599,7 +7599,7 @@ def _readiness_statement_timeout_milliseconds(options: str) -> int | None:
     """Read the last libpq statement-timeout option, if one is configured."""
     matches = list(
         re.finditer(
-            r"(?:^|\s)(?:-c\s+)?(?:--)?statement_timeout\s*=\s*(\S+)",
+            r"(?:^|\s)(?:-c\s*|--)?statement_timeout\s*=\s*(\S+)",
             options,
             re.IGNORECASE,
         )
