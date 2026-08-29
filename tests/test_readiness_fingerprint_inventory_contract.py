@@ -13,15 +13,43 @@ class ReadinessFingerprintInventoryContractTests(unittest.TestCase):
     def test_constraint_fingerprints_cover_exact_readiness_inventory(self) -> None:
         """Every required constraint has one canonical type/definition fingerprint."""
         self.assertEqual(
-            set(persistence_module._READINESS_CONSTRAINTS),
-            set(persistence_module._READINESS_CONSTRAINT_FINGERPRINTS),
+            len(persistence_module._READINESS_CONSTRAINTS),
+            len({item[:3] for item in persistence_module._READINESS_CONSTRAINTS}),
+        )
+        self.assertTrue(
+            all(
+                len(item) == 5
+                and item[3] in {"c", "u"}
+                and len(item[4]) == 32
+                for item in persistence_module._READINESS_CONSTRAINTS
+            )
         )
 
     def test_index_fingerprints_cover_exact_readiness_inventory(self) -> None:
         """Every required explicit index has one canonical definition fingerprint."""
         self.assertEqual(
             set(persistence_module._READINESS_INDEXES),
-            set(persistence_module._READINESS_INDEX_FINGERPRINTS),
+            {
+                f"{item[0]}.{item[1]}"
+                for item in persistence_module._READINESS_INDEX_DEFINITIONS
+            },
+        )
+        self.assertEqual(
+            len(persistence_module._READINESS_INDEX_DEFINITIONS),
+            len(
+                {
+                    (item[0], item[1])
+                    for item in persistence_module._READINESS_INDEX_DEFINITIONS
+                }
+            ),
+        )
+        self.assertTrue(
+            all(
+                len(item) == 7
+                and isinstance(item[4], bool)
+                and len(item[6]) == 32
+                for item in persistence_module._READINESS_INDEX_DEFINITIONS
+            )
         )
 
 

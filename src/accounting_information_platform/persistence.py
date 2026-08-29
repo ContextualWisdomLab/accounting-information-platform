@@ -5066,6 +5066,7 @@ class PostgresPostingLedger:
                                OR index_definition.indrelid <> table_relation.oid
                                OR NOT index_definition.indisvalid
                                OR NOT index_definition.indisready
+                               OR NOT index_definition.indislive
                                OR index_definition.indisunique <> required.index_unique
                                OR index_definition.indisprimary
                                OR index_definition.indisexclusion
