@@ -261,6 +261,64 @@ class BankStatementRegistryTests(unittest.TestCase):
         self.assertEqual(replayed["bank_statement_record_id"], first["bank_statement_record_id"])
         self.assertEqual(replayed["balances"], [])
 
+    def test_legacy_identity_rejects_changed_additional_balance_evidence(self) -> None:
+        """Legacy identity replay cannot discard an added balance fact."""
+        original = load_canonical_statement_fixture()
+        first = self._ingest(original, key="legacy-balance-change")
+        normalized = bank_statement.parse_bank_statement_payload(
+            original, CAMT053_MESSAGE_DEFINITION
+        )
+        legacy_hash = _pre_0018_normalized_hash(normalized)
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            connection.execute(
+                "ALTER TABLE accounting_integration.bank_statement_record "
+                "DISABLE TRIGGER bank_statement_record_immutable_guard"
+            )
+            connection.execute(
+                "ALTER TABLE accounting_integration.bank_statement_balance "
+                "DISABLE TRIGGER bank_statement_balance_immutable_guard"
+            )
+            connection.execute(
+                "DELETE FROM accounting_integration.bank_statement_balance "
+                "WHERE bank_statement_record_id = %s",
+                (first["bank_statement_record_id"],),
+            )
+            connection.execute(
+                "UPDATE accounting_integration.bank_statement_record "
+                "SET normalized_payload_hash = %s "
+                "WHERE bank_statement_record_id = %s",
+                (legacy_hash, first["bank_statement_record_id"]),
+            )
+            connection.execute(
+                "ALTER TABLE accounting_integration.bank_statement_balance "
+                "ENABLE TRIGGER bank_statement_balance_immutable_guard"
+            )
+            connection.execute(
+                "ALTER TABLE accounting_integration.bank_statement_record "
+                "ENABLE TRIGGER bank_statement_record_immutable_guard"
+            )
+            connection.commit()
+
+        start = original.index(b"      <Bal>\n")
+        end = original.index(b"      </Bal>\n", start) + len(b"      </Bal>\n")
+        balance_block = original[start:end]
+        changed_bytes = original.replace(
+            b"      <Ntry>\n", balance_block + b"      <Ntry>\n", 1
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "different entry evidence"):
+            self._ingest(changed_bytes, key="legacy-balance-change-other")
+        self.assertEqual(self._count("accounting_integration.bank_statement_record"), 1)
+        with mock.patch.object(self.store, "get_artifact", return_value=b"tampered"):
+            with self.assertRaisesRegex(AccountingValidationError, "different entry evidence"):
+                self._ingest(changed_bytes, key="legacy-balance-change-hash")
+        with mock.patch.object(
+            self.store,
+            "get_artifact",
+            side_effect=AccountingValidationError("artifact unavailable"),
+        ):
+            with self.assertRaisesRegex(AccountingValidationError, "different entry evidence"):
+                self._ingest(changed_bytes, key="legacy-balance-change-missing")
+
     def test_same_key_changed_bytes_writes_nothing(self) -> None:
         """Same idempotency key with changed bytes conflicts and writes nothing."""
         original = load_canonical_statement_fixture()

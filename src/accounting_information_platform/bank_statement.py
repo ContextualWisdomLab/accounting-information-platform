@@ -616,17 +616,23 @@ def accept_bank_statement_evidence(
             )
         prior_identity = connection.execute(
             """
-            SELECT bank_statement_record_id, normalized_payload_hash,
+            SELECT bank_statement_record.bank_statement_record_id,
+                   bank_statement_record.normalized_payload_hash,
+                   bank_statement_record.source_artifact_hash,
                    EXISTS (
                        SELECT 1
                        FROM accounting_integration.bank_statement_balance AS balance
                        WHERE balance.tenant_account_id = bank_statement_record.tenant_account_id
                          AND balance.bank_statement_record_id = bank_statement_record.bank_statement_record_id
-                   ) AS has_balance_evidence
+                   ) AS has_balance_evidence,
+                   artifact.artifact_store_reference
             FROM accounting_integration.bank_statement_record
-            WHERE tenant_account_id = %s
-              AND bank_account_record_id = %s
-              AND statement_identity_reference = %s
+            JOIN accounting_integration.bank_statement_artifact AS artifact
+              ON artifact.tenant_account_id = bank_statement_record.tenant_account_id
+             AND artifact.bank_statement_artifact_id = bank_statement_record.bank_statement_artifact_id
+            WHERE bank_statement_record.tenant_account_id = %s
+              AND bank_statement_record.bank_account_record_id = %s
+              AND bank_statement_record.statement_identity_reference = %s
             """,
             (tenant_id, account_row[0], statement.statement_identity_reference),
         ).fetchone()
@@ -634,8 +640,14 @@ def accept_bank_statement_evidence(
             normalized_hash_matches = (
                 prior_identity[1] == statement.normalized_payload_hash
                 or (
-                    not prior_identity[2]
+                    not prior_identity[3]
                     and prior_identity[1] == _legacy_normalized_payload_hash(statement)
+                    and _legacy_statement_matches_artifact(
+                        statement,
+                        prior_identity[2],
+                        prior_identity[4],
+                        store,
+                    )
                 )
             )
             if not normalized_hash_matches:
@@ -1683,6 +1695,25 @@ def _legacy_balance_hash(balance: NormalizedStatementBalance) -> str:
             sort_keys=True,
         ).encode("utf-8")
     )
+
+
+def _legacy_statement_matches_artifact(
+    statement: NormalizedBankStatement,
+    source_artifact_hash: str,
+    artifact_store_reference: str,
+    store: ArtifactStore,
+) -> bool:
+    """Prove a legacy identity replay preserves every normalized fact."""
+    try:
+        original_bytes = store.get_artifact(artifact_store_reference)
+        if _sha256_digest(original_bytes) != source_artifact_hash:
+            return False
+        original = parse_bank_statement_payload(
+            original_bytes, CAMT053_MESSAGE_DEFINITION
+        )
+    except AccountingValidationError:
+        return False
+    return _normalized_payload(original) == _normalized_payload(statement)
 
 
 def _balance_payload(balance: NormalizedStatementBalance) -> dict[str, object]:
