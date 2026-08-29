@@ -8,7 +8,7 @@ import unittest
 import uuid
 from datetime import timedelta
 from threading import Thread
-from unittest import mock
+import unittest.mock as mock
 
 import psycopg
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
