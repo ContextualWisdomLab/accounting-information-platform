@@ -53,7 +53,7 @@ After installation, prove with the actual runtime login that supported reads and
 The multithreaded HTTP server gives each request an independent PostgreSQL
 transaction. Each new session bounds lock waits to five seconds and idle
 transactions to sixty seconds. State-changing proposal, adjusting, reversal,
-HomeTax, period-open, and period-close commands acquire tenant-scoped
+HomeTax, period-open, period-close, and reconciliation-run commands acquire tenant-scoped
 transaction advisory locks. Posting/reversal re-read their selected period
 after acquiring the shared period lock; close selects the period row with
 `FOR UPDATE` before evaluating its package. A lock timeout rolls back the
