@@ -56,6 +56,14 @@ class BankStatementBalanceAdapterTests(unittest.TestCase):
             proprietary.normalized_payload_hash,
         )
 
+    def test_mixed_standard_and_proprietary_balance_type_fails_closed(self) -> None:
+        """Malformed CdOrPrtry with both choices cannot discard either fact."""
+        payload = load_canonical_statement_fixture().replace(
+            b"<Cd>OPBD</Cd>", b"<Cd>OPBD</Cd><Prtry>CUSTOM-OPEN</Prtry>", 1
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "either Cd or Prtry"):
+            parse_bank_statement_payload(payload, CAMT053_MESSAGE_DEFINITION)
+
     def test_balance_population_has_a_domain_bound(self) -> None:
         """One valid-sized XML document cannot fan out into unbounded balance rows."""
         payload = load_canonical_statement_fixture()

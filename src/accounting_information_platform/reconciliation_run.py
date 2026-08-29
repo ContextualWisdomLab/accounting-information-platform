@@ -162,6 +162,30 @@ def accept_reconciliation_run(
               AND legal_entity.recorded_at <= %s
               AND accounting_book.recorded_at <= %s
               AND artifact.recorded_at <= %s
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM accounting_integration.bank_statement_balance AS balance
+                  WHERE balance.tenant_account_id = statement.tenant_account_id
+                    AND balance.bank_statement_record_id = statement.bank_statement_record_id
+                    AND balance.recorded_at > %s
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM accounting_integration.bank_statement_entry AS entry
+                  WHERE entry.tenant_account_id = statement.tenant_account_id
+                    AND entry.bank_statement_record_id = statement.bank_statement_record_id
+                    AND entry.recorded_at > %s
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM accounting_integration.bank_statement_entry_detail AS detail
+                  JOIN accounting_integration.bank_statement_entry AS entry
+                    ON entry.tenant_account_id = detail.tenant_account_id
+                   AND entry.bank_statement_entry_id = detail.bank_statement_entry_id
+                  WHERE entry.tenant_account_id = statement.tenant_account_id
+                    AND entry.bank_statement_record_id = statement.bank_statement_record_id
+                    AND detail.recorded_at > %s
+              )
             FOR SHARE OF assignment
             """,
             (
@@ -171,6 +195,9 @@ def accept_reconciliation_run(
                 accounting_book_reference,
                 bank_cutoff_at,
                 bank_cutoff_at,
+                knowledge_cutoff_at,
+                knowledge_cutoff_at,
+                knowledge_cutoff_at,
                 knowledge_cutoff_at,
                 knowledge_cutoff_at,
                 knowledge_cutoff_at,

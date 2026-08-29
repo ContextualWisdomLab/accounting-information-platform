@@ -1578,6 +1578,11 @@ def _normalize_balance(
 ) -> NormalizedStatementBalance:
     standard_code = _first_text(node, ("Tp", "CdOrPrtry", "Cd"))
     proprietary_code = _first_text(node, ("Tp", "CdOrPrtry", "Prtry"))
+    if standard_code is not None and proprietary_code is not None:
+        raise AccountingValidationError(
+            "balance type must contain either Cd or Prtry, not both. "
+            "Correct Bal/Tp/CdOrPrtry, then retry ingest."
+        )
     code = standard_code or proprietary_code
     type_source = "cd" if standard_code else "prtry" if proprietary_code else None
     amount, currency = _required_amount(node, "Bal/Amt", allow_zero=True)
@@ -1643,8 +1648,40 @@ def _legacy_normalized_payload_hash(statement: NormalizedBankStatement) -> str:
     """Return the pre-0018 normalized hash used by legacy statement rows."""
     payload = _normalized_payload(statement)
     payload.pop("balances")
+    for field_name, balance_code in (
+        ("opening_balance_hash", "OPBD"),
+        ("closing_balance_hash", "CLBD"),
+    ):
+        balance = next(
+            (
+                item
+                for item in statement.balances
+                if item.balance_type_code == balance_code
+                and item.balance_type_source_code == "cd"
+            ),
+            None,
+        )
+        payload[field_name] = (
+            None if balance is None else _legacy_balance_hash(balance)
+        )
     return _sha256_digest(
         json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    )
+
+
+def _legacy_balance_hash(balance: NormalizedStatementBalance) -> str:
+    """Return the pre-0018 hash shape for one standard balance fact."""
+    return _sha256_digest(
+        json.dumps(
+            {
+                "code": balance.balance_type_code,
+                "amount": _decimal_text(balance.balance_amount),
+                "currency": balance.balance_currency_code,
+                "credit_debit": balance.credit_debit_code,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
     )
 
 

@@ -204,6 +204,33 @@ class ReconciliationRunApiTests(unittest.TestCase):
                 historical, posting.DATABASE_URL, self.case.policy.tenant_reference
             )
 
+    def test_statement_child_recorded_after_knowledge_cutoff_is_rejected(self) -> None:
+        """A historical run cannot include child evidence learned after its cutoff."""
+        statement, command = self._statement_and_command()
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            connection.execute(
+                "ALTER TABLE accounting_integration.bank_statement_balance "
+                "DISABLE TRIGGER bank_statement_balance_immutable_guard"
+            )
+            connection.execute(
+                """
+                UPDATE accounting_integration.bank_statement_balance
+                SET recorded_at = '2026-09-02T00:00:00Z'
+                WHERE bank_statement_record_id = %s
+                """,
+                (statement["bank_statement_record_id"],),
+            )
+            connection.execute(
+                "ALTER TABLE accounting_integration.bank_statement_balance "
+                "ENABLE TRIGGER bank_statement_balance_immutable_guard"
+            )
+            connection.commit()
+        historical = dict(command, knowledge_cutoff_at="2026-09-01T00:00:00Z")
+        with self.assertRaisesRegex(AccountingValidationError, "not bound"):
+            accept_reconciliation_run(
+                historical, posting.DATABASE_URL, self.case.policy.tenant_reference
+            )
+
     def test_database_rejects_orphan_reconciliation_run_at_commit(self) -> None:
         """A run cannot commit without exactly one immutable command-evidence row."""
         _statement, command = self._statement_and_command()

@@ -32,6 +32,45 @@ from tests import test_postgres_posting as posting
 VALID_FROM = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
+def _pre_0018_normalized_hash(statement: object) -> str:
+    """Recreate the normalized hash shape emitted before balance evidence rows."""
+    payload = bank_statement._normalized_payload(statement)
+    balances = payload.pop("balances")
+    for field_name, balance_code in (
+        ("opening_balance_hash", "OPBD"),
+        ("closing_balance_hash", "CLBD"),
+    ):
+        balance = next(
+            (
+                item
+                for item in balances
+                if item["balance_type_code"] == balance_code
+                and item["balance_type_source_code"] == "cd"
+            ),
+            None,
+        )
+        payload[field_name] = (
+            None
+            if balance is None
+            else "sha256:"
+            + hashlib.sha256(
+                json.dumps(
+                    {
+                        "code": balance["balance_type_code"],
+                        "amount": balance["balance_amount"],
+                        "currency": balance["balance_currency_code"],
+                        "credit_debit": balance["credit_debit_code"],
+                    },
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode("utf-8")
+            ).hexdigest()
+        )
+    return "sha256:" + hashlib.sha256(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
 class BankStatementRegistryTests(unittest.TestCase):
     """Prove ingest, replay, parser-security persistence, and tenant/book scope."""
 
@@ -139,13 +178,7 @@ class BankStatementRegistryTests(unittest.TestCase):
         normalized = bank_statement.parse_bank_statement_payload(
             payload, CAMT053_MESSAGE_DEFINITION
         )
-        legacy_payload = bank_statement._normalized_payload(normalized)
-        legacy_payload.pop("balances")
-        legacy_hash = "sha256:" + hashlib.sha256(
-            json.dumps(
-                legacy_payload, separators=(",", ":"), sort_keys=True
-            ).encode("utf-8")
-        ).hexdigest()
+        legacy_hash = _pre_0018_normalized_hash(normalized)
 
         with psycopg.connect(posting.DATABASE_URL) as connection:
             connection.execute(
@@ -191,13 +224,7 @@ class BankStatementRegistryTests(unittest.TestCase):
         normalized = bank_statement.parse_bank_statement_payload(
             original, CAMT053_MESSAGE_DEFINITION
         )
-        legacy_payload = bank_statement._normalized_payload(normalized)
-        legacy_payload.pop("balances")
-        legacy_hash = "sha256:" + hashlib.sha256(
-            json.dumps(
-                legacy_payload, separators=(",", ":"), sort_keys=True
-            ).encode("utf-8")
-        ).hexdigest()
+        legacy_hash = _pre_0018_normalized_hash(normalized)
         with psycopg.connect(posting.DATABASE_URL) as connection:
             connection.execute(
                 "ALTER TABLE accounting_integration.bank_statement_record "
