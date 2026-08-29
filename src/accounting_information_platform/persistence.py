@@ -4526,6 +4526,8 @@ class PostgresPostingLedger:
                                OR trigger.tgconstraint = 0
                                OR NOT trigger.tgdeferrable
                                OR NOT trigger.tginitdeferred
+                               OR trigger.tgqual IS NOT NULL
+                               OR pg_catalog.cardinality(trigger.tgattr) <> 0
                         ),
                         NOT EXISTS (
                             SELECT 1

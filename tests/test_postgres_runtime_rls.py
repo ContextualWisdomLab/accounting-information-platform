@@ -164,6 +164,70 @@ class PostgresRuntimeRlsTests(unittest.TestCase):
                             )
                         )
 
+    def test_readiness_rejects_conditional_or_column_restricted_balance_trigger(self) -> None:
+        """Readiness rejects balance triggers that skip required row changes."""
+        role_name = f"accounting_runtime_{uuid.uuid4().hex[:10]}"
+        password = f"AisRuntime{uuid.uuid4().hex}"
+        self._create_runtime_role(role_name, password, self.case.tenant_id)
+        self.addCleanup(self._drop_runtime_role, role_name)
+        runtime_ledger = PostgresPostingLedger(
+            self._runtime_database_url(role_name, password),
+            self.case.policy.tenant_reference,
+        )
+        trigger_cases = (
+            (
+                "general_journal",
+                "general_journal_balance_guard",
+                "INSERT OR UPDATE",
+                "WHEN (false)",
+            ),
+            (
+                "general_journal",
+                "general_journal_balance_guard",
+                "INSERT OR UPDATE OF accounting_date",
+                "",
+            ),
+            (
+                "journal_entry_line",
+                "journal_entry_balance_guard",
+                "INSERT OR UPDATE OR DELETE",
+                "WHEN (false)",
+            ),
+            (
+                "journal_entry_line",
+                "journal_entry_balance_guard",
+                "INSERT OR UPDATE OF debit_amount OR DELETE",
+                "",
+            ),
+        )
+        for table_name, trigger_name, event_clause, condition_clause in trigger_cases:
+            with self.subTest(trigger_name=trigger_name, altered=condition_clause or event_clause):
+                with psycopg.connect(posting.DATABASE_URL, autocommit=True) as admin:
+                    self._replace_balance_trigger(
+                        admin,
+                        table_name,
+                        trigger_name,
+                        event_clause,
+                        condition_clause,
+                    )
+                try:
+                    with self.assertRaisesRegex(
+                        AccountingValidationError,
+                        "accounting database schema is incomplete",
+                    ):
+                        runtime_ledger.check_readiness()
+                finally:
+                    with psycopg.connect(posting.DATABASE_URL, autocommit=True) as admin:
+                        self._replace_balance_trigger(
+                            admin,
+                            table_name,
+                            trigger_name,
+                            "INSERT OR UPDATE"
+                            if table_name == "general_journal"
+                            else "INSERT OR UPDATE OR DELETE",
+                            "",
+                        )
+
     def test_restricted_runtime_login_posts_same_tenant_and_cannot_rebind_other_tenant(self) -> None:
         """A least-privilege runtime posts its tenant and cannot self-authorize another tenant."""
         other = posting.PostgresPostingTests("setUp")
@@ -334,6 +398,33 @@ class PostgresRuntimeRlsTests(unittest.TestCase):
                 sql.SQL("DROP OWNED BY {} CASCADE").format(sql.Identifier(role_name))
             )
             admin.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(role_name)))
+
+    @staticmethod
+    def _replace_balance_trigger(
+        connection: object,
+        table_name: str,
+        trigger_name: str,
+        event_clause: str,
+        condition_clause: str,
+    ) -> None:
+        """Replace one balance trigger with a supplied event contract for a regression."""
+        connection.execute(
+            sql.SQL("DROP TRIGGER IF EXISTS {} ON accounting_core.{}").format(
+                sql.Identifier(trigger_name), sql.Identifier(table_name)
+            )
+        )
+        connection.execute(
+            sql.SQL(
+                "CREATE CONSTRAINT TRIGGER {} AFTER {} ON accounting_core.{} "
+                "DEFERRABLE INITIALLY DEFERRED FOR EACH ROW {} "
+                "EXECUTE FUNCTION accounting_core.assert_journal_balance()"
+            ).format(
+                sql.Identifier(trigger_name),
+                sql.SQL(event_clause),
+                sql.Identifier(table_name),
+                sql.SQL(condition_clause),
+            )
+        )
 
 
 if __name__ == "__main__":

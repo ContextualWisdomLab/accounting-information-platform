@@ -20,7 +20,8 @@ schema contract through migration `0014_reconciliation_candidate_allocation.sql`
 Because the repository has no durable schema-version table, this contract is
 represented by the current tables, functions, mutated columns, constraints,
 and migration indexes, plus the enabled exact registrations of the two
-database-owned deferred journal-balance triggers. The probe requires an active
+database-owned deferred journal-balance triggers with unrestricted event
+definitions. The probe requires an active
 binding even for privileged sessions and caps connection establishment at five seconds while
 preserving a stricter configured timeout. Return `200` with
 `{"status":"ready"}` only after all checks pass. Return `503` with stable
@@ -48,4 +49,7 @@ PostgreSQL HTTP integration test expected `GET /readyz` to return `200` and
 observed `404` on the unchanged foundation. A second regression verifies that
 an unreachable database returns `503` with operator-safe guidance and no raw
 driver or connection error. A third regression verifies that disabling either
-required journal-balance trigger returns `503` for a bound runtime login.
+required journal-balance trigger returns `503` for a bound runtime login. A
+fourth regression recreates each trigger with a `WHEN (false)` predicate and
+an `UPDATE OF` column filter in turn; each altered definition returns `503` and
+the canonical migration definition is restored after the check.

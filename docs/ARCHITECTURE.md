@@ -62,7 +62,9 @@ The mounted HTTP surface exposes `GET /healthz` as process liveness and
 `GET /readyz` as database readiness. Readiness checks PostgreSQL connectivity,
 an active bound runtime tenant, and the complete checked-in migration/schema
 contract through migration `0014`, including the enabled database-owned
-DEFERRABLE balance triggers and their exact relation/function registrations; it
+DEFERRABLE balance triggers, their exact relation/function registrations, and
+their unrestricted event definitions without `WHEN` predicates or `UPDATE OF`
+column filters; it
 uses a bounded connection attempt and does not accept the privileged fallback
 used by accounting commands. Neither probe is caller authentication or release
 evidence, and readiness responses use `Cache-Control: no-store` to prevent
