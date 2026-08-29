@@ -86,6 +86,7 @@ class BankStatementRegistryTests(unittest.TestCase):
                     "balance_amount": "100000",
                     "balance_currency_code": "KRW",
                     "credit_debit_code": "CRDT",
+                    "balance_effective_at": "2026-08-23T00:00:00Z",
                     "source_locator_path": "Document/BkToCstmrStmt/Stmt/Bal[1]",
                     "source_balance_hash": document["balances"][0]["source_balance_hash"],
                 },
@@ -95,6 +96,7 @@ class BankStatementRegistryTests(unittest.TestCase):
                     "balance_amount": "115000",
                     "balance_currency_code": "KRW",
                     "credit_debit_code": "CRDT",
+                    "balance_effective_at": "2026-08-24T00:00:00Z",
                     "source_locator_path": "Document/BkToCstmrStmt/Stmt/Bal[2]",
                     "source_balance_hash": document["balances"][1]["source_balance_hash"],
                 },
@@ -185,6 +187,9 @@ class BankStatementRegistryTests(unittest.TestCase):
         )
         self.assertEqual(loaded["credit_total_amount"], "25000")
         self.assertEqual(loaded["debit_total_amount"], "10000")
+        self.assertEqual(
+            loaded["balances"][0]["balance_effective_at"], "2026-08-23T00:00:00Z"
+        )
         listed = lookup_bank_statements(
             posting.DATABASE_URL,
             self.case.policy.tenant_reference,
@@ -209,6 +214,16 @@ class BankStatementRegistryTests(unittest.TestCase):
             cursor=str(page["next_cursor"]),
         )
         self.assertEqual(rest["bank_statement_entries"][0]["credit_debit_code"], "DBIT")
+
+    def test_missing_balance_effective_date_round_trips_as_unavailable(self) -> None:
+        """Unavailable balance dates remain explicit null evidence after persistence."""
+        payload = load_canonical_statement_fixture().replace(
+            b"        <Dt>\n          <Dt>2026-08-23</Dt>\n        </Dt>\n",
+            b"",
+            1,
+        )
+        document = self._ingest(payload, key="balance-date-missing")
+        self.assertIsNone(document["balances"][0]["balance_effective_at"])
 
     def test_cross_tenant_assignment_and_read_fail(self) -> None:
         """Another tenant cannot assign, read, or overwrite this bank account."""
