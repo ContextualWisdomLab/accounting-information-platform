@@ -858,6 +858,23 @@ class BankStatementRegistryTests(unittest.TestCase):
         get_assignment, _ = self.case._http_json("GET", "/bank-account-assignments", None)
         self.assertEqual(get_assignment, 405)
 
+    def test_http_rejects_balance_storage_overflow_as_client_error(self) -> None:
+        """An oversized balance is a validation error, not a persistence 500."""
+        server = self.case._start_http_server()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        payload = load_canonical_statement_fixture().replace(
+            b"100000.00", b"1" + b"0" * 32, 1
+        )
+        status, body = self.case._http_json(
+            "POST",
+            "/bank-statements",
+            self._command(payload, key="oversized-balance"),
+        )
+        self.assertEqual(status, 422)
+        self.assertIn("storage bound", str(body))
+        self.assertEqual(self._count("accounting_integration.bank_statement_record"), 0)
+
     def test_command_validation_and_list_cursors(self) -> None:
         """Missing fields, hash mismatch, and bad cursors fail before persistence."""
         with self.assertRaisesRegex(AccountingValidationError, "JSON object"):

@@ -64,6 +64,14 @@ class BankStatementBalanceAdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(AccountingValidationError, "either Cd or Prtry"):
             parse_bank_statement_payload(payload, CAMT053_MESSAGE_DEFINITION)
 
+    def test_balance_amount_exceeding_storage_bound_fails_in_parser(self) -> None:
+        """A balance beyond numeric(38,6) fails before persistence can overflow."""
+        payload = load_canonical_statement_fixture().replace(
+            b"100000.00", b"1" + b"0" * 32, 1
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "storage bound"):
+            parse_bank_statement_payload(payload, CAMT053_MESSAGE_DEFINITION)
+
     def test_balance_population_has_a_domain_bound(self) -> None:
         """One valid-sized XML document cannot fan out into unbounded balance rows."""
         payload = load_canonical_statement_fixture()

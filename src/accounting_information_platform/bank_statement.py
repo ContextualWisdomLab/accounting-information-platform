@@ -1796,6 +1796,11 @@ def _amount_from_element(
     try:
         amount = _parse_amount(text)
     except AccountingValidationError as error:
+        if "storage bound" in str(error):
+            raise AccountingValidationError(
+                f"{label} exceeds the numeric(38,6) storage bound. "
+                "Correct the amount, then retry ingest."
+            ) from error
         raise AccountingValidationError(
             f"{label} must be an exact decimal with at most six fractional digits. "
             "Correct the amount, then retry ingest."
