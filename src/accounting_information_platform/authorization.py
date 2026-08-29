@@ -11,7 +11,6 @@ import hashlib
 import hmac
 import re
 from dataclasses import dataclass, field
-from enum import Enum
 from secrets import token_bytes
 from types import MappingProxyType
 from typing import Mapping
@@ -24,13 +23,6 @@ _PERMISSION_PATTERN = re.compile(r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$")
 _PRINCIPAL_KINDS = frozenset(("human", "service", "agent"))
 
 
-class _AuthorizationIssuance(Enum):
-    """Stable in-process provenance marker that survives supported copying."""
-
-    ISSUED = "issued"
-
-
-_AUTHORIZATION_ISSUANCE_TOKEN = _AuthorizationIssuance.ISSUED
 _AUTHORIZATION_DECISION_SEAL_KEY = token_bytes(32)
 _DECISION_VALUE_NAMES = (
     "principal_reference",
@@ -130,7 +122,6 @@ class AuthorizationDecision:
     policy_version: str
     decision_code: str
     allowed: bool
-    _issuance_token: object = field(default=None, repr=False, compare=False)
     _decision_fingerprint: str = field(default="", repr=False, compare=False)
 
 
@@ -147,7 +138,6 @@ def _decision_fingerprint(decision: AuthorizationDecision) -> str:
 def _issue_authorization_decision(**values: object) -> AuthorizationDecision:
     """Create decision evidence only through the policy evaluator."""
     decision = AuthorizationDecision(**values)
-    object.__setattr__(decision, "_issuance_token", _AUTHORIZATION_ISSUANCE_TOKEN)
     object.__setattr__(decision, "_decision_fingerprint", _decision_fingerprint(decision))
     return decision
 
@@ -237,10 +227,7 @@ def record_authorization_decision(
     """Append one decision to the tenant-scoped PostgreSQL authorization evidence table."""
     if not correlation_reference or len(correlation_reference) > 512:
         raise ValueError("authorization correlation reference must contain 1 to 512 characters")
-    if (
-        decision._issuance_token is not _AUTHORIZATION_ISSUANCE_TOKEN
-        or decision._decision_fingerprint != _decision_fingerprint(decision)
-    ):
+    if decision._decision_fingerprint != _decision_fingerprint(decision):
         raise ValueError("authorization decision must be issued by authorize and remain unchanged")
     if decision.requested_tenant_reference != tenant_reference:
         raise ValueError("authorization decision tenant scope must match requested tenant reference")
