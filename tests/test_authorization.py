@@ -204,11 +204,11 @@ class AuthorizationContractTests(unittest.TestCase):
         )
         self.assertEqual(
             _post_authorization_operation("/period-closes", b"not-json"),
-            None,
+            "hard_close_period",
         )
         self.assertEqual(
             _post_authorization_operation("/period-closes", b"[]"),
-            None,
+            "hard_close_period",
         )
         self.assertEqual(_post_authorization_operation("/unknown", b"{}"), None)
         self.assertEqual(

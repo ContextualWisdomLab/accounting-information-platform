@@ -12066,6 +12066,66 @@ class PostgresPostingTests(unittest.TestCase):
                         connection.execute(mutation, (self.tenant_id,))
         server.shutdown()
 
+    def test_malformed_period_close_is_denied_and_recorded_before_validation(self) -> None:
+        """Unclassifiable close input cannot bypass high-impact authorization or write rows."""
+        context = AuthenticatedPrincipal(
+            principal_reference="urn:cwl:principal:catalog-reader",
+            tenant_reference=self.policy.tenant_reference,
+            authentication_context_reference="urn:cwl:authentication:catalog-reader",
+            granted_permission_codes=frozenset({"accounting.read_close"}),
+            purpose_code="close_read",
+            credential_evidence_reference="urn:cwl:auth-evidence:catalog-reader",
+            principal_kind="human",
+        )
+        server = self._start_http_server(authorization_context=context)
+
+        malformed_status, _malformed = self._http_raw(
+            "POST", "/period-closes", b"not-json", self.policy.tenant_reference
+        )
+        non_object_status, _non_object = self._http_raw(
+            "POST", "/period-closes", b"[]", self.policy.tenant_reference
+        )
+
+        self.assertEqual(malformed_status, 403)
+        self.assertEqual(non_object_status, 403)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), 0)
+        self.assertEqual(self._count_table("accounting_integration.outbox_event"), 0)
+        self.assertEqual(
+            self._count_table("accounting_integration.authorization_decision_record"),
+            2,
+        )
+        server.shutdown()
+
+    def test_authorized_malformed_period_close_preserves_validation_error(self) -> None:
+        """A hard-close-capable caller still receives client validation after audit authorization."""
+        context = AuthenticatedPrincipal(
+            principal_reference="urn:cwl:principal:close-writer",
+            tenant_reference=self.policy.tenant_reference,
+            authentication_context_reference="urn:cwl:authentication:close-writer",
+            granted_permission_codes=frozenset({"accounting.hard_close_period"}),
+            purpose_code="period_close",
+            credential_evidence_reference="urn:cwl:auth-evidence:close-writer",
+            principal_kind="human",
+        )
+        server = self._start_http_server(authorization_context=context)
+
+        malformed_status, _malformed = self._http_raw(
+            "POST", "/period-closes", b"not-json", self.policy.tenant_reference
+        )
+        non_object_status, _non_object = self._http_raw(
+            "POST", "/period-closes", b"[]", self.policy.tenant_reference
+        )
+
+        self.assertEqual(malformed_status, 400)
+        self.assertEqual(non_object_status, 400)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), 0)
+        self.assertEqual(self._count_table("accounting_integration.outbox_event"), 0)
+        self.assertEqual(
+            self._count_table("accounting_integration.authorization_decision_record"),
+            2,
+        )
+        server.shutdown()
+
     def test_authorization_evidence_retains_principal_and_requested_tenants(self) -> None:
         """A cross-tenant denial retains both sides of the attempted scope."""
         principal_tenant = "urn:cwl:tenant_principal_other"
