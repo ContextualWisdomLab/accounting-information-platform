@@ -41,9 +41,13 @@ _EXPLICIT_TRIGGER_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_READINESS_INDEXES = tuple(
+    f"{item[0]}.{item[1]}" for item in persistence_module._READINESS_INDEX_DEFINITIONS
+)
+
 
 class PostgresReadinessDefinitionContractTests(unittest.TestCase):
-    """Reject same-identity control rewrites and missing checked-in indexes."""
+    """Reject same-identity control rewrites and missing schema definitions."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -121,7 +125,33 @@ class PostgresReadinessDefinitionContractTests(unittest.TestCase):
                     f"{match.group('schema').lower()}.{match.group('index').lower()}"
                 )
         self.assertTrue(expected_indexes)
-        self.assertEqual(expected_indexes, set(persistence_module._READINESS_INDEXES))
+        self.assertEqual(expected_indexes, set(_READINESS_INDEXES))
+
+    def test_installed_constraint_inventory_matches_readiness(self) -> None:
+        """Every migrated primary, unique, foreign-key, and check constraint is protected."""
+        expected_constraints = {
+            item[:4] for item in persistence_module._READINESS_CONSTRAINTS
+        }
+        with psycopg.connect(posting.DATABASE_URL) as admin:
+            actual_constraints = set(
+                admin.execute(
+                    """
+                    SELECT namespace.nspname, relation.relname,
+                           catalog_constraint.conname, catalog_constraint.contype::text
+                    FROM pg_catalog.pg_constraint AS catalog_constraint
+                    JOIN pg_catalog.pg_namespace AS namespace
+                      ON namespace.oid = catalog_constraint.connamespace
+                    JOIN pg_catalog.pg_class AS relation
+                      ON relation.oid = catalog_constraint.conrelid
+                    WHERE namespace.nspname IN (
+                        'accounting_core', 'accounting_integration',
+                        'accounting_reporting'
+                    )
+                      AND catalog_constraint.contype IN ('p', 'u', 'f', 'c')
+                    """
+                ).fetchall()
+            )
+        self.assertEqual(actual_constraints, expected_constraints)
 
     def test_every_checked_in_trigger_is_required_by_readiness(self) -> None:
         """The readiness trigger inventory cannot silently lag a migration trigger."""
@@ -141,7 +171,7 @@ class PostgresReadinessDefinitionContractTests(unittest.TestCase):
     def test_required_index_drop_fails_readiness(self) -> None:
         """Dropping any explicitly checked-in index makes readiness fail closed."""
         self.runtime_ledger.check_readiness()
-        for index_name in persistence_module._READINESS_INDEXES:
+        for index_name in _READINESS_INDEXES:
             with self.subTest(index_name=index_name):
                 with psycopg.connect(posting.DATABASE_URL, autocommit=True) as admin:
                     canonical_definition = admin.execute(
@@ -195,7 +225,10 @@ class PostgresReadinessDefinitionContractTests(unittest.TestCase):
                           ON parent_table.oid = parent_constraint.conrelid
                         JOIN pg_catalog.pg_depend
                           ON pg_depend.refobjid = parent_constraint.conindid
+                         AND pg_depend.refclassid = 'pg_class'::regclass
                          AND pg_depend.classid = 'pg_constraint'::regclass
+                         AND parent_constraint.conindid <> 0
+                         AND parent_constraint.contype IN ('p', 'u')
                         JOIN pg_catalog.pg_constraint AS dependent_constraint
                           ON dependent_constraint.oid = pg_depend.objid
                          AND dependent_constraint.contype = 'f'
@@ -277,7 +310,7 @@ class PostgresReadinessDefinitionContractTests(unittest.TestCase):
     def test_required_index_redefinition_fails_readiness(self) -> None:
         """A same-name weaker index makes readiness fail closed."""
         self.runtime_ledger.check_readiness()
-        for index_name in persistence_module._READINESS_INDEXES:
+        for index_name in _READINESS_INDEXES:
             with self.subTest(index_name=index_name):
                 with psycopg.connect(posting.DATABASE_URL, autocommit=True) as admin:
                     canonical_definition, schema_name, table_name, first_column = (

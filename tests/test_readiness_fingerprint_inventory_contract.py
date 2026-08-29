@@ -6,6 +6,10 @@ import unittest
 
 from accounting_information_platform import persistence as persistence_module
 
+_READINESS_INDEXES = tuple(
+    f"{item[0]}.{item[1]}" for item in persistence_module._READINESS_INDEX_DEFINITIONS
+)
+
 
 class ReadinessFingerprintInventoryContractTests(unittest.TestCase):
     """Keep every protected constraint and index paired with canonical semantics."""
@@ -13,13 +17,13 @@ class ReadinessFingerprintInventoryContractTests(unittest.TestCase):
     def test_constraint_fingerprints_cover_exact_readiness_inventory(self) -> None:
         """Every required constraint has one canonical type/definition fingerprint."""
         self.assertEqual(
-            len(persistence_module._READINESS_CONSTRAINTS),
-            len({item[:3] for item in persistence_module._READINESS_CONSTRAINTS}),
+                len(persistence_module._READINESS_CONSTRAINTS),
+                len({item[:3] for item in persistence_module._READINESS_CONSTRAINTS}),
         )
         self.assertTrue(
             all(
                 len(item) == 5
-                and item[3] in {"c", "u"}
+                and item[3] in {"c", "f", "p", "u"}
                 and len(item[4]) == 32
                 for item in persistence_module._READINESS_CONSTRAINTS
             )
@@ -28,7 +32,7 @@ class ReadinessFingerprintInventoryContractTests(unittest.TestCase):
     def test_index_fingerprints_cover_exact_readiness_inventory(self) -> None:
         """Every required explicit index has one canonical definition fingerprint."""
         self.assertEqual(
-            set(persistence_module._READINESS_INDEXES),
+            set(_READINESS_INDEXES),
             {
                 f"{item[0]}.{item[1]}"
                 for item in persistence_module._READINESS_INDEX_DEFINITIONS
