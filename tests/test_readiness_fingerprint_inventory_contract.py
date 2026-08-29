@@ -3,16 +3,70 @@
 from __future__ import annotations
 
 import unittest
+import re
+from pathlib import Path
 
 from accounting_information_platform import persistence as persistence_module
 
 _READINESS_INDEXES = tuple(
     f"{item[0]}.{item[1]}" for item in persistence_module._READINESS_INDEX_DEFINITIONS
 )
+_MIGRATION_ROOT = Path(__file__).resolve().parents[1] / "database" / "migrations"
+_TABLE_DECLARATION_PATTERN = re.compile(
+    r"CREATE\s+TABLE\s+(?P<schema>[a-z0-9_]+)\.(?P<table>[a-z0-9_]+)",
+    re.IGNORECASE,
+)
+_RLS_DECLARATION_PATTERN = re.compile(
+    r"ALTER\s+TABLE\s+(?P<schema>[a-z0-9_]+)\.(?P<table>[a-z0-9_]+)\s+"
+    r"(?:ENABLE|FORCE)\s+ROW\s+LEVEL\s+SECURITY",
+    re.IGNORECASE,
+)
+_POLICY_DECLARATION_PATTERN = re.compile(
+    r"CREATE\s+POLICY\s+(?P<policy>[a-z0-9_]+)\s+ON\s+"
+    r"(?P<schema>[a-z0-9_]+)\.(?P<table>[a-z0-9_]+)",
+    re.IGNORECASE,
+)
+
+
+def _migration_text() -> str:
+    """Return the complete checked-in migration source in execution order."""
+    return "\n".join(
+        path.read_text(encoding="utf-8") for path in sorted(_MIGRATION_ROOT.glob("*.sql"))
+    )
 
 
 class ReadinessFingerprintInventoryContractTests(unittest.TestCase):
-    """Keep every protected constraint and index paired with canonical semantics."""
+    """Keep every protected migration object paired with canonical semantics."""
+
+    def test_readiness_table_inventory_covers_all_migration_tables(self) -> None:
+        """A new migration table cannot silently fall outside readiness."""
+        migration_tables = {
+            f"{match.group('schema')}.{match.group('table')}"
+            for match in _TABLE_DECLARATION_PATTERN.finditer(_migration_text())
+        }
+        self.assertEqual(migration_tables, set(persistence_module._READINESS_TABLES))
+
+    def test_readiness_rls_inventory_covers_all_migration_declarations(self) -> None:
+        """RLS declarations remain paired with the readiness table contract."""
+        migration_rls_tables = {
+            (match.group("schema"), match.group("table"))
+            for match in _RLS_DECLARATION_PATTERN.finditer(_migration_text())
+        }
+        self.assertEqual(
+            migration_rls_tables,
+            set(persistence_module._READINESS_RLS_TABLES),
+        )
+
+    def test_readiness_policy_inventory_covers_all_migration_policies(self) -> None:
+        """A new or renamed tenant policy must update the runtime contract."""
+        migration_policies = {
+            (match.group("schema"), match.group("table"), match.group("policy"))
+            for match in _POLICY_DECLARATION_PATTERN.finditer(_migration_text())
+        }
+        self.assertEqual(
+            migration_policies,
+            set(persistence_module._READINESS_RLS_POLICIES),
+        )
 
     def test_constraint_fingerprints_cover_exact_readiness_inventory(self) -> None:
         """Every required constraint has one canonical type/definition fingerprint."""

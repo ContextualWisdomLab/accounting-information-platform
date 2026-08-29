@@ -107,39 +107,6 @@ _READINESS_COLUMNS = (
     ("accounting_core", "bank_account_assignment", "assignment_idempotency_key"),
     ("accounting_core", "bank_account_assignment", "assignment_command_hash"),
 )
-_READINESS_RLS_TABLES = (
-    ("accounting_core", "account_role_mapping"),
-    ("accounting_core", "accounting_book"),
-    ("accounting_core", "accounting_book_period_control"),
-    ("accounting_core", "bank_account_assignment"),
-    ("accounting_core", "bank_account_record"),
-    ("accounting_core", "chart_account"),
-    ("accounting_core", "fiscal_calendar"),
-    ("accounting_core", "fiscal_period"),
-    ("accounting_core", "general_journal"),
-    ("accounting_core", "journal_entry_line"),
-    ("accounting_core", "journal_match_allocation"),
-    ("accounting_core", "journal_reversal"),
-    ("accounting_core", "journal_source_reference"),
-    ("accounting_core", "legal_entity_record"),
-    ("accounting_core", "reconciliation_candidate"),
-    ("accounting_core", "reconciliation_evidence"),
-    ("accounting_core", "reconciliation_exception"),
-    ("accounting_core", "reconciliation_match"),
-    ("accounting_core", "reconciliation_run"),
-    ("accounting_core", "statement_match_allocation"),
-    ("accounting_integration", "bank_statement_artifact"),
-    ("accounting_integration", "bank_statement_entry"),
-    ("accounting_integration", "bank_statement_entry_detail"),
-    ("accounting_integration", "bank_statement_record"),
-    ("accounting_integration", "fiscal_period_open_command"),
-    ("accounting_integration", "home_tax_submission"),
-    ("accounting_integration", "journal_proposal_record"),
-    ("accounting_integration", "outbox_event"),
-    ("accounting_integration", "posting_receipt"),
-    ("accounting_reporting", "trial_balance_line"),
-    ("accounting_reporting", "trial_balance_snapshot"),
-)
 _READINESS_RLS_POLICIES = (
     ("accounting_core", "account_role_mapping", "account_mapping_isolation"),
     ("accounting_core", "accounting_book", "accounting_book_isolation"),
@@ -172,6 +139,10 @@ _READINESS_RLS_POLICIES = (
     ("accounting_integration", "posting_receipt", "posting_receipt_isolation"),
     ("accounting_reporting", "trial_balance_line", "trial_line_isolation"),
     ("accounting_reporting", "trial_balance_snapshot", "trial_snapshot_isolation"),
+)
+_READINESS_RLS_TABLES = tuple(
+    (schema_name, table_name)
+    for schema_name, table_name, _policy_name in _READINESS_RLS_POLICIES
 )
 _READINESS_TENANT_FUNCTION_FINGERPRINT = "9c2cfaea74d193cadc39f46c242dd9a5"
 _READINESS_COLUMN_FINGERPRINTS = (
