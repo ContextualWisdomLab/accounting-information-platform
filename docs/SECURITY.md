@@ -33,7 +33,8 @@ versioned permission; soft-close and hard-close are independent permissions. Mis
 tenant-mismatched, insufficient, or agent-originated high-impact decisions fail closed before
 `accept` or `lookup` executes. Each decision is appended to tenant-scoped forced-RLS
 `accounting_integration.authorization_decision_record`, including both principal and requested tenant
-references, without raw tokens or full policy documents. The standalone runner has no principal by
+references, without raw tokens or full policy documents. The persistence boundary rejects a record
+whose requested tenant differs from its storage tenant. The standalone runner has no principal by
 default and denies all accounting routes except health status.
 
 ## PostgreSQL runtime identities

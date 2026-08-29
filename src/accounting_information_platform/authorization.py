@@ -190,6 +190,8 @@ def record_authorization_decision(
     """Append one decision to the tenant-scoped PostgreSQL authorization evidence table."""
     if not correlation_reference or len(correlation_reference) > 512:
         raise ValueError("authorization correlation reference must contain 1 to 512 characters")
+    if decision.requested_tenant_reference != tenant_reference:
+        raise ValueError("authorization decision tenant scope must match requested tenant reference")
     from .persistence import PostgresPostingLedger
 
     ledger = PostgresPostingLedger(database_url, tenant_reference)

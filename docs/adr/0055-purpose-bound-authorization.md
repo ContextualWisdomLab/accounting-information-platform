@@ -29,7 +29,8 @@ Every routed decision is appended to the tenant-scoped, forced-RLS
 `accounting_integration.authorization_decision_record` table. The record keeps the policy version,
 decision, principal/purpose evidence, principal tenant, requested tenant, operation, required
 permission, and bounded correlation identity. It never stores raw credentials. Database mutation
-triggers make the evidence append-only.
+triggers make the evidence append-only, and the persistence boundary rejects evidence whose
+requested tenant differs from the tenant scope used to store it.
 
 The standalone runner has no authenticated principal by default and therefore exposes only health
 status until a trusted host adapter supplies a validated context to

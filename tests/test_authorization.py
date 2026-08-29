@@ -238,6 +238,13 @@ class AuthorizationContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "correlation reference"):
             record_authorization_decision("postgresql://unused", TENANT, decision, "")
 
+    def test_authorization_evidence_rejects_requested_tenant_outside_storage_scope(self) -> None:
+        """Audit evidence cannot claim a requested tenant different from its storage scope."""
+        decision = authorize(principal("accounting.read_catalog"), "urn:cwl:tenant_other", "read_catalog")
+
+        with self.assertRaisesRegex(ValueError, "tenant scope"):
+            record_authorization_decision("postgresql://unused", TENANT, decision, "/account-role-mappings")
+
     def test_internal_handlers_keep_their_missing_header_guard(self) -> None:
         """Direct handler dispatch remains fail-closed even outside the normal router."""
         handler_names = (
