@@ -58,9 +58,11 @@ that renumbering cannot silently drop a commitment.
 
 `main` is protected by an AIP repository-scoped active gate with one approving
 review, stale-review dismissal, required thread resolution, merge/squash-only
-methods, and deletion/non-fast-forward protection. The central required-workflow
-release gates remain scoped to the default branch; they are not yet applied to
-`main`.
+methods, and deletion/non-fast-forward protection. The central required workflows
+and AIP Accounting Foundation CI are now applied to `main` by active organization
+ruleset `21783807`, scoped only to this repository and branch with no bypass
+actors. A fresh release PR must still prove the effective policy, exact-head
+workflow results, independent approval, and integrated release attestation.
 
 The live tracker owns the current successor sequence: multi-match conservation
 and approval, close-package provenance, exact statement-balance and run-command
@@ -117,7 +119,7 @@ exact-head gates rather than leaving merge safety to convention alone.
 
 | Priority | Gap | Buyer impact | Required evidence before closing |
 | --- | --- | --- | --- |
-| P0 | Repository governance does not yet enforce the intended merge/release policy everywhere | A technically green candidate could be integrated without the complete release control plane; AIP `main` is protected by a repository-scoped active gate, but central required-workflow release gates are not yet applied to `main` | Protected `develop`/`main` policy with required accounting CI/security/dependency gates, independent review, thread resolution, no force-push/deletion path, and fresh effective-policy evidence from branch and ruleset surfaces together |
+| P0 | Repository governance does not yet provide complete release evidence | A technically green candidate could still lack exact-head release attestation; AIP `main` now has repository-scoped protection plus the central required workflows and repository-owned Accounting Foundation CI | Protected `develop`/`main` policy with required accounting CI/security/dependency gates, independent review, thread resolution, no force-push/deletion path, and a fresh release PR proving effective policy and integrated-head evidence together |
 | P0 | Database authority must remain stronger than application intent on the integrated head | Direct SQL must never rewrite balances, tenant scope, finalized facts, or closed periods | Real PostgreSQL runtime tests for deferred balance, append-only/finalization guards, forced RLS with a restricted runtime login, DB-owned tenant binding, temporal reversal rules, and purpose-limited close authority |
 | P0 | Stateful commands require exact replay identity and immutable source evidence | Retries must not duplicate or mutate posting, reversal, close, tax, or statement-acceptance evidence | Tenant-scoped command keys, immutable source hashes/references, exact replay, changed-evidence conflict, and atomic command/outbox persistence proven in PostgreSQL |
 | P1 | Deterministic reconciliation and candidate/match allocation are partially delivered | Cash close can explain differences and safely abstain, and `develop` persists the initial one-approved-match path; cross-run active consumption still needs the full many-to-many control | Exact split/aggregate conservation with many-to-many allocation rows, temporal cutoff, concurrency safety, immutable approval evidence, exception/approval workflow, provenance, and bridge equations from bank evidence to posted cash journals. Delivered so far: deterministic proposal engine, finite-Decimal bridge, immutable-scope close-review projection, durable run/exception/evidence substrate, and initial candidate/match/allocation persistence on protected `develop` |

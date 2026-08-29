@@ -43,10 +43,15 @@ class ProductGapBaselineContractTests(unittest.TestCase):
         self.assertIn(expected_url, references)
 
     def test_baseline_distinguishes_main_branch_protection_from_release_gates(self) -> None:
-        """The governance gap must reflect the live repository-scoped main gate."""
+        """The governance gap must reflect the live main release workflow gate."""
         text = BASELINE.read_text(encoding="utf-8")
-        self.assertIn("AIP `main` is protected by a repository-scoped active gate", text)
-        self.assertIn("central required-workflow release gates are not yet applied to `main`", text)
+        self.assertIn("`main` is protected by an AIP repository-scoped active gate", text)
+        self.assertRegex(
+            text,
+            re.compile(
+                r"central\s+required\s+workflows\s+and\s+AIP\s+Accounting\s+Foundation\s+CI\s+are\s+now\s+applied\s+to\s+`main`"
+            ),
+        )
         self.assertNotIn("`main` remains outside release-grade protection", text)
 
     def test_readme_describes_the_integrated_reconciliation_foundation(self) -> None:
