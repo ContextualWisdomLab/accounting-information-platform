@@ -356,7 +356,7 @@ def validate_quality_requirements(requirements_text: str) -> tuple[str, ...]:
                 current_requirement = None
             else:
                 current_requirement = (
-                    name_match.group(1).lower(),
+                    re.sub(r"[-_.]+", "-", name_match.group(1)).lower(),
                     name_match.group(2),
                 )
                 if current_requirement in seen_requirements:

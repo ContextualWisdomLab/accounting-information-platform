@@ -456,6 +456,15 @@ class RepositoryContractTests(unittest.TestCase):
             validate_quality_requirements(duplicate_version),
         )
 
+        for equivalent_name in ("psycopg_binary", "psycopg.binary"):
+            equivalent_duplicate = quality_requirements + (
+                f"\n{equivalent_name}==3.3.4\n"
+            )
+            self.assertIn(
+                "quality dependency stanza appears more than once: psycopg-binary==3.3.4",
+                validate_quality_requirements(equivalent_duplicate),
+            )
+
     def test_append_only_journal_sql_rejects_update_and_delete(self) -> None:
         """Migrations cannot UPDATE or DELETE posted journal tables."""
         forbidden_statements = (
