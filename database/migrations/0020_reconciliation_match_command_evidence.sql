@@ -4,6 +4,18 @@ BEGIN;
 -- This records reviewable candidate evidence only; it cannot approve, close, or
 -- post a journal.
 
+-- Command provenance must name the candidate actually referenced by the match.
+-- The existing match primary key proves row identity, while this tenant/run
+-- composite key gives downstream evidence a database-owned same-chain target.
+ALTER TABLE accounting_core.reconciliation_match
+    ADD CONSTRAINT reconciliation_match_candidate_chain_unique
+    UNIQUE (
+        tenant_account_id,
+        reconciliation_run_id,
+        reconciliation_match_id,
+        reconciliation_candidate_id
+    );
+
 CREATE TABLE accounting_core.reconciliation_match_command (
     reconciliation_match_command_id uuid PRIMARY KEY DEFAULT uuidv7(),
     tenant_account_id uuid NOT NULL,
@@ -31,11 +43,13 @@ CREATE TABLE accounting_core.reconciliation_match_command (
     FOREIGN KEY (
         tenant_account_id,
         reconciliation_run_id,
-        reconciliation_match_id
+        reconciliation_match_id,
+        reconciliation_candidate_id
     ) REFERENCES accounting_core.reconciliation_match (
         tenant_account_id,
         reconciliation_run_id,
-        reconciliation_match_id
+        reconciliation_match_id,
+        reconciliation_candidate_id
     ),
     UNIQUE (tenant_account_id, candidate_idempotency_key),
     UNIQUE (tenant_account_id, reconciliation_run_id, reconciliation_match_id)
