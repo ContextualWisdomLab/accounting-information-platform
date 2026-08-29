@@ -22,8 +22,6 @@ from accounting_information_platform import (
 )
 from accounting_information_platform.http_api import _bank_statement_status
 from accounting_information_platform.bank_statement import (
-    MAX_ATTRIBUTE_COUNT,
-    MAX_ELEMENT_COUNT,
     MAX_ENTRY_COUNT,
     MAX_TEXT_BYTES,
     MAX_XML_DEPTH,
@@ -471,6 +469,40 @@ class BankStatementAdapterTests(unittest.TestCase):
             missing_date_payload, CAMT053_MESSAGE_DEFINITION
         )
         self.assertIsNone(missing_date.balances[0].balance_effective_at)
+
+    def test_proprietary_balance_type_is_material_evidence(self) -> None:
+        """CdOrPrtry/Prtry survives normalization instead of collapsing to no type."""
+        baseline_payload = load_canonical_statement_fixture()
+        proprietary_payload = baseline_payload.replace(
+            b"<Cd>OPBD</Cd>", b"<Prtry>OPENING_CUSTOM</Prtry>", 1
+        )
+
+        baseline = parse_bank_statement_payload(
+            baseline_payload, CAMT053_MESSAGE_DEFINITION
+        )
+        proprietary = parse_bank_statement_payload(
+            proprietary_payload, CAMT053_MESSAGE_DEFINITION
+        )
+
+        self.assertEqual(proprietary.balances[0].balance_type_code, "OPENING_CUSTOM")
+        self.assertNotEqual(
+            baseline.balances[0].source_balance_hash,
+            proprietary.balances[0].source_balance_hash,
+        )
+        self.assertNotEqual(
+            baseline.normalized_payload_hash,
+            proprietary.normalized_payload_hash,
+        )
+
+    def test_balance_population_has_a_domain_bound(self) -> None:
+        """A statement cannot create an unbounded number of relational balance rows."""
+        with mock.patch(
+            "accounting_information_platform.bank_statement.MAX_BALANCE_COUNT", 1
+        ):
+            with self.assertRaisesRegex(AccountingValidationError, "balance count"):
+                parse_bank_statement_payload(
+                    load_canonical_statement_fixture(), CAMT053_MESSAGE_DEFINITION
+                )
 
     def test_invalid_balance_direction_fails_closed(self) -> None:
         """A balance with an unknown economic direction is not accepted as evidence."""

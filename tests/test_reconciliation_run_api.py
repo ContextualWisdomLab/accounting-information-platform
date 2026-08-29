@@ -408,6 +408,12 @@ class ReconciliationRunApiTests(unittest.TestCase):
                 accept_reconciliation_run(
                     command, posting.DATABASE_URL, self.case.policy.tenant_reference
                 )
+        binding_sql = next(
+            call.args[0]
+            for call in fake_connection.execute.call_args_list
+            if "bank_statement_record AS statement" in call.args[0]
+        )
+        self.assertIn("FOR SHARE OF assignment", binding_sql)
 
     def test_lookup_and_http_routes_return_same_scoped_run(self) -> None:
         """The public read and HTTP command routes expose only the evaluating run."""

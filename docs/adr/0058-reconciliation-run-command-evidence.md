@@ -27,8 +27,9 @@ hash matches, and its bank-account assignment is active for the requested legal
 entity, book, and bank cutoff. It opens only `evaluating` scope, records one
 `bank_statement` evidence reference, and replays an exact command. Reuse of a key
 with changed evidence fails closed. Every bank, book, and knowledge cutoff must
-carry an explicit zero-offset UTC timezone (`Z` or `+00:00`); timezone-naive or
-non-UTC wall-clock values fail before persistence and canonical command hashing.
+carry the canonical UTC timestamp grammar with `T` and either `Z` or `+00:00`;
+timezone-naive, non-UTC, or equivalent noncanonical forms fail before
+persistence and canonical command hashing.
 After the command lock, an existing idempotency key is resolved from its stored
 run evidence before live assignment validation, so an exact retry remains a
 replay even if that assignment later closes or overlaps; changed request fields

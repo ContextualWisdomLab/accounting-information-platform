@@ -80,6 +80,11 @@ class ReconciliationRunCanonicalTimestampTests(unittest.TestCase):
             _command_hash(bank_cutoff_at=explicit, **common),
         )
 
+    def test_canonical_grammar_still_rejects_invalid_calendar_instants(self) -> None:
+        """A canonical spelling must still name a real calendar instant."""
+        with self.assertRaisesRegex(AccountingValidationError, "ISO-8601 timestamp"):
+            _parse_timestamp("2026-02-30T23:59:59Z", "bank_cutoff_at")
+
 
 if __name__ == "__main__":
     unittest.main()

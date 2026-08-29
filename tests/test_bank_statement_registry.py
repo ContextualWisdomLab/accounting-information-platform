@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import unittest
 import uuid
 from datetime import datetime, timezone
@@ -11,6 +12,7 @@ from urllib.parse import quote
 
 import psycopg
 
+import accounting_information_platform.bank_statement as bank_statement
 from accounting_information_platform import (
     AccountingValidationError,
     CAMT053_MESSAGE_DEFINITION,
@@ -127,6 +129,58 @@ class BankStatementRegistryTests(unittest.TestCase):
         self.assertEqual(self._count("accounting_integration.bank_statement_record"), 1)
         self.assertEqual(self._count("accounting_integration.bank_statement_entry"), 2)
         self.assertEqual(self._count("accounting_integration.bank_statement_balance"), 2)
+
+    def test_legacy_normalized_hash_replays_without_synthesizing_balance_rows(self) -> None:
+        """Pre-0018 normalized hashes remain exact-replay compatible after upgrade."""
+        payload = load_canonical_statement_fixture()
+        first = self._ingest(payload, key="legacy-normalized-replay")
+        normalized = bank_statement.parse_bank_statement_payload(
+            payload, CAMT053_MESSAGE_DEFINITION
+        )
+        legacy_payload = bank_statement._normalized_payload(normalized)
+        legacy_payload.pop("balances")
+        legacy_hash = "sha256:" + hashlib.sha256(
+            json.dumps(
+                legacy_payload, separators=(",", ":"), sort_keys=True
+            ).encode("utf-8")
+        ).hexdigest()
+
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            connection.execute(
+                "ALTER TABLE accounting_integration.bank_statement_record "
+                "DISABLE TRIGGER bank_statement_record_immutable_guard"
+            )
+            connection.execute(
+                "ALTER TABLE accounting_integration.bank_statement_balance "
+                "DISABLE TRIGGER bank_statement_balance_immutable_guard"
+            )
+            connection.execute(
+                "DELETE FROM accounting_integration.bank_statement_balance "
+                "WHERE bank_statement_record_id = %s",
+                (first["bank_statement_record_id"],),
+            )
+            connection.execute(
+                "UPDATE accounting_integration.bank_statement_record "
+                "SET normalized_payload_hash = %s "
+                "WHERE bank_statement_record_id = %s",
+                (legacy_hash, first["bank_statement_record_id"]),
+            )
+            connection.execute(
+                "ALTER TABLE accounting_integration.bank_statement_balance "
+                "ENABLE TRIGGER bank_statement_balance_immutable_guard"
+            )
+            connection.execute(
+                "ALTER TABLE accounting_integration.bank_statement_record "
+                "ENABLE TRIGGER bank_statement_record_immutable_guard"
+            )
+            connection.commit()
+
+        same_key = self._ingest(payload, key="legacy-normalized-replay")
+        different_key = self._ingest(payload, key="legacy-normalized-replay-other")
+        self.assertTrue(same_key["replayed"])
+        self.assertTrue(different_key["replayed"])
+        self.assertEqual(same_key["balances"], [])
+        self.assertEqual(different_key["balances"], [])
 
     def test_same_key_changed_bytes_writes_nothing(self) -> None:
         """Same idempotency key with changed bytes conflicts and writes nothing."""
@@ -317,7 +371,7 @@ class BankStatementRegistryTests(unittest.TestCase):
                     "accounting_book_reference": self.case.policy.accounting_book_reference,
                     "chart_account_code": "119900",
                     "valid_from": "2026-02-01T00:00:00Z",
-                    "assignment_idempotency_key": f"assign-x1-" + uuid.uuid4().hex,
+                    "assignment_idempotency_key": "assign-x1-" + uuid.uuid4().hex,
                 },
                 posting.DATABASE_URL,
                 self.case.policy.tenant_reference,
@@ -712,7 +766,7 @@ class BankStatementRegistryTests(unittest.TestCase):
                     "legal_entity_reference": self.case.policy.legal_entity_reference,
                     "accounting_book_reference": self.case.policy.accounting_book_reference,
                     "valid_from": "2026-03-01T00:00:00Z",
-                    "assignment_idempotency_key": f"assign-x2-" + uuid.uuid4().hex,
+                    "assignment_idempotency_key": "assign-x2-" + uuid.uuid4().hex,
                 },
                 posting.DATABASE_URL,
                 self.case.policy.tenant_reference,
@@ -726,7 +780,7 @@ class BankStatementRegistryTests(unittest.TestCase):
                     "accounting_book_reference": "urn:cwl:accounting_book:missing",
                     "chart_account_code": "110200",
                     "valid_from": "2026-03-01T00:00:00Z",
-                    "assignment_idempotency_key": f"assign-x3-" + uuid.uuid4().hex,
+                    "assignment_idempotency_key": "assign-x3-" + uuid.uuid4().hex,
                 },
                 posting.DATABASE_URL,
                 self.case.policy.tenant_reference,
@@ -958,7 +1012,7 @@ class BankStatementRegistryTests(unittest.TestCase):
                         "accounting_book_reference": self.case.policy.accounting_book_reference,
                         "chart_account_code": "110200",
                         "valid_from": "2026-04-01T00:00:00Z",
-                    "assignment_idempotency_key": f"assign-x4-" + uuid.uuid4().hex,
+                    "assignment_idempotency_key": "assign-x4-" + uuid.uuid4().hex,
                     },
                     posting.DATABASE_URL,
                     self.case.policy.tenant_reference,
