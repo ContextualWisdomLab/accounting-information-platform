@@ -24,11 +24,14 @@ prevent cross-scope evidence and duplicate command or match identities.
 
 `accept_reconciliation_match` is the smallest durable command boundary: it
 accepts one exact 1:1 proposed match, requires quoted positive equal decimal
-amounts, creates the candidate, proposed match, statement allocation, journal
+amounts that equal the bound immutable bank-entry and posted-journal source
+facts, creates the candidate, proposed match, statement allocation, journal
 allocation, and command evidence in one transaction, and grants no approval,
 close, chart-account, reversal, or posting authority. Exact retries return the
 stored document; reuse of the key with changed command or source evidence fails
-closed. `POST /reconciliation-matches` exposes that command and
+closed. Database source-conservation violations are translated to a stable
+validation failure rather than leaking a driver error. `POST
+/reconciliation-matches` exposes that command and
 `GET /reconciliation-matches?reconciliation_match_id=` reads the tenant-scoped
 document.
 

@@ -5,6 +5,9 @@ from __future__ import annotations
 import hashlib
 import unittest
 import uuid
+from datetime import date
+from decimal import Decimal
+from unittest import mock
 
 import psycopg
 
@@ -21,6 +24,9 @@ from accounting_information_platform import (
     load_canonical_statement_fixture,
     lookup_bank_statement_entries,
     lookup_reconciliation_match,
+)
+from accounting_information_platform.reconciliation_match import (
+    _require_recorded_source_amounts,
 )
 from tests import test_postgres_posting as posting
 
@@ -106,11 +112,22 @@ class ReconciliationMatchApiTests(unittest.TestCase):
 
     def _command(self) -> dict[str, object]:
         run_id, statement_reference = self._open_run()
+        journal = self.case.ledger.post(
+            self.case._two_line_proposal(
+                proposal_id=str(uuid.uuid4()),
+                idempotency_key=f"match-journal-{uuid.uuid4().hex}",
+                source_payload_hash="sha256:" + "9" * 64,
+                source_event_references=(f"urn:cwl:reconciliation:journal:{uuid.uuid4()}",),
+                transaction_date=date(2026, 8, 24),
+                accounting_date=date(2026, 8, 24),
+            ),
+            self.case.policy,
+        )
         return {
             "tenant_reference": self.case.policy.tenant_reference,
             "reconciliation_run_id": run_id,
             "statement_entry_reference": statement_reference,
-            "journal_reference": "journal-match-fixture",
+            "journal_reference": journal.journal_reference,
             "statement_amount": "25000.00",
             "journal_amount": "25000.00",
             "rule_code": "provider_reference",
@@ -181,6 +198,132 @@ class ReconciliationMatchApiTests(unittest.TestCase):
                     accept_reconciliation_match(
                         changed, posting.DATABASE_URL, self.case.policy.tenant_reference
                     )
+
+    def test_match_command_requires_recorded_source_amounts(self) -> None:
+        """A proposed match cannot invent amounts or point at an absent journal."""
+        command = self._command()
+        tenant = self.case.policy.tenant_reference
+        with self.assertRaisesRegex(AccountingValidationError, "does not match recorded"):
+            accept_reconciliation_match(
+                dict(
+                    command,
+                    statement_amount="24999.99",
+                    journal_amount="24999.99",
+                    candidate_idempotency_key=f"source-amount-{uuid.uuid4().hex}",
+                ),
+                posting.DATABASE_URL,
+                tenant,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "journal source"):
+            accept_reconciliation_match(
+                dict(
+                    command,
+                    journal_reference="urn:cwl:accounting:general_journal:missing",
+                    candidate_idempotency_key=f"missing-journal-{uuid.uuid4().hex}",
+                ),
+                posting.DATABASE_URL,
+                tenant,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "not recorded exactly once"):
+            accept_reconciliation_match(
+                dict(
+                    command,
+                    statement_entry_reference="statement-entry-missing",
+                    candidate_idempotency_key=f"missing-statement-{uuid.uuid4().hex}",
+                ),
+                posting.DATABASE_URL,
+                tenant,
+            )
+
+    def test_match_source_guard_rejects_unbalanced_or_wrong_journal_amounts(self) -> None:
+        """Defensive source checks reject impossible or mismatched journal evidence."""
+        for journal_row, message in (
+            (("KRW", Decimal("25000"), Decimal("24999")), "balanced and positive"),
+            (("KRW", Decimal("24999"), Decimal("24999")), "does not match recorded"),
+        ):
+            with self.subTest(message=message):
+                connection = mock.Mock()
+                statement_result = mock.Mock()
+                statement_result.fetchall.return_value = [(Decimal("25000"), "KRW")]
+                journal_result = mock.Mock()
+                journal_result.fetchone.return_value = journal_row
+                connection.execute.side_effect = [statement_result, journal_result]
+                with self.assertRaisesRegex(AccountingValidationError, message):
+                    _require_recorded_source_amounts(
+                        connection,
+                        tenant_id=uuid.uuid4(),
+                        reconciliation_run_id=uuid.uuid4(),
+                        accounting_book_id=uuid.uuid4(),
+                        currency_code="KRW",
+                        statement_reference="statement-entry",
+                        journal_reference="journal-reference",
+                        statement_amount=Decimal("25000"),
+                        journal_amount=Decimal("25000"),
+                    )
+
+    def test_match_command_maps_source_conservation_guard_to_validation(self) -> None:
+        """A legacy cross-run amount conflict cannot escape as a raw database error."""
+        command = self._command()
+        tenant = self.case.policy.tenant_reference
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            statement_id = connection.execute(
+                """
+                SELECT bank_statement_record_id
+                FROM accounting_core.reconciliation_run_command
+                WHERE tenant_account_id = %s AND reconciliation_run_id = %s
+                """,
+                (self.case.tenant_id, command["reconciliation_run_id"]),
+            ).fetchone()[0]
+        second_run = accept_reconciliation_run(
+            {
+                "tenant_reference": tenant,
+                "bank_statement_record_id": statement_id,
+                "legal_entity_reference": self.case.policy.legal_entity_reference,
+                "accounting_book_reference": self.case.policy.accounting_book_reference,
+                "bank_cutoff_at": "2026-08-24T23:59:59Z",
+                "book_cutoff_at": "2026-08-24T23:59:59Z",
+                "matching_policy_version": "deterministic-v1",
+                "knowledge_cutoff_at": "2026-08-25T00:00:00Z",
+                "reconciliation_idempotency_key": f"run-conflict-{uuid.uuid4().hex}",
+                "source_payload_hash": "sha256:" + hashlib.sha256(
+                    load_canonical_statement_fixture()
+                ).hexdigest(),
+            },
+            posting.DATABASE_URL,
+            tenant,
+        )
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            connection.execute(
+                """
+                INSERT INTO accounting_core.reconciliation_candidate (
+                    tenant_account_id, reconciliation_run_id,
+                    statement_entry_reference, journal_reference,
+                    statement_amount, journal_amount, rule_code
+                )
+                VALUES (%s, %s, %s, %s, '24999.99', '24999.99', 'legacy-conflict')
+                """,
+                (
+                    self.case.tenant_id,
+                    second_run["reconciliation_run_id"],
+                    command["statement_entry_reference"],
+                    command["journal_reference"],
+                ),
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "conservation evidence"):
+            accept_reconciliation_match(command, posting.DATABASE_URL, tenant)
+
+    def test_match_command_uuid_errors_refer_to_match(self) -> None:
+        """Match endpoints use match-specific recovery guidance for UUID errors."""
+        command = self._command()
+        tenant = self.case.policy.tenant_reference
+        with self.assertRaisesRegex(AccountingValidationError, "retry the match"):
+            accept_reconciliation_match(
+                dict(command, reconciliation_run_id="not-a-uuid"),
+                posting.DATABASE_URL,
+                tenant,
+            )
+        with self.assertRaisesRegex(AccountingValidationError, "retry the match"):
+            lookup_reconciliation_match(posting.DATABASE_URL, tenant, "not-a-uuid")
 
     def test_match_command_validation_and_run_lifecycle_fail_closed(self) -> None:
         """Malformed, missing-run, and non-evaluating commands write no evidence."""

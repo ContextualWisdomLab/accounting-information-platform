@@ -8,6 +8,8 @@ from decimal import Decimal
 from typing import Mapping
 from uuid import UUID
 
+from psycopg.errors import CheckViolation
+
 from .core import (
     AccountingValidationError,
     IdempotencyConflictError,
@@ -15,7 +17,6 @@ from .core import (
     _parse_amount,
 )
 from .persistence import PostgresPostingLedger, _exact_amount_text
-from .reconciliation_run import _parse_uuid
 
 
 def accept_reconciliation_match(
@@ -23,7 +24,7 @@ def accept_reconciliation_match(
 ) -> dict[str, object]:
     """Persist one exact 1:1 proposed match for an evaluating reconciliation run."""
     command = _require_command(payload, tenant_reference)
-    run_id = _parse_uuid(
+    run_id = _parse_match_uuid(
         str(command.get("reconciliation_run_id") or ""),
         "reconciliation_run_id",
     )
@@ -93,7 +94,7 @@ def accept_reconciliation_match(
 
         run = connection.execute(
             """
-            SELECT run_status_code
+            SELECT run_status_code, accounting_book_id, currency_code
             FROM accounting_core.reconciliation_run
             WHERE tenant_account_id = %s
               AND reconciliation_run_id = %s
@@ -110,6 +111,17 @@ def accept_reconciliation_match(
                 "reconciliation matches can only be proposed on an evaluating run. "
                 "Open a new evaluating reconciliation run, then retry the match."
             )
+        _require_recorded_source_amounts(
+            connection,
+            tenant_id=tenant_id,
+            reconciliation_run_id=run_id,
+            accounting_book_id=run[1],
+            currency_code=run[2],
+            statement_reference=statement_reference,
+            journal_reference=journal_reference,
+            statement_amount=statement_amount,
+            journal_amount=journal_amount,
+        )
 
         ledger._acquire_command_lock(
             connection,
@@ -132,26 +144,32 @@ def accept_reconciliation_match(
                 "Use the existing proposed match or a new source pair, then retry."
             )
 
-        candidate_id = connection.execute(
-            """
-            INSERT INTO accounting_core.reconciliation_candidate (
-                tenant_account_id, reconciliation_run_id,
-                statement_entry_reference, journal_reference,
-                statement_amount, journal_amount, rule_code
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            RETURNING reconciliation_candidate_id
-            """,
-            (
-                tenant_id,
-                run_id,
-                statement_reference,
-                journal_reference,
-                statement_amount,
-                journal_amount,
-                rule_code,
-            ),
-        ).fetchone()[0]
+        try:
+            candidate_id = connection.execute(
+                """
+                INSERT INTO accounting_core.reconciliation_candidate (
+                    tenant_account_id, reconciliation_run_id,
+                    statement_entry_reference, journal_reference,
+                    statement_amount, journal_amount, rule_code
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING reconciliation_candidate_id
+                """,
+                (
+                    tenant_id,
+                    run_id,
+                    statement_reference,
+                    journal_reference,
+                    statement_amount,
+                    journal_amount,
+                    rule_code,
+                ),
+            ).fetchone()[0]
+        except CheckViolation as error:
+            raise AccountingValidationError(
+                "the proposed match conflicts with recorded source conservation evidence. "
+                "Refresh the source amounts and evaluating run, then retry the match."
+            ) from error
         match_id = connection.execute(
             """
             INSERT INTO accounting_core.reconciliation_match (
@@ -217,7 +235,7 @@ def lookup_reconciliation_match(
     database_url: str, tenant_reference: str, reconciliation_match_id: str
 ) -> dict[str, object]:
     """Read one tenant-scoped proposed reconciliation match and its exact allocation."""
-    match_id = _parse_uuid(reconciliation_match_id, "reconciliation_match_id")
+    match_id = _parse_match_uuid(reconciliation_match_id, "reconciliation_match_id")
     ledger = PostgresPostingLedger(database_url, tenant_reference)
     with ledger._session() as connection:
         tenant_id = ledger._require_tenant(connection)
@@ -311,6 +329,92 @@ def _require_command(payload: object, tenant_reference: str) -> Mapping[str, obj
             "Send the match to that tenant's AIS endpoint, then retry."
         )
     return payload
+
+
+def _parse_match_uuid(value: str, label: str) -> UUID:
+    """Parse a match command identifier with match-specific recovery guidance."""
+    try:
+        return UUID(value)
+    except (ValueError, AttributeError) as error:
+        raise AccountingValidationError(
+            f"{label} must be a UUID. Supply a persisted {label}, then retry the match."
+        ) from error
+
+
+def _require_recorded_source_amounts(
+    connection: object,
+    *,
+    tenant_id: UUID,
+    reconciliation_run_id: UUID,
+    accounting_book_id: UUID,
+    currency_code: str,
+    statement_reference: str,
+    journal_reference: str,
+    statement_amount: Decimal,
+    journal_amount: Decimal,
+) -> None:
+    """Require command amounts to equal tenant-scoped immutable source facts."""
+    statement_rows = connection.execute(
+        """
+        SELECT entry.entry_amount, entry.entry_currency_code
+        FROM accounting_integration.bank_statement_entry AS entry
+        JOIN accounting_core.reconciliation_run_command AS run_command
+          ON run_command.tenant_account_id = entry.tenant_account_id
+         AND run_command.bank_statement_record_id = entry.bank_statement_record_id
+        JOIN accounting_core.reconciliation_run AS run_scope
+          ON run_scope.tenant_account_id = run_command.tenant_account_id
+         AND run_scope.reconciliation_run_id = run_command.reconciliation_run_id
+        WHERE run_command.tenant_account_id = %s
+          AND run_command.reconciliation_run_id = %s
+          AND (entry.source_entry_identity = %s OR entry.bank_statement_entry_id::text = %s)
+          AND run_scope.currency_code = entry.entry_currency_code
+        """,
+        (tenant_id, reconciliation_run_id, statement_reference, statement_reference),
+    ).fetchall()
+    if len(statement_rows) != 1:
+        raise AccountingValidationError(
+            "statement source evidence is not recorded exactly once for this reconciliation run. "
+            "Supply an entry reference from the bound bank statement, then retry the match."
+        )
+    recorded_statement_amount = statement_rows[0][0]
+    if recorded_statement_amount != statement_amount:
+        raise AccountingValidationError(
+            "statement_amount does not match recorded statement source amount. "
+            "Supply the exact recorded statement amount, then retry the match."
+        )
+
+    journal_row = connection.execute(
+        """
+        SELECT journal.transaction_currency_code,
+               COALESCE(SUM(line.debit_amount), 0),
+               COALESCE(SUM(line.credit_amount), 0)
+        FROM accounting_core.general_journal AS journal
+        LEFT JOIN accounting_core.journal_entry_line AS line
+          ON line.tenant_account_id = journal.tenant_account_id
+         AND line.general_journal_id = journal.general_journal_id
+        WHERE journal.tenant_account_id = %s
+          AND journal.accounting_book_id = %s
+          AND journal.journal_reference = %s
+          AND journal.journal_status_code = 'posted'
+        GROUP BY journal.general_journal_id, journal.transaction_currency_code
+        """,
+        (tenant_id, accounting_book_id, journal_reference),
+    ).fetchone()
+    if journal_row is None or journal_row[0] != currency_code:
+        raise AccountingValidationError(
+            "journal source evidence is not a posted journal in the reconciliation scope. "
+            "Supply a posted journal reference from the bound accounting book, then retry the match."
+        )
+    if journal_row[1] != journal_row[2] or journal_row[1] <= 0:
+        raise AccountingValidationError(
+            "journal source evidence is not balanced and positive. "
+            "Supply a balanced posted journal, then retry the match."
+        )
+    if journal_row[1] != journal_amount:
+        raise AccountingValidationError(
+            "journal_amount does not match recorded journal source amount. "
+            "Supply the exact recorded journal amount, then retry the match."
+        )
 
 
 def _require_text(value: object, field_name: str) -> str:
