@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import unittest
+from collections import defaultdict
 
 import psycopg
 
@@ -19,7 +21,7 @@ class TemporaryEarlyReadinessColumnProbe(unittest.TestCase):
         posting.PostgresPostingTests.setUpClass()
 
     def test_emit_canonical_columns(self) -> None:
-        """Fail intentionally with exact PostgreSQL 18 user-column metadata."""
+        """Fail intentionally with compact exact PostgreSQL 18 column fingerprints."""
         with psycopg.connect(posting.DATABASE_URL) as connection:
             rows = connection.execute(
                 """
@@ -60,7 +62,24 @@ class TemporaryEarlyReadinessColumnProbe(unittest.TestCase):
                 ORDER BY namespace.nspname, relation.relname, attribute.attnum
                 """
             ).fetchall()
-        self.fail("CANONICAL_COLUMNS=" + json.dumps(rows, separators=(",", ":")))
+        grouped: dict[tuple[str, str], list[list[object]]] = defaultdict(list)
+        for row in rows:
+            grouped[(row[0], row[1])].append(list(row[2:]))
+        fingerprints = [
+            [
+                schema_name,
+                table_name,
+                len(metadata),
+                hashlib.sha256(
+                    json.dumps(metadata, separators=(",", ":")).encode("utf-8")
+                ).hexdigest(),
+            ]
+            for (schema_name, table_name), metadata in sorted(grouped.items())
+        ]
+        self.fail(
+            "CANONICAL_COLUMN_FINGERPRINTS="
+            + json.dumps(fingerprints, separators=(",", ":"))
+        )
 
 
 if __name__ == "__main__":
