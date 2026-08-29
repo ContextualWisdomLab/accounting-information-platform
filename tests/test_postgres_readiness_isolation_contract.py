@@ -244,9 +244,9 @@ class PostgresReadinessIsolationContractTests(unittest.TestCase):
         self.assertIn(b'"status":"not_ready"', body)
 
     def test_readiness_preserves_a_stricter_configured_statement_timeout(self) -> None:
-        """A deployment timeout below the readiness cap remains effective."""
+        """A deployment timeout below the readiness cap remains effective end to end."""
         settings = conninfo_to_dict(self.runtime_url)
-        settings["options"] = "-c statement_timeout=100ms"
+        settings["options"] = "-cstatement_timeout=100ms"
         strict_ledger = PostgresPostingLedger(
             make_conninfo(**settings), self.case.policy.tenant_reference
         )
