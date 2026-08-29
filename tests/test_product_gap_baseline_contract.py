@@ -54,6 +54,12 @@ class ProductGapBaselineContractTests(unittest.TestCase):
         )
         self.assertNotIn("`main` remains outside release-grade protection", text)
 
+    def test_changelog_does_not_claim_an_unpublished_tagged_release(self) -> None:
+        """Changelog history must not claim a tag or release absent from GitHub."""
+        changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        self.assertNotIn("First tagged release", changelog)
+        self.assertIn("not a published release or tag", changelog)
+
     def test_readme_describes_the_integrated_reconciliation_foundation(self) -> None:
         """The buyer-facing README must not call integrated reconciliation evidence absent."""
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
