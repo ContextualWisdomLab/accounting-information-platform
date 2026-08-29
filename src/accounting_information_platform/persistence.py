@@ -37,41 +37,6 @@ _SQL_SKIP_UUID = UUID(int=0)
 _CLOSING_JOURNAL_PATTERN = "urn:cwl:accounting:general_journal:period_closing:%"
 _READINESS_CONNECT_TIMEOUT_SECONDS = 5
 _READINESS_STATEMENT_TIMEOUT_MILLISECONDS = 5_000
-_READINESS_TABLES = (
-    "accounting_core.tenant_account",
-    "accounting_core.legal_entity_record",
-    "accounting_core.accounting_book",
-    "accounting_core.chart_account",
-    "accounting_core.account_role_mapping",
-    "accounting_core.fiscal_calendar",
-    "accounting_core.fiscal_period",
-    "accounting_integration.journal_proposal_record",
-    "accounting_core.general_journal",
-    "accounting_core.journal_entry_line",
-    "accounting_core.journal_source_reference",
-    "accounting_core.journal_reversal",
-    "accounting_integration.posting_receipt",
-    "accounting_reporting.trial_balance_snapshot",
-    "accounting_reporting.trial_balance_line",
-    "accounting_integration.outbox_event",
-    "accounting_integration.home_tax_submission",
-    "accounting_core.runtime_tenant_binding",
-    "accounting_integration.fiscal_period_open_command",
-    "accounting_core.accounting_book_period_control",
-    "accounting_core.bank_account_record",
-    "accounting_core.bank_account_assignment",
-    "accounting_integration.bank_statement_artifact",
-    "accounting_integration.bank_statement_record",
-    "accounting_integration.bank_statement_entry",
-    "accounting_integration.bank_statement_entry_detail",
-    "accounting_core.reconciliation_run",
-    "accounting_core.reconciliation_exception",
-    "accounting_core.reconciliation_evidence",
-    "accounting_core.reconciliation_candidate",
-    "accounting_core.reconciliation_match",
-    "accounting_core.statement_match_allocation",
-    "accounting_core.journal_match_allocation",
-)
 _READINESS_FUNCTIONS = (
     "accounting_core.guard_journal_line_book_scope()",
     "accounting_core.current_tenant_account_id()",
@@ -179,6 +144,10 @@ _READINESS_COLUMN_FINGERPRINTS = (
     ("accounting_integration", "posting_receipt", 8, "901d09055edb9d560ba09118e5843ad8ef6145b882ef55ea6ee1e3fb9acda942"),
     ("accounting_reporting", "trial_balance_line", 7, "d4444986d7f37011866fed3125238240f4fbda402764bf20ef1f3c7c453729fd"),
     ("accounting_reporting", "trial_balance_snapshot", 10, "c000256659212235d9c0d38cf4ee6842b79ddd72f10abce709e28a36e4d70e42"),
+)
+_READINESS_TABLES = tuple(
+    f"{schema_name}.{table_name}"
+    for schema_name, table_name, _column_count, _fingerprint in _READINESS_COLUMN_FINGERPRINTS
 )
 _READINESS_CONSTRAINTS = (
     # PostgreSQL 18 pg_get_constraintdef() fingerprints cover every
@@ -5098,7 +5067,21 @@ class PostgresPostingLedger:
                     connection_options["connect_timeout"] = str(
                         _READINESS_CONNECT_TIMEOUT_SECONDS
                     )
-                    database_url = psycopg.conninfo.make_conninfo(**connection_options)
+                startup_options = connection_options.get("options") or ""
+                configured_statement_timeout = (
+                    _readiness_statement_timeout_milliseconds(startup_options)
+                )
+                if (
+                    configured_statement_timeout is None
+                    or configured_statement_timeout <= 0
+                    or configured_statement_timeout
+                    > _READINESS_STATEMENT_TIMEOUT_MILLISECONDS
+                ):
+                    connection_options["options"] = (
+                        f"{startup_options} -c statement_timeout="
+                        f"{_READINESS_STATEMENT_TIMEOUT_MILLISECONDS}ms"
+                    ).strip()
+                database_url = psycopg.conninfo.make_conninfo(**connection_options)
             connection = psycopg.connect(database_url)
         except Exception as error:
             raise AccountingValidationError(
@@ -5108,20 +5091,6 @@ class PostgresPostingLedger:
         try:
             connection.execute("SET lock_timeout = '5s'")
             connection.execute("SET idle_in_transaction_session_timeout = '60s'")
-            if readiness:
-                configured_timeout = connection.execute(
-                    "SELECT current_setting('statement_timeout')::interval"
-                ).fetchone()[0]
-                timeout_milliseconds = _READINESS_STATEMENT_TIMEOUT_MILLISECONDS
-                if configured_timeout > timedelta(0):
-                    timeout_milliseconds = min(
-                        timeout_milliseconds,
-                        max(1, int(configured_timeout.total_seconds() * 1000)),
-                    )
-                connection.execute(
-                    "SELECT pg_catalog.set_config('statement_timeout', %s, false)",
-                    (f"{timeout_milliseconds}ms",),
-                )
             yield connection
         except Exception:
             connection.rollback()
@@ -5500,19 +5469,23 @@ class PostgresPostingLedger:
                 column_groups: dict[tuple[str, str], list[list[object]]] = {}
                 for row in column_rows:
                     column_groups.setdefault((row[0], row[1]), []).append(list(row[2:]))
-                actual_column_fingerprints = {
-                    table_key: (
-                        len(metadata),
-                        hashlib.sha256(
-                            json.dumps(metadata, separators=(",", ":")).encode("utf-8")
-                        ).hexdigest(),
-                    )
-                    for table_key, metadata in column_groups.items()
-                }
                 required_column_fingerprints = {
                     (schema_name, table_name): (column_count, fingerprint)
                     for schema_name, table_name, column_count, fingerprint
                     in _READINESS_COLUMN_FINGERPRINTS
+                }
+                actual_column_fingerprints = {
+                    table_key: (
+                        required_column_fingerprints[table_key][0],
+                        hashlib.sha256(
+                            json.dumps(
+                                metadata[: required_column_fingerprints[table_key][0]],
+                                separators=(",", ":"),
+                            ).encode("utf-8")
+                        ).hexdigest(),
+                    )
+                    for table_key, metadata in column_groups.items()
+                    if table_key in required_column_fingerprints
                 }
                 columns_ok &= actual_column_fingerprints == required_column_fingerprints
                 if not version_ok:
@@ -7573,6 +7546,40 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             "Foundation migration failed. Inspect the PostgreSQL error, restore a clean "
             "database, then retry the migration."
         ) from error
+
+
+def _readiness_statement_timeout_milliseconds(options: str) -> int | None:
+    """Read the last libpq statement-timeout option, if one is configured."""
+    matches = list(
+        re.finditer(
+            r"(?:^|\s)(?:-c\s+)?(?:--)?statement_timeout\s*=\s*(\S+)",
+            options,
+            re.IGNORECASE,
+        )
+    )
+    if not matches:
+        return None
+    value = re.fullmatch(
+        r"(?P<amount>\d+(?:\.\d+)?)(?P<unit>us|ms|s|min|h|d)?",
+        matches[-1].group(1),
+        re.IGNORECASE,
+    )
+    if value is None:
+        return None
+    unit_milliseconds = {
+        "us": Decimal("0.001"),
+        "ms": Decimal("1"),
+        "s": Decimal("1000"),
+        "min": Decimal("60000"),
+        "h": Decimal("3600000"),
+        "d": Decimal("86400000"),
+    }
+    return int(
+        Decimal(value.group("amount"))
+        * unit_milliseconds.get(
+            (value.group("unit") or "ms").lower(), Decimal("1")
+        )
+    )
 
 
 def _import_psycopg():

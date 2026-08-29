@@ -13,16 +13,19 @@ _READINESS_INDEXES = tuple(
 )
 _MIGRATION_ROOT = Path(__file__).resolve().parents[1] / "database" / "migrations"
 _TABLE_DECLARATION_PATTERN = re.compile(
-    r"CREATE\s+TABLE\s+(?P<schema>[a-z0-9_]+)\.(?P<table>[a-z0-9_]+)",
+    r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"
+    r"(?P<schema>[a-z0-9_]+)\.(?P<table>[a-z0-9_]+)",
     re.IGNORECASE,
 )
 _RLS_DECLARATION_PATTERN = re.compile(
-    r"ALTER\s+TABLE\s+(?P<schema>[a-z0-9_]+)\.(?P<table>[a-z0-9_]+)\s+"
+    r"ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?"
+    r"(?P<schema>[a-z0-9_]+)\.(?P<table>[a-z0-9_]+)\s+"
     r"(?:ENABLE|FORCE)\s+ROW\s+LEVEL\s+SECURITY",
     re.IGNORECASE,
 )
 _POLICY_DECLARATION_PATTERN = re.compile(
-    r"CREATE\s+POLICY\s+(?P<policy>[a-z0-9_]+)\s+ON\s+"
+    r"CREATE\s+POLICY\s+(?:IF\s+NOT\s+EXISTS\s+)?"
+    r"(?P<policy>[a-z0-9_]+)\s+ON\s+"
     r"(?P<schema>[a-z0-9_]+)\.(?P<table>[a-z0-9_]+)",
     re.IGNORECASE,
 )
@@ -37,6 +40,37 @@ def _migration_text() -> str:
 
 class ReadinessFingerprintInventoryContractTests(unittest.TestCase):
     """Keep every protected migration object paired with canonical semantics."""
+
+    def test_migration_parsers_accept_declaration_modifiers(self) -> None:
+        """Inventory parsing cannot skip valid conditional migration declarations."""
+        self.assertEqual(
+            ("accounting_core", "readiness_parser_table"),
+            tuple(
+                _TABLE_DECLARATION_PATTERN.search(
+                    "CREATE TABLE IF NOT EXISTS "
+                    "accounting_core.readiness_parser_table"
+                ).group(name)
+                for name in ("schema", "table")
+            ),
+        )
+        self.assertEqual(
+            ("accounting_core", "readiness_parser_table"),
+            tuple(
+                _RLS_DECLARATION_PATTERN.search(
+                    "ALTER TABLE IF EXISTS accounting_core.readiness_parser_table "
+                    "ENABLE ROW LEVEL SECURITY"
+                ).group(name)
+                for name in ("schema", "table")
+            ),
+        )
+        policy = _POLICY_DECLARATION_PATTERN.search(
+            "CREATE POLICY IF NOT EXISTS readiness_parser_isolation ON "
+            "accounting_core.readiness_parser_table"
+        )
+        self.assertEqual(
+            ("accounting_core", "readiness_parser_table", "readiness_parser_isolation"),
+            tuple(policy.group(name) for name in ("schema", "table", "policy")),
+        )
 
     def test_readiness_table_inventory_covers_all_migration_tables(self) -> None:
         """A new migration table cannot silently fall outside readiness."""

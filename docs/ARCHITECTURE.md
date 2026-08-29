@@ -60,15 +60,18 @@ The HTTP surface currently binds tenant identity through the configured AIS tena
 
 The mounted HTTP surface exposes `GET /healthz` as process liveness and
 `GET /readyz` as database readiness. Readiness checks PostgreSQL connectivity,
-an active bound runtime tenant, and the complete checked-in migration/schema
+an active bound runtime tenant, and the required checked-in migration/schema
 contract through migration `0014`, including the enabled database-owned
 DEFERRABLE balance triggers, their exact relation/function registrations, and
 their unrestricted event definitions without `WHEN` predicates or `UPDATE OF`
 column filters; it also requires forced RLS and exact public tenant-isolation
 policies on every tenant-scoped fact table plus the canonical tenant-binding
-function definition. It uses bounded connection and statement attempts,
-preserving stricter configured timeouts, and does not accept the privileged
-fallback used by accounting commands. Neither probe is caller authentication
+function definition. Recorded canonical column metadata is an ordered prefix,
+so compatible additive tables and columns do not remove an instance from
+service while missing or altered required columns fail closed. It installs the
+statement bound before the first connected readiness command, uses bounded
+connection and statement attempts, preserves stricter configured timeouts, and
+does not accept the privileged fallback used by accounting commands. Neither probe is caller authentication
 or release evidence, and readiness responses use `Cache-Control: no-store` to
 prevent stale intermediary reuse.
 

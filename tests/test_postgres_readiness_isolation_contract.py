@@ -6,7 +6,9 @@ import http.client
 import time
 import unittest
 import uuid
+from datetime import timedelta
 from threading import Thread
+from unittest import mock
 
 import psycopg
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
@@ -16,6 +18,7 @@ from accounting_information_platform import (
     PostgresPostingLedger,
     create_journal_proposal_server,
 )
+from accounting_information_platform import persistence as persistence_module
 from tests import test_postgres_posting as posting
 from tests import test_postgres_runtime_rls as runtime_rls
 
@@ -250,6 +253,31 @@ class PostgresReadinessIsolationContractTests(unittest.TestCase):
             self.assertEqual(
                 connection.execute("SHOW statement_timeout").fetchone()[0], "100ms"
             )
+
+    def test_readiness_caps_a_looser_timeout_in_connection_startup_options(self) -> None:
+        """The first connected readiness command is bounded by startup options."""
+        settings = conninfo_to_dict(self.runtime_url)
+        settings["options"] = "-c statement_timeout=30s"
+        loose_ledger = PostgresPostingLedger(
+            make_conninfo(**settings), self.case.policy.tenant_reference
+        )
+        connection = mock.MagicMock()
+        connection.execute.return_value.fetchone.return_value = (timedelta(seconds=30),)
+        with mock.patch.object(
+            persistence_module, "_import_psycopg", return_value=psycopg
+        ), mock.patch.object(psycopg, "connect", return_value=connection) as connect:
+            with loose_ledger._session(readiness=True):
+                pass
+        startup_options = conninfo_to_dict(connect.call_args.args[0])["options"]
+        self.assertIn("statement_timeout=5000ms", startup_options)
+
+    def test_readiness_ignores_malformed_timeout_options(self) -> None:
+        """An unparseable timeout does not disable the readiness cap."""
+        self.assertIsNone(
+            persistence_module._readiness_statement_timeout_milliseconds(
+                "-c statement_timeout=not-a-duration"
+            )
+        )
 
 
 if __name__ == "__main__":

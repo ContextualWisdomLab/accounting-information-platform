@@ -15,7 +15,7 @@ serve the authoritative accounting boundary.
 
 Keep `GET /healthz` as a database-independent liveness response. Add
 `GET /readyz`, which opens the configured PostgreSQL 18 session, verifies the
-database-controlled runtime tenant binding, and checks the complete current
+database-controlled runtime tenant binding, and checks the required current
 schema contract through migration `0014_reconciliation_candidate_allocation.sql`.
 Because the repository has no durable schema-version table, this contract is
 represented by the current tables, functions, mutated columns, constraints,
@@ -30,13 +30,15 @@ fingerprint. Required constraints are also bound to their relation, type,
 validated/enforced and non-deferrable state, and canonical
 `pg_get_constraintdef()` fingerprint. Required indexes are bound to their
 owning relation, valid/ready and uniqueness state, predicate, and canonical
-`pg_get_indexdef()` fingerprint. The probe also requires forced row-level
+`pg_get_indexdef()` fingerprint. Required column metadata is compared as an
+ordered canonical prefix, allowing compatible additive tables and columns
+without allowing a missing or altered required column. The probe also requires forced row-level
 security on every tenant-scoped fact table, the exact public tenant-isolation
 policy on each such table, and the canonical `current_tenant_account_id()`
 definition fingerprint. It requires an active binding even for privileged
-sessions, caps connection establishment at five seconds, and applies a
-five-second statement timeout to the complete readiness operation while
-preserving a stricter configured timeout. Return `200` with
+sessions, caps connection establishment at five seconds, installs the
+five-second statement timeout in startup options before the first connected
+command, and preserves a stricter configured timeout. Return `200` with
 `{"status":"ready"}` only after all checks pass. Return `503` with stable
 operator guidance when a check fails; do not return driver, connection, or
 database-object details to the caller. Both readiness responses carry
@@ -60,7 +62,9 @@ fails readiness closed rather than silently reducing database-owned accounting
 enforcement. A same-name weakened constraint or index, disabled forced RLS,
 missing or broadened tenant policy, or changed tenant-binding function is
 likewise schema drift. A blocked or slow connected query fails closed at the
-statement timeout instead of retaining an HTTP worker indefinitely.
+statement timeout instead of retaining an HTTP worker indefinitely. Additive
+schema objects remain compatible with the probe because only the recorded
+canonical column prefix is required.
 
 ## Evidence
 
@@ -89,4 +93,7 @@ non-unique index; each altered catalog object returns `503` before its canonical
 definition is restored. A sixth regression inventories every tenant-scoped
 table's forced RLS and exact public tenant policy, drops RLS or a policy and
 requires readiness to fail closed, and holds a connected tenant lookup behind a
-slow function to prove the HTTP response is bounded by the statement timeout.
+slow function to prove the HTTP response is bounded by the startup-installed
+statement timeout. A separate regression adds a table and column and proves
+compatible additive schema remains ready; migration inventory parser tests
+cover conditional declaration modifiers.

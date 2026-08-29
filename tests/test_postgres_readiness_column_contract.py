@@ -116,6 +116,38 @@ class PostgresReadinessColumnContractTests(unittest.TestCase):
         )
         self.assertEqual(_installed_column_fingerprints(), expected)
 
+    def test_additive_schema_objects_do_not_fail_readiness(self) -> None:
+        """Compatible tables and columns added by a migration remain serviceable."""
+        self.runtime_ledger.check_readiness()
+        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as admin:
+            admin.execute(
+                """
+                CREATE TABLE accounting_core.readiness_additive_table (
+                    readiness_additive_value integer
+                )
+                """
+            )
+            admin.execute(
+                """
+                ALTER TABLE accounting_core.general_journal
+                ADD COLUMN readiness_additive_column text
+                """
+            )
+        try:
+            self.runtime_ledger.check_readiness()
+        finally:
+            with psycopg.connect(posting.DATABASE_URL, autocommit=True) as admin:
+                admin.execute(
+                    """
+                    ALTER TABLE accounting_core.general_journal
+                    DROP COLUMN readiness_additive_column
+                    """
+                )
+                admin.execute(
+                    "DROP TABLE accounting_core.readiness_additive_table"
+                )
+        self.runtime_ledger.check_readiness()
+
     def test_material_default_drift_fails_readiness(self) -> None:
         """A same-column default rewrite must make the runtime readiness probe fail closed."""
         self.runtime_ledger.check_readiness()
