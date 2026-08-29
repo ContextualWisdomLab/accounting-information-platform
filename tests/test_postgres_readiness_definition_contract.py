@@ -30,7 +30,8 @@ _CONTROL_FUNCTIONS = (
 )
 
 _EXPLICIT_INDEX_PATTERN = re.compile(
-    r"CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?P<index>[a-z0-9_]+)\s+"
+    r"CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:CONCURRENTLY\s+)?"
+    r"(?:IF\s+NOT\s+EXISTS\s+)?(?P<index>[a-z0-9_]+)\s+"
     r"ON\s+(?P<schema>[a-z0-9_]+)\.[a-z0-9_]+",
     re.IGNORECASE,
 )
@@ -112,6 +113,31 @@ class PostgresReadinessDefinitionContractTests(unittest.TestCase):
                     with psycopg.connect(posting.DATABASE_URL, autocommit=True) as admin:
                         admin.execute(canonical_definition)
                 self.runtime_ledger.check_readiness()
+
+    def test_explicit_index_parser_accepts_postgresql_18_creation_variants(self) -> None:
+        """PostgreSQL 18 index modifiers cannot evade migration inventory parsing."""
+        definitions = (
+            "CREATE INDEX plain_idx ON accounting_core.general_journal (posted_at)",
+            "CREATE INDEX IF NOT EXISTS guarded_idx "
+            "ON accounting_core.general_journal (posted_at)",
+            "CREATE UNIQUE INDEX CONCURRENTLY concurrent_idx "
+            "ON accounting_core.general_journal (posted_at)",
+            "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS guarded_concurrent_idx "
+            "ON accounting_core.general_journal (posted_at)",
+        )
+        self.assertEqual(
+            {
+                "plain_idx",
+                "guarded_idx",
+                "concurrent_idx",
+                "guarded_concurrent_idx",
+            },
+            {
+                match.group("index").lower()
+                for definition in definitions
+                if (match := _EXPLICIT_INDEX_PATTERN.search(definition))
+            },
+        )
 
     def test_every_checked_in_explicit_index_is_required_by_readiness(self) -> None:
         """The readiness index inventory cannot lag an explicit migration index."""
