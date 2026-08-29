@@ -36,6 +36,7 @@ _SQL_SKIP_DATETIME = datetime(1, 1, 1, tzinfo=timezone.utc)
 _SQL_SKIP_UUID = UUID(int=0)
 _CLOSING_JOURNAL_PATTERN = "urn:cwl:accounting:general_journal:period_closing:%"
 _READINESS_CONNECT_TIMEOUT_SECONDS = 5
+_READINESS_STATEMENT_TIMEOUT_MILLISECONDS = 5_000
 _READINESS_TABLES = (
     "accounting_core.tenant_account",
     "accounting_core.legal_entity_record",
@@ -106,6 +107,73 @@ _READINESS_COLUMNS = (
     ("accounting_core", "bank_account_assignment", "assignment_idempotency_key"),
     ("accounting_core", "bank_account_assignment", "assignment_command_hash"),
 )
+_READINESS_RLS_TABLES = (
+    ("accounting_core", "account_role_mapping"),
+    ("accounting_core", "accounting_book"),
+    ("accounting_core", "accounting_book_period_control"),
+    ("accounting_core", "bank_account_assignment"),
+    ("accounting_core", "bank_account_record"),
+    ("accounting_core", "chart_account"),
+    ("accounting_core", "fiscal_calendar"),
+    ("accounting_core", "fiscal_period"),
+    ("accounting_core", "general_journal"),
+    ("accounting_core", "journal_entry_line"),
+    ("accounting_core", "journal_match_allocation"),
+    ("accounting_core", "journal_reversal"),
+    ("accounting_core", "journal_source_reference"),
+    ("accounting_core", "legal_entity_record"),
+    ("accounting_core", "reconciliation_candidate"),
+    ("accounting_core", "reconciliation_evidence"),
+    ("accounting_core", "reconciliation_exception"),
+    ("accounting_core", "reconciliation_match"),
+    ("accounting_core", "reconciliation_run"),
+    ("accounting_core", "statement_match_allocation"),
+    ("accounting_integration", "bank_statement_artifact"),
+    ("accounting_integration", "bank_statement_entry"),
+    ("accounting_integration", "bank_statement_entry_detail"),
+    ("accounting_integration", "bank_statement_record"),
+    ("accounting_integration", "fiscal_period_open_command"),
+    ("accounting_integration", "home_tax_submission"),
+    ("accounting_integration", "journal_proposal_record"),
+    ("accounting_integration", "outbox_event"),
+    ("accounting_integration", "posting_receipt"),
+    ("accounting_reporting", "trial_balance_line"),
+    ("accounting_reporting", "trial_balance_snapshot"),
+)
+_READINESS_RLS_POLICIES = (
+    ("accounting_core", "account_role_mapping", "account_mapping_isolation"),
+    ("accounting_core", "accounting_book", "accounting_book_isolation"),
+    ("accounting_core", "accounting_book_period_control", "accounting_book_period_isolation"),
+    ("accounting_core", "bank_account_assignment", "bank_account_assignment_isolation"),
+    ("accounting_core", "bank_account_record", "bank_account_record_isolation"),
+    ("accounting_core", "chart_account", "chart_account_isolation"),
+    ("accounting_core", "fiscal_calendar", "fiscal_calendar_isolation"),
+    ("accounting_core", "fiscal_period", "fiscal_period_isolation"),
+    ("accounting_core", "general_journal", "general_journal_isolation"),
+    ("accounting_core", "journal_entry_line", "journal_entry_isolation"),
+    ("accounting_core", "journal_match_allocation", "journal_match_allocation_isolation"),
+    ("accounting_core", "journal_reversal", "journal_reversal_isolation"),
+    ("accounting_core", "journal_source_reference", "journal_source_isolation"),
+    ("accounting_core", "legal_entity_record", "legal_entity_isolation"),
+    ("accounting_core", "reconciliation_candidate", "reconciliation_candidate_isolation"),
+    ("accounting_core", "reconciliation_evidence", "reconciliation_evidence_isolation"),
+    ("accounting_core", "reconciliation_exception", "reconciliation_exception_isolation"),
+    ("accounting_core", "reconciliation_match", "reconciliation_match_isolation"),
+    ("accounting_core", "reconciliation_run", "reconciliation_run_isolation"),
+    ("accounting_core", "statement_match_allocation", "statement_match_allocation_isolation"),
+    ("accounting_integration", "bank_statement_artifact", "bank_statement_artifact_isolation"),
+    ("accounting_integration", "bank_statement_entry", "bank_statement_entry_isolation"),
+    ("accounting_integration", "bank_statement_entry_detail", "bank_statement_detail_isolation"),
+    ("accounting_integration", "bank_statement_record", "bank_statement_record_isolation"),
+    ("accounting_integration", "fiscal_period_open_command", "fiscal_period_open_command_isolation"),
+    ("accounting_integration", "home_tax_submission", "home_tax_submission_isolation"),
+    ("accounting_integration", "journal_proposal_record", "journal_proposal_isolation"),
+    ("accounting_integration", "outbox_event", "outbox_event_isolation"),
+    ("accounting_integration", "posting_receipt", "posting_receipt_isolation"),
+    ("accounting_reporting", "trial_balance_line", "trial_line_isolation"),
+    ("accounting_reporting", "trial_balance_snapshot", "trial_snapshot_isolation"),
+)
+_READINESS_TENANT_FUNCTION_FINGERPRINT = "9c2cfaea74d193cadc39f46c242dd9a5"
 _READINESS_COLUMN_FINGERPRINTS = (
     ("accounting_core", "account_role_mapping", 10, "dedc64e5c9fd53c0c38be2d14e3cffae2f2a879ba903d2994e49371988fe9974"),
     ("accounting_core", "accounting_book", 9, "7399e895b1d329ce2225db6e7efbb9ee7b33870ccc25324f9417e7f9c6df12d3"),
@@ -5069,6 +5137,20 @@ class PostgresPostingLedger:
         try:
             connection.execute("SET lock_timeout = '5s'")
             connection.execute("SET idle_in_transaction_session_timeout = '60s'")
+            if readiness:
+                configured_timeout = connection.execute(
+                    "SELECT current_setting('statement_timeout')::interval"
+                ).fetchone()[0]
+                timeout_milliseconds = _READINESS_STATEMENT_TIMEOUT_MILLISECONDS
+                if configured_timeout > timedelta(0):
+                    timeout_milliseconds = min(
+                        timeout_milliseconds,
+                        max(1, int(configured_timeout.total_seconds() * 1000)),
+                    )
+                connection.execute(
+                    "SELECT pg_catalog.set_config('statement_timeout', %s, false)",
+                    (f"{timeout_milliseconds}ms",),
+                )
             yield connection
         except Exception:
             connection.rollback()
@@ -5329,6 +5411,82 @@ class PostgresPostingLedger:
                         [item[6] for item in _READINESS_INDEX_DEFINITIONS],
                     ),
                 ).fetchone()
+                rls_ok = connection.execute(
+                    """
+                    SELECT NOT EXISTS (
+                        SELECT 1
+                        FROM unnest(%s::text[], %s::text[])
+                            AS required(schema_name, table_name)
+                        LEFT JOIN pg_catalog.pg_namespace AS namespace
+                          ON namespace.nspname = required.schema_name
+                        LEFT JOIN pg_catalog.pg_class AS relation
+                          ON relation.relnamespace = namespace.oid
+                         AND relation.relname = required.table_name
+                        WHERE relation.oid IS NULL
+                           OR NOT relation.relrowsecurity
+                           OR NOT relation.relforcerowsecurity
+                    )
+                    """,
+                    (
+                        [schema_name for schema_name, _table_name in _READINESS_RLS_TABLES],
+                        [table_name for _schema_name, table_name in _READINESS_RLS_TABLES],
+                    ),
+                ).fetchone()[0]
+                policies_ok = connection.execute(
+                    """
+                    SELECT (
+                        SELECT count(*)
+                        FROM pg_catalog.pg_policies AS actual
+                        WHERE (actual.schemaname, actual.tablename) IN (
+                            SELECT required.schema_name, required.table_name
+                            FROM unnest(%s::text[], %s::text[])
+                                AS required(schema_name, table_name)
+                        )
+                    ) = %s
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM unnest(%s::text[], %s::text[], %s::text[])
+                            AS required(schema_name, table_name, policy_name)
+                        LEFT JOIN pg_catalog.pg_policies AS actual
+                          ON actual.schemaname = required.schema_name
+                         AND actual.tablename = required.table_name
+                         AND actual.policyname = required.policy_name
+                        WHERE actual.policyname IS NULL
+                           OR actual.permissive <> 'PERMISSIVE'
+                           OR pg_catalog.array_to_string(actual.roles, ',') <> 'public'
+                           OR actual.cmd <> 'ALL'
+                           OR COALESCE(actual.qual, '')
+                              <> '(tenant_account_id = accounting_core.current_tenant_account_id())'
+                           OR COALESCE(actual.with_check, '')
+                              <> '(tenant_account_id = accounting_core.current_tenant_account_id())'
+                    )
+                    """,
+                    (
+                        [schema_name for schema_name, _table_name, _policy_name in _READINESS_RLS_POLICIES],
+                        [table_name for _schema_name, table_name, _policy_name in _READINESS_RLS_POLICIES],
+                        len(_READINESS_RLS_POLICIES),
+                        [schema_name for schema_name, _table_name, _policy_name in _READINESS_RLS_POLICIES],
+                        [table_name for _schema_name, table_name, _policy_name in _READINESS_RLS_POLICIES],
+                        [policy_name for _schema_name, _table_name, policy_name in _READINESS_RLS_POLICIES],
+                    ),
+                ).fetchone()[0]
+                tenant_function_ok = connection.execute(
+                    """
+                    SELECT COALESCE(
+                        (
+                            SELECT pg_catalog.md5(pg_catalog.pg_get_functiondef(function.oid))
+                            FROM pg_catalog.pg_proc AS function
+                            JOIN pg_catalog.pg_namespace AS namespace
+                              ON namespace.oid = function.pronamespace
+                            WHERE namespace.nspname = 'accounting_core'
+                              AND function.proname = 'current_tenant_account_id'
+                              AND pg_catalog.pg_get_function_identity_arguments(function.oid) = ''
+                        ),
+                        ''
+                    ) = %s
+                    """,
+                    (_READINESS_TENANT_FUNCTION_FINGERPRINT,),
+                ).fetchone()[0]
                 column_rows = connection.execute(
                     """
                     SELECT namespace.nspname,
@@ -5389,7 +5547,17 @@ class PostgresPostingLedger:
                 if not version_ok:
                     raise AccountingValidationError("PostgreSQL 18 is required.")
                 if not all(
-                    (tables_ok, functions_ok, columns_ok, constraints_ok, control_triggers_ok, indexes_ok)
+                    (
+                        tables_ok,
+                        functions_ok,
+                        rls_ok,
+                        policies_ok,
+                        tenant_function_ok,
+                        columns_ok,
+                        constraints_ok,
+                        control_triggers_ok,
+                        indexes_ok,
+                    )
                 ):
                     raise AccountingValidationError(
                         "accounting database schema is incomplete."

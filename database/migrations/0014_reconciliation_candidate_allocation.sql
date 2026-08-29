@@ -145,11 +145,27 @@ CREATE INDEX journal_allocation_run_reference_index
 
 ALTER TABLE accounting_core.reconciliation_candidate ENABLE ROW LEVEL SECURITY;
 ALTER TABLE accounting_core.reconciliation_candidate FORCE ROW LEVEL SECURITY;
+CREATE POLICY reconciliation_candidate_isolation
+    ON accounting_core.reconciliation_candidate
+    USING (tenant_account_id = accounting_core.current_tenant_account_id())
+    WITH CHECK (tenant_account_id = accounting_core.current_tenant_account_id());
 ALTER TABLE accounting_core.reconciliation_match ENABLE ROW LEVEL SECURITY;
 ALTER TABLE accounting_core.reconciliation_match FORCE ROW LEVEL SECURITY;
+CREATE POLICY reconciliation_match_isolation
+    ON accounting_core.reconciliation_match
+    USING (tenant_account_id = accounting_core.current_tenant_account_id())
+    WITH CHECK (tenant_account_id = accounting_core.current_tenant_account_id());
 ALTER TABLE accounting_core.statement_match_allocation ENABLE ROW LEVEL SECURITY;
 ALTER TABLE accounting_core.statement_match_allocation FORCE ROW LEVEL SECURITY;
+CREATE POLICY statement_match_allocation_isolation
+    ON accounting_core.statement_match_allocation
+    USING (tenant_account_id = accounting_core.current_tenant_account_id())
+    WITH CHECK (tenant_account_id = accounting_core.current_tenant_account_id());
 ALTER TABLE accounting_core.journal_match_allocation ENABLE ROW LEVEL SECURITY;
 ALTER TABLE accounting_core.journal_match_allocation FORCE ROW LEVEL SECURITY;
+CREATE POLICY journal_match_allocation_isolation
+    ON accounting_core.journal_match_allocation
+    USING (tenant_account_id = accounting_core.current_tenant_account_id())
+    WITH CHECK (tenant_account_id = accounting_core.current_tenant_account_id());
 
 COMMIT;

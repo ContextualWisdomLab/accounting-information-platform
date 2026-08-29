@@ -30,13 +30,18 @@ fingerprint. Required constraints are also bound to their relation, type,
 validated/enforced and non-deferrable state, and canonical
 `pg_get_constraintdef()` fingerprint. Required indexes are bound to their
 owning relation, valid/ready and uniqueness state, predicate, and canonical
-`pg_get_indexdef()` fingerprint. The probe requires an active binding even for privileged sessions
-and caps connection establishment at five seconds while preserving a stricter
-configured timeout. Return `200` with `{"status":"ready"}` only after all checks
-pass. Return `503` with stable operator guidance when a check fails; do not
-return driver, connection, or database-object details to the caller. Both
-readiness responses carry `Cache-Control: no-store` so an intermediary cannot
-reuse a stale readiness result.
+`pg_get_indexdef()` fingerprint. The probe also requires forced row-level
+security on every tenant-scoped fact table, the exact public tenant-isolation
+policy on each such table, and the canonical `current_tenant_account_id()`
+definition fingerprint. It requires an active binding even for privileged
+sessions, caps connection establishment at five seconds, and applies a
+five-second statement timeout to the complete readiness operation while
+preserving a stricter configured timeout. Return `200` with
+`{"status":"ready"}` only after all checks pass. Return `503` with stable
+operator guidance when a check fails; do not return driver, connection, or
+database-object details to the caller. Both readiness responses carry
+`Cache-Control: no-store` so an intermediary cannot reuse a stale readiness
+result.
 
 The probes are operational signals only. They do not authenticate callers,
 authorize accounting commands, or replace exact-head CI, security, package,
@@ -52,7 +57,10 @@ reasonable interval. The endpoint does not apply migrations or repair tenant
 provisioning. A missing, disabled, detached, conditionally narrowed, or
 column-scope-drifted accounting-control trigger is treated as schema drift and
 fails readiness closed rather than silently reducing database-owned accounting
-enforcement. A same-name weakened constraint or index is likewise schema drift.
+enforcement. A same-name weakened constraint or index, disabled forced RLS,
+missing or broadened tenant policy, or changed tenant-binding function is
+likewise schema drift. A blocked or slow connected query fails closed at the
+statement timeout instead of retaining an HTTP worker indefinitely.
 
 ## Evidence
 
@@ -78,4 +86,7 @@ fail-closed result before restoring the checked-in definition.
 The definition-contract regression replaces every required constraint with a
 same-name `CHECK (true)` and every required index with a same-name single-column
 non-unique index; each altered catalog object returns `503` before its canonical
-definition is restored.
+definition is restored. A sixth regression inventories every tenant-scoped
+table's forced RLS and exact public tenant policy, drops RLS or a policy and
+requires readiness to fail closed, and holds a connected tenant lookup behind a
+slow function to prove the HTTP response is bounded by the statement timeout.
