@@ -418,6 +418,12 @@ def validate_quality_requirements(requirements_text: str) -> tuple[str, ...]:
         )
     elif not package_hashes["psycopg-binary"]:
         errors.append("psycopg-binary must be hash locked")
+    elif PSYCOPG_BINARY_CP314_MANYLINUX_X86_64_WHEEL_HASH not in package_hashes[
+        "psycopg-binary"
+    ]:
+        errors.append(
+            "psycopg-binary must pin the CPython 3.14 manylinux x86_64 wheel hash"
+        )
 
     return tuple(errors)
 
