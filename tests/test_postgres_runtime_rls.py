@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import http.client
+import json
 import uuid
 import unittest
+from threading import Thread
 
 import psycopg
 from psycopg import sql
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
-from accounting_information_platform import AccountingValidationError, PostgresPostingLedger
+from accounting_information_platform import (
+    AccountingValidationError,
+    PostgresPostingLedger,
+    create_journal_proposal_server,
+)
 from tests import test_postgres_posting as posting
 
 
@@ -70,6 +77,47 @@ class PostgresRuntimeRlsTests(unittest.TestCase):
                     self.assertIsNotNone(row)
                     assert row is not None
                     self.assertEqual(row, (True, True))
+
+    def test_readiness_requires_a_database_tenant_binding(self) -> None:
+        """Readiness rejects an unbound privileged session and accepts a bound runtime."""
+        with self.assertRaisesRegex(
+            AccountingValidationError, "cannot be authorized for the requested tenant"
+        ):
+            PostgresPostingLedger(
+                posting.DATABASE_URL, self.case.policy.tenant_reference
+            ).check_readiness()
+
+        role_name = f"accounting_runtime_{uuid.uuid4().hex[:10]}"
+        password = f"AisRuntime{uuid.uuid4().hex}"
+        self._create_runtime_role(role_name, password, self.case.tenant_id)
+        self.addCleanup(self._drop_runtime_role, role_name)
+        runtime_ledger = PostgresPostingLedger(
+            self._runtime_database_url(role_name, password),
+            self.case.policy.tenant_reference,
+        )
+
+        runtime_ledger.check_readiness()
+
+        server = create_journal_proposal_server(
+            self._runtime_database_url(role_name, password),
+            self.case.policy.tenant_reference,
+            "127.0.0.1",
+            0,
+        )
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        connection = http.client.HTTPConnection("127.0.0.1", server.server_port)
+        try:
+            connection.request("GET", "/readyz")
+            response = connection.getresponse()
+            body = json.loads(response.read())
+        finally:
+            connection.close()
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(body, {"status": "ready"})
 
     def test_restricted_runtime_login_posts_same_tenant_and_cannot_rebind_other_tenant(self) -> None:
         """A least-privilege runtime posts its tenant and cannot self-authorize another tenant."""

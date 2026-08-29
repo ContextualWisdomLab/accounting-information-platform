@@ -44,11 +44,13 @@ bus. The in-memory `PostingLedger` remains the reference oracle that the
 PostgreSQL adapter must match.
 
 When a host mounts the HTTP surface, `GET /healthz` reports only that the
-process can answer. `GET /readyz` checks PostgreSQL 18 connectivity, the
-database-controlled tenant binding, and the required accounting schema; it
-returns `503` with operator-safe guidance when those checks fail. Either probe
-is operational evidence only and does not replace exact-head CI, security,
-package, recovery, or independent-review evidence.
+process can answer. `GET /readyz` checks PostgreSQL 18 connectivity, an active
+database-controlled tenant binding, and the complete checked-in migration/schema
+contract through `0014_reconciliation_candidate_allocation.sql`; its connection
+attempt has a five-second upper bound unless an operator configured a stricter
+timeout. It returns `503` with operator-safe guidance when those checks fail.
+Either probe is operational evidence only and does not replace exact-head CI,
+security, package, recovery, or independent-review evidence.
 
 The initial milestone does not claim production compliance with a
 jurisdiction's accounting, tax, or statutory reporting rules. It establishes

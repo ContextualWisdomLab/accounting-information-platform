@@ -15,10 +15,16 @@ serve the authoritative accounting boundary.
 
 Keep `GET /healthz` as a database-independent liveness response. Add
 `GET /readyz`, which opens the configured PostgreSQL 18 session, verifies the
-database-controlled runtime tenant binding, and checks the required accounting
-schema objects. Return `200` with `{"status":"ready"}` only after all checks
-pass. Return `503` with stable operator guidance when a check fails; do not
-return driver, connection, or database-object details to the caller.
+database-controlled runtime tenant binding, and checks the complete current
+schema contract through migration `0014_reconciliation_candidate_allocation.sql`.
+Because the repository has no durable schema-version table, this contract is
+represented by the current tables, functions, mutated columns, constraints,
+and migration indexes. The probe requires an active binding even for
+privileged sessions and caps connection establishment at five seconds while
+preserving a stricter configured timeout. Return `200` with
+`{"status":"ready"}` only after all checks pass. Return `503` with stable
+operator guidance when a check fails; do not return driver, connection, or
+database-object details to the caller.
 
 The probes are operational signals only. They do not authenticate callers,
 authorize accounting commands, or replace exact-head CI, security, package,

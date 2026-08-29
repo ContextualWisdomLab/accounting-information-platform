@@ -35,6 +35,117 @@ _SQL_SKIP_DATE = date.min
 _SQL_SKIP_DATETIME = datetime(1, 1, 1, tzinfo=timezone.utc)
 _SQL_SKIP_UUID = UUID(int=0)
 _CLOSING_JOURNAL_PATTERN = "urn:cwl:accounting:general_journal:period_closing:%"
+_READINESS_CONNECT_TIMEOUT_SECONDS = 5
+_READINESS_TABLES = (
+    "accounting_core.tenant_account",
+    "accounting_core.legal_entity_record",
+    "accounting_core.accounting_book",
+    "accounting_core.chart_account",
+    "accounting_core.account_role_mapping",
+    "accounting_core.fiscal_calendar",
+    "accounting_core.fiscal_period",
+    "accounting_integration.journal_proposal_record",
+    "accounting_core.general_journal",
+    "accounting_core.journal_entry_line",
+    "accounting_core.journal_source_reference",
+    "accounting_core.journal_reversal",
+    "accounting_integration.posting_receipt",
+    "accounting_reporting.trial_balance_snapshot",
+    "accounting_reporting.trial_balance_line",
+    "accounting_integration.outbox_event",
+    "accounting_integration.home_tax_submission",
+    "accounting_core.runtime_tenant_binding",
+    "accounting_integration.fiscal_period_open_command",
+    "accounting_core.accounting_book_period_control",
+    "accounting_core.bank_account_record",
+    "accounting_core.bank_account_assignment",
+    "accounting_integration.bank_statement_artifact",
+    "accounting_integration.bank_statement_record",
+    "accounting_integration.bank_statement_entry",
+    "accounting_integration.bank_statement_entry_detail",
+    "accounting_core.reconciliation_run",
+    "accounting_core.reconciliation_exception",
+    "accounting_core.reconciliation_evidence",
+    "accounting_core.reconciliation_candidate",
+    "accounting_core.reconciliation_match",
+    "accounting_core.statement_match_allocation",
+    "accounting_core.journal_match_allocation",
+)
+_READINESS_FUNCTIONS = (
+    "accounting_core.guard_journal_line_book_scope()",
+    "accounting_core.current_tenant_account_id()",
+    "accounting_core.guard_period_insert()",
+    "accounting_core.assert_journal_balance()",
+    "accounting_core.guard_reversal_temporal_order()",
+    "accounting_core.guard_reversal_lineage_insert()",
+    "accounting_core.reject_finalized_fact_mutation()",
+    "accounting_core.guard_finalized_journal_extension()",
+    "accounting_integration.reject_period_open_command_mutation()",
+    "accounting_core.guard_soft_close_evidence_update()",
+    "accounting_integration.reject_statement_mutation()",
+    "accounting_core.reject_reconciliation_run_scope_mutation()",
+)
+_READINESS_COLUMNS = (
+    ("accounting_core", "chart_account", "account_class_code"),
+    ("accounting_reporting", "trial_balance_snapshot", "close_idempotency_key"),
+    (
+        "accounting_core",
+        "accounting_book_period_control",
+        "soft_close_idempotency_key",
+    ),
+    (
+        "accounting_core",
+        "accounting_book_period_control",
+        "soft_close_source_payload_hash",
+    ),
+    (
+        "accounting_core",
+        "accounting_book_period_control",
+        "soft_close_source_journal_count",
+    ),
+    ("accounting_core", "bank_account_assignment", "assignment_idempotency_key"),
+    ("accounting_core", "bank_account_assignment", "assignment_command_hash"),
+)
+_READINESS_CONSTRAINTS = (
+    ("accounting_reporting", "trial_balance_snapshot", "close_idempotency_nonempty_check"),
+    (
+        "accounting_reporting",
+        "trial_balance_snapshot",
+        "close_idempotency_tenant_key_unique",
+    ),
+    ("accounting_core", "chart_account", "chart_account_book_identity"),
+    (
+        "accounting_core",
+        "accounting_book_period_control",
+        "soft_close_evidence_complete_check",
+    ),
+    (
+        "accounting_core",
+        "bank_account_assignment",
+        "bank_account_assignment_command_key_present",
+    ),
+    (
+        "accounting_core",
+        "bank_account_assignment",
+        "bank_account_assignment_command_hash_format",
+    ),
+    (
+        "accounting_core",
+        "bank_account_assignment",
+        "bank_account_assignment_reconciliation_scope_identity",
+    ),
+)
+_READINESS_INDEXES = (
+    "accounting_integration.journal_proposal_tenant_received_index",
+    "accounting_core.general_journal_tenant_period_date_index",
+    "accounting_integration.home_tax_submission_scope_order_index",
+    "accounting_core.accounting_book_period_scope_index",
+    "accounting_integration.bank_statement_account_period_index",
+    "accounting_core.bank_account_assignment_command_key_scope",
+    "accounting_core.reconciliation_run_scope_index",
+    "accounting_core.reconciliation_match_approved_single",
+    "accounting_core.reconciliation_candidate_run_reference_index",
+)
 
 
 class PostgresPostingLedger:
@@ -4275,13 +4386,29 @@ class PostgresPostingLedger:
                 self._active_connection = None
 
     @contextmanager
-    def _session(self) -> Iterator[object]:
+    def _session(self, *, readiness: bool = False) -> Iterator[object]:
         if self._active_connection is not None:
             yield self._active_connection
             return
         psycopg = _import_psycopg()
         try:
-            connection = psycopg.connect(self._database_url)
+            database_url = self._database_url
+            if readiness:
+                connection_options = psycopg.conninfo.conninfo_to_dict(database_url)
+                configured_timeout = connection_options.get("connect_timeout")
+                timeout_seconds = (
+                    int(configured_timeout) if configured_timeout is not None else None
+                )
+                if (
+                    timeout_seconds is None
+                    or timeout_seconds <= 0
+                    or timeout_seconds > _READINESS_CONNECT_TIMEOUT_SECONDS
+                ):
+                    connection_options["connect_timeout"] = str(
+                        _READINESS_CONNECT_TIMEOUT_SECONDS
+                    )
+                    database_url = psycopg.conninfo.make_conninfo(**connection_options)
+            connection = psycopg.connect(database_url)
         except Exception as error:
             raise AccountingValidationError(
                 "PostgreSQL is not reachable. Start PostgreSQL 18, set ACCOUNTING_DATABASE_URL "
@@ -4300,27 +4427,78 @@ class PostgresPostingLedger:
             connection.close()
 
     def check_readiness(self) -> None:
-        """Verify PostgreSQL connectivity, tenant binding, and core schema readiness."""
+        """Verify PostgreSQL 18, tenant binding, and the complete schema contract."""
         try:
-            with self._session() as connection:
-                self._require_tenant(connection)
-                missing_objects = connection.execute(
+            with self._session(readiness=True) as connection:
+                self._require_tenant(connection, allow_privileged=False)
+                version_ok, tables_ok, functions_ok, columns_ok, constraints_ok, indexes_ok = connection.execute(
                     """
-                    SELECT required.object_name
-                    FROM (
-                        VALUES
-                            ('accounting_core.tenant_account'),
-                            ('accounting_core.runtime_tenant_binding'),
-                            ('accounting_core.general_journal'),
-                            ('accounting_core.journal_entry_line'),
-                            ('accounting_core.journal_source_reference'),
-                            ('accounting_integration.posting_receipt'),
-                            ('accounting_integration.outbox_event')
-                    ) AS required(object_name)
-                    WHERE to_regclass(required.object_name) IS NULL
-                    """
-                ).fetchall()
-                if missing_objects:
+                    SELECT
+                        current_setting('server_version_num')::integer
+                            BETWEEN 180000 AND 189999,
+                        NOT EXISTS (
+                            SELECT 1
+                            FROM unnest(%s::text[]) AS required(object_name)
+                            WHERE to_regclass(required.object_name) IS NULL
+                        ),
+                        NOT EXISTS (
+                            SELECT 1
+                            FROM unnest(%s::text[]) AS required(function_name)
+                            WHERE to_regprocedure(required.function_name) IS NULL
+                        ),
+                        NOT EXISTS (
+                            SELECT 1
+                            FROM unnest(%s::text[], %s::text[], %s::text[])
+                                AS required(schema_name, table_name, column_name)
+                            LEFT JOIN pg_catalog.pg_namespace
+                              ON pg_namespace.nspname = required.schema_name
+                            LEFT JOIN pg_catalog.pg_class
+                              ON pg_class.relnamespace = pg_namespace.oid
+                             AND pg_class.relname = required.table_name
+                            LEFT JOIN pg_catalog.pg_attribute
+                              ON pg_attribute.attrelid = pg_class.oid
+                             AND pg_attribute.attname = required.column_name
+                             AND pg_attribute.attnum > 0
+                             AND NOT pg_attribute.attisdropped
+                            WHERE pg_attribute.attrelid IS NULL
+                        ),
+                        NOT EXISTS (
+                            SELECT 1
+                            FROM unnest(%s::text[], %s::text[], %s::text[])
+                                AS required(schema_name, table_name, constraint_name)
+                            LEFT JOIN pg_catalog.pg_namespace
+                              ON pg_namespace.nspname = required.schema_name
+                            LEFT JOIN pg_catalog.pg_class
+                              ON pg_class.relnamespace = pg_namespace.oid
+                             AND pg_class.relname = required.table_name
+                            LEFT JOIN pg_catalog.pg_constraint
+                              ON pg_constraint.conrelid = pg_class.oid
+                             AND pg_constraint.conname = required.constraint_name
+                            WHERE pg_constraint.oid IS NULL
+                        ),
+                        NOT EXISTS (
+                            SELECT 1
+                            FROM unnest(%s::text[]) AS required(index_name)
+                            WHERE to_regclass(required.index_name) IS NULL
+                        )
+                    """,
+                    (
+                        list(_READINESS_TABLES),
+                        list(_READINESS_FUNCTIONS),
+                        [item[0] for item in _READINESS_COLUMNS],
+                        [item[1] for item in _READINESS_COLUMNS],
+                        [item[2] for item in _READINESS_COLUMNS],
+                        [item[0] for item in _READINESS_CONSTRAINTS],
+                        [item[1] for item in _READINESS_CONSTRAINTS],
+                        [item[2] for item in _READINESS_CONSTRAINTS],
+                        list(_READINESS_INDEXES),
+                    ),
+                ).fetchone()
+                if not version_ok:
+                    raise AccountingValidationError("PostgreSQL 18 is required.")
+                if not all(
+                    (tables_ok, functions_ok, columns_ok, constraints_ok, indexes_ok)
+                ):
                     raise AccountingValidationError(
                         "accounting database schema is incomplete."
                     )
@@ -4338,7 +4516,9 @@ class PostgresPostingLedger:
             (self._tenant_reference, command_scope),
         )
 
-    def _require_tenant(self, connection: object) -> UUID:
+    def _require_tenant(
+        self, connection: object, *, allow_privileged: bool = True
+    ) -> UUID:
         row = connection.execute(
             """
             SELECT tenant_account_id
@@ -4363,6 +4543,11 @@ class PostgresPostingLedger:
                     "then retry the request."
                 )
             return requested_tenant_id
+        if not allow_privileged:
+            raise AccountingValidationError(
+                "this request cannot be authorized for the requested tenant. "
+                "Ask the platform operator to verify tenant provisioning, then retry."
+            )
         rolsuper, rolbypassrls = connection.execute(
             """
             SELECT rolsuper, rolbypassrls

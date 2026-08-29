@@ -60,8 +60,10 @@ The HTTP surface currently binds tenant identity through the configured AIS tena
 
 The mounted HTTP surface exposes `GET /healthz` as process liveness and
 `GET /readyz` as database readiness. Readiness checks PostgreSQL connectivity,
-the bound runtime tenant, and the required accounting schema; neither probe is
-caller authentication or release evidence.
+an active bound runtime tenant, and the complete checked-in migration/schema
+contract through migration `0014`; it uses a bounded connection attempt and
+does not accept the privileged fallback used by accounting commands. Neither
+probe is caller authentication or release evidence.
 
 ## Posting transaction
 
