@@ -34,7 +34,10 @@ class TemporaryEarlyReadinessColumnProbe(unittest.TestCase):
                        ),
                        attribute.attidentity::text,
                        attribute.attgenerated::text,
-                       COALESCE(collation_namespace.nspname || '.' || collation.collname, '')
+                       COALESCE(
+                           collation_namespace.nspname || '.' || collation_row.collname,
+                           ''
+                       )
                 FROM pg_catalog.pg_attribute AS attribute
                 JOIN pg_catalog.pg_class AS relation
                   ON relation.oid = attribute.attrelid
@@ -43,11 +46,11 @@ class TemporaryEarlyReadinessColumnProbe(unittest.TestCase):
                 LEFT JOIN pg_catalog.pg_attrdef AS default_value
                   ON default_value.adrelid = relation.oid
                  AND default_value.adnum = attribute.attnum
-                LEFT JOIN pg_catalog.pg_collation AS collation
-                  ON collation.oid = attribute.attcollation
+                LEFT JOIN pg_catalog.pg_collation AS collation_row
+                  ON collation_row.oid = attribute.attcollation
                  AND attribute.attcollation <> 0
                 LEFT JOIN pg_catalog.pg_namespace AS collation_namespace
-                  ON collation_namespace.oid = collation.collnamespace
+                  ON collation_namespace.oid = collation_row.collnamespace
                 WHERE namespace.nspname IN (
                     'accounting_core', 'accounting_integration', 'accounting_reporting'
                 )
