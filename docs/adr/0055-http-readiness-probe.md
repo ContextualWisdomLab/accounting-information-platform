@@ -19,8 +19,9 @@ database-controlled runtime tenant binding, and checks the complete current
 schema contract through migration `0014_reconciliation_candidate_allocation.sql`.
 Because the repository has no durable schema-version table, this contract is
 represented by the current tables, functions, mutated columns, constraints,
-and migration indexes. The probe requires an active binding even for
-privileged sessions and caps connection establishment at five seconds while
+and migration indexes, plus the enabled exact registrations of the two
+database-owned deferred journal-balance triggers. The probe requires an active
+binding even for privileged sessions and caps connection establishment at five seconds while
 preserving a stricter configured timeout. Return `200` with
 `{"status":"ready"}` only after all checks pass. Return `503` with stable
 operator guidance when a check fails; do not return driver, connection, or
@@ -46,4 +47,5 @@ The initial readiness regression was written before implementation: the
 PostgreSQL HTTP integration test expected `GET /readyz` to return `200` and
 observed `404` on the unchanged foundation. A second regression verifies that
 an unreachable database returns `503` with operator-safe guidance and no raw
-connection error.
+driver or connection error. A third regression verifies that disabling either
+required journal-balance trigger returns `503` for a bound runtime login.

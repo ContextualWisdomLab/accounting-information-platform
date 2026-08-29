@@ -120,6 +120,50 @@ class PostgresRuntimeRlsTests(unittest.TestCase):
         self.assertEqual(body, {"status": "ready"})
         self.assertEqual(response.getheader("Cache-Control"), "no-store")
 
+    def test_readiness_rejects_a_disabled_journal_balance_trigger(self) -> None:
+        """Readiness fails closed when either database balance trigger is disabled."""
+        role_name = f"accounting_runtime_{uuid.uuid4().hex[:10]}"
+        password = f"AisRuntime{uuid.uuid4().hex}"
+        self._create_runtime_role(role_name, password, self.case.tenant_id)
+        self.addCleanup(self._drop_runtime_role, role_name)
+        runtime_ledger = PostgresPostingLedger(
+            self._runtime_database_url(role_name, password),
+            self.case.policy.tenant_reference,
+        )
+        triggers = (
+            ("accounting_core", "general_journal", "general_journal_balance_guard"),
+            (
+                "accounting_core",
+                "journal_entry_line",
+                "journal_entry_balance_guard",
+            ),
+        )
+        for schema_name, table_name, trigger_name in triggers:
+            with self.subTest(trigger_name=trigger_name):
+                with psycopg.connect(posting.DATABASE_URL, autocommit=True) as admin:
+                    admin.execute(
+                        sql.SQL("ALTER TABLE {}.{} DISABLE TRIGGER {}").format(
+                            sql.Identifier(schema_name),
+                            sql.Identifier(table_name),
+                            sql.Identifier(trigger_name),
+                        )
+                    )
+                try:
+                    with self.assertRaisesRegex(
+                        AccountingValidationError,
+                        "accounting database schema is incomplete",
+                    ):
+                        runtime_ledger.check_readiness()
+                finally:
+                    with psycopg.connect(posting.DATABASE_URL, autocommit=True) as admin:
+                        admin.execute(
+                            sql.SQL("ALTER TABLE {}.{} ENABLE TRIGGER {}").format(
+                                sql.Identifier(schema_name),
+                                sql.Identifier(table_name),
+                                sql.Identifier(trigger_name),
+                            )
+                        )
+
     def test_restricted_runtime_login_posts_same_tenant_and_cannot_rebind_other_tenant(self) -> None:
         """A least-privilege runtime posts its tenant and cannot self-authorize another tenant."""
         other = posting.PostgresPostingTests("setUp")

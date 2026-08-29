@@ -146,6 +146,24 @@ _READINESS_INDEXES = (
     "accounting_core.reconciliation_match_approved_single",
     "accounting_core.reconciliation_candidate_run_reference_index",
 )
+_READINESS_BALANCE_TRIGGERS = (
+    (
+        "accounting_core",
+        "general_journal",
+        "general_journal_balance_guard",
+        "accounting_core",
+        "assert_journal_balance",
+        21,
+    ),
+    (
+        "accounting_core",
+        "journal_entry_line",
+        "journal_entry_balance_guard",
+        "accounting_core",
+        "assert_journal_balance",
+        29,
+    ),
+)
 
 
 class PostgresPostingLedger:
@@ -4475,6 +4493,39 @@ class PostgresPostingLedger:
                               ON pg_constraint.conrelid = pg_class.oid
                              AND pg_constraint.conname = required.constraint_name
                             WHERE pg_constraint.oid IS NULL
+                        )
+                        AND NOT EXISTS (
+                            SELECT 1
+                            FROM unnest(
+                                %s::text[], %s::text[], %s::text[],
+                                %s::text[], %s::text[], %s::smallint[]
+                            ) AS required(
+                                schema_name, table_name, trigger_name,
+                                function_schema, function_name, trigger_type
+                            )
+                            LEFT JOIN pg_catalog.pg_namespace AS trigger_namespace
+                              ON trigger_namespace.nspname = required.schema_name
+                            LEFT JOIN pg_catalog.pg_class AS relation
+                              ON relation.relnamespace = trigger_namespace.oid
+                             AND relation.relname = required.table_name
+                            LEFT JOIN pg_catalog.pg_trigger AS trigger
+                              ON trigger.tgrelid = relation.oid
+                             AND trigger.tgname = required.trigger_name
+                            LEFT JOIN pg_catalog.pg_namespace AS function_namespace
+                              ON function_namespace.nspname = required.function_schema
+                            LEFT JOIN pg_catalog.pg_proc AS function
+                              ON function.oid = trigger.tgfoid
+                             AND function.pronamespace = function_namespace.oid
+                             AND function.proname = required.function_name
+                             AND pg_catalog.pg_get_function_identity_arguments(function.oid) = ''
+                            WHERE trigger.oid IS NULL
+                               OR function.oid IS NULL
+                               OR trigger.tgenabled <> 'O'
+                               OR trigger.tgisinternal
+                               OR trigger.tgtype <> required.trigger_type
+                               OR trigger.tgconstraint = 0
+                               OR NOT trigger.tgdeferrable
+                               OR NOT trigger.tginitdeferred
                         ),
                         NOT EXISTS (
                             SELECT 1
@@ -4491,6 +4542,12 @@ class PostgresPostingLedger:
                         [item[0] for item in _READINESS_CONSTRAINTS],
                         [item[1] for item in _READINESS_CONSTRAINTS],
                         [item[2] for item in _READINESS_CONSTRAINTS],
+                        [item[0] for item in _READINESS_BALANCE_TRIGGERS],
+                        [item[1] for item in _READINESS_BALANCE_TRIGGERS],
+                        [item[2] for item in _READINESS_BALANCE_TRIGGERS],
+                        [item[3] for item in _READINESS_BALANCE_TRIGGERS],
+                        [item[4] for item in _READINESS_BALANCE_TRIGGERS],
+                        [item[5] for item in _READINESS_BALANCE_TRIGGERS],
                         list(_READINESS_INDEXES),
                     ),
                 ).fetchone()
