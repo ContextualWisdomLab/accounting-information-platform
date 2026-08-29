@@ -86,7 +86,9 @@ class DataModelDocumentationContractTests(unittest.TestCase):
         data_model = DATA_MODEL.read_text(encoding="utf-8")
         erd = ERD.read_text(encoding="utf-8")
         self.assertIn("balance_effective_at", migration)
+        self.assertIn("balance_type_source_code", migration)
         self.assertIn("balance_effective_at", data_model)
+        self.assertIn("balance_type_source_code", data_model)
         self.assertIn(
             "bank_statement_record ||--o{ bank_statement_balance",
             erd,

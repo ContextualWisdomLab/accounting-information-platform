@@ -109,6 +109,7 @@ BEGIN
           AND (
               command.source_payload_hash IS DISTINCT FROM statement.source_artifact_hash
               OR statement.source_artifact_hash IS DISTINCT FROM artifact.source_artifact_hash
+              OR command.source_payload_reference IS DISTINCT FROM artifact.artifact_store_reference
           )
     ) THEN
         RAISE EXCEPTION

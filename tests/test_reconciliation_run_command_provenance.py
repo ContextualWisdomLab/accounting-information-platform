@@ -64,6 +64,7 @@ class ReconciliationRunCommandProvenanceTests(unittest.TestCase):
         run_id: object,
         statement_id: object,
         source_payload_hash: str,
+        source_payload_reference: str | None = None,
     ) -> None:
         """Attach one direct-SQL command row to an existing reconciliation run."""
         connection.execute(
@@ -83,9 +84,29 @@ class ReconciliationRunCommandProvenanceTests(unittest.TestCase):
                 f"direct-provenance-{uuid.uuid4().hex}",
                 "sha256:" + "1" * 64,
                 source_payload_hash,
-                f"memory:{source_payload_hash}",
+                source_payload_reference or f"memory:{source_payload_hash}",
             ),
         )
+
+    def test_database_rejects_false_command_artifact_reference(self) -> None:
+        """A command cannot publish an artifact URI different from retained evidence."""
+        statement, command = self.helper._statement_and_command()
+        scope = self.helper._assignment_scope()
+        assert scope is not None
+        connection = psycopg.connect(posting.DATABASE_URL)
+        self.addCleanup(connection.close)
+        run_id = self._insert_run(connection, scope, command)
+        self._insert_command(
+            connection,
+            scope[0],
+            run_id,
+            statement["bank_statement_record_id"],
+            command["source_payload_hash"],
+            source_payload_reference="memory:sha256:" + "9" * 64,
+        )
+        with self.assertRaisesRegex(psycopg.Error, "source payload hash"):
+            connection.commit()
+        connection.rollback()
 
     def test_database_rejects_false_command_source_hash(self) -> None:
         """A command cannot claim source bytes different from its referenced statement."""

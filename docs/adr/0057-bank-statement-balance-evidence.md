@@ -18,9 +18,10 @@ database evidence chain.
 
 Migration `0018_bank_statement_balance_evidence.sql` adds the tenant-scoped,
 immutable `accounting_integration.bank_statement_balance` table. The parser
-records every statement `Bal` in sequence with its optional type code, exact
-`Decimal` amount, ISO currency, `CRDT`/`DBIT` direction, typed effective
-date/time, canonical source locator, and source hash. The effective date/time
+records every statement `Bal` in sequence with its optional type code and
+`balance_type_source_code` discriminator (`cd` or `prtry`), exact `Decimal`
+amount, ISO currency, `CRDT`/`DBIT` direction, typed effective date/time,
+canonical source locator, and source hash. The effective date/time
 is distinct from the statement period and system `recorded_at` time. The
 existing opening and closing hash fields remain on `bank_statement_record` for
 compatibility, and the normalized payload hash now includes the complete
@@ -28,9 +29,11 @@ balance facts.
 
 The table has composite tenant foreign keys, forced row-level security,
 database immutability, exact numeric storage, and no journal relationship that
-could grant posting authority. A bridge may select `OPBD` and `CLBD` facts and
-convert direction under its own explicit accounting contract; it must fail
-closed when required numeric facts are missing or out of scope. Existing
+could grant posting authority. A bridge may select standard `Cd` `OPBD` and
+`CLBD` facts and convert direction under its own explicit accounting contract;
+proprietary `Prtry` values remain distinct evidence even when their text matches
+a standard code. The bridge must fail closed when required numeric facts are
+missing or out of scope. Existing
 statements recorded before this additive migration are not backfilled by
 inference or mutation.
 
@@ -38,7 +41,8 @@ inference or mutation.
 
 Reconciliation can consume exact persisted statement balances without treating
 an artifact hash as an amount. Existing callers keep the hash fields and gain a
-`balances` read projection. A historical statement with only hash evidence
+`balances` read projection, including whether a balance type came from standard
+`Cd` or proprietary `Prtry` content. A historical statement with only hash evidence
 remains valid immutable history but is not sufficient for a new exact bridge
 until a separate, explicit evidence-repair contract exists.
 

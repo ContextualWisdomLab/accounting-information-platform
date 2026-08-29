@@ -85,6 +85,7 @@ class BankStatementRegistryTests(unittest.TestCase):
                 {
                     "balance_sequence_number": 1,
                     "balance_type_code": "OPBD",
+                    "balance_type_source_code": "cd",
                     "balance_amount": "100000",
                     "balance_currency_code": "KRW",
                     "credit_debit_code": "CRDT",
@@ -95,6 +96,7 @@ class BankStatementRegistryTests(unittest.TestCase):
                 {
                     "balance_sequence_number": 2,
                     "balance_type_code": "CLBD",
+                    "balance_type_source_code": "cd",
                     "balance_amount": "115000",
                     "balance_currency_code": "KRW",
                     "credit_debit_code": "CRDT",

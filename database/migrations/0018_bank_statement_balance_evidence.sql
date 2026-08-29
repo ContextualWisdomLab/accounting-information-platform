@@ -10,6 +10,11 @@ CREATE TABLE accounting_integration.bank_statement_balance (
     balance_sequence_number integer NOT NULL CHECK (balance_sequence_number > 0),
     balance_type_code text
         CHECK (balance_type_code IS NULL OR btrim(balance_type_code) <> ''),
+    balance_type_source_code text
+        CHECK (
+            (balance_type_code IS NULL AND balance_type_source_code IS NULL)
+            OR (balance_type_code IS NOT NULL AND balance_type_source_code IN ('cd', 'prtry'))
+        ),
     balance_amount numeric(38, 6) NOT NULL CHECK (balance_amount >= 0),
     balance_currency_code text NOT NULL CHECK (balance_currency_code ~ '^[A-Z]{3}$'),
     credit_debit_code text NOT NULL CHECK (credit_debit_code IN ('CRDT', 'DBIT')),
