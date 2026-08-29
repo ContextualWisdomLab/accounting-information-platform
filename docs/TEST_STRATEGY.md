@@ -33,6 +33,7 @@ Required regressions include:
 - after an authoritative posting receipt exists, a late journal-line or source-reference insert into that finalized journal fails before it can extend the monetary/evidence population;
 - hard-closed periods reject later inserts;
 - reconciliation-run command evidence is forced-RLS and immutable, exact retries replay while changed command evidence conflicts, historical runs exclude facts recorded after their knowledge cutoff, and deferred database provenance rejects orphan runs or cross-bank statement bindings;
+- reconciliation-match command evidence is forced-RLS and immutable, its run lock prevents a racing terminal transition, source entry/journal cutoffs and CRDT/DBIT cash-line direction are enforced, compound journals use the assigned cash line, and database triggers require one equal allocation per side while rejecting late allocations;
 - a login that merely sets `accounting_core.journal_write_role` cannot insert into a soft-closed period;
 - a purpose-limited session login that is a member of `accounting_closing_writer` can exercise the supported soft-close exception path;
 - migration `0005` changes a pre-existing LOGIN `accounting_closing_writer` back to `NOLOGIN`;

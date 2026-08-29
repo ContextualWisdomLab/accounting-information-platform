@@ -94,10 +94,12 @@ def accept_reconciliation_match(
 
         run = connection.execute(
             """
-            SELECT run_status_code, accounting_book_id, currency_code
+            SELECT run_status_code, accounting_book_id, currency_code,
+                   bank_account_assignment_id, bank_cutoff_at, book_cutoff_at
             FROM accounting_core.reconciliation_run
             WHERE tenant_account_id = %s
               AND reconciliation_run_id = %s
+            FOR UPDATE
             """,
             (tenant_id, run_id),
         ).fetchone()
@@ -117,6 +119,9 @@ def accept_reconciliation_match(
             reconciliation_run_id=run_id,
             accounting_book_id=run[1],
             currency_code=run[2],
+            bank_account_assignment_id=run[3],
+            bank_cutoff_at=run[4],
+            book_cutoff_at=run[5],
             statement_reference=statement_reference,
             journal_reference=journal_reference,
             statement_amount=statement_amount,
@@ -348,15 +353,19 @@ def _require_recorded_source_amounts(
     reconciliation_run_id: UUID,
     accounting_book_id: UUID,
     currency_code: str,
+    bank_account_assignment_id: UUID,
+    bank_cutoff_at: object,
+    book_cutoff_at: object,
     statement_reference: str,
     journal_reference: str,
     statement_amount: Decimal,
     journal_amount: Decimal,
 ) -> None:
-    """Require command amounts to equal tenant-scoped immutable source facts."""
+    """Require exact source amounts, direction, assignment, and run cutoffs."""
     statement_rows = connection.execute(
         """
-        SELECT entry.entry_amount, entry.entry_currency_code
+        SELECT entry.entry_amount, entry.entry_currency_code,
+               entry.credit_debit_code
         FROM accounting_integration.bank_statement_entry AS entry
         JOIN accounting_core.reconciliation_run_command AS run_command
           ON run_command.tenant_account_id = entry.tenant_account_id
@@ -368,8 +377,17 @@ def _require_recorded_source_amounts(
           AND run_command.reconciliation_run_id = %s
           AND (entry.source_entry_identity = %s OR entry.bank_statement_entry_id::text = %s)
           AND run_scope.currency_code = entry.entry_currency_code
+          AND (entry.booking_occurred_at IS NULL OR entry.booking_occurred_at <= %s)
+          AND (entry.value_occurred_at IS NULL OR entry.value_occurred_at <= %s)
         """,
-        (tenant_id, reconciliation_run_id, statement_reference, statement_reference),
+        (
+            tenant_id,
+            reconciliation_run_id,
+            statement_reference,
+            statement_reference,
+            bank_cutoff_at,
+            bank_cutoff_at,
+        ),
     ).fetchall()
     if len(statement_rows) != 1:
         raise AccountingValidationError(
@@ -382,24 +400,61 @@ def _require_recorded_source_amounts(
             "statement_amount does not match recorded statement source amount. "
             "Supply the exact recorded statement amount, then retry the match."
         )
+    statement_direction = statement_rows[0][2]
+    if statement_direction not in {"CRDT", "DBIT"}:
+        raise AccountingValidationError(
+            "statement source evidence has an unsupported direction. "
+            "Supply a CRDT or DBIT statement entry, then retry the match."
+        )
 
     journal_row = connection.execute(
         """
         SELECT journal.journal_status_code,
                journal.transaction_currency_code,
                COALESCE(SUM(line.debit_amount), 0),
-               COALESCE(SUM(line.credit_amount), 0)
+               COALESCE(SUM(line.credit_amount), 0),
+               COALESCE(
+                   SUM(
+                       CASE
+                           WHEN line.chart_account_id = assignment.chart_account_id
+                           THEN line.debit_amount
+                           ELSE 0
+                       END
+                   ),
+                   0
+               ),
+               COALESCE(
+                   SUM(
+                       CASE
+                           WHEN line.chart_account_id = assignment.chart_account_id
+                           THEN line.credit_amount
+                           ELSE 0
+                       END
+                   ),
+                   0
+               )
         FROM accounting_core.general_journal AS journal
+        JOIN accounting_core.bank_account_assignment AS assignment
+          ON assignment.tenant_account_id = journal.tenant_account_id
+         AND assignment.accounting_book_id = journal.accounting_book_id
         LEFT JOIN accounting_core.journal_entry_line AS line
           ON line.tenant_account_id = journal.tenant_account_id
          AND line.general_journal_id = journal.general_journal_id
         WHERE journal.tenant_account_id = %s
           AND journal.accounting_book_id = %s
           AND journal.journal_reference = %s
+          AND assignment.bank_account_assignment_id = %s
+          AND journal.accounting_date <= (%s::timestamptz AT TIME ZONE 'UTC')::date
         GROUP BY journal.general_journal_id, journal.journal_status_code,
-                 journal.transaction_currency_code
+                 journal.transaction_currency_code, assignment.chart_account_id
         """,
-        (tenant_id, accounting_book_id, journal_reference),
+        (
+            tenant_id,
+            accounting_book_id,
+            journal_reference,
+            bank_account_assignment_id,
+            book_cutoff_at,
+        ),
     ).fetchone()
     if journal_row is None:
         raise AccountingValidationError(
@@ -416,9 +471,25 @@ def _require_recorded_source_amounts(
             "journal source evidence is not balanced and positive. "
             "Supply a balanced posted journal, then retry the match."
         )
-    if journal_row[2] != journal_amount:
+    cash_debit = journal_row[4]
+    cash_credit = journal_row[5]
+    expected_cash_debit = statement_direction == "CRDT"
+    if (
+        expected_cash_debit
+        and cash_credit != 0
+    ) or (
+        not expected_cash_debit
+        and cash_debit != 0
+    ):
+        expected_side = "debit" if expected_cash_debit else "credit"
         raise AccountingValidationError(
-            "journal_amount does not match recorded journal source amount. "
+            "journal source evidence direction does not match the statement direction; "
+            f"the assigned cash line must carry the amount on the {expected_side} side. "
+            "Supply matching CRDT/DBIT source evidence, then retry the match."
+        )
+    if (cash_debit if expected_cash_debit else cash_credit) != journal_amount:
+        raise AccountingValidationError(
+            "journal_amount does not match recorded assigned cash line amount in the journal source. "
             "Supply the exact recorded journal amount, then retry the match."
         )
 

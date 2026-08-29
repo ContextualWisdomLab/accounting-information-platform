@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import unittest
 import uuid
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from unittest import mock
 
@@ -15,6 +15,7 @@ from accounting_information_platform import (
     CAMT053_MESSAGE_DEFINITION,
     AccountingValidationError,
     IdempotencyConflictError,
+    JournalLineProposal,
     MemoryArtifactStore,
     accept_bank_account_assignment,
     accept_bank_account_record,
@@ -69,8 +70,22 @@ class ReconciliationMatchApiTests(unittest.TestCase):
             self.case.policy.tenant_reference,
         )
 
-    def _open_run(self) -> tuple[str, str]:
+    def _open_run(
+        self, entry_index: int = 0, late_statement_entry: bool = False
+    ) -> tuple[str, str]:
         fixture = load_canonical_statement_fixture()
+        fixture = fixture.replace(
+            b"BANK-STMT-2026-08-24", f"BANK-STMT-{uuid.uuid4().hex[:12]}".encode(), 1
+        )
+        fixture = fixture.replace(
+            b"Invoice 1001", f"Invoice {uuid.uuid4().hex[:8]}".encode(), 1
+        )
+        if late_statement_entry:
+            fixture = fixture.replace(
+                b"2026-08-24T01:15:00+00:00",
+                b"2026-08-25T01:15:00+00:00",
+                1,
+            )
         statement = accept_bank_statement_evidence(
             {
                 "tenant_reference": self.case.policy.tenant_reference,
@@ -88,7 +103,7 @@ class ReconciliationMatchApiTests(unittest.TestCase):
             self.case.policy.tenant_reference,
             str(statement["bank_statement_record_id"]),
         )["bank_statement_entries"]
-        entry = entries[0]
+        entry = entries[entry_index]
         statement_hash = "sha256:" + hashlib.sha256(fixture).hexdigest()
         run = accept_reconciliation_run(
             {
@@ -99,7 +114,7 @@ class ReconciliationMatchApiTests(unittest.TestCase):
                 "bank_cutoff_at": "2026-08-24T23:59:59Z",
                 "book_cutoff_at": "2026-08-24T23:59:59Z",
                 "matching_policy_version": "deterministic-v1",
-                "knowledge_cutoff_at": "2026-08-25T00:00:00Z",
+                "knowledge_cutoff_at": "2026-09-01T00:00:00Z",
                 "reconciliation_idempotency_key": f"run-match-{uuid.uuid4().hex}",
                 "source_payload_hash": statement_hash,
             },
@@ -110,16 +125,50 @@ class ReconciliationMatchApiTests(unittest.TestCase):
             entry["source_entry_identity"] or entry["bank_statement_entry_id"]
         )
 
-    def _command(self) -> dict[str, object]:
-        run_id, statement_reference = self._open_run()
+    def _command(
+        self,
+        *,
+        entry_index: int = 0,
+        amount: str = "25000",
+        cash_direction: str = "debit",
+        accounting_date: date = date(2026, 8, 24),
+        extra_debit: str = "0",
+        late_statement_entry: bool = False,
+    ) -> dict[str, object]:
+        run_id, statement_reference = self._open_run(entry_index, late_statement_entry)
+        cash_debit, cash_credit = (
+            (amount, "0") if cash_direction == "debit" else ("0", amount)
+        )
+        if cash_direction == "debit" and Decimal(extra_debit) > 0:
+            lines = (
+                JournalLineProposal(1, "cash_receipt", cash_debit, cash_credit),
+                JournalLineProposal(2, "accounts_receivable", extra_debit, "0"),
+                JournalLineProposal(
+                    3,
+                    "usage_revenue",
+                    "0",
+                    str(Decimal(amount) + Decimal(extra_debit)),
+                ),
+            )
+        elif cash_direction == "debit":
+            lines = (
+                JournalLineProposal(1, "cash_receipt", cash_debit, cash_credit),
+                JournalLineProposal(2, "usage_revenue", "0", amount),
+            )
+        else:
+            lines = (
+                JournalLineProposal(1, "cash_receipt", cash_debit, cash_credit),
+                JournalLineProposal(2, "accounts_receivable", amount, "0"),
+            )
         journal = self.case.ledger.post(
             self.case._two_line_proposal(
                 proposal_id=str(uuid.uuid4()),
                 idempotency_key=f"match-journal-{uuid.uuid4().hex}",
                 source_payload_hash="sha256:" + "9" * 64,
                 source_event_references=(f"urn:cwl:reconciliation:journal:{uuid.uuid4()}",),
-                transaction_date=date(2026, 8, 24),
-                accounting_date=date(2026, 8, 24),
+                transaction_date=accounting_date,
+                accounting_date=accounting_date,
+                lines=lines,
             ),
             self.case.policy,
         )
@@ -128,8 +177,8 @@ class ReconciliationMatchApiTests(unittest.TestCase):
             "reconciliation_run_id": run_id,
             "statement_entry_reference": statement_reference,
             "journal_reference": journal.journal_reference,
-            "statement_amount": "25000.00",
-            "journal_amount": "25000.00",
+            "statement_amount": f"{Decimal(amount):.2f}",
+            "journal_amount": f"{Decimal(amount):.2f}",
             "rule_code": "provider_reference",
             "candidate_idempotency_key": f"candidate-{uuid.uuid4().hex}",
             "source_payload_hash": "sha256:" + "1" * 64,
@@ -235,18 +284,142 @@ class ReconciliationMatchApiTests(unittest.TestCase):
                 tenant,
             )
 
+    def test_match_uses_assigned_cash_line_for_compound_journal(self) -> None:
+        """A compound journal matches only the assigned cash line, not its total."""
+        command = self._command(extra_debit="100")
+        document = accept_reconciliation_match(
+            command, posting.DATABASE_URL, self.case.policy.tenant_reference
+        )
+        self.assertEqual(document["allocated_amount"], "25000")
+
+    def test_match_enforces_statement_and_cash_journal_direction(self) -> None:
+        """CRDT uses cash debit and DBIT uses cash credit for source matching."""
+        with self.assertRaisesRegex(AccountingValidationError, "direction"):
+            accept_reconciliation_match(
+                self._command(cash_direction="credit"),
+                posting.DATABASE_URL,
+                self.case.policy.tenant_reference,
+            )
+        valid = accept_reconciliation_match(
+            self._command(entry_index=1, amount="10000", cash_direction="credit"),
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+        )
+        self.assertEqual(valid["match_status_code"], "proposed")
+
+    def test_match_rejects_journal_after_book_cutoff(self) -> None:
+        """A journal recorded after the run book cutoff is not matchable evidence."""
+        with self.assertRaisesRegex(AccountingValidationError, "journal source"):
+            accept_reconciliation_match(
+                self._command(accounting_date=date(2026, 8, 25)),
+                posting.DATABASE_URL,
+                self.case.policy.tenant_reference,
+            )
+
+    def test_match_rejects_statement_entry_after_bank_cutoff(self) -> None:
+        """A statement entry outside the run bank cutoff is not matchable evidence."""
+        with self.assertRaisesRegex(AccountingValidationError, "not recorded exactly once"):
+            accept_reconciliation_match(
+                self._command(late_statement_entry=True),
+                posting.DATABASE_URL,
+                self.case.policy.tenant_reference,
+            )
+
+    def test_match_command_requires_complete_allocation_evidence(self) -> None:
+        """Direct command evidence cannot omit its one-to-one allocation rows."""
+        command = self._command()
+        tenant_id = self.case.tenant_id
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            candidate_id = connection.execute(
+                """
+                INSERT INTO accounting_core.reconciliation_candidate (
+                    tenant_account_id, reconciliation_run_id,
+                    statement_entry_reference, journal_reference,
+                    statement_amount, journal_amount, rule_code
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, 'direct-command')
+                RETURNING reconciliation_candidate_id
+                """,
+                (
+                    tenant_id,
+                    command["reconciliation_run_id"],
+                    command["statement_entry_reference"],
+                    command["journal_reference"],
+                    command["statement_amount"],
+                    command["journal_amount"],
+                ),
+            ).fetchone()[0]
+            match_id = connection.execute(
+                """
+                INSERT INTO accounting_core.reconciliation_match (
+                    tenant_account_id, reconciliation_run_id,
+                    reconciliation_candidate_id, match_status_code
+                )
+                VALUES (%s, %s, %s, 'proposed')
+                RETURNING reconciliation_match_id
+                """,
+                (tenant_id, command["reconciliation_run_id"], candidate_id),
+            ).fetchone()[0]
+            with self.assertRaisesRegex(psycopg.errors.CheckViolation, "one statement"):
+                connection.execute(
+                    """
+                    INSERT INTO accounting_core.reconciliation_match_command (
+                        tenant_account_id, reconciliation_run_id,
+                        reconciliation_candidate_id, reconciliation_match_id,
+                        candidate_idempotency_key, candidate_command_hash,
+                        source_payload_hash, source_payload_reference
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        tenant_id,
+                        command["reconciliation_run_id"],
+                        candidate_id,
+                        match_id,
+                        f"direct-command-{uuid.uuid4().hex}",
+                        "sha256:" + "4" * 64,
+                        command["source_payload_hash"],
+                        command["source_payload_reference"],
+                    ),
+                )
+
+    def test_match_command_rejects_late_allocation_after_command_evidence(self) -> None:
+        """Command evidence freezes its allocation population."""
+        command = self._command()
+        document = accept_reconciliation_match(
+            command, posting.DATABASE_URL, self.case.policy.tenant_reference
+        )
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            with self.assertRaisesRegex(psycopg.errors.CheckViolation, "command evidence"):
+                connection.execute(
+                    """
+                    INSERT INTO accounting_core.statement_match_allocation (
+                        tenant_account_id, reconciliation_run_id,
+                        reconciliation_match_id, statement_entry_reference,
+                        allocated_amount
+                    )
+                    VALUES (%s, %s, %s, %s, '1')
+                    """,
+                    (
+                        self.case.tenant_id,
+                        command["reconciliation_run_id"],
+                        document["reconciliation_match_id"],
+                        command["statement_entry_reference"],
+                    ),
+                )
+
     def test_match_source_guard_rejects_unbalanced_or_wrong_journal_amounts(self) -> None:
         """Defensive source checks reject impossible or mismatched journal evidence."""
         for journal_row, message in (
-            (("posted", "KRW", Decimal("25000"), Decimal("24999")), "balanced and positive"),
-            (("posted", "KRW", Decimal("24999"), Decimal("24999")), "does not match recorded"),
-            (("draft", "KRW", Decimal("25000"), Decimal("25000")), "not a posted journal"),
-            (("posted", "USD", Decimal("25000"), Decimal("25000")), "not a posted journal"),
+            (("posted", "KRW", Decimal("25000"), Decimal("24999"), Decimal("25000"), Decimal("0")), "balanced and positive"),
+            (("posted", "KRW", Decimal("24999"), Decimal("24999"), Decimal("24999"), Decimal("0")), "does not match recorded"),
+            (("draft", "KRW", Decimal("25000"), Decimal("25000"), Decimal("25000"), Decimal("0")), "not a posted journal"),
+            (("posted", "USD", Decimal("25000"), Decimal("25000"), Decimal("25000"), Decimal("0")), "not a posted journal"),
         ):
             with self.subTest(message=message):
                 connection = mock.Mock()
                 statement_result = mock.Mock()
-                statement_result.fetchall.return_value = [(Decimal("25000"), "KRW")]
+                statement_result.fetchall.return_value = [(Decimal("25000"), "KRW", "CRDT")]
                 journal_result = mock.Mock()
                 journal_result.fetchone.return_value = journal_row
                 connection.execute.side_effect = [statement_result, journal_result]
@@ -257,11 +430,36 @@ class ReconciliationMatchApiTests(unittest.TestCase):
                         reconciliation_run_id=uuid.uuid4(),
                         accounting_book_id=uuid.uuid4(),
                         currency_code="KRW",
+                        bank_account_assignment_id=uuid.uuid4(),
+                        bank_cutoff_at=datetime(2026, 8, 24, 23, 59, 59, tzinfo=timezone.utc),
+                        book_cutoff_at=datetime(2026, 8, 24, 23, 59, 59, tzinfo=timezone.utc),
                         statement_reference="statement-entry",
                         journal_reference="journal-reference",
                         statement_amount=Decimal("25000"),
                         journal_amount=Decimal("25000"),
                     )
+
+    def test_match_source_guard_rejects_unsupported_direction(self) -> None:
+        """The source guard remains defensive if a malformed row bypasses its DB check."""
+        connection = mock.Mock()
+        statement_result = mock.Mock()
+        statement_result.fetchall.return_value = [(Decimal("25000"), "KRW", "OTHER")]
+        connection.execute.return_value = statement_result
+        with self.assertRaisesRegex(AccountingValidationError, "unsupported direction"):
+            _require_recorded_source_amounts(
+                connection,
+                tenant_id=uuid.uuid4(),
+                reconciliation_run_id=uuid.uuid4(),
+                accounting_book_id=uuid.uuid4(),
+                currency_code="KRW",
+                bank_account_assignment_id=uuid.uuid4(),
+                bank_cutoff_at=datetime(2026, 8, 24, 23, 59, 59, tzinfo=timezone.utc),
+                book_cutoff_at=datetime(2026, 8, 24, 23, 59, 59, tzinfo=timezone.utc),
+                statement_reference="statement-entry",
+                journal_reference="journal-reference",
+                statement_amount=Decimal("25000"),
+                journal_amount=Decimal("25000"),
+            )
 
     def test_match_command_maps_source_conservation_guard_to_validation(self) -> None:
         """A legacy cross-run amount conflict cannot escape as a raw database error."""
@@ -276,6 +474,14 @@ class ReconciliationMatchApiTests(unittest.TestCase):
                 """,
                 (self.case.tenant_id, command["reconciliation_run_id"]),
             ).fetchone()[0]
+            source_hash = connection.execute(
+                """
+                SELECT source_artifact_hash
+                FROM accounting_integration.bank_statement_record
+                WHERE tenant_account_id = %s AND bank_statement_record_id = %s
+                """,
+                (self.case.tenant_id, statement_id),
+            ).fetchone()[0]
         second_run = accept_reconciliation_run(
             {
                 "tenant_reference": tenant,
@@ -285,11 +491,9 @@ class ReconciliationMatchApiTests(unittest.TestCase):
                 "bank_cutoff_at": "2026-08-24T23:59:59Z",
                 "book_cutoff_at": "2026-08-24T23:59:59Z",
                 "matching_policy_version": "deterministic-v1",
-                "knowledge_cutoff_at": "2026-08-25T00:00:00Z",
+                "knowledge_cutoff_at": "2026-09-01T00:00:00Z",
                 "reconciliation_idempotency_key": f"run-conflict-{uuid.uuid4().hex}",
-                "source_payload_hash": "sha256:" + hashlib.sha256(
-                    load_canonical_statement_fixture()
-                ).hexdigest(),
+                "source_payload_hash": source_hash,
             },
             posting.DATABASE_URL,
             tenant,

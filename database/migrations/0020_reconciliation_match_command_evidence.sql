@@ -89,4 +89,75 @@ BEFORE UPDATE OR DELETE
 ON accounting_core.reconciliation_match_command
 FOR EACH ROW EXECUTE FUNCTION accounting_core.reject_reconciliation_match_command_mutation();
 
+CREATE OR REPLACE FUNCTION accounting_core.enforce_reconciliation_match_command_allocations()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    statement_allocation_count bigint;
+    journal_allocation_count bigint;
+    statement_allocation_total numeric(30, 6);
+    journal_allocation_total numeric(30, 6);
+BEGIN
+    SELECT COUNT(*), COALESCE(SUM(allocation.allocated_amount), 0)
+    INTO statement_allocation_count, statement_allocation_total
+    FROM accounting_core.statement_match_allocation AS allocation
+    WHERE allocation.tenant_account_id = NEW.tenant_account_id
+      AND allocation.reconciliation_run_id = NEW.reconciliation_run_id
+      AND allocation.reconciliation_match_id = NEW.reconciliation_match_id;
+
+    SELECT COUNT(*), COALESCE(SUM(allocation.allocated_amount), 0)
+    INTO journal_allocation_count, journal_allocation_total
+    FROM accounting_core.journal_match_allocation AS allocation
+    WHERE allocation.tenant_account_id = NEW.tenant_account_id
+      AND allocation.reconciliation_run_id = NEW.reconciliation_run_id
+      AND allocation.reconciliation_match_id = NEW.reconciliation_match_id;
+
+    IF statement_allocation_count <> 1
+       OR journal_allocation_count <> 1
+       OR statement_allocation_total <> journal_allocation_total THEN
+        RAISE EXCEPTION
+            'reconciliation match command requires exactly one statement and one journal allocation with equal amounts (reconciliation_match_command_allocation)'
+            USING ERRCODE = '23514';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER z_reconciliation_match_command_allocation_guard
+AFTER INSERT
+ON accounting_core.reconciliation_match_command
+FOR EACH ROW EXECUTE FUNCTION accounting_core.enforce_reconciliation_match_command_allocations();
+
+CREATE OR REPLACE FUNCTION accounting_core.reject_reconciliation_match_command_allocation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM accounting_core.reconciliation_match_command AS command
+        WHERE command.tenant_account_id = NEW.tenant_account_id
+          AND command.reconciliation_run_id = NEW.reconciliation_run_id
+          AND command.reconciliation_match_id = NEW.reconciliation_match_id
+    ) THEN
+        RAISE EXCEPTION
+            'reconciliation match command evidence freezes its allocation population; create a new proposed match instead (reconciliation_match_command_allocation_frozen)'
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER z_reconciliation_match_command_allocation_frozen_guard
+BEFORE INSERT
+ON accounting_core.statement_match_allocation
+FOR EACH ROW EXECUTE FUNCTION accounting_core.reject_reconciliation_match_command_allocation();
+
+CREATE TRIGGER z_reconciliation_match_command_allocation_frozen_guard
+BEFORE INSERT
+ON accounting_core.journal_match_allocation
+FOR EACH ROW EXECUTE FUNCTION accounting_core.reject_reconciliation_match_command_allocation();
+
 COMMIT;

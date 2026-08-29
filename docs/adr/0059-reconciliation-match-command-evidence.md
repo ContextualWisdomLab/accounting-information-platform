@@ -34,6 +34,15 @@ reconciliation_candidate_id)` to the same composite identity on
 with a different valid match from the same run. Uniqueness rules additionally
 prevent duplicate command or match identities.
 
+The command also binds source admission to the run snapshot: statement booking
+and value timestamps must be no later than the bank cutoff, and journal
+accounting date must be no later than the book cutoff. The journal amount is
+read from the run assignment's cash chart account rather than the journal-wide
+total; a `CRDT` statement requires that line on the debit side and a `DBIT`
+statement requires it on the credit side. The run row is locked through the
+candidate and allocation writes so a concurrent run transition cannot race the
+match.
+
 `accept_reconciliation_match` is the smallest durable command boundary: it
 accepts one exact 1:1 proposed match, requires quoted positive equal decimal
 amounts that equal the bound immutable bank-entry and posted-journal source
@@ -48,6 +57,11 @@ validation failure rather than leaking a driver error. `POST
 document. The HTTP boundary reports malformed identifiers as `400`, absent
 source evidence as `404`, state conflicts as `409`, and source-content or
 conservation validation failures as `422`.
+
+The database requires command insertion to observe exactly one statement and
+one journal allocation with equal exact amounts, and rejects allocation rows
+inserted after command evidence. These are evidence-integrity controls only;
+they do not turn a proposed match into an approved accounting fact.
 
 The command intentionally does not replace the existing pure split/aggregate
 allocation planner or the database approval workflow. It provides a bounded
