@@ -58,6 +58,11 @@ The application runtime database login is separate from the migration owner and 
 
 The HTTP surface currently binds tenant identity through the configured AIS tenant plus `X-CWL-Tenant-Reference`. That header is not a general credential. Production exposure therefore requires a trusted host or gateway that authenticates the caller before traffic reaches this process. Purpose-bound application authorization is tracked separately from the database-credential boundary and must not be inferred from request-body fields, model output, or database GUCs.
 
+The mounted HTTP surface exposes `GET /healthz` as process liveness and
+`GET /readyz` as database readiness. Readiness checks PostgreSQL connectivity,
+the bound runtime tenant, and the required accounting schema; neither probe is
+caller authentication or release evidence.
+
 ## Posting transaction
 
 A proposal follows one authoritative transaction boundary:
@@ -102,6 +107,7 @@ The current HTTP / library surface includes:
 - income statement, balance sheet, changes in equity, cash-flow and statement packages;
 - period-close package and VAT period register;
 - fail-closed HomeTax submission evidence and receipt history.
+- `/healthz` liveness and `/readyz` database-readiness probes.
 
 Detailed request / response and behavioral contracts live in the corresponding ADRs. Read models do not become alternate posting authorities.
 

@@ -25,6 +25,15 @@ class OperabilityDocumentationContractTests(unittest.TestCase):
             operability,
         )
 
+    def test_readiness_documentation_distinguishes_liveness_from_database_readiness(self) -> None:
+        """Operators must know what each HTTP probe proves and does not prove."""
+        operability = (ROOT / "docs" / "OPERABILITY.md").read_text(encoding="utf-8")
+
+        self.assertIn("`GET /healthz`", operability)
+        self.assertIn("`GET /readyz`", operability)
+        self.assertIn("503", operability)
+        self.assertIn("Readiness is not release evidence.", operability)
+
 
 if __name__ == "__main__":
     unittest.main()

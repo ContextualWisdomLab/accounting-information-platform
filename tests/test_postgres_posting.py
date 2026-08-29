@@ -10237,6 +10237,9 @@ class PostgresPostingTests(unittest.TestCase):
         health_status, health_body = self._http_json(
             "GET", "/healthz", None, tenant_header=None
         )
+        ready_status, ready_body = self._http_json(
+            "GET", "/readyz", None, tenant_header=None
+        )
         live_status, live_balance = self._http_trial_balance()
         close_status, close_receipt = self._http_json("POST", "/period-closes", close_body)
         replay_status, replay_receipt = self._http_json("POST", "/period-closes", close_body)
@@ -10254,6 +10257,8 @@ class PostgresPostingTests(unittest.TestCase):
 
         self.assertEqual(health_status, 200)
         self.assertEqual(health_body, {"status": "ok"})
+        self.assertEqual(ready_status, 200)
+        self.assertEqual(ready_body, {"status": "ready"})
         self.assertEqual(live_status, 200)
         self.assertEqual(live_balance["balance_source_code"], "live")
         self.assertEqual(live_balance["period_status_code"], "open")
@@ -10452,6 +10457,59 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before)
         self.assertEqual(self._period_status("2026-08"), "hard_closed")
         server.shutdown()
+
+    def test_http_readyz_fails_closed_when_database_is_unreachable(self) -> None:
+        """Readiness reports an actionable 503 without exposing driver details."""
+        server = create_journal_proposal_server(
+            "postgresql://postgres:postgres@127.0.0.1:1/accounting_test?connect_timeout=1",
+            self.policy.tenant_reference,
+            "127.0.0.1",
+            0,
+        )
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self._http_server = server
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        status, body = self._http_json("GET", "/readyz", None, tenant_header=None)
+
+        self.assertEqual(status, 503)
+        self.assertEqual(body["status"], "not_ready")
+        self.assertIn("PostgreSQL 18", str(body["error_message"]))
+        self.assertNotIn("connection refused", str(body["error_message"]).lower())
+
+    def test_readiness_rejects_an_incomplete_accounting_schema(self) -> None:
+        """Readiness fails closed when a required accounting object is absent."""
+        ledger = PostgresPostingLedger(DATABASE_URL, self.policy.tenant_reference)
+        session = mock.MagicMock()
+        session.__enter__.return_value = session
+        session.execute.return_value.fetchall.return_value = [
+            ("accounting_core.general_journal",)
+        ]
+
+        with mock.patch.object(ledger, "_session", return_value=session):
+            with mock.patch.object(ledger, "_require_tenant"):
+                with self.assertRaisesRegex(
+                    AccountingValidationError, "accounting database schema is incomplete"
+                ):
+                    ledger.check_readiness()
+
+    def test_readiness_masks_database_probe_errors(self) -> None:
+        """Readiness does not expose an unexpected database probe error."""
+        ledger = PostgresPostingLedger(DATABASE_URL, self.policy.tenant_reference)
+        session = mock.MagicMock()
+        session.__enter__.return_value = session
+        session.execute.side_effect = RuntimeError("internal database detail")
+
+        with mock.patch.object(ledger, "_session", return_value=session):
+            with mock.patch.object(ledger, "_require_tenant"):
+                with self.assertRaisesRegex(
+                    AccountingValidationError,
+                    "accounting service readiness could not be verified",
+                ) as raised:
+                    ledger.check_readiness()
+        self.assertNotIn("internal database detail", str(raised.exception))
 
     def test_http_soft_closes_then_hard_closes_period(self) -> None:
         """POST /period-closes soft-closes, then hard-closes, without a second close route."""

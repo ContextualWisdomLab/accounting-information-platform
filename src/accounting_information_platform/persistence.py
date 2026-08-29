@@ -4299,6 +4299,38 @@ class PostgresPostingLedger:
         finally:
             connection.close()
 
+    def check_readiness(self) -> None:
+        """Verify PostgreSQL connectivity, tenant binding, and core schema readiness."""
+        try:
+            with self._session() as connection:
+                self._require_tenant(connection)
+                missing_objects = connection.execute(
+                    """
+                    SELECT required.object_name
+                    FROM (
+                        VALUES
+                            ('accounting_core.tenant_account'),
+                            ('accounting_core.runtime_tenant_binding'),
+                            ('accounting_core.general_journal'),
+                            ('accounting_core.journal_entry_line'),
+                            ('accounting_core.journal_source_reference'),
+                            ('accounting_integration.posting_receipt'),
+                            ('accounting_integration.outbox_event')
+                    ) AS required(object_name)
+                    WHERE to_regclass(required.object_name) IS NULL
+                    """
+                ).fetchall()
+                if missing_objects:
+                    raise AccountingValidationError(
+                        "accounting database schema is incomplete."
+                    )
+        except AccountingValidationError:
+            raise
+        except Exception as error:
+            raise AccountingValidationError(
+                "accounting service readiness could not be verified."
+            ) from error
+
     def _acquire_command_lock(self, connection: object, command_scope: str) -> None:
         """Serialize one tenant command scope until the current transaction ends."""
         connection.execute(

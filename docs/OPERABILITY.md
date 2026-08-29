@@ -129,7 +129,9 @@ The current foundation never returns `submission_status_code=transmitted`. Missi
 
 Request bodies are bounded. Oversized JSON commands are rejected before domain work. Invalid accounting inputs return a client error with a next action; they must not escape as raw parser / URL / database exceptions.
 
-Health checks do not prove accounting readiness. A process can be healthy while exact-head CI, PostgreSQL integration, security or independent review is still missing.
+`GET /healthz` is a liveness probe: it proves only that the mounted process can answer. `GET /readyz` is a database-readiness probe: it verifies PostgreSQL 18 connectivity, the database-controlled tenant binding, and the required accounting schema before returning `200 {"status":"ready"}`. A failed readiness check returns `503` with operator-safe guidance and does not expose driver or connection details. Check migrations, runtime tenant provisioning, and database connectivity before retrying.
+
+Readiness is not release evidence. A process can be ready while exact-head CI, security, package, recovery, or independent-review evidence is still missing; the unchanged exact head must pass those applicable gates together.
 
 ## Outbox and audit
 
