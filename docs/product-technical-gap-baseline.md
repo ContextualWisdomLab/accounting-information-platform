@@ -1,6 +1,6 @@
 # Product and technical gap baseline
 
-**Evidence refresh:** 2026-08-27 (Asia/Seoul)
+**Evidence refresh:** 2026-08-29 (Asia/Seoul)
 
 This file is the durable buyer-visible gap queue for `accounting-information-platform`.
 It records authority, dependency order, acceptance evidence, and product gaps that
