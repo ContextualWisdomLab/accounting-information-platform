@@ -95,12 +95,37 @@ BEGIN
             USING ERRCODE = '23514';
     END IF;
 
+    IF EXISTS (
+        SELECT 1
+        FROM accounting_core.reconciliation_run_command AS command
+        JOIN accounting_integration.bank_statement_record AS statement
+          ON statement.tenant_account_id = command.tenant_account_id
+         AND statement.bank_statement_record_id = command.bank_statement_record_id
+        WHERE command.tenant_account_id = NEW.tenant_account_id
+          AND command.reconciliation_run_id = NEW.reconciliation_run_id
+          AND command.source_payload_hash IS DISTINCT FROM statement.source_artifact_hash
+    ) THEN
+        RAISE EXCEPTION
+            'reconciliation run command source payload hash does not match statement artifact (reconciliation_run_command_provenance)'
+            USING ERRCODE = '23514';
+    END IF;
+
     RETURN NULL;
 END;
 $$;
 
 CREATE CONSTRAINT TRIGGER reconciliation_run_command_provenance_guard
     AFTER INSERT ON accounting_core.reconciliation_run
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.enforce_reconciliation_run_command_provenance();
+
+-- Validate provenance whenever command evidence is attached as well as when a
+-- new run is created. This keeps the control effective for runs that predate
+-- the command-evidence migration while preserving run-before-command ordering
+-- inside one transaction.
+CREATE CONSTRAINT TRIGGER reconciliation_run_command_provenance_insert_guard
+    AFTER INSERT ON accounting_core.reconciliation_run_command
     DEFERRABLE INITIALLY DEFERRED
     FOR EACH ROW
     EXECUTE FUNCTION accounting_core.enforce_reconciliation_run_command_provenance();
