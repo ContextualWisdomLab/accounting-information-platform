@@ -159,6 +159,41 @@ _READINESS_INDEXES = (
     "accounting_core.reconciliation_allocation_run_reference_index",
     "accounting_core.journal_allocation_run_reference_index",
 )
+_READINESS_CONSTRAINT_FINGERPRINTS = {
+    ('accounting_reporting', 'trial_balance_snapshot', 'close_idempotency_nonempty_check'): ('c', '7953f37e0cda34bb8fdc1d813cd2b252'),
+    ('accounting_reporting', 'trial_balance_snapshot', 'close_idempotency_tenant_key_unique'): ('u', '2dd996893c62710a9721e1b8ae457d25'),
+    ('accounting_core', 'chart_account', 'chart_account_book_identity'): ('u', 'aca5f809983b8764b9999a2abb0ec3a2'),
+    ('accounting_core', 'accounting_book_period_control', 'soft_close_evidence_complete_check'): ('c', 'b0c01ee22824af75c5faa9e6fef705e1'),
+    ('accounting_core', 'bank_account_assignment', 'bank_account_assignment_command_key_present'): ('c', 'f38926f6b77818270f4cd81692cf91df'),
+    ('accounting_core', 'bank_account_assignment', 'bank_account_assignment_command_hash_format'): ('c', '2e3d46754adf91011085059e5910a8ab'),
+    ('accounting_core', 'bank_account_assignment', 'bank_account_assignment_reconciliation_scope_identity'): ('u', '0f9f3199e1b43dd4299899a26c144b63'),
+}
+
+_READINESS_INDEX_FINGERPRINTS = {
+    'accounting_integration.home_tax_submission_scope_order_index': 'd6b1b688aece25340f915c0a0d9f8b50',
+    'accounting_integration.journal_proposal_tenant_received_index': 'c8fa3fb6e9260045dd8157d7fe3b8b4b',
+    'accounting_core.general_journal_tenant_period_date_index': '5c426ce4a8f04aad8e99c4b59e5f5b71',
+    'accounting_core.journal_entry_tenant_journal_index': '5072afea7396a298f8cc243fee1a4eb3',
+    'accounting_integration.outbox_event_pending_created_index': 'fc4ccb0e4fca277698e24ae7dc930153',
+    'accounting_core.reversal_event_tenant_reversed_index': '71f39d81b1d456e6821af4327cc8fd40',
+    'accounting_integration.posting_receipt_tenant_created_index': '89fc500a7f7d35f860a04ef8f333dd97',
+    'accounting_integration.home_tax_submission_tenant_created_index': '989da24e0b7905e00bf84c531d0a481c',
+    'accounting_core.runtime_tenant_binding_active_index': 'ba8c772c745da4ee6477ecad42b1cc3b',
+    'accounting_core.accounting_book_period_scope_index': 'cb9f53ec5912bd7f81bdbf7984b302b3',
+    'accounting_core.accounting_book_period_soft_close_key_index': '16a9d03ccaa464e216bbeac73fba113e',
+    'accounting_integration.bank_statement_account_period_index': 'f1c8b50a192c553a9e42d61dfd8d088a',
+    'accounting_integration.bank_statement_entry_order_index': '8c916af412e96b617698a04de28265f8',
+    'accounting_core.bank_account_assignment_command_key_scope': '64ac2bc9357e787bcacaa6a8e1f396e6',
+    'accounting_core.bank_account_assignment_active_book_scope': 'b2630c8c9c671bb11266fba47d1831f3',
+    'accounting_core.reconciliation_run_scope_index': 'da3de4858f6a576e7ca77d93dfdcb0e4',
+    'accounting_core.reconciliation_exception_run_index': 'b7170b69a7c4eaaf3924f774c3d12b0b',
+    'accounting_core.reconciliation_evidence_run_index': 'd4ae874758fc23e85321f68d256d046b',
+    'accounting_core.reconciliation_candidate_run_reference_index': '6437127d9851ad2fcae9bdfd27645352',
+    'accounting_core.reconciliation_match_approved_single': 'c2ac9dd58cecb53c83ab231ab07f6b62',
+    'accounting_core.reconciliation_allocation_run_reference_index': 'ec236d72041f66d51a31be2e0edfd886',
+    'accounting_core.journal_allocation_run_reference_index': 'd3f4d334a92af03ef68bda117af03655',
+}
+
 _READINESS_BALANCE_TRIGGERS = (
     # MD5 fingerprints are generated from PostgreSQL 18 pg_get_functiondef() for
     # the checked-in 0005_closed_period_guard.sql definition.
@@ -4687,8 +4722,13 @@ class PostgresPostingLedger:
                         ),
                         NOT EXISTS (
                             SELECT 1
-                            FROM unnest(%s::text[], %s::text[], %s::text[])
-                                AS required(schema_name, table_name, constraint_name)
+                            FROM unnest(
+                                %s::text[], %s::text[], %s::text[],
+                                %s::text[], %s::text[]
+                            ) AS required(
+                                schema_name, table_name, constraint_name,
+                                constraint_type, definition_fingerprint
+                            )
                             LEFT JOIN pg_catalog.pg_namespace
                               ON pg_namespace.nspname = required.schema_name
                             LEFT JOIN pg_catalog.pg_class
@@ -4698,6 +4738,15 @@ class PostgresPostingLedger:
                               ON pg_constraint.conrelid = pg_class.oid
                              AND pg_constraint.conname = required.constraint_name
                             WHERE pg_constraint.oid IS NULL
+                               OR pg_constraint.contype::text <> required.constraint_type
+                               OR NOT pg_constraint.convalidated
+                               OR NOT pg_constraint.conenforced
+                               OR pg_catalog.md5(
+                                    pg_catalog.pg_get_constraintdef(
+                                        pg_constraint.oid,
+                                        true
+                                    )
+                                  ) <> required.definition_fingerprint
                         )
                         AND NOT EXISTS (
                             SELECT 1
@@ -4794,8 +4843,20 @@ class PostgresPostingLedger:
                         ),
                         NOT EXISTS (
                             SELECT 1
-                            FROM unnest(%s::text[]) AS required(index_name)
-                            WHERE to_regclass(required.index_name) IS NULL
+                            FROM unnest(%s::text[], %s::text[])
+                                AS required(index_name, definition_fingerprint)
+                            LEFT JOIN pg_catalog.pg_class AS index_relation
+                              ON index_relation.oid = to_regclass(required.index_name)
+                            LEFT JOIN pg_catalog.pg_index AS index_metadata
+                              ON index_metadata.indexrelid = index_relation.oid
+                            WHERE index_relation.oid IS NULL
+                               OR index_metadata.indexrelid IS NULL
+                               OR NOT index_metadata.indisvalid
+                               OR NOT index_metadata.indisready
+                               OR NOT index_metadata.indislive
+                               OR pg_catalog.md5(
+                                    pg_catalog.pg_get_indexdef(index_relation.oid)
+                                  ) <> required.definition_fingerprint
                         )
                     """,
                     (
@@ -4807,6 +4868,14 @@ class PostgresPostingLedger:
                         [item[0] for item in _READINESS_CONSTRAINTS],
                         [item[1] for item in _READINESS_CONSTRAINTS],
                         [item[2] for item in _READINESS_CONSTRAINTS],
+                        [
+                            _READINESS_CONSTRAINT_FINGERPRINTS[item][0]
+                            for item in _READINESS_CONSTRAINTS
+                        ],
+                        [
+                            _READINESS_CONSTRAINT_FINGERPRINTS[item][1]
+                            for item in _READINESS_CONSTRAINTS
+                        ],
                         [item[0] for item in _READINESS_BALANCE_TRIGGERS],
                         [item[1] for item in _READINESS_BALANCE_TRIGGERS],
                         [item[2] for item in _READINESS_BALANCE_TRIGGERS],
@@ -4826,6 +4895,10 @@ class PostgresPostingLedger:
                             for item in _READINESS_CONTROL_TRIGGERS
                         ],
                         list(_READINESS_INDEXES),
+                        [
+                            _READINESS_INDEX_FINGERPRINTS[item]
+                            for item in _READINESS_INDEXES
+                        ],
                     ),
                 ).fetchone()
                 if not version_ok:
