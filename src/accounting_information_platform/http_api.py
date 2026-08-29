@@ -1890,6 +1890,8 @@ def _reconciliation_match_status(error: AccountingValidationError) -> int:
         return 404
     if "must be a UUID" in message or "is required" in message:
         return 400
+    if "can only be proposed" in message or "already recorded for this run" in message:
+        return 409
     return 422
 
 

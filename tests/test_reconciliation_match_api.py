@@ -393,6 +393,20 @@ class ReconciliationMatchApiTests(unittest.TestCase):
             "/reconciliation-matches",
             dict(command, source_payload_hash="sha256:" + "3" * 64),
         )
+        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
+            connection.execute(
+                """
+                UPDATE accounting_core.reconciliation_run
+                SET run_status_code = 'review_required'
+                WHERE reconciliation_run_id = %s
+                """,
+                (command["reconciliation_run_id"],),
+            )
+        state_conflict_status, _state_conflict = self.case._http_json(
+            "POST",
+            "/reconciliation-matches",
+            dict(command, candidate_idempotency_key=f"http-state-{uuid.uuid4().hex}"),
+        )
         wrong_status, _wrong = self.case._http_json(
             "POST",
             "/reconciliation-matches",
@@ -432,6 +446,7 @@ class ReconciliationMatchApiTests(unittest.TestCase):
         self.assertEqual(read_status, 200)
         self.assertEqual(read["reconciliation_match_id"], created["reconciliation_match_id"])
         self.assertEqual(conflict_status, 409)
+        self.assertEqual(state_conflict_status, 409)
         self.assertEqual(wrong_status, 403)
         self.assertEqual(missing_header_status, 400)
         self.assertEqual(invalid_body_status, 400)

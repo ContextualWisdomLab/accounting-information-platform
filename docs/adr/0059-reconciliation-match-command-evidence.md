@@ -33,7 +33,9 @@ closed. Database source-conservation violations are translated to a stable
 validation failure rather than leaking a driver error. `POST
 /reconciliation-matches` exposes that command and
 `GET /reconciliation-matches?reconciliation_match_id=` reads the tenant-scoped
-document.
+document. The HTTP boundary reports malformed identifiers as `400`, absent
+source evidence as `404`, state conflicts as `409`, and source-content or
+conservation validation failures as `422`.
 
 The command intentionally does not replace the existing pure split/aggregate
 allocation planner or the database approval workflow. It provides a bounded
