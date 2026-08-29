@@ -19,10 +19,12 @@ database evidence chain.
 Migration `0018_bank_statement_balance_evidence.sql` adds the tenant-scoped,
 immutable `accounting_integration.bank_statement_balance` table. The parser
 records every statement `Bal` in sequence with its optional type code, exact
-`Decimal` amount, ISO currency, `CRDT`/`DBIT` direction, canonical source
-locator, and source hash. The existing opening and closing hash fields remain
-on `bank_statement_record` for compatibility, and the normalized payload hash
-now includes the complete balance facts.
+`Decimal` amount, ISO currency, `CRDT`/`DBIT` direction, typed effective
+date/time, canonical source locator, and source hash. The effective date/time
+is distinct from the statement period and system `recorded_at` time. The
+existing opening and closing hash fields remain on `bank_statement_record` for
+compatibility, and the normalized payload hash now includes the complete
+balance facts.
 
 The table has composite tenant foreign keys, forced row-level security,
 database immutability, exact numeric storage, and no journal relationship that

@@ -13,6 +13,7 @@ CREATE TABLE accounting_integration.bank_statement_balance (
     balance_amount numeric(38, 6) NOT NULL CHECK (balance_amount >= 0),
     balance_currency_code text NOT NULL CHECK (balance_currency_code ~ '^[A-Z]{3}$'),
     credit_debit_code text NOT NULL CHECK (credit_debit_code IN ('CRDT', 'DBIT')),
+    balance_effective_at timestamptz,
     source_locator_path text NOT NULL CHECK (btrim(source_locator_path) <> ''),
     source_balance_hash text NOT NULL CHECK (source_balance_hash ~ '^sha256:[0-9a-f]{64}$'),
     recorded_at timestamptz NOT NULL DEFAULT clock_timestamp(),
