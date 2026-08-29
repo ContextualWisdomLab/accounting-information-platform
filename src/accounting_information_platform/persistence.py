@@ -136,15 +136,28 @@ _READINESS_CONSTRAINTS = (
     ),
 )
 _READINESS_INDEXES = (
+    "accounting_integration.home_tax_submission_scope_order_index",
     "accounting_integration.journal_proposal_tenant_received_index",
     "accounting_core.general_journal_tenant_period_date_index",
-    "accounting_integration.home_tax_submission_scope_order_index",
+    "accounting_core.journal_entry_tenant_journal_index",
+    "accounting_integration.outbox_event_pending_created_index",
+    "accounting_core.reversal_event_tenant_reversed_index",
+    "accounting_integration.posting_receipt_tenant_created_index",
+    "accounting_integration.home_tax_submission_tenant_created_index",
+    "accounting_core.runtime_tenant_binding_active_index",
     "accounting_core.accounting_book_period_scope_index",
+    "accounting_core.accounting_book_period_soft_close_key_index",
     "accounting_integration.bank_statement_account_period_index",
+    "accounting_integration.bank_statement_entry_order_index",
     "accounting_core.bank_account_assignment_command_key_scope",
+    "accounting_core.bank_account_assignment_active_book_scope",
     "accounting_core.reconciliation_run_scope_index",
-    "accounting_core.reconciliation_match_approved_single",
+    "accounting_core.reconciliation_exception_run_index",
+    "accounting_core.reconciliation_evidence_run_index",
     "accounting_core.reconciliation_candidate_run_reference_index",
+    "accounting_core.reconciliation_match_approved_single",
+    "accounting_core.reconciliation_allocation_run_reference_index",
+    "accounting_core.journal_allocation_run_reference_index",
 )
 _READINESS_BALANCE_TRIGGERS = (
     # MD5 fingerprints are generated from PostgreSQL 18 pg_get_functiondef() for
@@ -342,6 +355,19 @@ _READINESS_CONTROL_TRIGGERS = (
         "tenant_account_id,legal_entity_id,accounting_book_id,bank_account_assignment_id,currency_code,bank_cutoff_at,book_cutoff_at,matching_policy_version,knowledge_cutoff_at",
     ),
 )
+
+_READINESS_CONTROL_FUNCTION_FINGERPRINTS = {
+    ("accounting_core", "guard_journal_line_book_scope"): "d5405804549eebcdf5671e806e5b44cf",
+    ("accounting_core", "guard_period_insert"): "9f9279beee5d7f0e5e7d35855a26239a",
+    ("accounting_core", "guard_reversal_temporal_order"): "f246ad19efc8aeae4a4ade2447bd385f",
+    ("accounting_core", "guard_reversal_lineage_insert"): "05930c3362ed781dbddac4867c1dff3f",
+    ("accounting_core", "reject_finalized_fact_mutation"): "bd0805588ceb59b3bf8b3b044562cc07",
+    ("accounting_core", "guard_finalized_journal_extension"): "fce00d3dbe97d45c5102908f07ffc0d9",
+    ("accounting_integration", "reject_period_open_command_mutation"): "9b876e04b2c18c1f2f68592b261166bc",
+    ("accounting_core", "guard_soft_close_evidence_update"): "1df9550334c4dcb6f2f1c4f8e8e6daa7",
+    ("accounting_integration", "reject_statement_mutation"): "5a8e89e5e5322c8659dc8eb3dee4858c",
+    ("accounting_core", "reject_reconciliation_run_scope_mutation"): "863b6ca92b9ec815f5c5688bc2f74892",
+}
 
 
 
@@ -4717,11 +4743,11 @@ class PostgresPostingLedger:
                             FROM unnest(
                                 %s::text[], %s::text[], %s::text[],
                                 %s::text[], %s::text[], %s::smallint[],
-                                %s::text[]
+                                %s::text[], %s::text[]
                             ) AS required(
                                 schema_name, table_name, trigger_name,
                                 function_schema, function_name, trigger_type,
-                                trigger_columns
+                                trigger_columns, function_fingerprint
                             )
                             LEFT JOIN pg_catalog.pg_namespace AS trigger_namespace
                               ON trigger_namespace.nspname = required.schema_name
@@ -4763,6 +4789,8 @@ class PostgresPostingLedger:
                                     ),
                                     ''
                                   ) <> required.trigger_columns
+                               OR pg_catalog.md5(pg_catalog.pg_get_functiondef(function.oid))
+                                  <> required.function_fingerprint
                         ),
                         NOT EXISTS (
                             SELECT 1
@@ -4793,6 +4821,10 @@ class PostgresPostingLedger:
                         [item[4] for item in _READINESS_CONTROL_TRIGGERS],
                         [item[5] for item in _READINESS_CONTROL_TRIGGERS],
                         [item[6] for item in _READINESS_CONTROL_TRIGGERS],
+                        [
+                            _READINESS_CONTROL_FUNCTION_FINGERPRINTS[(item[3], item[4])]
+                            for item in _READINESS_CONTROL_TRIGGERS
+                        ],
                         list(_READINESS_INDEXES),
                     ),
                 ).fetchone()
