@@ -173,6 +173,32 @@ class FoundationInstallManifestContractTests(unittest.TestCase):
                 self.assertIn(migration_twenty_one, text)
                 self.assertLess(text.index(migration_twenty), text.index(migration_twenty_one))
 
+    def test_run_provenance_repair_rejects_existing_mismatches(self) -> None:
+        """The upgrade must fail closed on already stored cross-bank commands."""
+        migration = (
+            ROOT
+            / "database/migrations/0021_reconciliation_run_command_provenance_repair.sql"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "reconciliation_run_command_provenance_upgrade_visibility",
+            migration,
+        )
+        for policy in (
+            "reconciliation_run_command_provenance_run_upgrade_visibility",
+            "reconciliation_run_command_provenance_assignment_upgrade_visibility",
+            "reconciliation_run_command_provenance_statement_upgrade_visibility",
+        ):
+            with self.subTest(policy=policy):
+                self.assertIn(policy, migration)
+        self.assertIn(
+            "statement.bank_account_record_id IS DISTINCT FROM assignment.bank_account_record_id",
+            migration,
+        )
+        self.assertIn(
+            "existing reconciliation run command provenance is invalid",
+            migration,
+        )
+
     def test_install_fails_closed_when_approval_snapshot_migration_is_missing(self) -> None:
         """The canonical loader may not silently stop before database-owned approval evidence."""
         original_is_file = Path.is_file
