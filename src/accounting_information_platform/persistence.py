@@ -169,6 +169,181 @@ _READINESS_BALANCE_TRIGGERS = (
     ),
 )
 
+_READINESS_CONTROL_TRIGGERS = (
+    (
+        "accounting_core",
+        "journal_entry_line",
+        "journal_line_book_scope_guard",
+        "accounting_core",
+        "guard_journal_line_book_scope",
+        23,
+        "tenant_account_id,general_journal_id,chart_account_id",
+    ),
+    (
+        "accounting_core",
+        "general_journal",
+        "closed_period_guard",
+        "accounting_core",
+        "guard_period_insert",
+        7,
+        "",
+    ),
+    (
+        "accounting_core",
+        "journal_reversal",
+        "journal_reversal_first_temporal_guard",
+        "accounting_core",
+        "guard_reversal_temporal_order",
+        7,
+        "",
+    ),
+    (
+        "accounting_core",
+        "journal_reversal",
+        "journal_reversal_second_finalization_guard",
+        "accounting_core",
+        "guard_reversal_lineage_insert",
+        7,
+        "",
+    ),
+    (
+        "accounting_core",
+        "general_journal",
+        "general_journal_immutable_guard",
+        "accounting_core",
+        "reject_finalized_fact_mutation",
+        27,
+        "",
+    ),
+    (
+        "accounting_core",
+        "journal_entry_line",
+        "journal_entry_immutable_guard",
+        "accounting_core",
+        "reject_finalized_fact_mutation",
+        27,
+        "",
+    ),
+    (
+        "accounting_core",
+        "journal_source_reference",
+        "journal_source_immutable_guard",
+        "accounting_core",
+        "reject_finalized_fact_mutation",
+        27,
+        "",
+    ),
+    (
+        "accounting_core",
+        "journal_reversal",
+        "journal_reversal_immutable_guard",
+        "accounting_core",
+        "reject_finalized_fact_mutation",
+        27,
+        "",
+    ),
+    (
+        "accounting_integration",
+        "posting_receipt",
+        "posting_receipt_immutable_guard",
+        "accounting_core",
+        "reject_finalized_fact_mutation",
+        27,
+        "",
+    ),
+    (
+        "accounting_integration",
+        "journal_proposal_record",
+        "journal_proposal_immutable_guard",
+        "accounting_core",
+        "reject_finalized_fact_mutation",
+        27,
+        "",
+    ),
+    (
+        "accounting_core",
+        "journal_entry_line",
+        "journal_entry_finalized_guard",
+        "accounting_core",
+        "guard_finalized_journal_extension",
+        7,
+        "",
+    ),
+    (
+        "accounting_core",
+        "journal_source_reference",
+        "journal_source_finalized_guard",
+        "accounting_core",
+        "guard_finalized_journal_extension",
+        7,
+        "",
+    ),
+    (
+        "accounting_integration",
+        "fiscal_period_open_command",
+        "fiscal_period_open_command_immutable",
+        "accounting_integration",
+        "reject_period_open_command_mutation",
+        27,
+        "",
+    ),
+    (
+        "accounting_core",
+        "accounting_book_period_control",
+        "soft_close_evidence_immutable_guard",
+        "accounting_core",
+        "guard_soft_close_evidence_update",
+        19,
+        "soft_close_idempotency_key,soft_close_source_payload_hash,soft_close_source_journal_count",
+    ),
+    (
+        "accounting_integration",
+        "bank_statement_artifact",
+        "bank_statement_artifact_immutable_guard",
+        "accounting_integration",
+        "reject_statement_mutation",
+        27,
+        "",
+    ),
+    (
+        "accounting_integration",
+        "bank_statement_record",
+        "bank_statement_record_immutable_guard",
+        "accounting_integration",
+        "reject_statement_mutation",
+        27,
+        "",
+    ),
+    (
+        "accounting_integration",
+        "bank_statement_entry",
+        "bank_statement_entry_immutable_guard",
+        "accounting_integration",
+        "reject_statement_mutation",
+        27,
+        "",
+    ),
+    (
+        "accounting_integration",
+        "bank_statement_entry_detail",
+        "bank_statement_entry_detail_immutable_guard",
+        "accounting_integration",
+        "reject_statement_mutation",
+        27,
+        "",
+    ),
+    (
+        "accounting_core",
+        "reconciliation_run",
+        "reconciliation_run_scope_guard",
+        "accounting_core",
+        "reject_reconciliation_run_scope_mutation",
+        19,
+        "tenant_account_id,legal_entity_id,accounting_book_id,bank_account_assignment_id,currency_code,bank_cutoff_at,book_cutoff_at,matching_policy_version,knowledge_cutoff_at",
+    ),
+)
+
+
 
 class PostgresPostingLedger:
     """Authoritative posting, catalog policy resolution, close, trial balance, and statements on PostgreSQL 18."""
@@ -4453,7 +4628,7 @@ class PostgresPostingLedger:
         try:
             with self._session(readiness=True) as connection:
                 self._require_tenant(connection, allow_privileged=False)
-                version_ok, tables_ok, functions_ok, columns_ok, constraints_ok, indexes_ok = connection.execute(
+                version_ok, tables_ok, functions_ok, columns_ok, constraints_ok, control_triggers_ok, indexes_ok = connection.execute(
                     """
                     SELECT
                         current_setting('server_version_num')::integer
@@ -4539,6 +4714,58 @@ class PostgresPostingLedger:
                         ),
                         NOT EXISTS (
                             SELECT 1
+                            FROM unnest(
+                                %s::text[], %s::text[], %s::text[],
+                                %s::text[], %s::text[], %s::smallint[],
+                                %s::text[]
+                            ) AS required(
+                                schema_name, table_name, trigger_name,
+                                function_schema, function_name, trigger_type,
+                                trigger_columns
+                            )
+                            LEFT JOIN pg_catalog.pg_namespace AS trigger_namespace
+                              ON trigger_namespace.nspname = required.schema_name
+                            LEFT JOIN pg_catalog.pg_class AS relation
+                              ON relation.relnamespace = trigger_namespace.oid
+                             AND relation.relname = required.table_name
+                            LEFT JOIN pg_catalog.pg_trigger AS trigger
+                              ON trigger.tgrelid = relation.oid
+                             AND trigger.tgname = required.trigger_name
+                            LEFT JOIN pg_catalog.pg_namespace AS function_namespace
+                              ON function_namespace.nspname = required.function_schema
+                            LEFT JOIN pg_catalog.pg_proc AS function
+                              ON function.oid = trigger.tgfoid
+                             AND function.pronamespace = function_namespace.oid
+                             AND function.proname = required.function_name
+                             AND pg_catalog.pg_get_function_identity_arguments(function.oid) = ''
+                            WHERE trigger.oid IS NULL
+                               OR function.oid IS NULL
+                               OR trigger.tgenabled <> 'O'
+                               OR trigger.tgisinternal
+                               OR trigger.tgtype <> required.trigger_type
+                               OR trigger.tgconstraint <> 0
+                               OR trigger.tgdeferrable
+                               OR trigger.tginitdeferred
+                               OR trigger.tgqual IS NOT NULL
+                               OR COALESCE(
+                                    pg_catalog.array_to_string(
+                                        ARRAY(
+                                            SELECT attribute.attname::text
+                                            FROM unnest(trigger.tgattr::smallint[])
+                                                 WITH ORDINALITY
+                                                 AS trigger_column(attnum, position)
+                                            JOIN pg_catalog.pg_attribute AS attribute
+                                              ON attribute.attrelid = relation.oid
+                                             AND attribute.attnum = trigger_column.attnum
+                                            ORDER BY trigger_column.position
+                                        ),
+                                        ','
+                                    ),
+                                    ''
+                                  ) <> required.trigger_columns
+                        ),
+                        NOT EXISTS (
+                            SELECT 1
                             FROM unnest(%s::text[]) AS required(index_name)
                             WHERE to_regclass(required.index_name) IS NULL
                         )
@@ -4559,13 +4786,20 @@ class PostgresPostingLedger:
                         [item[4] for item in _READINESS_BALANCE_TRIGGERS],
                         [item[5] for item in _READINESS_BALANCE_TRIGGERS],
                         [item[6] for item in _READINESS_BALANCE_TRIGGERS],
+                        [item[0] for item in _READINESS_CONTROL_TRIGGERS],
+                        [item[1] for item in _READINESS_CONTROL_TRIGGERS],
+                        [item[2] for item in _READINESS_CONTROL_TRIGGERS],
+                        [item[3] for item in _READINESS_CONTROL_TRIGGERS],
+                        [item[4] for item in _READINESS_CONTROL_TRIGGERS],
+                        [item[5] for item in _READINESS_CONTROL_TRIGGERS],
+                        [item[6] for item in _READINESS_CONTROL_TRIGGERS],
                         list(_READINESS_INDEXES),
                     ),
                 ).fetchone()
                 if not version_ok:
                     raise AccountingValidationError("PostgreSQL 18 is required.")
                 if not all(
-                    (tables_ok, functions_ok, columns_ok, constraints_ok, indexes_ok)
+                    (tables_ok, functions_ok, columns_ok, constraints_ok, control_triggers_ok, indexes_ok)
                 ):
                     raise AccountingValidationError(
                         "accounting database schema is incomplete."
