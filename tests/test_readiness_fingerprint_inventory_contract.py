@@ -56,6 +56,25 @@ class ReadinessFingerprintInventoryContractTests(unittest.TestCase):
             )
         )
 
+    def test_control_function_fingerprints_cover_every_control_trigger(self) -> None:
+        """Every control trigger resolves one canonical function fingerprint."""
+        required_functions = {
+            (item[3], item[4])
+            for item in persistence_module._READINESS_CONTROL_TRIGGERS
+        }
+        self.assertEqual(
+            required_functions,
+            set(persistence_module._READINESS_CONTROL_FUNCTION_FINGERPRINTS),
+        )
+        self.assertTrue(
+            all(
+                len(fingerprint) == 32
+                for fingerprint in (
+                    persistence_module._READINESS_CONTROL_FUNCTION_FINGERPRINTS.values()
+                )
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
