@@ -1,6 +1,6 @@
 # Hash-locked quality and packaging tools for --require-hashes --only-binary=:all:.
 # coverage 7.15.4: every CPython 3.13 wheel plus py3-none-any.
-# psycopg 3.3.4 plus every CPython 3.13 and 3.14 psycopg-binary wheel.
+# psycopg 3.3.4 plus every CPython 3.13 wheel and the CPython 3.14 manylinux2014 x86_64 wheel.
 coverage==7.15.4 \
     --hash=sha256:c705b28feb2775dc82a25f1d473a370bc37ff93f5177f4e29ce2425f560f6921 \
     --hash=sha256:3ff205ab5e3ecc670f6a4dd19d9cbf12ede53dd41cfc1e15716ec961ea6d314e \

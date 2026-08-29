@@ -373,30 +373,6 @@ class RepositoryContractTests(unittest.TestCase):
             ),
         )
 
-    def test_quality_requirements_include_central_python_314_psycopg_wheel(self) -> None:
-        """The central coverage image must install the native PostgreSQL wheel."""
-        quality_requirements = (ROOT / "requirements-quality.txt").read_text(
-            encoding="utf-8"
-        )
-        psycopg_binary_stanza = re.search(
-            r"(?ms)^psycopg-binary==3\.3\.4 \\\n"
-            r"(?:    --hash=sha256:[0-9a-f]{64}(?: \\\n|\n))+",
-            quality_requirements,
-        )
-        self.assertIsNotNone(psycopg_binary_stanza)
-        self.assertIn(
-            f"--hash=sha256:{PSYCOPG_BINARY_CP314_MANYLINUX_X86_64_WHEEL_HASH}",
-            psycopg_binary_stanza.group(0) if psycopg_binary_stanza else "",
-        )
-        without_cp314 = quality_requirements.replace(
-            f"    --hash=sha256:{PSYCOPG_BINARY_CP314_MANYLINUX_X86_64_WHEEL_HASH}\n",
-            "",
-        )
-        self.assertIn(
-            "psycopg-binary must pin the CPython 3.14 manylinux x86_64 wheel hash",
-            validate_quality_requirements(without_cp314),
-        )
-
         orphan_and_unpinned = validate_quality_requirements(
             f"--hash=sha256:{COVERAGE_UNIVERSAL_WHEEL_HASH}\n"
             "not-a-pinned-requirement\n"
@@ -438,6 +414,30 @@ class RepositoryContractTests(unittest.TestCase):
             "# comment and blank lines are ignored\n\n"
         )
         self.assertEqual(inline_valid, ())
+
+    def test_quality_requirements_include_central_python_314_psycopg_wheel(self) -> None:
+        """The central coverage image must install the native PostgreSQL wheel."""
+        quality_requirements = (ROOT / "requirements-quality.txt").read_text(
+            encoding="utf-8"
+        )
+        psycopg_binary_stanza = re.search(
+            r"(?ms)^psycopg-binary==3\.3\.4 \\\n"
+            r"(?:    --hash=sha256:[0-9a-f]{64}(?: \\\n|\n))+",
+            quality_requirements,
+        )
+        self.assertIsNotNone(psycopg_binary_stanza)
+        self.assertIn(
+            f"--hash=sha256:{PSYCOPG_BINARY_CP314_MANYLINUX_X86_64_WHEEL_HASH}",
+            psycopg_binary_stanza.group(0) if psycopg_binary_stanza else "",
+        )
+        without_cp314 = quality_requirements.replace(
+            f"    --hash=sha256:{PSYCOPG_BINARY_CP314_MANYLINUX_X86_64_WHEEL_HASH}\n",
+            "",
+        )
+        self.assertIn(
+            "psycopg-binary must pin the CPython 3.14 manylinux x86_64 wheel hash",
+            validate_quality_requirements(without_cp314),
+        )
 
     def test_append_only_journal_sql_rejects_update_and_delete(self) -> None:
         """Migrations cannot UPDATE or DELETE posted journal tables."""
