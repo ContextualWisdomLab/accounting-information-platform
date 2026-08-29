@@ -166,6 +166,7 @@ class PostgresReadinessDefinitionContractTests(unittest.TestCase):
         table_name = "accounting_book_period_control"
         constraint_name = "soft_close_evidence_complete_check"
         self.runtime_ledger.check_readiness()
+        constraint_dropped = False
         with psycopg.connect(posting.DATABASE_URL, autocommit=True) as admin:
             canonical_definition = admin.execute(
                 """
@@ -181,27 +182,7 @@ class PostgresReadinessDefinitionContractTests(unittest.TestCase):
                 """,
                 (schema_name, table_name, constraint_name),
             ).fetchone()[0]
-            admin.execute(
-                sql.SQL("ALTER TABLE {}.{} DROP CONSTRAINT {}").format(
-                    sql.Identifier(schema_name),
-                    sql.Identifier(table_name),
-                    sql.Identifier(constraint_name),
-                )
-            )
-            admin.execute(
-                sql.SQL("ALTER TABLE {}.{} ADD CONSTRAINT {} CHECK (true) NOT VALID").format(
-                    sql.Identifier(schema_name),
-                    sql.Identifier(table_name),
-                    sql.Identifier(constraint_name),
-                )
-            )
         try:
-            with self.assertRaisesRegex(
-                AccountingValidationError,
-                "accounting database schema is incomplete",
-            ):
-                self.runtime_ledger.check_readiness()
-        finally:
             with psycopg.connect(posting.DATABASE_URL, autocommit=True) as admin:
                 admin.execute(
                     sql.SQL("ALTER TABLE {}.{} DROP CONSTRAINT {}").format(
@@ -210,20 +191,46 @@ class PostgresReadinessDefinitionContractTests(unittest.TestCase):
                         sql.Identifier(constraint_name),
                     )
                 )
+                constraint_dropped = True
                 admin.execute(
-                    sql.SQL("ALTER TABLE {}.{} ADD CONSTRAINT {} {}").format(
+                    sql.SQL(
+                        "ALTER TABLE {}.{} ADD CONSTRAINT {} CHECK (true) NOT VALID"
+                    ).format(
                         sql.Identifier(schema_name),
                         sql.Identifier(table_name),
                         sql.Identifier(constraint_name),
-                        sql.SQL(canonical_definition),
                     )
                 )
+            with self.assertRaisesRegex(
+                AccountingValidationError,
+                "accounting database schema is incomplete",
+            ):
+                self.runtime_ledger.check_readiness()
+        finally:
+            if constraint_dropped:
+                with psycopg.connect(posting.DATABASE_URL, autocommit=True) as admin:
+                    admin.execute(
+                        sql.SQL("ALTER TABLE {}.{} DROP CONSTRAINT IF EXISTS {}").format(
+                            sql.Identifier(schema_name),
+                            sql.Identifier(table_name),
+                            sql.Identifier(constraint_name),
+                        )
+                    )
+                    admin.execute(
+                        sql.SQL("ALTER TABLE {}.{} ADD CONSTRAINT {} {}").format(
+                            sql.Identifier(schema_name),
+                            sql.Identifier(table_name),
+                            sql.Identifier(constraint_name),
+                            sql.SQL(canonical_definition),
+                        )
+                    )
         self.runtime_ledger.check_readiness()
 
     def test_same_name_weakened_index_fails_readiness(self) -> None:
         """A same-name index on a different expression must not satisfy readiness."""
         index_name = "accounting_integration.home_tax_submission_scope_order_index"
         self.runtime_ledger.check_readiness()
+        index_dropped = False
         with psycopg.connect(posting.DATABASE_URL, autocommit=True) as admin:
             canonical_definition, schema_name, table_name = admin.execute(
                 """
@@ -241,26 +248,31 @@ class PostgresReadinessDefinitionContractTests(unittest.TestCase):
                 """,
                 (index_name,),
             ).fetchone()
-            admin.execute(sql.SQL("DROP INDEX {}").format(sql.SQL(index_name)))
-            index_schema, index_relation_name = index_name.split(".", 1)
-            admin.execute(
-                sql.SQL("CREATE INDEX {}.{} ON {}.{} ((1))").format(
-                    sql.Identifier(index_schema),
-                    sql.Identifier(index_relation_name),
-                    sql.Identifier(schema_name),
-                    sql.Identifier(table_name),
-                )
-            )
         try:
+            with psycopg.connect(posting.DATABASE_URL, autocommit=True) as admin:
+                admin.execute(sql.SQL("DROP INDEX {}").format(sql.SQL(index_name)))
+                index_dropped = True
+                index_schema, index_relation_name = index_name.split(".", 1)
+                admin.execute(
+                    sql.SQL("CREATE INDEX {}.{} ON {}.{} ((1))").format(
+                        sql.Identifier(index_schema),
+                        sql.Identifier(index_relation_name),
+                        sql.Identifier(schema_name),
+                        sql.Identifier(table_name),
+                    )
+                )
             with self.assertRaisesRegex(
                 AccountingValidationError,
                 "accounting database schema is incomplete",
             ):
                 self.runtime_ledger.check_readiness()
         finally:
-            with psycopg.connect(posting.DATABASE_URL, autocommit=True) as admin:
-                admin.execute(sql.SQL("DROP INDEX {}").format(sql.SQL(index_name)))
-                admin.execute(canonical_definition)
+            if index_dropped:
+                with psycopg.connect(posting.DATABASE_URL, autocommit=True) as admin:
+                    admin.execute(
+                        sql.SQL("DROP INDEX IF EXISTS {}").format(sql.SQL(index_name))
+                    )
+                    admin.execute(canonical_definition)
         self.runtime_ledger.check_readiness()
 
 
