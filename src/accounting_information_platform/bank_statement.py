@@ -137,6 +137,7 @@ class NormalizedStatementBalance:
     balance_amount: Decimal
     balance_currency_code: str
     credit_debit_code: str
+    balance_effective_at: datetime | None
     source_locator_path: str
     source_balance_hash: str
 
@@ -664,9 +665,9 @@ def accept_bank_statement_evidence(
                     tenant_account_id, bank_statement_record_id,
                     balance_sequence_number, balance_type_code, balance_amount,
                     balance_currency_code, credit_debit_code, source_locator_path,
-                    source_balance_hash
+                    source_balance_hash, balance_effective_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     tenant_id,
@@ -678,6 +679,7 @@ def accept_bank_statement_evidence(
                     balance.credit_debit_code,
                     balance.source_locator_path,
                     balance.source_balance_hash,
+                    balance.balance_effective_at,
                 ),
             )
         for entry in statement.entries:
@@ -1026,7 +1028,7 @@ def _load_statement_document(
         """
         SELECT balance_sequence_number, balance_type_code, balance_amount,
                balance_currency_code, credit_debit_code, source_locator_path,
-               source_balance_hash
+               source_balance_hash, balance_effective_at
         FROM accounting_integration.bank_statement_balance
         WHERE tenant_account_id = %s AND bank_statement_record_id = %s
         ORDER BY balance_sequence_number ASC
@@ -1057,6 +1059,9 @@ def _load_statement_document(
                 "credit_debit_code": balance[4],
                 "source_locator_path": balance[5],
                 "source_balance_hash": balance[6],
+                "balance_effective_at": None
+                if balance[7] is None
+                else _format_timestamp(balance[7]),
             }
             for balance in balance_rows
         ],
@@ -1527,6 +1532,9 @@ def _normalize_balance(
     code = _first_text(node, ("Tp", "CdOrPrtry", "Cd"))
     amount, currency = _required_amount(node, "Bal/Amt", allow_zero=True)
     indicator = _required_text(node, ("CdtDbtInd",), "balance credit/debit indicator")
+    effective_at = _optional_timestamp(
+        _first_text(node, ("Dt", "DtTm")) or _first_text(node, ("Dt", "Dt"))
+    )
     if indicator not in {"CRDT", "DBIT"}:
         raise AccountingValidationError(
             "balance credit/debit indicator must be CRDT or DBIT. "
@@ -1539,6 +1547,9 @@ def _normalize_balance(
                 "amount": _decimal_text(amount),
                 "currency": currency,
                 "credit_debit": indicator,
+                "effective_at": None
+                if effective_at is None
+                else _format_timestamp(effective_at),
             },
             separators=(",", ":"),
             sort_keys=True,
@@ -1550,6 +1561,7 @@ def _normalize_balance(
         balance_amount=amount,
         balance_currency_code=currency,
         credit_debit_code=indicator,
+        balance_effective_at=effective_at,
         source_locator_path=f"Document/BkToCstmrStmt/Stmt/Bal[{sequence}]",
         source_balance_hash=source_hash,
     )
@@ -1582,6 +1594,9 @@ def _balance_payload(balance: NormalizedStatementBalance) -> dict[str, object]:
         "balance_amount": _decimal_text(balance.balance_amount),
         "balance_currency_code": balance.balance_currency_code,
         "credit_debit_code": balance.credit_debit_code,
+        "balance_effective_at": None
+        if balance.balance_effective_at is None
+        else _format_timestamp(balance.balance_effective_at),
         "source_locator_path": balance.source_locator_path,
         "source_balance_hash": balance.source_balance_hash,
     }

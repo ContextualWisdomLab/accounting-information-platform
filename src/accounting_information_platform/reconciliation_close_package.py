@@ -17,6 +17,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from .reconciliation_read_model import (
+    _RECONCILED_CLOSE_REVIEW_NEXT_ACTION,
     ReconciliationCloseReviewProjection,
     render_reconciliation_close_review_json,
 )
@@ -173,6 +174,8 @@ def _validate_projection(projection: object) -> ReconciliationCloseReviewProject
 
     for field_name in _PROJECTION_IDENTITY_FIELDS:
         _require_identifier(getattr(projection, field_name), field_name=field_name)
+    if projection.next_action != _RECONCILED_CLOSE_REVIEW_NEXT_ACTION:
+        raise ValueError("next action must use the canonical close-review guidance")
 
     for field_name in _PROJECTION_MONEY_FIELDS:
         value = getattr(projection, field_name)
