@@ -170,15 +170,15 @@ class PostgresReadinessDefinitionContractTests(unittest.TestCase):
         with psycopg.connect(posting.DATABASE_URL, autocommit=True) as admin:
             canonical_definition = admin.execute(
                 """
-                SELECT pg_get_constraintdef(constraint.oid, true)
-                FROM pg_catalog.pg_constraint AS constraint
+                SELECT pg_get_constraintdef(constraint_record.oid, true)
+                FROM pg_catalog.pg_constraint AS constraint_record
                 JOIN pg_catalog.pg_class AS relation
-                  ON relation.oid = constraint.conrelid
+                  ON relation.oid = constraint_record.conrelid
                 JOIN pg_catalog.pg_namespace AS namespace
                   ON namespace.oid = relation.relnamespace
                 WHERE namespace.nspname = %s
                   AND relation.relname = %s
-                  AND constraint.conname = %s
+                  AND constraint_record.conname = %s
                 """,
                 (schema_name, table_name, constraint_name),
             ).fetchone()[0]
@@ -252,10 +252,9 @@ class PostgresReadinessDefinitionContractTests(unittest.TestCase):
             with psycopg.connect(posting.DATABASE_URL, autocommit=True) as admin:
                 admin.execute(sql.SQL("DROP INDEX {}").format(sql.SQL(index_name)))
                 index_dropped = True
-                index_schema, index_relation_name = index_name.split(".", 1)
+                _, index_relation_name = index_name.split(".", 1)
                 admin.execute(
-                    sql.SQL("CREATE INDEX {}.{} ON {}.{} ((1))").format(
-                        sql.Identifier(index_schema),
+                    sql.SQL("CREATE INDEX {} ON {}.{} ((1))").format(
                         sql.Identifier(index_relation_name),
                         sql.Identifier(schema_name),
                         sql.Identifier(table_name),
