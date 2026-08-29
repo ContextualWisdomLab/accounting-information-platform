@@ -385,7 +385,8 @@ def _require_recorded_source_amounts(
 
     journal_row = connection.execute(
         """
-        SELECT journal.transaction_currency_code,
+        SELECT journal.journal_status_code,
+               journal.transaction_currency_code,
                COALESCE(SUM(line.debit_amount), 0),
                COALESCE(SUM(line.credit_amount), 0)
         FROM accounting_core.general_journal AS journal
@@ -395,22 +396,27 @@ def _require_recorded_source_amounts(
         WHERE journal.tenant_account_id = %s
           AND journal.accounting_book_id = %s
           AND journal.journal_reference = %s
-          AND journal.journal_status_code = 'posted'
-        GROUP BY journal.general_journal_id, journal.transaction_currency_code
+        GROUP BY journal.general_journal_id, journal.journal_status_code,
+                 journal.transaction_currency_code
         """,
         (tenant_id, accounting_book_id, journal_reference),
     ).fetchone()
-    if journal_row is None or journal_row[0] != currency_code:
+    if journal_row is None:
+        raise AccountingValidationError(
+            "journal source evidence is not recorded in the reconciliation scope. "
+            "Supply a recorded journal reference from the bound accounting book, then retry the match."
+        )
+    if journal_row[0:2] != ("posted", currency_code):
         raise AccountingValidationError(
             "journal source evidence is not a posted journal in the reconciliation scope. "
             "Supply a posted journal reference from the bound accounting book, then retry the match."
         )
-    if journal_row[1] != journal_row[2] or journal_row[1] <= 0:
+    if journal_row[2] != journal_row[3] or journal_row[2] <= 0:
         raise AccountingValidationError(
             "journal source evidence is not balanced and positive. "
             "Supply a balanced posted journal, then retry the match."
         )
-    if journal_row[1] != journal_amount:
+    if journal_row[2] != journal_amount:
         raise AccountingValidationError(
             "journal_amount does not match recorded journal source amount. "
             "Supply the exact recorded journal amount, then retry the match."

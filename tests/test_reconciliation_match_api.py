@@ -238,8 +238,10 @@ class ReconciliationMatchApiTests(unittest.TestCase):
     def test_match_source_guard_rejects_unbalanced_or_wrong_journal_amounts(self) -> None:
         """Defensive source checks reject impossible or mismatched journal evidence."""
         for journal_row, message in (
-            (("KRW", Decimal("25000"), Decimal("24999")), "balanced and positive"),
-            (("KRW", Decimal("24999"), Decimal("24999")), "does not match recorded"),
+            (("posted", "KRW", Decimal("25000"), Decimal("24999")), "balanced and positive"),
+            (("posted", "KRW", Decimal("24999"), Decimal("24999")), "does not match recorded"),
+            (("draft", "KRW", Decimal("25000"), Decimal("25000")), "not a posted journal"),
+            (("posted", "USD", Decimal("25000"), Decimal("25000")), "not a posted journal"),
         ):
             with self.subTest(message=message):
                 connection = mock.Mock()
@@ -393,6 +395,15 @@ class ReconciliationMatchApiTests(unittest.TestCase):
             "/reconciliation-matches",
             dict(command, source_payload_hash="sha256:" + "3" * 64),
         )
+        missing_journal_status, _missing_journal = self.case._http_json(
+            "POST",
+            "/reconciliation-matches",
+            dict(
+                command,
+                journal_reference="urn:cwl:accounting:general_journal:missing",
+                candidate_idempotency_key=f"http-missing-journal-{uuid.uuid4().hex}",
+            ),
+        )
         with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
             connection.execute(
                 """
@@ -446,6 +457,7 @@ class ReconciliationMatchApiTests(unittest.TestCase):
         self.assertEqual(read_status, 200)
         self.assertEqual(read["reconciliation_match_id"], created["reconciliation_match_id"])
         self.assertEqual(conflict_status, 409)
+        self.assertEqual(missing_journal_status, 404)
         self.assertEqual(state_conflict_status, 409)
         self.assertEqual(wrong_status, 403)
         self.assertEqual(missing_header_status, 400)
