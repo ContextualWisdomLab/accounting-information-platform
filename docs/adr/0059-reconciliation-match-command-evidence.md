@@ -20,7 +20,9 @@ forced-RLS `accounting_core.reconciliation_match_command` relation. It binds a
 tenant, evaluating reconciliation run, candidate, and match to a tenant-scoped
 candidate idempotency key, canonical command hash, source-payload hash, and
 immutable object-storage reference. Composite foreign keys and uniqueness rules
-prevent cross-scope evidence and duplicate command or match identities.
+prevent cross-scope evidence, duplicate command or match identities, and
+candidate/match pair mixing: migration 0020 references the candidate-inclusive
+unique key on `reconciliation_match` from the command row.
 
 `accept_reconciliation_match` is the smallest durable command boundary: it
 accepts one exact 1:1 proposed match, requires quoted positive equal decimal

@@ -186,6 +186,93 @@ class ReconciliationMatchApiTests(unittest.TestCase):
                     (document["reconciliation_match_id"],),
                 )
 
+    def test_match_command_fk_proves_candidate_and_match_same_chain(self) -> None:
+        """Command evidence cannot combine a candidate with another candidate's match."""
+        run_id, _ = self._open_run()
+        candidate_a_reference = f"candidate-a-{uuid.uuid4().hex}"
+        candidate_b_reference = f"candidate-b-{uuid.uuid4().hex}"
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            candidate_a = connection.execute(
+                """
+                INSERT INTO accounting_core.reconciliation_candidate (
+                    tenant_account_id, reconciliation_run_id,
+                    statement_entry_reference, journal_reference,
+                    statement_amount, journal_amount, rule_code
+                )
+                VALUES (%s, %s, %s, %s, '1.00', '1.00', 'test-a')
+                RETURNING reconciliation_candidate_id
+                """,
+                (
+                    self.case.tenant_id,
+                    run_id,
+                    candidate_a_reference,
+                    f"journal-a-{uuid.uuid4().hex}",
+                ),
+            ).fetchone()[0]
+            candidate_b = connection.execute(
+                """
+                INSERT INTO accounting_core.reconciliation_candidate (
+                    tenant_account_id, reconciliation_run_id,
+                    statement_entry_reference, journal_reference,
+                    statement_amount, journal_amount, rule_code
+                )
+                VALUES (%s, %s, %s, %s, '1.00', '1.00', 'test-b')
+                RETURNING reconciliation_candidate_id
+                """,
+                (
+                    self.case.tenant_id,
+                    run_id,
+                    candidate_b_reference,
+                    f"journal-b-{uuid.uuid4().hex}",
+                ),
+            ).fetchone()[0]
+            connection.execute(
+                """
+                INSERT INTO accounting_core.reconciliation_match (
+                    tenant_account_id, reconciliation_run_id,
+                    reconciliation_candidate_id, match_status_code
+                )
+                VALUES (%s, %s, %s, 'proposed')
+                RETURNING reconciliation_match_id
+                """,
+                (self.case.tenant_id, run_id, candidate_a),
+            ).fetchone()[0]
+            match_b = connection.execute(
+                """
+                INSERT INTO accounting_core.reconciliation_match (
+                    tenant_account_id, reconciliation_run_id,
+                    reconciliation_candidate_id, match_status_code
+                )
+                VALUES (%s, %s, %s, 'proposed')
+                RETURNING reconciliation_match_id
+                """,
+                (self.case.tenant_id, run_id, candidate_b),
+            ).fetchone()[0]
+
+        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
+            with self.assertRaises(psycopg.errors.ForeignKeyViolation):
+                connection.execute(
+                    """
+                    INSERT INTO accounting_core.reconciliation_match_command (
+                        tenant_account_id, reconciliation_run_id,
+                        reconciliation_candidate_id, reconciliation_match_id,
+                        candidate_idempotency_key, candidate_command_hash,
+                        source_payload_hash, source_payload_reference
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        self.case.tenant_id,
+                        run_id,
+                        candidate_a,
+                        match_b,
+                        f"cross-chain-{uuid.uuid4().hex}",
+                        "sha256:" + "1" * 64,
+                        "sha256:" + "2" * 64,
+                        "urn:cwl:object:cross-chain",
+                    ),
+                )
+
     def test_match_command_rejects_non_exact_or_unbalanced_amounts(self) -> None:
         """The command rejects JSON numbers and non-conserving 1:1 evidence."""
         command = self._command()

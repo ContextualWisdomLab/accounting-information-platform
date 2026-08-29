@@ -68,6 +68,7 @@ Financial-statement, cash-flow, changes-in-equity, aging, account-balance, ledge
 - Posted journals are never updated or deleted; finalized journal populations cannot be extended after receipt issuance.
 - Exact debit and credit amounts use PostgreSQL `numeric` and application `Decimal`; binary floating-point accounting amounts are rejected at input boundaries.
 - Command idempotency is tenant-scoped and tied to immutable source/command evidence so exact retries replay and changed evidence fails closed.
+- `reconciliation_match_command` uses a candidate-inclusive composite foreign key to `reconciliation_match`, so its tenant, run, match, and candidate identifiers must name one persisted candidate-to-match chain rather than independently valid rows.
 
 ## Future extensions
 
