@@ -101,12 +101,18 @@ BEGIN
         JOIN accounting_integration.bank_statement_record AS statement
           ON statement.tenant_account_id = command.tenant_account_id
          AND statement.bank_statement_record_id = command.bank_statement_record_id
+        JOIN accounting_integration.bank_statement_artifact AS artifact
+          ON artifact.tenant_account_id = statement.tenant_account_id
+         AND artifact.bank_statement_artifact_id = statement.bank_statement_artifact_id
         WHERE command.tenant_account_id = NEW.tenant_account_id
           AND command.reconciliation_run_id = NEW.reconciliation_run_id
-          AND command.source_payload_hash IS DISTINCT FROM statement.source_artifact_hash
+          AND (
+              command.source_payload_hash IS DISTINCT FROM statement.source_artifact_hash
+              OR statement.source_artifact_hash IS DISTINCT FROM artifact.source_artifact_hash
+          )
     ) THEN
         RAISE EXCEPTION
-            'reconciliation run command source payload hash does not match statement artifact (reconciliation_run_command_provenance)'
+            'reconciliation run command source payload hash does not match retained statement artifact (reconciliation_run_command_provenance)'
             USING ERRCODE = '23514';
     END IF;
 
