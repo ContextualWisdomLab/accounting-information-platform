@@ -33,14 +33,19 @@ What is present:
 - a stdlib HTTP surface for proposal acceptance, posting receipts, journals,
   reversals, period close/open, trial balances, financial statements, ledgers,
   aging, VAT/HomeTax rejection receipts, outbox, audit, and catalog reads;
+- an immutable camt.053.001.14 bank-statement evidence registry with normalized
+  entries and external artifact provenance;
+- a deterministic reconciliation proposal engine, exact book-to-bank bridge,
+  and durable reconciliation runs, exceptions, and evidence;
 - product, architecture, security, and standards documents listed below.
 
 What is not present: an automatically started listener, gRPC or live event
-transport, foreign exchange, revenue schedules, bank-statement ingestion and
-reconciliation, consolidation, tax calculation, or live HomeTax/NTS
-transmission. The outbox is durable but this tree does not publish it to a
-bus. The in-memory `PostingLedger` remains the reference oracle that the
-PostgreSQL adapter must match.
+transport, foreign exchange, revenue schedules, full cross-run many-to-many
+allocation, reconciliation approval and close-package provenance,
+consolidation, tax calculation, or live HomeTax/NTS transmission. The outbox
+is durable but this tree does not publish it to a bus. The in-memory
+`PostingLedger` remains the reference oracle that the PostgreSQL adapter must
+match.
 
 The initial milestone does not claim production compliance with a
 jurisdiction's accounting, tax, or statutory reporting rules. It establishes
