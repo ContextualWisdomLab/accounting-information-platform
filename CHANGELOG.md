@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Quality dependency validation now rejects duplicate package-version stanzas so a required wheel hash cannot be satisfied by merging separate declarations.
 - Extended the hash-locked PostgreSQL quality dependency set with the CPython 3.14 `psycopg-binary` wheel required by the central coverage runner; the repository contract now keeps that interpreter boundary executable.
 - Added the deterministic bank-reconciliation proposal engine from ADR 0054: stable provider, end-to-end, and account-servicer references take precedence; exact decimal amount and currency evidence must agree; exact-money plus bounded-date fallback is permitted only for one unique candidate; and ambiguity, conflicts, out-of-window evidence, or no candidate produce explicit abstention with an operator next action. Match proposals are read-only evidence with no automatic journal posting; any accounting adjustment must re-enter the existing journal command boundary.
 - Added the exact book-to-bank reconciliation bridge with exact Decimal equations, fail-closed one minor unit differences, statement-population and book-population provenance, no automatic journal posting, and ADR 0054.

@@ -340,6 +340,7 @@ def validate_quality_requirements(requirements_text: str) -> tuple[str, ...]:
     errors: list[str] = []
     package_hashes: dict[str, set[str]] = {}
     package_version_hashes: dict[tuple[str, str], set[str]] = {}
+    seen_requirements: set[tuple[str, str]] = set()
     current_requirement: tuple[str, str] | None = None
 
     for raw_line in requirements_text.splitlines():
@@ -358,6 +359,12 @@ def validate_quality_requirements(requirements_text: str) -> tuple[str, ...]:
                     name_match.group(1).lower(),
                     name_match.group(2),
                 )
+                if current_requirement in seen_requirements:
+                    errors.append(
+                        "quality dependency stanza appears more than once: "
+                        f"{current_requirement[0]}=={current_requirement[1]}"
+                    )
+                seen_requirements.add(current_requirement)
                 package_hashes.setdefault(current_requirement[0], set())
                 package_version_hashes.setdefault(current_requirement, set())
         if hashes:
