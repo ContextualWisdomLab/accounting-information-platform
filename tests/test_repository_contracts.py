@@ -438,6 +438,15 @@ class RepositoryContractTests(unittest.TestCase):
             "psycopg-binary must pin the CPython 3.14 manylinux x86_64 wheel hash",
             validate_quality_requirements(without_cp314),
         )
+        wrong_version = (
+            without_cp314
+            + "\npsycopg-binary==3.3.5 \\\n"
+            f"    --hash=sha256:{PSYCOPG_BINARY_CP314_MANYLINUX_X86_64_WHEEL_HASH}\n"
+        )
+        self.assertIn(
+            "psycopg-binary must pin the CPython 3.14 manylinux x86_64 wheel hash",
+            validate_quality_requirements(wrong_version),
+        )
 
     def test_append_only_journal_sql_rejects_update_and_delete(self) -> None:
         """Migrations cannot UPDATE or DELETE posted journal tables."""
