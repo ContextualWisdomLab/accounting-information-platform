@@ -314,10 +314,24 @@ class BankStatementRegistryTests(unittest.TestCase):
         with mock.patch.object(
             self.store,
             "get_artifact",
-            side_effect=AccountingValidationError("artifact unavailable"),
+            side_effect=bank_statement.ArtifactStoreError("artifact unavailable"),
         ):
             with self.assertRaisesRegex(AccountingValidationError, "different entry evidence"):
                 self._ingest(changed_bytes, key="legacy-balance-change-missing")
+
+    def test_legacy_identity_rejects_unparseable_retained_artifact(self) -> None:
+        """A retained artifact that cannot be parsed is not replay evidence."""
+        statement = bank_statement.parse_bank_statement_payload(
+            load_canonical_statement_fixture(), CAMT053_MESSAGE_DEFINITION
+        )
+        invalid = b"<broken"
+        invalid_hash = "sha256:" + hashlib.sha256(invalid).hexdigest()
+        reference = self.store.put_artifact(invalid_hash, invalid)
+        self.assertFalse(
+            bank_statement._legacy_statement_matches_artifact(
+                statement, invalid_hash, reference, self.store
+            )
+        )
 
     def test_same_key_changed_bytes_writes_nothing(self) -> None:
         """Same idempotency key with changed bytes conflicts and writes nothing."""

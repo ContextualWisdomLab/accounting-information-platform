@@ -44,8 +44,16 @@ _ADAPTER_ROOT = Path(__file__).resolve().parent / "iso20022"
 _MANIFEST_PATH = _ADAPTER_ROOT / "adapter_manifest.json"
 
 
+class ArtifactStoreError(AccountingValidationError):
+    """Expected artifact-store retrieval or persistence failure."""
+
+
 class ArtifactStore(Protocol):
-    """Host-owned immutable store for original bank-statement bytes."""
+    """Host-owned immutable store for original bank-statement bytes.
+
+    Implementations must translate expected backend failures into
+    ``ArtifactStoreError``; unexpected programming errors must propagate.
+    """
 
     def put_artifact(self, source_artifact_hash: str, payload: bytes) -> str:
         """Persist *payload* under *source_artifact_hash* and return a locator."""
@@ -65,7 +73,7 @@ class MemoryArtifactStore:
         """Retain *payload* by hash and return a memory locator."""
         existing = self._artifacts.get(source_artifact_hash)
         if existing is not None and existing != payload:
-            raise AccountingValidationError(
+            raise ArtifactStoreError(
                 "artifact store already holds different bytes for this source hash. "
                 "Supply the original statement bytes, then retry ingest."
             )
@@ -75,13 +83,13 @@ class MemoryArtifactStore:
     def get_artifact(self, artifact_store_reference: str) -> bytes:
         """Return stored bytes for a memory locator."""
         if not artifact_store_reference.startswith("memory:"):
-            raise AccountingValidationError(
+            raise ArtifactStoreError(
                 "artifact store reference is not a memory locator. "
                 "Use the host evidence store for that locator, then retry the read."
             )
         payload = self._artifacts.get(artifact_store_reference.removeprefix("memory:"))
         if payload is None:
-            raise AccountingValidationError(
+            raise ArtifactStoreError(
                 "statement artifact is not retained in the host evidence store. "
                 "Restore the original artifact, then retry the read."
             )
@@ -1706,8 +1714,11 @@ def _legacy_statement_matches_artifact(
     """Prove a legacy identity replay preserves every normalized fact."""
     try:
         original_bytes = store.get_artifact(artifact_store_reference)
-        if _sha256_digest(original_bytes) != source_artifact_hash:
-            return False
+    except ArtifactStoreError:
+        return False
+    if _sha256_digest(original_bytes) != source_artifact_hash:
+        return False
+    try:
         original = parse_bank_statement_payload(
             original_bytes, CAMT053_MESSAGE_DEFINITION
         )

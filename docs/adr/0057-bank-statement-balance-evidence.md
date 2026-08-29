@@ -33,9 +33,13 @@ could grant posting authority. A bridge may select standard `Cd` `OPBD` and
 `CLBD` facts and convert direction under its own explicit accounting contract;
 proprietary `Prtry` values remain distinct evidence even when their text matches
 a standard code. The bridge must fail closed when required numeric facts are
-missing or out of scope. Existing
-statements recorded before this additive migration are not backfilled by
-inference or mutation.
+missing or out of scope. Existing statements recorded before this additive
+migration are not backfilled by inference or mutation. Their pre-0018 normalized
+hashes remain replay-compatible only when the legacy balance hash shape matches
+and the retained source artifact re-parses to the complete same normalized
+evidence; unavailable or mismatched artifact retrieval fails closed. All accepted
+balance, entry, and detail amounts must fit PostgreSQL `numeric(38,6)` before
+artifact or relational persistence.
 
 ## Consequences
 
