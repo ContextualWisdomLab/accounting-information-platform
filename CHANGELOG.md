@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Malformed or non-object period-close request bodies no longer create an allowed hard-close authorization record before the request is rejected; authorization evidence is reserved for a structurally valid close command.
+
 - Authorization principals now require an explicit `principal_kind` (`human`, `service`, or
   `agent`) so omitted host identity classification cannot silently receive human high-impact
   authority. Authorization evidence retains both principal and requested tenant references, and

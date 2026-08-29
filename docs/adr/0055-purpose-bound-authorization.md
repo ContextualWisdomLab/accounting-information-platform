@@ -13,6 +13,11 @@ but they do not replace an application decision made before a route invokes doma
 
 ## Decision
 
+The HTTP boundary classifies a period-close authorization operation only after
+the request body is valid JSON object data. Malformed or non-object bodies are
+rejected without recording an allowed hard-close decision, because they are not
+accounting commands.
+
 The trusted host identity adapter supplies an immutable `AuthenticatedPrincipal` containing only
 validated opaque principal, tenant, authentication-context, purpose, permission, and credential-
 evidence references plus an explicit `principal_kind`. `principal_kind` must be one of `human`,

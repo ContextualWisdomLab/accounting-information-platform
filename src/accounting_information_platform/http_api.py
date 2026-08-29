@@ -1928,8 +1928,10 @@ def _post_authorization_operation(path: str, raw_body: bytes) -> str | None:
     try:
         payload = json.loads(raw_body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
-        return "hard_close_period"
-    return period_close_operation(payload.get("period_status_code") if isinstance(payload, dict) else None)
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return period_close_operation(payload.get("period_status_code"))
 
 
 def _authorization_correlation(path: str, raw_body: bytes) -> str:
