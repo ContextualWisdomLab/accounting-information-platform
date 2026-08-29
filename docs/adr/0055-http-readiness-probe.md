@@ -19,9 +19,10 @@ database-controlled runtime tenant binding, and checks the complete current
 schema contract through migration `0014_reconciliation_candidate_allocation.sql`.
 Because the repository has no durable schema-version table, this contract is
 represented by the current tables, functions, mutated columns, constraints,
-and migration indexes, plus the enabled exact registrations of the two
-database-owned deferred journal-balance triggers with unrestricted event
-definitions. The probe requires an active
+and migration indexes, plus the enabled exact registrations of every
+database-owned guard trigger through migration `0013`, including the two
+deferred journal-balance triggers, their unrestricted event definitions, and
+the exact `UPDATE OF` column sets for scope/evidence guards. The probe requires an active
 binding even for privileged sessions and caps connection establishment at five seconds while
 preserving a stricter configured timeout. Return `200` with
 `{"status":"ready"}` only after all checks pass. Return `503` with stable
@@ -56,3 +57,5 @@ the canonical migration definition is restored after the check. A fifth
 regression replaces `assert_journal_balance()` in place with the same signature;
 the readiness probe rejects the changed function definition even though the
 trigger OID and relation/event registration remain unchanged.
+The non-balance trigger contract is also exercised by disabling close and
+immutable-fact controls; each disabled registration returns `503`.

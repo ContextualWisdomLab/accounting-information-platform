@@ -10508,6 +10508,8 @@ class PostgresPostingTests(unittest.TestCase):
             True,
             True,
             True,
+            True,
+            True,
         )
 
         with mock.patch.object(ledger, "_session", return_value=session):
@@ -10540,6 +10542,8 @@ class PostgresPostingTests(unittest.TestCase):
         session.__enter__.return_value = session
         session.execute.return_value.fetchone.return_value = (
             False,
+            True,
+            True,
             True,
             True,
             True,
