@@ -36,6 +36,7 @@ MAX_ATTRIBUTE_COUNT = 20_000
 MAX_TEXT_BYTES = 262_144
 MAX_STATEMENT_COUNT = 1
 MAX_ENTRY_COUNT = 500
+MAX_BALANCE_COUNT = 100
 MAX_REMITTANCE_CHARS = 256
 _PAGE_DEFAULT = 50
 _PAGE_MAXIMUM = 100
@@ -569,16 +570,30 @@ def accept_bank_statement_evidence(
         )
         prior_key = connection.execute(
             """
-            SELECT bank_statement_record_id, source_artifact_hash, normalized_payload_hash
+            SELECT bank_statement_record_id, source_artifact_hash,
+                   normalized_payload_hash,
+                   EXISTS (
+                       SELECT 1
+                       FROM accounting_integration.bank_statement_balance AS balance
+                       WHERE balance.tenant_account_id = bank_statement_record.tenant_account_id
+                         AND balance.bank_statement_record_id = bank_statement_record.bank_statement_record_id
+                   ) AS has_balance_evidence
             FROM accounting_integration.bank_statement_record
             WHERE tenant_account_id = %s AND ingestion_idempotency_key = %s
             """,
             (tenant_id, idempotency_key),
         ).fetchone()
         if prior_key is not None:
+            normalized_hash_matches = (
+                prior_key[2] == statement.normalized_payload_hash
+                or (
+                    not prior_key[3]
+                    and prior_key[2] == _legacy_normalized_payload_hash(statement)
+                )
+            )
             if (
                 prior_key[1] != statement.source_artifact_hash
-                or prior_key[2] != statement.normalized_payload_hash
+                or not normalized_hash_matches
             ):
                 raise IdempotencyConflictError(
                     "ingestion idempotency key was already used with a different statement artifact"
@@ -1300,10 +1315,16 @@ def _normalize_statement(statement: "_XmlElement", payload: bytes) -> Normalized
             "statement contains no Ntry elements. "
             "Supply at least one entry, then retry ingest."
         )
-    balances = [
-        _normalize_balance(node, index)
-        for index, node in enumerate(_direct_children(statement, "Bal"), start=1)
-    ]
+    balances = []
+    for index, balance_node in enumerate(
+        _direct_children(statement, "Bal"), start=1
+    ):
+        if index > MAX_BALANCE_COUNT:
+            raise AccountingValidationError(
+                "statement balance count exceeds the adapter bound. "
+                "Send fewer balances, then retry ingest."
+            )
+        balances.append(_normalize_balance(balance_node, index))
     opening = next(
         (item.source_balance_hash for item in balances if item.balance_type_code == "OPBD"),
         None,
@@ -1529,7 +1550,9 @@ def _normalize_detail(
 def _normalize_balance(
     node: "_XmlElement", sequence: int
 ) -> NormalizedStatementBalance:
-    code = _first_text(node, ("Tp", "CdOrPrtry", "Cd"))
+    code = _first_text(node, ("Tp", "CdOrPrtry", "Cd")) or _first_text(
+        node, ("Tp", "CdOrPrtry", "Prtry")
+    )
     amount, currency = _required_amount(node, "Bal/Amt", allow_zero=True)
     indicator = _required_text(node, ("CdtDbtInd",), "balance credit/debit indicator")
     effective_at = _optional_timestamp(
@@ -1585,6 +1608,15 @@ def _normalized_payload(statement: NormalizedBankStatement) -> dict[str, object]
         "balances": [_balance_payload(balance) for balance in statement.balances],
         "entries": [_entry_payload(entry) for entry in statement.entries],
     }
+
+
+def _legacy_normalized_payload_hash(statement: NormalizedBankStatement) -> str:
+    """Return the pre-0018 normalized hash used by legacy statement rows."""
+    payload = _normalized_payload(statement)
+    payload.pop("balances")
+    return _sha256_digest(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    )
 
 
 def _balance_payload(balance: NormalizedStatementBalance) -> dict[str, object]:

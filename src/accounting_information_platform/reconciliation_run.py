@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Mapping
 from uuid import UUID
 
@@ -162,6 +162,7 @@ def accept_reconciliation_run(
               AND legal_entity.recorded_at <= %s
               AND accounting_book.recorded_at <= %s
               AND artifact.recorded_at <= %s
+            FOR SHARE OF assignment
             """,
             (
                 tenant_id,
@@ -410,8 +411,9 @@ def _parse_uuid(value: str, label: str) -> UUID:
 def _parse_timestamp(value: str, label: str) -> datetime:
     if _CANONICAL_UTC_TIMESTAMP_PATTERN.fullmatch(value) is None:
         raise AccountingValidationError(
-            f"{label} must be a canonical UTC timestamp with an explicit UTC timezone "
-            "(Z or +00:00). Supply an unambiguous canonical UTC timestamp, then retry the run."
+            f"{label} must be a canonical UTC timestamp with an explicit UTC "
+            "offset, using T and Z or +00:00. Supply an unambiguous UTC "
+            "timestamp, then retry the run."
         )
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -419,11 +421,6 @@ def _parse_timestamp(value: str, label: str) -> datetime:
         raise AccountingValidationError(
             f"{label} must be an ISO-8601 timestamp. Supply a UTC timestamp, then retry the run."
         ) from error
-    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
-        raise AccountingValidationError(
-            f"{label} must include an explicit UTC timezone (Z or +00:00). "
-            "Supply an unambiguous UTC timestamp, then retry the run."
-        )
     return parsed.astimezone(timezone.utc)
 
 
