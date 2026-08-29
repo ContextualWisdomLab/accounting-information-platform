@@ -45,10 +45,11 @@ PostgreSQL adapter must match.
 
 When a host mounts the HTTP surface, `GET /healthz` reports only that the
 process can answer. `GET /readyz` checks PostgreSQL 18 connectivity, an active
-database-controlled tenant binding, and the complete checked-in migration/schema
-contract through `0014_reconciliation_candidate_allocation.sql`; its connection
-attempt has a five-second upper bound unless an operator configured a stricter
-timeout. It returns `503` with operator-safe guidance when those checks fail.
+database-controlled tenant binding, and the required checked-in migration/schema
+contract through `0015_reconciliation_policy_repair.sql`; its single-host
+connection and complete connected operation each have a five-second total
+upper bound unless an operator configured a stricter timeout. It returns `503`
+with operator-safe guidance when those checks fail.
 Readiness responses use `Cache-Control: no-store` so a proxy cannot reuse a
 stale database status.
 Either probe is operational evidence only and does not replace exact-head CI,
@@ -130,7 +131,7 @@ factory/runner and provide the tenant-bound host boundary explicitly.
 `unittest` discovery also runs `tests/test_postgres_posting.py`, which needs a
 reachable PostgreSQL 18 instance and `ACCOUNTING_DATABASE_URL` (CI uses
 `postgresql://postgres:postgres@127.0.0.1:5432/accounting_test` and applies
-the checked-in migration chain through `database/migrations/0014_reconciliation_candidate_allocation.sql`). Persistence is still
+the checked-in migration chain through `database/migrations/0015_reconciliation_policy_repair.sql`). Persistence is still
 local to this repository; it is not a Naruon or sibling checkout.
 
 Optional import smoke after the editable install above:

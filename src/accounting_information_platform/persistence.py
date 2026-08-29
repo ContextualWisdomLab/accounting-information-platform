@@ -6,6 +6,7 @@ import hashlib
 import importlib
 import json
 import re
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
@@ -5055,6 +5056,15 @@ class PostgresPostingLedger:
             database_url = self._database_url
             if readiness:
                 connection_options = psycopg.conninfo.conninfo_to_dict(database_url)
+                host_list = (
+                    connection_options.get("host")
+                    or connection_options.get("hostaddr")
+                    or ""
+                )
+                if "," in host_list:
+                    raise AccountingValidationError(
+                        "readiness requires a single PostgreSQL host."
+                    )
                 configured_timeout = connection_options.get("connect_timeout")
                 timeout_seconds = (
                     int(configured_timeout) if configured_timeout is not None else None
@@ -5083,6 +5093,8 @@ class PostgresPostingLedger:
                     ).strip()
                 database_url = psycopg.conninfo.make_conninfo(**connection_options)
             connection = psycopg.connect(database_url)
+        except AccountingValidationError:
+            raise
         except Exception as error:
             raise AccountingValidationError(
                 "PostgreSQL is not reachable. Start PostgreSQL 18, set ACCOUNTING_DATABASE_URL "
@@ -5103,8 +5115,17 @@ class PostgresPostingLedger:
     def check_readiness(self) -> None:
         """Verify PostgreSQL 18, tenant binding, and the complete schema contract."""
         try:
+            readiness_deadline = (
+                time.monotonic()
+                + _READINESS_STATEMENT_TIMEOUT_MILLISECONDS / 1000
+            )
             with self._session(readiness=True) as connection:
-                self._require_tenant(connection, allow_privileged=False)
+                self._require_tenant(
+                    connection,
+                    allow_privileged=False,
+                    statement_deadline=readiness_deadline,
+                )
+                _set_readiness_statement_timeout(connection, readiness_deadline)
                 version_ok, tables_ok, functions_ok, columns_ok, constraints_ok, control_triggers_ok, indexes_ok = connection.execute(
                     """
                     SELECT
@@ -5351,6 +5372,7 @@ class PostgresPostingLedger:
                         [item[6] for item in _READINESS_INDEX_DEFINITIONS],
                     ),
                 ).fetchone()
+                _set_readiness_statement_timeout(connection, readiness_deadline)
                 rls_ok = connection.execute(
                     """
                     SELECT NOT EXISTS (
@@ -5372,6 +5394,7 @@ class PostgresPostingLedger:
                         [table_name for _schema_name, table_name in _READINESS_RLS_TABLES],
                     ),
                 ).fetchone()[0]
+                _set_readiness_statement_timeout(connection, readiness_deadline)
                 policies_ok = connection.execute(
                     """
                     SELECT (
@@ -5410,6 +5433,7 @@ class PostgresPostingLedger:
                         [policy_name for _schema_name, _table_name, policy_name in _READINESS_RLS_POLICIES],
                     ),
                 ).fetchone()[0]
+                _set_readiness_statement_timeout(connection, readiness_deadline)
                 tenant_function_ok = connection.execute(
                     """
                     SELECT COALESCE(
@@ -5427,6 +5451,7 @@ class PostgresPostingLedger:
                     """,
                     (_READINESS_TENANT_FUNCTION_FINGERPRINT,),
                 ).fetchone()[0]
+                _set_readiness_statement_timeout(connection, readiness_deadline)
                 column_rows = connection.execute(
                     """
                     SELECT namespace.nspname,
@@ -5521,8 +5546,14 @@ class PostgresPostingLedger:
         )
 
     def _require_tenant(
-        self, connection: object, *, allow_privileged: bool = True
+        self,
+        connection: object,
+        *,
+        allow_privileged: bool = True,
+        statement_deadline: float | None = None,
     ) -> UUID:
+        if statement_deadline is not None:
+            _set_readiness_statement_timeout(connection, statement_deadline)
         row = connection.execute(
             """
             SELECT tenant_account_id
@@ -5536,6 +5567,8 @@ class PostgresPostingLedger:
                 f"Tenant {self._tenant_reference} is not recorded. Create the tenant_account row, then retry posting."
             )
         requested_tenant_id = row[0]
+        if statement_deadline is not None:
+            _set_readiness_statement_timeout(connection, statement_deadline)
         bound_tenant_id = connection.execute(
             "SELECT accounting_core.current_tenant_account_id()"
         ).fetchone()[0]
@@ -5552,6 +5585,8 @@ class PostgresPostingLedger:
                 "this request cannot be authorized for the requested tenant. "
                 "Ask the platform operator to verify tenant provisioning, then retry."
             )
+        if statement_deadline is not None:
+            _set_readiness_statement_timeout(connection, statement_deadline)
         rolsuper, rolbypassrls = connection.execute(
             """
             SELECT rolsuper, rolbypassrls
@@ -7516,6 +7551,15 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             f"{allocation_control_migration_path}. Restore "
             "database/migrations/0014_reconciliation_candidate_allocation.sql, then retry."
         )
+    policy_repair_migration_path = (
+        migration_path.parent / "0015_reconciliation_policy_repair.sql"
+    )
+    if not policy_repair_migration_path.is_file():
+        raise AccountingValidationError(
+            "Reconciliation policy-repair migration is missing at "
+            f"{policy_repair_migration_path}. Restore "
+            "database/migrations/0015_reconciliation_policy_repair.sql, then retry."
+        )
     psycopg = _import_psycopg()
     try:
         with psycopg.connect(
@@ -7540,6 +7584,9 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             )
             connection.execute(
                 allocation_control_migration_path.read_text(encoding="utf-8")
+            )
+            connection.execute(
+                policy_repair_migration_path.read_text(encoding="utf-8")
             )
     except Exception as error:
         raise AccountingValidationError(
@@ -7579,6 +7626,25 @@ def _readiness_statement_timeout_milliseconds(options: str) -> int | None:
         * unit_milliseconds.get(
             (value.group("unit") or "ms").lower(), Decimal("1")
         )
+    )
+
+
+def _set_readiness_statement_timeout(connection: object, deadline: float) -> None:
+    """Apply only the remaining total readiness budget to the next statement."""
+    remaining_milliseconds = int((deadline - time.monotonic()) * 1000)
+    if remaining_milliseconds <= 0:
+        raise AccountingValidationError("readiness time budget expired.")
+    configured_timeout = connection.execute(
+        "SELECT current_setting('statement_timeout')::interval"
+    ).fetchone()[0]
+    if isinstance(configured_timeout, timedelta) and configured_timeout > timedelta(0):
+        remaining_milliseconds = min(
+            remaining_milliseconds,
+            max(1, int(configured_timeout.total_seconds() * 1000)),
+        )
+    connection.execute(
+        "SELECT pg_catalog.set_config('statement_timeout', %s, false)",
+        (f"{remaining_milliseconds}ms",),
     )
 
 

@@ -16,7 +16,7 @@ serve the authoritative accounting boundary.
 Keep `GET /healthz` as a database-independent liveness response. Add
 `GET /readyz`, which opens the configured PostgreSQL 18 session, verifies the
 database-controlled runtime tenant binding, and checks the required current
-schema contract through migration `0014_reconciliation_candidate_allocation.sql`.
+schema contract through migration `0015_reconciliation_policy_repair.sql`.
 Because the repository has no durable schema-version table, this contract is
 represented by the current tables, functions, mutated columns, constraints,
 and migration indexes. Readiness additionally binds each checked-in
@@ -38,7 +38,10 @@ policy on each such table, and the canonical `current_tenant_account_id()`
 definition fingerprint. It requires an active binding even for privileged
 sessions, caps connection establishment at five seconds, installs the
 five-second statement timeout in startup options before the first connected
-command, and preserves a stricter configured timeout. Return `200` with
+command, preserves a stricter configured timeout, and applies one remaining
+five-second total budget across the connected operation. Readiness rejects
+multi-host connection strings because per-host connection timeouts could
+otherwise multiply that budget. Return `200` with
 `{"status":"ready"}` only after all checks pass. Return `503` with stable
 operator guidance when a check fails; do not return driver, connection, or
 database-object details to the caller. Both readiness responses carry
@@ -96,4 +99,6 @@ requires readiness to fail closed, and holds a connected tenant lookup behind a
 slow function to prove the HTTP response is bounded by the startup-installed
 statement timeout. A separate regression adds a table and column and proves
 compatible additive schema remains ready; migration inventory parser tests
-cover conditional declaration modifiers.
+cover conditional declaration modifiers. An upgrade regression removes the
+four policies from an installed `0014` state, applies only `0015`, and proves
+restricted-runtime readiness recovers.

@@ -7,6 +7,7 @@ import time
 import unittest
 import uuid
 from datetime import timedelta
+from pathlib import Path
 from threading import Thread
 import unittest.mock as mock
 
@@ -262,7 +263,6 @@ class PostgresReadinessIsolationContractTests(unittest.TestCase):
             make_conninfo(**settings), self.case.policy.tenant_reference
         )
         connection = mock.MagicMock()
-        connection.execute.return_value.fetchone.return_value = (timedelta(seconds=30),)
         with mock.patch.object(
             persistence_module, "_import_psycopg", return_value=psycopg
         ), mock.patch.object(psycopg, "connect", return_value=connection) as connect:
@@ -278,6 +278,127 @@ class PostgresReadinessIsolationContractTests(unittest.TestCase):
                 "-c statement_timeout=not-a-duration"
             )
         )
+
+    def test_readiness_uses_remaining_total_time_budget(self) -> None:
+        """Each readiness statement receives the remaining request budget."""
+        connection = mock.MagicMock()
+        connection.execute.return_value.fetchone.return_value = (timedelta(seconds=5),)
+        with mock.patch.object(persistence_module.time, "monotonic", return_value=100.25):
+            persistence_module._set_readiness_statement_timeout(connection, 101.0)
+        self.assertEqual(
+            connection.execute.call_args.args[1],
+            ("750ms",),
+        )
+
+    def test_readiness_does_not_widen_a_stricter_statement_timeout(self) -> None:
+        """A stricter effective timeout remains stricter for every next query."""
+        connection = mock.MagicMock()
+        connection.execute.return_value.fetchone.return_value = (
+            timedelta(milliseconds=100),
+        )
+        with mock.patch.object(persistence_module.time, "monotonic", return_value=100.25):
+            persistence_module._set_readiness_statement_timeout(connection, 101.0)
+        self.assertEqual(
+            connection.execute.call_args.args[1],
+            ("100ms",),
+        )
+
+    def test_readiness_applies_the_total_budget_when_timeout_is_disabled(self) -> None:
+        """A disabled PostgreSQL timeout is replaced by the remaining budget."""
+        connection = mock.MagicMock()
+        connection.execute.return_value.fetchone.return_value = (timedelta(0),)
+        with mock.patch.object(persistence_module.time, "monotonic", return_value=100.25):
+            persistence_module._set_readiness_statement_timeout(connection, 101.0)
+        self.assertEqual(
+            connection.execute.call_args.args[1],
+            ("750ms",),
+        )
+
+    def test_readiness_rejects_an_expired_total_time_budget(self) -> None:
+        """An expired readiness budget fails before another catalog query starts."""
+        with mock.patch.object(persistence_module.time, "monotonic", return_value=101.0):
+            with self.assertRaisesRegex(
+                AccountingValidationError, "readiness time budget expired"
+            ):
+                persistence_module._set_readiness_statement_timeout(
+                    mock.MagicMock(), 100.0
+                )
+
+    def test_readiness_applies_timeout_before_privileged_role_probe(self) -> None:
+        """The privileged fallback receives the same readiness timeout contract."""
+        connection = mock.MagicMock()
+        connection.execute.side_effect = [
+            mock.Mock(fetchone=mock.Mock(return_value=(self.case.tenant_id,))),
+            mock.Mock(fetchone=mock.Mock(return_value=(None,))),
+        ]
+        with mock.patch.object(
+            persistence_module,
+            "_set_readiness_statement_timeout",
+            side_effect=[None, None, AccountingValidationError("readiness time budget expired")],
+        ) as apply_timeout:
+            with self.assertRaisesRegex(
+                AccountingValidationError, "readiness time budget expired"
+            ):
+                self.runtime_ledger._require_tenant(
+                    connection,
+                    allow_privileged=True,
+                    statement_deadline=100.0,
+                )
+        self.assertEqual(apply_timeout.call_count, 3)
+
+    def test_readiness_rejects_multi_host_connection_strings(self) -> None:
+        """A host list cannot exceed the single five-second connection budget."""
+        settings = conninfo_to_dict(self.runtime_url)
+        settings["host"] = "127.0.0.1,127.0.0.1"
+        multi_host_ledger = PostgresPostingLedger(
+            make_conninfo(**settings), self.case.policy.tenant_reference
+        )
+        with self.assertRaisesRegex(
+            AccountingValidationError, "single PostgreSQL host"
+        ):
+            with multi_host_ledger._session(readiness=True):
+                pass
+
+    def test_incremental_policy_migration_repairs_an_existing_0014_database(self) -> None:
+        """The forward migration repairs databases that already ran migration 0014."""
+        migration_path = (
+            Path(__file__).resolve().parents[1]
+            / "database"
+            / "migrations"
+            / "0015_reconciliation_policy_repair.sql"
+        )
+        migration = migration_path.read_text(encoding="utf-8")
+        with psycopg.connect(
+            posting.DATABASE_URL,
+            autocommit=True,
+            cursor_factory=psycopg.ClientCursor,
+        ) as admin:
+            admin.execute(
+                "DROP POLICY IF EXISTS reconciliation_candidate_isolation "
+                "ON accounting_core.reconciliation_candidate"
+            )
+            admin.execute(
+                "DROP POLICY IF EXISTS reconciliation_match_isolation "
+                "ON accounting_core.reconciliation_match"
+            )
+            admin.execute(
+                "DROP POLICY IF EXISTS statement_match_allocation_isolation "
+                "ON accounting_core.statement_match_allocation"
+            )
+            admin.execute(
+                "DROP POLICY IF EXISTS journal_match_allocation_isolation "
+                "ON accounting_core.journal_match_allocation"
+            )
+            admin.execute(migration)
+        try:
+            self.runtime_ledger.check_readiness()
+        finally:
+            with psycopg.connect(
+                posting.DATABASE_URL,
+                autocommit=True,
+                cursor_factory=psycopg.ClientCursor,
+            ) as admin:
+                admin.execute(migration)
 
 
 if __name__ == "__main__":
