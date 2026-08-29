@@ -17,6 +17,12 @@ from .reconciliation import ReconciliationDecision
 from .reconciliation_bridge import BookToBankBridgeResult
 
 
+_RECONCILED_CLOSE_REVIEW_NEXT_ACTION = (
+    "Attach this exact reconciliation evidence to the period-close review; "
+    "the authorized reconciliation review remains a separate control."
+)
+
+
 @dataclass(frozen=True)
 class ReconciliationCloseReviewScope:
     """Immutable accounting and bank-account scope for one close-review run."""
@@ -209,10 +215,7 @@ def build_reconciliation_close_review(
             "statement evidence, then rerun period-close review."
         )
     else:
-        next_action = (
-            "Attach this exact reconciliation evidence to the period-close review; "
-            "the authorized reconciliation review remains a separate control."
-        )
+        next_action = _RECONCILED_CLOSE_REVIEW_NEXT_ACTION
 
     return ReconciliationCloseReviewProjection(
         tenant_account_reference=projection_input.scope.tenant_account_reference,

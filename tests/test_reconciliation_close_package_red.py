@@ -425,6 +425,13 @@ class ReconciliationClosePackageTests(unittest.TestCase):
                         replace(self._input(), projection=projection)
                     )
 
+    def test_package_rejects_caller_supplied_next_action(self) -> None:
+        """Close-package guidance cannot be replaced with an unauthorized action."""
+        projection = replace(self._projection(), next_action="Approve and post this reconciliation")
+
+        with self.assertRaisesRegex(ValueError, "next action"):
+            build_reconciliation_close_package(replace(self._input(), projection=projection))
+
         with self.assertRaisesRegex(ValueError, "ReconciliationCloseReviewProjection"):
             build_reconciliation_close_package(
                 replace(self._input(), projection=object())  # type: ignore[arg-type]
