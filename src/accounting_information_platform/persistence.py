@@ -106,6 +106,41 @@ _READINESS_COLUMNS = (
     ("accounting_core", "bank_account_assignment", "assignment_idempotency_key"),
     ("accounting_core", "bank_account_assignment", "assignment_command_hash"),
 )
+_READINESS_COLUMN_FINGERPRINTS = (
+    ("accounting_core", "account_role_mapping", 10, "dedc64e5c9fd53c0c38be2d14e3cffae2f2a879ba903d2994e49371988fe9974"),
+    ("accounting_core", "accounting_book", 9, "7399e895b1d329ce2225db6e7efbb9ee7b33870ccc25324f9417e7f9c6df12d3"),
+    ("accounting_core", "accounting_book_period_control", 10, "34c15ac952d044644030ebd1572abea1c1735504fe42b6ab3b12b21f4a16363d"),
+    ("accounting_core", "bank_account_assignment", 11, "3f0525ce187b8177a450795d3152be09456c484921d3519225877b14a00762c3"),
+    ("accounting_core", "bank_account_record", 6, "789c6f67bef0dfe092c9a8cc01c6565fe760324dba55441cb78dbed422140933"),
+    ("accounting_core", "chart_account", 10, "00cf50d6767e93dd5c8e08c7548d5a106f79e1d2cab788520feebcfc734c7774"),
+    ("accounting_core", "fiscal_calendar", 5, "98592e7dd88b3cd557e34cb569ad56b4a44f6c77c9c6a2eafcf8a78ad40ffed8"),
+    ("accounting_core", "fiscal_period", 9, "9ebd9155188a34619d03e2d5e062870d5fa4b3696481b07d75726ed0869a08cb"),
+    ("accounting_core", "general_journal", 15, "7a4c9f3ceaabb0c6b62aa84d29ccfaba558a1ef05dbea56fe618d4fac9a67213"),
+    ("accounting_core", "journal_entry_line", 10, "c67aba7bfb7afffd4b934474c1120901c6527de471255ded778b58b89ee0fbc7"),
+    ("accounting_core", "journal_match_allocation", 7, "6e02b58f45c91e4d4d9be19a3e4b296e6b79c1fa117eeb4d6d18f3a2424a4e02"),
+    ("accounting_core", "journal_reversal", 6, "d14f8508cdc2427c20a12de4c01110257e3eea125122205b13bec718aa7e0357"),
+    ("accounting_core", "journal_source_reference", 6, "b6da66657b76cfde57a7d29d3b54ba9f1e0face4a42556bebc9519e2bf9e658c"),
+    ("accounting_core", "legal_entity_record", 8, "8d3ca7767d97cd3cb1f1079aede5a64851dd13838427bae8ec0f89d3a9521a5b"),
+    ("accounting_core", "reconciliation_candidate", 9, "3604bec1f054717623d5625101e071fb12e99a05db311d94f1b7e47874fb14d8"),
+    ("accounting_core", "reconciliation_evidence", 9, "5ca30a43ae8e40291166ac2c0d58be4ae97f0ac017d68185768b56c3bd29068a"),
+    ("accounting_core", "reconciliation_exception", 9, "c5d64cb854348e796a02b91c7d2e036209fff504030b3503f6418ee7c9340d76"),
+    ("accounting_core", "reconciliation_match", 7, "6a819f98e37334047d135ea107c449bcbe73ec699fe1253e77224e1c95e28877"),
+    ("accounting_core", "reconciliation_run", 12, "0e0bb7771504d6765f84d401ce8c93806af9b6da3d1232777331f44d1a1fb99b"),
+    ("accounting_core", "runtime_tenant_binding", 7, "737cb26fefab313e0d1493ee29efc2eb8179012eef41b9bcc72515cddba4b062"),
+    ("accounting_core", "statement_match_allocation", 7, "443d000c078ecc946af417feaf2ce326b666e925d21c393d88cc7ad05c0634f3"),
+    ("accounting_core", "tenant_account", 3, "84cca03fd15500baf0a1cc69d7c16ccd84e0fd4ca9868226e9a49a5408bacfa3"),
+    ("accounting_integration", "bank_statement_artifact", 6, "1579cf1bc24f49d82fb726a56f5a7e8b9e5e90546ea61bad4d8ddc3a0db0c2a5"),
+    ("accounting_integration", "bank_statement_entry", 23, "901945fdfa37b3fc88c6b2a2c3b12e11ebedb9a73c6ac396446408b10ac247ba"),
+    ("accounting_integration", "bank_statement_entry_detail", 13, "f911fd0ecd7bc4a2f2a9c3464f9be5cdcd426345cc372194c06e0263e9a303c8"),
+    ("accounting_integration", "bank_statement_record", 16, "b4b952b4190cffd0f4728b7bb36b2806f5d3f410a33088f40a8674df5ef43f27"),
+    ("accounting_integration", "fiscal_period_open_command", 9, "a5fe15c4aa442c5758f02eeaef109d4e094dfb69f35fe0f41e44179a41cb419b"),
+    ("accounting_integration", "home_tax_submission", 14, "a5a57e31b530af134d7b12a641089552e361b5ec534965bb287e34b032788341"),
+    ("accounting_integration", "journal_proposal_record", 9, "cd9b60e16c9c915fb80b5f60fce351d9694aced846c21f3af615adb7b059768e"),
+    ("accounting_integration", "outbox_event", 8, "cf0a8d212e2f703996882c05573facba683b240f3fbffa6df3d0caaab55a4ef3"),
+    ("accounting_integration", "posting_receipt", 8, "901d09055edb9d560ba09118e5843ad8ef6145b882ef55ea6ee1e3fb9acda942"),
+    ("accounting_reporting", "trial_balance_line", 7, "d4444986d7f37011866fed3125238240f4fbda402764bf20ef1f3c7c453729fd"),
+    ("accounting_reporting", "trial_balance_snapshot", 10, "c000256659212235d9c0d38cf4ee6842b79ddd72f10abce709e28a36e4d70e42"),
+)
 _READINESS_CONSTRAINTS = (
     # PostgreSQL 18 pg_get_constraintdef() fingerprints cover every
     # migration-defined primary, unique, foreign-key, and check constraint.
@@ -5294,6 +5329,63 @@ class PostgresPostingLedger:
                         [item[6] for item in _READINESS_INDEX_DEFINITIONS],
                     ),
                 ).fetchone()
+                column_rows = connection.execute(
+                    """
+                    SELECT namespace.nspname,
+                           relation.relname,
+                           attribute.attname,
+                           pg_catalog.format_type(attribute.atttypid, attribute.atttypmod),
+                           attribute.attnotnull,
+                           COALESCE(
+                               pg_catalog.pg_get_expr(default_value.adbin, default_value.adrelid),
+                               ''
+                           ),
+                           attribute.attidentity::text,
+                           attribute.attgenerated::text,
+                           COALESCE(
+                               collation_namespace.nspname || '.' || collation_row.collname,
+                               ''
+                           )
+                    FROM pg_catalog.pg_attribute AS attribute
+                    JOIN pg_catalog.pg_class AS relation
+                      ON relation.oid = attribute.attrelid
+                    JOIN pg_catalog.pg_namespace AS namespace
+                      ON namespace.oid = relation.relnamespace
+                    LEFT JOIN pg_catalog.pg_attrdef AS default_value
+                      ON default_value.adrelid = relation.oid
+                     AND default_value.adnum = attribute.attnum
+                    LEFT JOIN pg_catalog.pg_collation AS collation_row
+                      ON collation_row.oid = attribute.attcollation
+                     AND attribute.attcollation <> 0
+                    LEFT JOIN pg_catalog.pg_namespace AS collation_namespace
+                      ON collation_namespace.oid = collation_row.collnamespace
+                    WHERE namespace.nspname IN (
+                        'accounting_core', 'accounting_integration', 'accounting_reporting'
+                    )
+                      AND relation.relkind IN ('r', 'p')
+                      AND attribute.attnum > 0
+                      AND NOT attribute.attisdropped
+                    ORDER BY namespace.nspname, relation.relname, attribute.attnum
+                    """
+                ).fetchall()
+                column_groups: dict[tuple[str, str], list[list[object]]] = {}
+                for row in column_rows:
+                    column_groups.setdefault((row[0], row[1]), []).append(list(row[2:]))
+                actual_column_fingerprints = {
+                    table_key: (
+                        len(metadata),
+                        hashlib.sha256(
+                            json.dumps(metadata, separators=(",", ":")).encode("utf-8")
+                        ).hexdigest(),
+                    )
+                    for table_key, metadata in column_groups.items()
+                }
+                required_column_fingerprints = {
+                    (schema_name, table_name): (column_count, fingerprint)
+                    for schema_name, table_name, column_count, fingerprint
+                    in _READINESS_COLUMN_FINGERPRINTS
+                }
+                columns_ok &= actual_column_fingerprints == required_column_fingerprints
                 if not version_ok:
                     raise AccountingValidationError("PostgreSQL 18 is required.")
                 if not all(
