@@ -146,13 +146,13 @@ def compute_book_to_bank_bridge(
     bridge_balance = _exact_decimal_sum(
         bridge_input.reconciled_book_balance,
         bridge_input.outstanding_book_items,
-        -bridge_input.outstanding_bank_items,
+        bridge_input.outstanding_bank_items.copy_negate(),
     )
 
     if expected_statement_closing != bridge_input.statement_closing_balance:
         difference = _exact_decimal_sum(
             expected_statement_closing,
-            -bridge_input.statement_closing_balance,
+            bridge_input.statement_closing_balance.copy_negate(),
         )
         return _result(
             bridge_input,
@@ -171,7 +171,7 @@ def compute_book_to_bank_bridge(
     if expected_book_closing != bridge_input.book_closing_balance:
         difference = _exact_decimal_sum(
             expected_book_closing,
-            -bridge_input.book_closing_balance,
+            bridge_input.book_closing_balance.copy_negate(),
         )
         return _result(
             bridge_input,
@@ -189,7 +189,7 @@ def compute_book_to_bank_bridge(
 
     unexplained_difference = _exact_decimal_sum(
         bridge_balance,
-        -bridge_input.statement_closing_balance,
+        bridge_input.statement_closing_balance.copy_negate(),
     )
     if unexplained_difference != Decimal("0"):
         return _result(
