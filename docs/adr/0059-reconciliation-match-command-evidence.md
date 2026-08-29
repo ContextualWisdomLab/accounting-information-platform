@@ -13,16 +13,26 @@ persisted one candidate and its source evidence atomically. A caller that wrote
 those relations independently could leave a candidate without durable command
 identity or make a retry ambiguous.
 
+Immutable command provenance must also prove one real candidate-to-match chain,
+not merely prove that a candidate row and a match row both exist in the same
+tenant and run. Independent foreign keys permit a cross-pair combination in
+which command evidence names candidate A and match B even though match B points
+to candidate C. Because command evidence is append-only, that mismatch must be
+rejected by the database before it can become durable provenance.
+
 ## Decision
 
 Migration `0020_reconciliation_match_command_evidence.sql` adds the immutable,
 forced-RLS `accounting_core.reconciliation_match_command` relation. It binds a
 tenant, evaluating reconciliation run, candidate, and match to a tenant-scoped
 candidate idempotency key, canonical command hash, source-payload hash, and
-immutable object-storage reference. Composite foreign keys and uniqueness rules
-prevent cross-scope evidence, duplicate command or match identities, and
-candidate/match pair mixing: migration 0020 references the candidate-inclusive
-unique key on `reconciliation_match` from the command row.
+immutable object-storage reference. The candidate still has its own tenant/run
+foreign key, while one database-owned composite foreign key binds
+`(tenant_account_id, reconciliation_run_id, reconciliation_match_id,
+reconciliation_candidate_id)` to the same composite identity on
+`reconciliation_match`. The command therefore cannot combine a valid candidate
+with a different valid match from the same run. Uniqueness rules additionally
+prevent duplicate command or match identities.
 
 `accept_reconciliation_match` is the smallest durable command boundary: it
 accepts one exact 1:1 proposed match, requires quoted positive equal decimal
@@ -48,11 +58,14 @@ authority boundaries.
 ## Consequences
 
 Proposed reconciliation evidence now has a durable retry identity and an
-atomic candidate-to-allocation provenance chain. Legacy candidates or matches
-without command evidence are not synthesized by this read boundary. A proposed
-match remains non-authoritative: only the existing approval controls can record
-a human decision, and any adjustment must re-enter the authoritative journal
-command boundary.
+atomic candidate-to-allocation provenance chain. A database write that attempts
+to cross-pair a candidate with a match referencing another candidate fails at
+the relational boundary, even when every identifier is otherwise valid in the
+same tenant and run. Legacy candidates or matches without command evidence are
+not synthesized by this read boundary. A proposed match remains
+non-authoritative: only the existing approval controls can record a human
+decision, and any adjustment must re-enter the authoritative journal command
+boundary.
 
 ## References
 
