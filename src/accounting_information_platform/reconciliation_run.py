@@ -152,6 +152,12 @@ def accept_reconciliation_run(
               AND accounting_book.book_name = %s
               AND assignment.valid_from <= %s
               AND (assignment.valid_to IS NULL OR assignment.valid_to > %s)
+              AND statement.recorded_at <= %s
+              AND account.recorded_at <= %s
+              AND assignment.recorded_at <= %s
+              AND legal_entity.recorded_at <= %s
+              AND accounting_book.recorded_at <= %s
+              AND artifact.recorded_at <= %s
             """,
             (
                 tenant_id,
@@ -160,6 +166,12 @@ def accept_reconciliation_run(
                 accounting_book_reference,
                 bank_cutoff_at,
                 bank_cutoff_at,
+                knowledge_cutoff_at,
+                knowledge_cutoff_at,
+                knowledge_cutoff_at,
+                knowledge_cutoff_at,
+                knowledge_cutoff_at,
+                knowledge_cutoff_at,
             ),
         ).fetchall()
         if not binding_rows:

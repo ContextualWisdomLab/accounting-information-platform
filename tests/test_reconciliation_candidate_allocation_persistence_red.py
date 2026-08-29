@@ -12,8 +12,11 @@ import psycopg
 
 from tests import test_postgres_posting as posting
 from accounting_information_platform import (
+    CAMT053_MESSAGE_DEFINITION,
     accept_bank_account_assignment,
     accept_bank_account_record,
+    accept_bank_statement_evidence,
+    load_canonical_statement_fixture,
 )
 
 
@@ -94,7 +97,7 @@ class PostgresReconciliationAllocationRedTests(unittest.TestCase):
                 "tenant_reference": self.case.policy.tenant_reference,
                 "bank_account_reference": self.account_reference,
                 "account_currency_code": "KRW",
-                "account_identifier": "acct-opaque-allocation-fixture",
+                "account_identifier": "acct-opaque-fixture-only",
             },
             posting.DATABASE_URL,
             self.case.policy.tenant_reference,
@@ -112,7 +115,21 @@ class PostgresReconciliationAllocationRedTests(unittest.TestCase):
             posting.DATABASE_URL,
             self.case.policy.tenant_reference,
         )
-        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
+        statement_payload = load_canonical_statement_fixture().replace(
+            b"Invoice 1001", f"Invoice {uuid.uuid4().hex[:8]}".encode(), 1
+        )
+        self.statement_record = accept_bank_statement_evidence(
+            {
+                "tenant_reference": self.case.policy.tenant_reference,
+                "bank_account_reference": self.account_reference,
+                "message_definition_identifier": CAMT053_MESSAGE_DEFINITION,
+                "statement_payload": statement_payload.decode("utf-8"),
+                "ingestion_idempotency_key": f"statement-run-{uuid.uuid4().hex}",
+            },
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+        )
+        with psycopg.connect(posting.DATABASE_URL) as connection:
             assignments = connection.execute(
                 """
                 SELECT a.tenant_account_id, a.legal_entity_id, a.accounting_book_id,
@@ -131,7 +148,7 @@ class PostgresReconciliationAllocationRedTests(unittest.TestCase):
             "bank_account_assignment_id": assignments[0][3],
         }
         self.run_reference = uuid.uuid4()
-        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
+        with psycopg.connect(posting.DATABASE_URL) as connection:
             connection.execute(
                 "SELECT set_config('app.tenant_account_id', %s, false)",
                 (str(self.scope["tenant_account_id"]),),
@@ -157,7 +174,25 @@ class PostgresReconciliationAllocationRedTests(unittest.TestCase):
                     VALID_FROM,
                 ),
             )
-            connection.execute("RESET app.tenant_account_id")
+            connection.execute(
+                """
+                INSERT INTO accounting_core.reconciliation_run_command (
+                    tenant_account_id, reconciliation_run_id, bank_statement_record_id,
+                    reconciliation_idempotency_key, reconciliation_command_hash,
+                    source_payload_hash, source_payload_reference
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    self.scope["tenant_account_id"],
+                    self.run_reference,
+                    self.statement_record["bank_statement_record_id"],
+                    f"run-evidence-{uuid.uuid4().hex}",
+                    "sha256:" + "c" * 64,
+                    self.statement_record["source_artifact_hash"],
+                    f"memory:{self.statement_record['source_artifact_hash']}",
+                ),
+            )
+            connection.commit()
 
     def _insert_candidate(
         self,
