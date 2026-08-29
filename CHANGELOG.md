@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Closed additional match-evidence gaps: journal `posted_at` now respects the run knowledge cutoff, direct command evidence must match candidate amounts as well as allocation totals, existing-run command inserts reapply bank-account provenance validation, and the psycopg exception import is deferred until the database command path. Dependency-free public imports remain usable; the match boundary remains review-only.
 - Hardened proposed-match source admission: the run row is locked through match persistence; statement booking/value timestamps and journal accounting dates respect the run cutoffs; CRDT/DBIT must agree with the debit/credit side of the assigned cash chart line; and compound journals match that cash line rather than the journal-wide total. Migration `0020_reconciliation_match_command_evidence.sql` now requires exactly one equal statement/journal allocation at command insert and freezes allocations after command evidence. These controls remain review evidence only and cannot approve, close, or post.
 - Hardened migration `0020_reconciliation_match_command_evidence.sql` so immutable match-command evidence cannot mix an independently valid candidate with another candidate's match; the candidate-inclusive composite foreign key now proves the persisted chain.
 - Extended the hash-locked PostgreSQL quality dependency set with the CPython 3.14 `psycopg-binary` wheel required by the central coverage runner; the repository contract now keeps that interpreter boundary executable.

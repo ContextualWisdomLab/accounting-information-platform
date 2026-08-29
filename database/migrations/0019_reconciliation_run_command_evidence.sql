@@ -105,6 +105,11 @@ CREATE CONSTRAINT TRIGGER reconciliation_run_command_provenance_guard
     FOR EACH ROW
     EXECUTE FUNCTION accounting_core.enforce_reconciliation_run_command_provenance();
 
+CREATE TRIGGER reconciliation_run_command_provenance_insert_guard
+    AFTER INSERT ON accounting_core.reconciliation_run_command
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.enforce_reconciliation_run_command_provenance();
+
 ALTER TABLE accounting_core.reconciliation_run_command ENABLE ROW LEVEL SECURITY;
 ALTER TABLE accounting_core.reconciliation_run_command FORCE ROW LEVEL SECURITY;
 CREATE POLICY reconciliation_run_command_isolation

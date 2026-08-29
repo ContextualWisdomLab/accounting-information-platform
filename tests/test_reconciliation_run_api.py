@@ -307,6 +307,91 @@ class ReconciliationRunApiTests(unittest.TestCase):
                 )
                 connection.commit()
 
+    def test_database_rejects_wrong_command_added_to_legacy_run(self) -> None:
+        """A command added to a pre-existing run still proves bank-account provenance."""
+        _statement, command = self._statement_and_command()
+        second_account_reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
+        accept_bank_account_record(
+            {
+                "tenant_reference": self.case.policy.tenant_reference,
+                "bank_account_reference": second_account_reference,
+                "account_currency_code": "KRW",
+                "account_identifier": "acct-opaque-fixture-only",
+            },
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+        )
+        second_statement = accept_bank_statement_evidence(
+            {
+                "tenant_reference": self.case.policy.tenant_reference,
+                "bank_account_reference": second_account_reference,
+                "message_definition_identifier": CAMT053_MESSAGE_DEFINITION,
+                "statement_payload": load_canonical_statement_fixture()
+                .replace(b"BANK-STMT-2026-08-24", b"BANK-STMT-LEGACY-2", 1)
+                .decode("utf-8"),
+                "ingestion_idempotency_key": f"statement-run-legacy-{uuid.uuid4().hex}",
+            },
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            artifact_store=self.store,
+        )
+        scope = self._assignment_scope()
+        assert scope is not None
+        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
+            connection.execute(
+                "ALTER TABLE accounting_core.reconciliation_run "
+                "DISABLE TRIGGER reconciliation_run_command_provenance_guard"
+            )
+            run_id = connection.execute(
+                """
+                INSERT INTO accounting_core.reconciliation_run (
+                    tenant_account_id, legal_entity_id, accounting_book_id,
+                    bank_account_assignment_id, currency_code, bank_cutoff_at,
+                    book_cutoff_at, matching_policy_version, knowledge_cutoff_at,
+                    run_status_code
+                )
+                VALUES (%s, %s, %s, %s, 'KRW', %s, %s, %s, %s, 'evaluating')
+                RETURNING reconciliation_run_id
+                """,
+                (
+                    scope[0],
+                    scope[1],
+                    scope[2],
+                    scope[3],
+                    command["bank_cutoff_at"],
+                    command["book_cutoff_at"],
+                    command["matching_policy_version"],
+                    command["knowledge_cutoff_at"],
+                ),
+            ).fetchone()[0]
+            connection.execute(
+                "ALTER TABLE accounting_core.reconciliation_run "
+                "ENABLE TRIGGER reconciliation_run_command_provenance_guard"
+            )
+        with self.assertRaisesRegex(psycopg.Error, "bank account provenance"):
+            with psycopg.connect(posting.DATABASE_URL) as connection:
+                connection.execute(
+                    """
+                    INSERT INTO accounting_core.reconciliation_run_command (
+                        tenant_account_id, reconciliation_run_id,
+                        bank_statement_record_id, reconciliation_idempotency_key,
+                        reconciliation_command_hash, source_payload_hash,
+                        source_payload_reference
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        scope[0],
+                        run_id,
+                        second_statement["bank_statement_record_id"],
+                        f"legacy-provenance-{uuid.uuid4().hex}",
+                        "sha256:" + "6" * 64,
+                        second_statement["source_artifact_hash"],
+                        f"memory:{second_statement['source_artifact_hash']}",
+                    ),
+                )
+                connection.commit()
+
     def test_wrong_source_hash_fails_before_run_persistence(self) -> None:
         """A run cannot claim a different immutable bank-statement source."""
         _statement, command = self._statement_and_command()

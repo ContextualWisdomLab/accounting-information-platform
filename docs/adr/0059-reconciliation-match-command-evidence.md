@@ -63,6 +63,12 @@ one journal allocation with equal exact amounts, and rejects allocation rows
 inserted after command evidence. These are evidence-integrity controls only;
 they do not turn a proposed match into an approved accounting fact.
 
+Historical match admission also requires the posted journal fact to be known by
+the run's `knowledge_cutoff_at`; a backdated accounting date alone is not
+enough. The source database driver is loaded only inside the database command
+path so dependency-free public imports remain available, while the runtime
+database boundary still reports its existing fail-closed driver error.
+
 The command intentionally does not replace the existing pure split/aggregate
 allocation planner or the database approval workflow. It provides a bounded
 buyer-facing persistence seam for the common 1:1 case; many-to-many planning,

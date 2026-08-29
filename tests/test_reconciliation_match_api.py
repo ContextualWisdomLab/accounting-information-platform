@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import subprocess
+import sys
 import unittest
 import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from pathlib import Path
 from unittest import mock
 
 import psycopg
@@ -69,6 +73,32 @@ class ReconciliationMatchApiTests(unittest.TestCase):
             posting.DATABASE_URL,
             self.case.policy.tenant_reference,
         )
+
+    def test_public_package_import_does_not_require_psycopg(self) -> None:
+        """Dependency-free public imports do not load the optional database driver."""
+        package_root = Path(__file__).resolve().parents[1]
+        script = """
+import builtins
+
+real_import = builtins.__import__
+
+def blocked_import(name, *args, **kwargs):
+    if name == "psycopg" or name.startswith("psycopg."):
+        raise ImportError("blocked for dependency-free import contract")
+    return real_import(name, *args, **kwargs)
+
+builtins.__import__ = blocked_import
+import accounting_information_platform
+"""
+        environment = dict(os.environ, PYTHONPATH=str(package_root / "src"))
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
 
     def _open_run(
         self, entry_index: int = 0, late_statement_entry: bool = False
@@ -408,6 +438,94 @@ class ReconciliationMatchApiTests(unittest.TestCase):
                     ),
                 )
 
+    def test_match_command_rejects_allocation_amount_different_from_candidate(self) -> None:
+        """Command evidence cannot preserve allocations that disagree with its candidate."""
+        command = self._command()
+        tenant_id = self.case.tenant_id
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            candidate_id = connection.execute(
+                """
+                INSERT INTO accounting_core.reconciliation_candidate (
+                    tenant_account_id, reconciliation_run_id,
+                    statement_entry_reference, journal_reference,
+                    statement_amount, journal_amount, rule_code
+                )
+                VALUES (%s, %s, %s, %s, '24999', '24999', 'wrong-amount')
+                RETURNING reconciliation_candidate_id
+                """,
+                (
+                    tenant_id,
+                    command["reconciliation_run_id"],
+                    command["statement_entry_reference"],
+                    command["journal_reference"],
+                ),
+            ).fetchone()[0]
+            match_id = connection.execute(
+                """
+                INSERT INTO accounting_core.reconciliation_match (
+                    tenant_account_id, reconciliation_run_id,
+                    reconciliation_candidate_id, match_status_code
+                )
+                VALUES (%s, %s, %s, 'proposed')
+                RETURNING reconciliation_match_id
+                """,
+                (tenant_id, command["reconciliation_run_id"], candidate_id),
+            ).fetchone()[0]
+            connection.execute(
+                """
+                INSERT INTO accounting_core.statement_match_allocation (
+                    tenant_account_id, reconciliation_run_id,
+                    reconciliation_match_id, statement_entry_reference,
+                    allocated_amount
+                )
+                VALUES (%s, %s, %s, %s, '25000')
+                """,
+                (
+                    tenant_id,
+                    command["reconciliation_run_id"],
+                    match_id,
+                    command["statement_entry_reference"],
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO accounting_core.journal_match_allocation (
+                    tenant_account_id, reconciliation_run_id,
+                    reconciliation_match_id, journal_reference,
+                    allocated_amount
+                )
+                VALUES (%s, %s, %s, %s, '25000')
+                """,
+                (
+                    tenant_id,
+                    command["reconciliation_run_id"],
+                    match_id,
+                    command["journal_reference"],
+                ),
+            )
+            with self.assertRaisesRegex(psycopg.errors.CheckViolation, "candidate"):
+                connection.execute(
+                    """
+                    INSERT INTO accounting_core.reconciliation_match_command (
+                        tenant_account_id, reconciliation_run_id,
+                        reconciliation_candidate_id, reconciliation_match_id,
+                        candidate_idempotency_key, candidate_command_hash,
+                        source_payload_hash, source_payload_reference
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        tenant_id,
+                        command["reconciliation_run_id"],
+                        candidate_id,
+                        match_id,
+                        f"wrong-amount-{uuid.uuid4().hex}",
+                        "sha256:" + "5" * 64,
+                        command["source_payload_hash"],
+                        command["source_payload_reference"],
+                    ),
+                )
+
     def test_match_source_guard_rejects_unbalanced_or_wrong_journal_amounts(self) -> None:
         """Defensive source checks reject impossible or mismatched journal evidence."""
         for journal_row, message in (
@@ -433,6 +551,7 @@ class ReconciliationMatchApiTests(unittest.TestCase):
                         bank_account_assignment_id=uuid.uuid4(),
                         bank_cutoff_at=datetime(2026, 8, 24, 23, 59, 59, tzinfo=timezone.utc),
                         book_cutoff_at=datetime(2026, 8, 24, 23, 59, 59, tzinfo=timezone.utc),
+                        knowledge_cutoff_at=datetime(2026, 9, 1, tzinfo=timezone.utc),
                         statement_reference="statement-entry",
                         journal_reference="journal-reference",
                         statement_amount=Decimal("25000"),
@@ -455,11 +574,41 @@ class ReconciliationMatchApiTests(unittest.TestCase):
                 bank_account_assignment_id=uuid.uuid4(),
                 bank_cutoff_at=datetime(2026, 8, 24, 23, 59, 59, tzinfo=timezone.utc),
                 book_cutoff_at=datetime(2026, 8, 24, 23, 59, 59, tzinfo=timezone.utc),
+                knowledge_cutoff_at=datetime(2026, 9, 1, tzinfo=timezone.utc),
                 statement_reference="statement-entry",
                 journal_reference="journal-reference",
                 statement_amount=Decimal("25000"),
                 journal_amount=Decimal("25000"),
             )
+
+    def test_match_source_guard_applies_journal_knowledge_cutoff(self) -> None:
+        """Historical runs cannot admit journals posted after their knowledge cutoff."""
+        connection = mock.Mock()
+        statement_result = mock.Mock()
+        statement_result.fetchall.return_value = [(Decimal("25000"), "KRW", "CRDT")]
+        journal_result = mock.Mock()
+        journal_result.fetchone.return_value = None
+        connection.execute.side_effect = [statement_result, journal_result]
+        knowledge_cutoff = datetime(2026, 8, 25, tzinfo=timezone.utc)
+        with self.assertRaisesRegex(AccountingValidationError, "journal source"):
+            _require_recorded_source_amounts(
+                connection,
+                tenant_id=uuid.uuid4(),
+                reconciliation_run_id=uuid.uuid4(),
+                accounting_book_id=uuid.uuid4(),
+                currency_code="KRW",
+                bank_account_assignment_id=uuid.uuid4(),
+                bank_cutoff_at=datetime(2026, 8, 24, 23, 59, 59, tzinfo=timezone.utc),
+                book_cutoff_at=datetime(2026, 8, 24, 23, 59, 59, tzinfo=timezone.utc),
+                knowledge_cutoff_at=knowledge_cutoff,
+                statement_reference="statement-entry",
+                journal_reference="journal-reference",
+                statement_amount=Decimal("25000"),
+                journal_amount=Decimal("25000"),
+            )
+        journal_query, journal_parameters = connection.execute.call_args_list[1].args
+        self.assertIn("journal.posted_at <= %s", journal_query)
+        self.assertEqual(journal_parameters[-1], knowledge_cutoff)
 
     def test_match_command_maps_source_conservation_guard_to_validation(self) -> None:
         """A legacy cross-run amount conflict cannot escape as a raw database error."""

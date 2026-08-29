@@ -8,8 +8,6 @@ from decimal import Decimal
 from typing import Mapping
 from uuid import UUID
 
-from psycopg.errors import CheckViolation
-
 from .core import (
     AccountingValidationError,
     IdempotencyConflictError,
@@ -95,7 +93,8 @@ def accept_reconciliation_match(
         run = connection.execute(
             """
             SELECT run_status_code, accounting_book_id, currency_code,
-                   bank_account_assignment_id, bank_cutoff_at, book_cutoff_at
+                   bank_account_assignment_id, bank_cutoff_at, book_cutoff_at,
+                   knowledge_cutoff_at
             FROM accounting_core.reconciliation_run
             WHERE tenant_account_id = %s
               AND reconciliation_run_id = %s
@@ -122,6 +121,7 @@ def accept_reconciliation_match(
             bank_account_assignment_id=run[3],
             bank_cutoff_at=run[4],
             book_cutoff_at=run[5],
+            knowledge_cutoff_at=run[6],
             statement_reference=statement_reference,
             journal_reference=journal_reference,
             statement_amount=statement_amount,
@@ -148,6 +148,8 @@ def accept_reconciliation_match(
                 "the reconciliation candidate is already recorded for this run and source pair. "
                 "Use the existing proposed match or a new source pair, then retry."
             )
+
+        from psycopg.errors import CheckViolation
 
         try:
             candidate_id = connection.execute(
@@ -356,6 +358,7 @@ def _require_recorded_source_amounts(
     bank_account_assignment_id: UUID,
     bank_cutoff_at: object,
     book_cutoff_at: object,
+    knowledge_cutoff_at: object,
     statement_reference: str,
     journal_reference: str,
     statement_amount: Decimal,
@@ -445,6 +448,7 @@ def _require_recorded_source_amounts(
           AND journal.journal_reference = %s
           AND assignment.bank_account_assignment_id = %s
           AND journal.accounting_date <= (%s::timestamptz AT TIME ZONE 'UTC')::date
+          AND journal.posted_at <= %s
         GROUP BY journal.general_journal_id, journal.journal_status_code,
                  journal.transaction_currency_code, assignment.chart_account_id
         """,
@@ -454,6 +458,7 @@ def _require_recorded_source_amounts(
             journal_reference,
             bank_account_assignment_id,
             book_cutoff_at,
+            knowledge_cutoff_at,
         ),
     ).fetchone()
     if journal_row is None:

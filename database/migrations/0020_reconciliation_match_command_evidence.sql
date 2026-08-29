@@ -98,7 +98,16 @@ DECLARE
     journal_allocation_count bigint;
     statement_allocation_total numeric(30, 6);
     journal_allocation_total numeric(30, 6);
+    candidate_statement_amount numeric(30, 6);
+    candidate_journal_amount numeric(30, 6);
 BEGIN
+    SELECT candidate.statement_amount, candidate.journal_amount
+    INTO candidate_statement_amount, candidate_journal_amount
+    FROM accounting_core.reconciliation_candidate AS candidate
+    WHERE candidate.tenant_account_id = NEW.tenant_account_id
+      AND candidate.reconciliation_run_id = NEW.reconciliation_run_id
+      AND candidate.reconciliation_candidate_id = NEW.reconciliation_candidate_id;
+
     SELECT COUNT(*), COALESCE(SUM(allocation.allocated_amount), 0)
     INTO statement_allocation_count, statement_allocation_total
     FROM accounting_core.statement_match_allocation AS allocation
@@ -115,9 +124,11 @@ BEGIN
 
     IF statement_allocation_count <> 1
        OR journal_allocation_count <> 1
-       OR statement_allocation_total <> journal_allocation_total THEN
+       OR statement_allocation_total <> journal_allocation_total
+       OR statement_allocation_total <> candidate_statement_amount
+       OR journal_allocation_total <> candidate_journal_amount THEN
         RAISE EXCEPTION
-            'reconciliation match command requires exactly one statement and one journal allocation with equal amounts (reconciliation_match_command_allocation)'
+            'reconciliation match command requires exactly one statement and one journal allocation matching candidate amounts (reconciliation_match_command_allocation)'
             USING ERRCODE = '23514';
     END IF;
 
