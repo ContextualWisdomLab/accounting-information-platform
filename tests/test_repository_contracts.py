@@ -373,9 +373,15 @@ class RepositoryContractTests(unittest.TestCase):
         quality_requirements = (ROOT / "requirements-quality.txt").read_text(
             encoding="utf-8"
         )
+        psycopg_binary_stanza = re.search(
+            r"(?ms)^psycopg-binary==3\.3\.4 \\\n"
+            r"(?:    --hash=sha256:[0-9a-f]{64}(?: \\\n|\n))+",
+            quality_requirements,
+        )
+        self.assertIsNotNone(psycopg_binary_stanza)
         self.assertIn(
             f"--hash=sha256:{PSYCOPG_BINARY_CP314_MANYLINUX_X86_64_WHEEL_HASH}",
-            quality_requirements,
+            psycopg_binary_stanza.group(0) if psycopg_binary_stanza else "",
         )
 
         orphan_and_unpinned = validate_quality_requirements(
