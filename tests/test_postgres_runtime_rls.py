@@ -118,6 +118,7 @@ class PostgresRuntimeRlsTests(unittest.TestCase):
 
         self.assertEqual(response.status, 200)
         self.assertEqual(body, {"status": "ready"})
+        self.assertEqual(response.getheader("Cache-Control"), "no-store")
 
     def test_restricted_runtime_login_posts_same_tenant_and_cannot_rebind_other_tenant(self) -> None:
         """A least-privilege runtime posts its tenant and cannot self-authorize another tenant."""

@@ -267,9 +267,10 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
                         "connectivity, migrations, and tenant provisioning, then retry."
                     ),
                 },
+                cache_control="no-store",
             )
             return
-        self._write_json(200, {"status": "ready"})
+        self._write_json(200, {"status": "ready"}, cache_control="no-store")
 
     def do_POST(self) -> None:
         """Route journal-proposal accept, adjusting journal, reverse, Billing pull, close, outbox publish, audit-history 405, and GET-only POST 405s."""
@@ -1753,11 +1754,19 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
     def _write_error(self, status_code: int, error_message: str) -> None:
         self._write_json(status_code, {"error_message": error_message})
 
-    def _write_json(self, status_code: int, document: dict[str, object]) -> None:
+    def _write_json(
+        self,
+        status_code: int,
+        document: dict[str, object],
+        *,
+        cache_control: str | None = None,
+    ) -> None:
         payload = json.dumps(document, separators=(",", ":"), sort_keys=True).encode("utf-8")
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
+        if cache_control is not None:
+            self.send_header("Cache-Control", cache_control)
         self.end_headers()
         self.wfile.write(payload)
 

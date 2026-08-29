@@ -24,7 +24,8 @@ privileged sessions and caps connection establishment at five seconds while
 preserving a stricter configured timeout. Return `200` with
 `{"status":"ready"}` only after all checks pass. Return `503` with stable
 operator guidance when a check fails; do not return driver, connection, or
-database-object details to the caller.
+database-object details to the caller. Both readiness responses carry
+`Cache-Control: no-store` so an intermediary cannot reuse stale liveness state.
 
 The probes are operational signals only. They do not authenticate callers,
 authorize accounting commands, or replace exact-head CI, security, package,

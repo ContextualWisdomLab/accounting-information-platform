@@ -34,6 +34,7 @@ class OperabilityDocumentationContractTests(unittest.TestCase):
         self.assertIn("503", operability)
         self.assertIn("0014_reconciliation_candidate_allocation.sql", operability)
         self.assertIn("capped at five seconds", operability)
+        self.assertIn("Cache-Control: no-store", operability)
         self.assertIn("Readiness is not release evidence.", operability)
 
 

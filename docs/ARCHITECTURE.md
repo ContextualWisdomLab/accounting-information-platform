@@ -63,7 +63,8 @@ The mounted HTTP surface exposes `GET /healthz` as process liveness and
 an active bound runtime tenant, and the complete checked-in migration/schema
 contract through migration `0014`; it uses a bounded connection attempt and
 does not accept the privileged fallback used by accounting commands. Neither
-probe is caller authentication or release evidence.
+probe is caller authentication or release evidence, and readiness responses
+use `Cache-Control: no-store` to prevent stale intermediary reuse.
 
 ## Posting transaction
 

@@ -10482,6 +10482,20 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertIn("PostgreSQL 18", str(body["error_message"]))
         self.assertNotIn("connection refused", str(body["error_message"]).lower())
 
+    def test_http_readyz_disables_response_caching(self) -> None:
+        """Readiness responses cannot be reused after the database state changes."""
+        self._start_http_server()
+        connection = http.client.HTTPConnection("127.0.0.1", self._http_port())
+        try:
+            connection.request("GET", "/readyz")
+            response = connection.getresponse()
+            response.read()
+        finally:
+            connection.close()
+
+        self.assertEqual(response.status, 503)
+        self.assertEqual(response.getheader("Cache-Control"), "no-store")
+
     def test_readiness_rejects_an_incomplete_accounting_schema(self) -> None:
         """Readiness fails closed when a required accounting object is absent."""
         ledger = PostgresPostingLedger(DATABASE_URL, self.policy.tenant_reference)
