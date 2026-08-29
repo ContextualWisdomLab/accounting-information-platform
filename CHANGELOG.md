@@ -2,9 +2,10 @@
 
 ## [Unreleased]
 
-- Authorization evidence persistence now accepts only immutable decisions issued by the
-  authorization evaluator; a caller-constructed `allowed` decision cannot be promoted into
-  durable audit evidence.
+- Authorization evidence persistence now accepts only unchanged decisions issued by the
+  authorization evaluator; caller-constructed or post-issuance-mutated `allowed` decisions
+  cannot be promoted into durable audit evidence, while copied evaluator decisions retain
+  their provenance.
 - Malformed or non-object period-close request bodies no longer create an allowed hard-close authorization record before the request is rejected; authorization evidence is reserved for a structurally valid close command.
 
 - Authorization principals now require an explicit `principal_kind` (`human`, `service`, or

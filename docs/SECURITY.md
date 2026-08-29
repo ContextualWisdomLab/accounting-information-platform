@@ -34,9 +34,9 @@ tenant-mismatched, insufficient, or agent-originated high-impact decisions fail 
 `accept` or `lookup` executes. Each decision is appended to tenant-scoped forced-RLS
 `accounting_integration.authorization_decision_record`, including both principal and requested tenant
 references, without raw tokens or full policy documents. The persistence boundary rejects a record
-whose requested tenant differs from its storage tenant and accepts only decisions issued by the
-authorization evaluator, preventing caller-constructed allow evidence. The standalone runner has
-no principal by default and denies all accounting routes except health status.
+whose requested tenant differs from its storage tenant and accepts only unchanged decisions issued
+by the authorization evaluator, preventing caller-constructed or mutated allow evidence. The
+standalone runner has no principal by default and denies all accounting routes except health status.
 
 ## PostgreSQL runtime identities
 

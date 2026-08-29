@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import unittest
 from email.message import Message
@@ -269,6 +270,35 @@ class AuthorizationContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "issued by authorize"):
             record_authorization_decision(
                 "postgresql://unused", TENANT, decision, "forged-decision"
+            )
+
+    def test_authorization_evidence_accepts_a_copied_policy_decision(self) -> None:
+        """Copying evaluator evidence preserves its provenance for the persistence boundary."""
+        decision = copy.deepcopy(
+            authorize(principal("accounting.read_catalog"), TENANT, "read_catalog")
+        )
+        ledger = mock.Mock()
+        session = mock.MagicMock()
+        session.__enter__.return_value = mock.Mock()
+        ledger._session.return_value = session
+        ledger._require_tenant.return_value = "tenant-id"
+        with mock.patch(
+            "accounting_information_platform.persistence.PostgresPostingLedger",
+            return_value=ledger,
+        ):
+            record_authorization_decision(
+                "postgresql://unused", TENANT, decision, "copied-decision"
+            )
+        ledger._require_tenant.assert_called_once()
+
+    def test_authorization_evidence_rejects_mutated_policy_decision(self) -> None:
+        """Mutating an issued decision cannot change the evidence accepted for persistence."""
+        decision = authorize(principal("accounting.read_catalog"), TENANT, "read_catalog")
+        object.__setattr__(decision, "allowed", False)
+
+        with self.assertRaisesRegex(ValueError, "issued by authorize"):
+            record_authorization_decision(
+                "postgresql://unused", TENANT, decision, "mutated-decision"
             )
 
     def test_internal_handlers_keep_their_missing_header_guard(self) -> None:

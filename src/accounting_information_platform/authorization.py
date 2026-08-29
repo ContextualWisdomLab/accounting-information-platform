@@ -7,8 +7,10 @@ module or the accounting domain.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, field
+from enum import Enum
 from types import MappingProxyType
 from typing import Mapping
 
@@ -18,7 +20,28 @@ from .core import _require_code, _require_reference
 AUTHORIZATION_POLICY_VERSION = "accounting-authorization-v1"
 _PERMISSION_PATTERN = re.compile(r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$")
 _PRINCIPAL_KINDS = frozenset(("human", "service", "agent"))
-_AUTHORIZATION_ISSUANCE_TOKEN = object()
+
+
+class _AuthorizationIssuance(Enum):
+    """Stable in-process provenance marker that survives supported copying."""
+
+    ISSUED = "issued"
+
+
+_AUTHORIZATION_ISSUANCE_TOKEN = _AuthorizationIssuance.ISSUED
+_DECISION_VALUE_NAMES = (
+    "principal_reference",
+    "tenant_reference",
+    "requested_tenant_reference",
+    "authentication_context_reference",
+    "credential_evidence_reference",
+    "operation_code",
+    "permission_code",
+    "purpose_code",
+    "policy_version",
+    "decision_code",
+    "allowed",
+)
 
 _OPERATION_PERMISSIONS: Mapping[str, str] = MappingProxyType(
     {
@@ -105,12 +128,20 @@ class AuthorizationDecision:
     decision_code: str
     allowed: bool
     _issuance_token: object = field(default=None, init=False, repr=False, compare=False)
+    _decision_fingerprint: str = field(default="", init=False, repr=False, compare=False)
+
+
+def _decision_fingerprint(decision: AuthorizationDecision) -> str:
+    """Fingerprint decision values so post-issuance mutation fails closed."""
+    values = tuple(getattr(decision, name) for name in _DECISION_VALUE_NAMES)
+    return hashlib.sha256(repr(values).encode("utf-8")).hexdigest()
 
 
 def _issue_authorization_decision(**values: object) -> AuthorizationDecision:
     """Create decision evidence only through the policy evaluator."""
     decision = AuthorizationDecision(**values)
     object.__setattr__(decision, "_issuance_token", _AUTHORIZATION_ISSUANCE_TOKEN)
+    object.__setattr__(decision, "_decision_fingerprint", _decision_fingerprint(decision))
     return decision
 
 
@@ -199,8 +230,11 @@ def record_authorization_decision(
     """Append one decision to the tenant-scoped PostgreSQL authorization evidence table."""
     if not correlation_reference or len(correlation_reference) > 512:
         raise ValueError("authorization correlation reference must contain 1 to 512 characters")
-    if decision._issuance_token is not _AUTHORIZATION_ISSUANCE_TOKEN:
-        raise ValueError("authorization decision must be issued by authorize")
+    if (
+        decision._issuance_token is not _AUTHORIZATION_ISSUANCE_TOKEN
+        or decision._decision_fingerprint != _decision_fingerprint(decision)
+    ):
+        raise ValueError("authorization decision must be issued by authorize and remain unchanged")
     if decision.requested_tenant_reference != tenant_reference:
         raise ValueError("authorization decision tenant scope must match requested tenant reference")
     from .persistence import PostgresPostingLedger
