@@ -219,6 +219,56 @@ def _validate_reviewed_allocation_conservation(
             )
 
 
+def _validate_reviewed_population_source_capacity(
+    reviewed_matches: tuple[ReconciliationReviewedMatch, ...],
+) -> None:
+    """Require source-capacity conservation across the complete reviewed population."""
+
+    for label in ("statement", "journal"):
+        capacities: dict[str, Decimal] = {}
+        allocated_totals: dict[str, Decimal] = {}
+        for reviewed_match in reviewed_matches:
+            if label == "statement":
+                allocations = reviewed_match.statement_allocations
+                candidate_reference = reviewed_match.candidate_statement_reference
+                candidate_capacity = reviewed_match.statement_amount
+            else:
+                allocations = reviewed_match.journal_allocations
+                candidate_reference = reviewed_match.candidate_journal_reference
+                candidate_capacity = reviewed_match.journal_amount
+
+            for allocation in allocations:
+                capacity = allocation.source_capacity
+                if allocation.source_reference == candidate_reference:
+                    if capacity is not None and capacity != candidate_capacity:
+                        raise ValueError(
+                            f"reviewed {label} source capacity must match the database-owned candidate amount"
+                        )
+                    capacity = candidate_capacity
+                elif capacity is None:
+                    raise ValueError(
+                        "reviewed multi-source allocation evidence requires authoritative source capacity "
+                        "for every allocated source"
+                    )
+
+                existing_capacity = capacities.get(allocation.source_reference)
+                if existing_capacity is not None and existing_capacity != capacity:
+                    raise ValueError(
+                        f"reviewed {label} source capacity must be consistent across reviewed matches"
+                    )
+                capacities[allocation.source_reference] = capacity
+                allocated_totals[allocation.source_reference] = _exact_decimal_sum(
+                    allocated_totals.get(allocation.source_reference, Decimal("0")),
+                    allocation.allocated_amount,
+                )
+
+        for source_reference, allocated_total in allocated_totals.items():
+            if allocated_total > capacities[source_reference]:
+                raise ValueError(
+                    f"reviewed {label} allocation exceeds authoritative source capacity across reviewed matches"
+                )
+
+
 def _validate_scope(
     scope: ReconciliationCloseReviewScope,
     bridge: BookToBankBridgeResult,
@@ -442,12 +492,14 @@ def _validate_reviewed_match_population(
                 "reviewed match evidence must cover every normalized journal allocation"
             )
         normalized_matches.append(normalized_match)
-    return tuple(
+    normalized_population = tuple(
         sorted(
             normalized_matches,
             key=lambda reviewed_match: reviewed_match.reconciliation_match_reference,
         )
     )
+    _validate_reviewed_population_source_capacity(normalized_population)
+    return normalized_population
 
 
 def build_reconciliation_close_review(
