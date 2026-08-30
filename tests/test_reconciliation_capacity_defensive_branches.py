@@ -66,12 +66,12 @@ class ReconciliationCapacityDefensiveBranchTests(unittest.TestCase):
             journal_amount=Decimal(journal_amount),
             rule_code="provider_reference",
             statement_allocations=(
-                cls._allocation("statement-allocation", candidate_statement_reference, "10.00")
+                (cls._allocation("statement-allocation", candidate_statement_reference, "10.00"),)
                 if statement_allocations is None
                 else statement_allocations
             ),
             journal_allocations=(
-                cls._allocation("journal-allocation", candidate_journal_reference, "10.00")
+                (cls._allocation("journal-allocation", candidate_journal_reference, "10.00"),)
                 if journal_allocations is None
                 else journal_allocations
             ),
