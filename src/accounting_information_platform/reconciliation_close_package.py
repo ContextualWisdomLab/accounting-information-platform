@@ -590,6 +590,40 @@ def _validate_approval_evidence(
     )
 
 
+def _validate_approval_payload_provenance(
+    approval_evidence: tuple[ReconciliationApprovalEvidence, ...],
+    evidence_references: tuple[ReconciliationEvidenceReference, ...],
+) -> None:
+    """Bind every approval command hash to separately retained immutable evidence."""
+    payload_evidence = tuple(
+        evidence
+        for evidence in evidence_references
+        if evidence.evidence_kind_code == "reconciliation_approval_payload"
+    )
+    expected_references = {
+        approval.evidence_reference for approval in approval_evidence
+    }
+    actual_references = {
+        evidence.evidence_reference for evidence in payload_evidence
+    }
+    if actual_references != expected_references:
+        raise ValueError(
+            "approval source payload evidence must exactly cover every packaged approval"
+        )
+    payload_by_reference = {
+        evidence.evidence_reference: evidence.sha256_digest
+        for evidence in payload_evidence
+    }
+    for approval in approval_evidence:
+        if not hmac.compare_digest(
+            payload_by_reference[approval.evidence_reference],
+            approval.source_payload_hash,
+        ):
+            raise ValueError(
+                "approval source payload evidence digest must match the retained immutable payload"
+            )
+
+
 def _evidence_mapping(
     evidence: ReconciliationEvidenceReference,
 ) -> dict[str, object]:
@@ -652,6 +686,7 @@ def build_reconciliation_close_package(
         package_input.evidence_references,
         projection=projection,
     )
+    _validate_approval_payload_provenance(approval_evidence, ordered_evidence)
     run_evidence = next(
         evidence
         for evidence in ordered_evidence
