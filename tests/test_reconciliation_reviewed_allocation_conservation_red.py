@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from decimal import Decimal
 
 from accounting_information_platform.reconciliation import ReconciliationDecision
@@ -79,6 +80,30 @@ class ReconciliationReviewedAllocationConservationTests(unittest.TestCase):
                     allocation_reference="journal-allocation-x",
                     source_reference="journal-x",
                     allocated_amount=Decimal("100.00"),
+                ),
+            ),
+        )
+
+    @classmethod
+    def _multi_source_match_with_capacity_evidence(cls) -> ReconciliationReviewedMatch:
+        """Return the same split with database-owned source capacities attached."""
+        unbound = cls._multi_source_match_without_capacity_evidence()
+        return replace(
+            unbound,
+            statement_allocations=(
+                replace(
+                    unbound.statement_allocations[0],
+                    source_capacity=Decimal("60.00"),
+                ),
+                replace(
+                    unbound.statement_allocations[1],
+                    source_capacity=Decimal("40.00"),
+                ),
+            ),
+            journal_allocations=(
+                replace(
+                    unbound.journal_allocations[0],
+                    source_capacity=Decimal("100.00"),
                 ),
             ),
         )
@@ -183,6 +208,47 @@ class ReconciliationReviewedAllocationConservationTests(unittest.TestCase):
                 )
             )
 
+    def test_multi_source_close_review_accepts_complete_exact_source_capacities(self) -> None:
+        """Bound capacities preserve valid aggregate evidence without weakening conservation."""
+        projection = build_reconciliation_close_review(
+            ReconciliationCloseReviewInput(
+                bridge_result=self._bridge(),
+                decisions=self._multi_source_decisions(),
+                expected_statement_entry_references=("statement-a", "statement-b"),
+                reviewed_matches=(self._multi_source_match_with_capacity_evidence(),),
+                scope=self._scope(),
+            )
+        )
+        self.assertEqual(projection.reviewed_match_references, ("match-split-001",))
+        self.assertEqual(
+            projection.reviewed_match_evidence[0].statement_allocations[1].source_capacity,
+            Decimal("40.00"),
+        )
+
+    def test_multi_source_close_review_rejects_per_source_overconsumption(self) -> None:
+        """Equal aggregate totals cannot hide one statement source exceeding capacity."""
+        bounded = self._multi_source_match_with_capacity_evidence()
+        overconsumed = replace(
+            bounded,
+            statement_allocations=(
+                bounded.statement_allocations[0],
+                replace(
+                    bounded.statement_allocations[1],
+                    source_capacity=Decimal("39.99"),
+                ),
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "source capacity"):
+            build_reconciliation_close_review(
+                ReconciliationCloseReviewInput(
+                    bridge_result=self._bridge(),
+                    decisions=self._multi_source_decisions(),
+                    expected_statement_entry_references=("statement-a", "statement-b"),
+                    reviewed_matches=(overconsumed,),
+                    scope=self._scope(),
+                )
+            )
+
     def test_close_package_independently_rejects_unequal_allocation_totals(self) -> None:
         """Caller-constructed projections cannot bypass the package evidence boundary."""
         projection = ReconciliationCloseReviewProjection(
@@ -244,6 +310,36 @@ class ReconciliationReviewedAllocationConservationTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "source capacit"):
             close_package._validate_projection(projection)
+
+    def test_close_package_accepts_capacity_bound_multi_source_projection(self) -> None:
+        """Package revalidation accepts the same exact per-source capacity proof."""
+        projection = ReconciliationCloseReviewProjection(
+            tenant_account_reference="tenant-001",
+            legal_entity_reference="entity-001",
+            accounting_book_reference="book-001",
+            bank_account_assignment_reference="bank-assignment-001",
+            reconciliation_run_reference="run-001",
+            statement_population_reference="statement-population-001",
+            book_population_reference="book-population-001",
+            currency_code="KRW",
+            bank_closing_balance=Decimal("100.00"),
+            posted_book_cash_balance=Decimal("100.00"),
+            reconciled_balance=Decimal("100.00"),
+            outstanding_bank_items=Decimal("0.00"),
+            outstanding_book_items=Decimal("0.00"),
+            unexplained_difference=Decimal("0.00"),
+            safely_matchable_candidate_count=1,
+            reviewed_match_references=("match-split-001",),
+            exception_count=0,
+            exception_statement_entry_references=(),
+            unexplained_difference_change=None,
+            outstanding_bank_items_change=None,
+            outstanding_book_items_change=None,
+            suitable_for_period_close_review=True,
+            next_action=_RECONCILED_CLOSE_REVIEW_NEXT_ACTION,
+            reviewed_match_evidence=(self._multi_source_match_with_capacity_evidence(),),
+        )
+        self.assertIs(close_package._validate_projection(projection), projection)
 
 
 if __name__ == "__main__":
