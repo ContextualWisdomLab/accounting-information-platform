@@ -68,6 +68,29 @@ class ReconciliationDataModelDocumentationContractTests(unittest.TestCase):
                     migration,
                 )
 
+    def test_precision_migration_rebuilds_column_dependent_candidate_trigger(self) -> None:
+        """The type repair must preserve the candidate UPDATE OF trigger registration."""
+        migration = (
+            ROOT
+            / "database/migrations/0022_reconciliation_amount_precision.sql"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "DROP TRIGGER reconciliation_candidate_capacity_guard",
+            migration,
+        )
+        self.assertIn(
+            "CREATE TRIGGER reconciliation_candidate_capacity_guard",
+            migration,
+        )
+        self.assertLess(
+            migration.index("DROP TRIGGER reconciliation_candidate_capacity_guard"),
+            migration.index("ALTER TABLE accounting_core.reconciliation_candidate"),
+        )
+        self.assertGreater(
+            migration.index("CREATE TRIGGER reconciliation_candidate_capacity_guard"),
+            migration.index("ALTER COLUMN journal_amount TYPE numeric(38, 6)"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

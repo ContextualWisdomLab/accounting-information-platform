@@ -3,6 +3,11 @@ BEGIN;
 -- Reconciliation monetary facts must use the same numeric(38, 6) domain as
 -- journal lines and bank-statement evidence. The original 0014 tables used a
 -- narrower legacy domain, which could reject valid source amounts.
+-- PostgreSQL does not permit changing a column type while an UPDATE OF trigger
+-- names that column, so the existing registration is rebuilt below.
+DROP TRIGGER reconciliation_candidate_capacity_guard
+    ON accounting_core.reconciliation_candidate;
+
 ALTER TABLE accounting_core.reconciliation_candidate
     ALTER COLUMN statement_amount TYPE numeric(38, 6),
     ALTER COLUMN journal_amount TYPE numeric(38, 6);
@@ -336,5 +341,16 @@ BEGIN
     RETURN NEW;
 END;
 $$;
+
+CREATE TRIGGER reconciliation_candidate_capacity_guard
+BEFORE INSERT OR UPDATE OF
+    tenant_account_id,
+    reconciliation_run_id,
+    statement_entry_reference,
+    journal_reference,
+    statement_amount,
+    journal_amount
+ON accounting_core.reconciliation_candidate
+FOR EACH ROW EXECUTE FUNCTION accounting_core.reconciliation_candidate_capacity_guard();
 
 COMMIT;
