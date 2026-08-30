@@ -278,6 +278,7 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
             exception_code=None,
             next_action="Review and record this deterministic reconciliation proposal; do not post a journal from it.",
             reconciliation_match_reference="reconciliation-match-split",
+            contract_version="reconciliation-decision/v2",
         )
         reviewed_match = ReviewedMatch(
             reconciliation_match_reference="reconciliation-match-split",
