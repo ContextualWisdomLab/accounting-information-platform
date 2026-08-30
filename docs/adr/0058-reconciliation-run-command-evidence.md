@@ -22,6 +22,16 @@ reference. The raw artifact hash is distinct from the normalized statement hash;
 the caller must supply the former. Composite foreign keys, forced RLS, exact hash
 checks, and an immutable trigger make the evidence database-owned.
 
+Because `reconciliation_run` already uses forced tenant RLS before migration 0019,
+the migration creates a transaction-scoped `FOR SELECT ... TO current_user`
+visibility policy only for its upgrade preflight. Before runtime command guards are
+installed, the preflight scans every historical run and refuses the migration with
+`reconciliation_run_command_upgrade_required` if a run lacks durable command
+evidence. The temporary policy and guard function are dropped before commit. The
+migration does not invent an idempotency key, source hash, statement identity, or
+other command provenance that cannot be reconstructed from authoritative retained
+evidence.
+
 `POST /reconciliation-runs` validates that the statement is persisted, its source
 hash matches, and its bank-account assignment is active for the requested legal
 entity, book, and bank cutoff. It opens only `evaluating` scope, records one
@@ -52,11 +62,14 @@ evidence through a later bounded command.
 
 ## Consequences
 
-Run creation has a durable provenance root and an explicit retry contract. Legacy
-`reconciliation_run` rows without a command-evidence row are not synthesized or
-backfilled; the new read boundary fails closed for those rows until a separate
-evidence-repair decision exists. The persisted command remains a control fact and
-does not cross the commercial-billing/statutory-accounting authority boundary.
+Run creation has a durable provenance root and an explicit retry contract. An
+upgrade containing historical `reconciliation_run` rows without command evidence
+fails before migration 0019 can commit; operators must reconstruct provenance from
+authoritative retained evidence through an explicit repair decision or keep the
+upgrade blocked. Runtime read paths therefore cannot silently hide a successfully
+migrated historical run merely because no command row exists. The persisted command
+remains a control fact and does not cross the commercial-billing/statutory-accounting
+authority boundary.
 
 ## References
 
