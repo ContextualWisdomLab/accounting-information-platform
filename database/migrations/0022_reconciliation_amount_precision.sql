@@ -18,6 +18,37 @@ ALTER TABLE accounting_core.statement_match_allocation
 ALTER TABLE accounting_core.journal_match_allocation
     ALTER COLUMN allocated_amount TYPE numeric(38, 6);
 
+-- A command transaction records its freeze on the locked match tuple. Unlike
+-- a command-table lookup, the row lock makes a waiting allocation recheck the
+-- committed tuple version after the command transaction finishes.
+ALTER TABLE accounting_core.reconciliation_match
+    ADD COLUMN command_evidence_recorded_at timestamptz;
+
+CREATE POLICY reconciliation_match_command_marker_match_upgrade_visibility
+    ON accounting_core.reconciliation_match
+    FOR UPDATE
+    TO current_user
+    USING (true)
+    WITH CHECK (true);
+CREATE POLICY reconciliation_match_command_marker_source_upgrade_visibility
+    ON accounting_core.reconciliation_match_command
+    FOR SELECT
+    TO current_user
+    USING (true);
+
+UPDATE accounting_core.reconciliation_match AS match
+SET command_evidence_recorded_at = command.recorded_at
+FROM accounting_core.reconciliation_match_command AS command
+WHERE command.tenant_account_id = match.tenant_account_id
+  AND command.reconciliation_run_id = match.reconciliation_run_id
+  AND command.reconciliation_match_id = match.reconciliation_match_id
+  AND match.command_evidence_recorded_at IS NULL;
+
+DROP POLICY reconciliation_match_command_marker_match_upgrade_visibility
+    ON accounting_core.reconciliation_match;
+DROP POLICY reconciliation_match_command_marker_source_upgrade_visibility
+    ON accounting_core.reconciliation_match_command;
+
 -- Keep aggregate variables unconstrained so an over-consumption comparison
 -- remains an exact rejection instead of overflowing before the guard runs.
 CREATE OR REPLACE FUNCTION accounting_core.reconciliation_match_approval_conservation_guard()
@@ -321,6 +352,19 @@ BEGIN
             USING ERRCODE = '23514';
     END IF;
 
+    UPDATE accounting_core.reconciliation_match AS match
+    SET command_evidence_recorded_at = NEW.recorded_at
+    WHERE match.tenant_account_id = NEW.tenant_account_id
+      AND match.reconciliation_run_id = NEW.reconciliation_run_id
+      AND match.reconciliation_match_id = NEW.reconciliation_match_id
+      AND match.command_evidence_recorded_at IS NULL;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION
+            'reconciliation match command evidence is already recorded; create a new proposed match instead (reconciliation_match_command_duplicate)'
+            USING ERRCODE = '23514';
+    END IF;
+
     SELECT candidate.statement_amount, candidate.journal_amount
     INTO candidate_statement_amount, candidate_journal_amount
     FROM accounting_core.reconciliation_candidate AS candidate
@@ -356,15 +400,17 @@ BEGIN
 END;
 $$;
 
--- Recheck command evidence after acquiring the match lock. A later statement
--- snapshot prevents an allocation from observing a stale pre-command view
--- after it waited for a concurrent command transaction to finish.
+-- Recheck the durable parent marker after acquiring the match lock. The
+-- locked tuple is the synchronization point for a command and allocation.
 CREATE OR REPLACE FUNCTION accounting_core.reject_reconciliation_match_command_allocation()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
+DECLARE
+    command_evidence_recorded_at timestamptz;
 BEGIN
-    PERFORM 1
+    SELECT match.command_evidence_recorded_at
+    INTO command_evidence_recorded_at
     FROM accounting_core.reconciliation_match AS match
     WHERE match.tenant_account_id = NEW.tenant_account_id
       AND match.reconciliation_run_id = NEW.reconciliation_run_id
@@ -377,13 +423,7 @@ BEGIN
             USING ERRCODE = '23514';
     END IF;
 
-    IF EXISTS (
-        SELECT 1
-        FROM accounting_core.reconciliation_match_command AS command
-        WHERE command.tenant_account_id = NEW.tenant_account_id
-          AND command.reconciliation_run_id = NEW.reconciliation_run_id
-          AND command.reconciliation_match_id = NEW.reconciliation_match_id
-    ) THEN
+    IF command_evidence_recorded_at IS NOT NULL THEN
         RAISE EXCEPTION
             'reconciliation match command evidence freezes its allocation population; create a new proposed match instead (reconciliation_match_command_allocation_frozen)'
             USING ERRCODE = '23514';

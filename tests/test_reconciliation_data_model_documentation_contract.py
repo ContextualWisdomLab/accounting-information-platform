@@ -92,7 +92,7 @@ class ReconciliationDataModelDocumentationContractTests(unittest.TestCase):
         )
 
     def test_precision_migration_rechecks_command_freeze_after_parent_lock(self) -> None:
-        """Allocation freeze evidence must use a snapshot taken after the match lock."""
+        """Allocation freeze evidence must use the locked parent marker."""
         migration = (
             ROOT
             / "database/migrations/0022_reconciliation_amount_precision.sql"
@@ -107,7 +107,8 @@ class ReconciliationDataModelDocumentationContractTests(unittest.TestCase):
         )[0]
         self.assertRegex(
             function,
-            r"(?s)FROM accounting_core\.reconciliation_match.*?FOR UPDATE.*?IF EXISTS",
+            r"(?s)FROM accounting_core\.reconciliation_match.*?FOR UPDATE.*?"
+            r"command_evidence_recorded_at IS NOT NULL",
         )
 
     def test_precision_migration_rejects_non_proposed_command_matches(self) -> None:
@@ -126,6 +127,26 @@ class ReconciliationDataModelDocumentationContractTests(unittest.TestCase):
         self.assertIn("current_match_status", function)
         self.assertIn("match_status_code", function)
         self.assertIn("reconciliation_match_command_status", function)
+
+    def test_precision_migration_persists_command_freeze_on_parent_match(self) -> None:
+        """Allocation guards must read a durable freeze marker from the locked parent."""
+        migration = (
+            ROOT
+            / "database/migrations/0022_reconciliation_amount_precision.sql"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "ADD COLUMN command_evidence_recorded_at timestamptz",
+            migration,
+        )
+        self.assertRegex(
+            migration,
+            r"(?s)UPDATE accounting_core\.reconciliation_match.*?SET command_evidence_recorded_at",
+        )
+        function = migration.split(
+            "CREATE OR REPLACE FUNCTION accounting_core.reject_reconciliation_match_command_allocation()",
+            1,
+        )[1].split("CREATE TRIGGER reconciliation_candidate_capacity_guard", 1)[0]
+        self.assertIn("command_evidence_recorded_at IS NOT NULL", function)
 
 
 if __name__ == "__main__":

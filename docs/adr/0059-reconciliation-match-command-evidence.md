@@ -64,12 +64,12 @@ conservation validation failures as `422`.
 
 The database requires command insertion to observe exactly one statement and
 one journal allocation with equal exact amounts while the match is still
-`proposed`, and rejects allocation rows inserted after command evidence. The
-allocation guard locks the parent match before its command-evidence query, so
-a transaction that waited on a concurrent command cannot use a stale snapshot
-to extend the frozen allocation population. These are evidence-integrity
-controls only; they do not turn a proposed match into an approved accounting
-fact.
+`proposed`, and records `command_evidence_recorded_at` on the locked parent
+match. Allocation rows inserted after command evidence read that durable
+parent marker after acquiring the same row lock, so a transaction that waited
+on a concurrent command cannot use a stale command-table snapshot to extend
+the frozen allocation population. These are evidence-integrity controls only;
+they do not turn a proposed match into an approved accounting fact.
 
 Migration `0021_reconciliation_run_command_provenance_repair.sql` is a
 forward-only upgrade for installations that already applied migration 0019
@@ -84,8 +84,9 @@ PostgreSQL numeric variables in the conservation and command-allocation
 triggers, preventing aggregate overflow from masking an exact conservation
 rejection. Its forward-recreated command guard rejects provenance for terminal
 matches, and its allocation-freeze guard takes the parent match lock before
-checking command evidence. The shared amount parser rejects values outside
-that same storage domain before a command reaches the database.
+checking the durable parent-row command-evidence marker. Existing command rows
+backfill that marker. The shared amount parser rejects values outside that same
+storage domain before a command reaches the database.
 
 Historical match admission also requires the posted journal fact to be known by
 the run's `knowledge_cutoff_at`; a backdated accounting date alone is not
