@@ -10,10 +10,12 @@ from accounting_information_platform.reconciliation_close_package import (
     ReconciliationApprovalEvidence,
     ReconciliationClosePackageInput,
     ReconciliationEvidenceReference,
+    _reconciliation_match_snapshot_sha256,
     build_reconciliation_close_package,
 )
 from accounting_information_platform.reconciliation_read_model import (
     ReconciliationCloseReviewProjection,
+    ReconciliationAllocationEvidence,
     ReconciliationReviewedMatch,
 )
 
@@ -22,15 +24,44 @@ class ReconciliationClosePackageEquationTests(unittest.TestCase):
     """Require close packages to re-prove the exact book-to-bank equation."""
 
     @staticmethod
-    def _approval_evidence() -> tuple[ReconciliationApprovalEvidence, ...]:
+    def _reviewed_match(index: int) -> ReconciliationReviewedMatch:
+        return ReconciliationReviewedMatch(
+            reconciliation_match_reference=f"reconciliation-match-{index:02d}",
+            candidate_reference=f"candidate-{index:02d}",
+            candidate_statement_reference=f"statement-entry-{index:02d}",
+            candidate_journal_reference=f"journal-{index:02d}",
+            statement_amount=Decimal("100.00"),
+            journal_amount=Decimal("100.00"),
+            rule_code="provider_reference",
+            statement_allocations=(
+                ReconciliationAllocationEvidence(
+                    allocation_reference=f"statement-allocation-{index:02d}",
+                    source_reference=f"statement-entry-{index:02d}",
+                    allocated_amount=Decimal("100.00"),
+                ),
+            ),
+            journal_allocations=(
+                ReconciliationAllocationEvidence(
+                    allocation_reference=f"journal-allocation-{index:02d}",
+                    source_reference=f"journal-{index:02d}",
+                    allocated_amount=Decimal("100.00"),
+                ),
+            ),
+        )
+
+    @classmethod
+    def _approval_evidence(cls) -> tuple[ReconciliationApprovalEvidence, ...]:
         return tuple(
             ReconciliationApprovalEvidence(
                 tenant_account_reference="tenant-1",
                 reconciliation_run_reference="run-2026-08",
                 reconciliation_match_reference=f"reconciliation-match-{index:02d}",
                 approval_decision_code="approved",
-                reconciliation_snapshot_sha256=(
-                    "sha256:" + "abcdef12"[index - 1] * 64
+                source_payload_hash="sha256:" + "1234567890abcdef"[index - 1] * 64,
+                reconciliation_snapshot_sha256=_reconciliation_match_snapshot_sha256(
+                    "tenant-1",
+                    "run-2026-08",
+                    cls._reviewed_match(index),
                 ),
                 evidence_reference=f"approval-evidence-{index}",
             )
@@ -60,12 +91,7 @@ class ReconciliationClosePackageEquationTests(unittest.TestCase):
                 f"reconciliation-match-{index:02d}" for index in range(1, 9)
             ),
             reviewed_match_evidence=tuple(
-                ReconciliationReviewedMatch(
-                    reconciliation_match_reference=f"reconciliation-match-{index:02d}",
-                    statement_entry_reference=f"statement-entry-{index:02d}",
-                    journal_reference=f"journal-{index:02d}",
-                    allocated_amount=Decimal("100.00"),
-                )
+                self._reviewed_match(index)
                 for index in range(1, 9)
             ),
             unexplained_difference_change=None,

@@ -14,7 +14,7 @@ import importlib
 import io
 import json
 import unittest
-from decimal import Decimal
+from decimal import Decimal, localcontext
 
 from accounting_information_platform.reconciliation import ReconciliationDecision
 from accounting_information_platform.reconciliation_bridge import (
@@ -33,6 +33,7 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
         return (
             module.ReconciliationCloseReviewInput,
             module.ReconciliationCloseReviewScope,
+            module.ReconciliationAllocationEvidence,
             module.ReconciliationReviewedMatch,
             module.build_reconciliation_close_review,
             module.render_reconciliation_close_review_json,
@@ -40,12 +41,33 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
         )
 
     @staticmethod
-    def _reviewed_match(ReviewedMatch, statement_reference: str = "stmt-001"):
+    def _reviewed_match(
+        Allocation,
+        ReviewedMatch,
+        statement_reference: str = "stmt-001",
+    ):
         return ReviewedMatch(
             reconciliation_match_reference="reconciliation-match-001",
-            statement_entry_reference=statement_reference,
-            journal_reference="journal-001",
-            allocated_amount=Decimal("100.00"),
+            candidate_reference="candidate-001",
+            candidate_statement_reference=statement_reference,
+            candidate_journal_reference="journal-001",
+            statement_amount=Decimal("100.00"),
+            journal_amount=Decimal("100.00"),
+            rule_code="provider_reference",
+            statement_allocations=(
+                Allocation(
+                    allocation_reference="statement-allocation-001",
+                    source_reference=statement_reference,
+                    allocated_amount=Decimal("100.00"),
+                ),
+            ),
+            journal_allocations=(
+                Allocation(
+                    allocation_reference="journal-allocation-001",
+                    source_reference="journal-001",
+                    allocated_amount=Decimal("100.00"),
+                ),
+            ),
         )
 
     def _bridge(self, **overrides):
@@ -114,7 +136,7 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
 
     def test_projection_exposes_exact_values_provenance_and_unresolved_next_action(self) -> None:
         """A controller can see exact bridge facts and the work still blocking close review."""
-        ProjectionInput, Scope, ReviewedMatch, build_projection, _, _ = self._api()
+        ProjectionInput, Scope, Allocation, ReviewedMatch, build_projection, _, _ = self._api()
         preceding = self._bridge(
             reconciliation_run_reference="run-previous",
             statement_population_reference="statement-previous",
@@ -129,7 +151,7 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
                 bridge_result=self._bridge(),
                 decisions=(self._match(), self._exception()),
                 expected_statement_entry_references=("stmt-001", "stmt-002"),
-                reviewed_matches=(self._reviewed_match(ReviewedMatch),),
+                reviewed_matches=(self._reviewed_match(Allocation, ReviewedMatch),),
                 scope=scope,
                 preceding_bridge_result=preceding,
                 preceding_scope=scope,
@@ -163,13 +185,13 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
 
     def test_fully_reconciled_projection_is_close_review_candidate_not_an_approval(self) -> None:
         """A clean projection may be suitable evidence but must not claim approval or posting."""
-        ProjectionInput, Scope, ReviewedMatch, build_projection, _, _ = self._api()
+        ProjectionInput, Scope, Allocation, ReviewedMatch, build_projection, _, _ = self._api()
         projection = build_projection(
             ProjectionInput(
                 bridge_result=self._bridge(),
                 decisions=(self._match(),),
                 expected_statement_entry_references=("stmt-001",),
-                reviewed_matches=(self._reviewed_match(ReviewedMatch),),
+                reviewed_matches=(self._reviewed_match(Allocation, ReviewedMatch),),
                 scope=self._scope(Scope),
             )
         )
@@ -182,13 +204,13 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
 
     def test_non_tying_bridge_never_emits_success_shaped_close_review_evidence(self) -> None:
         """An exact bridge difference keeps the public projection fail-closed."""
-        ProjectionInput, Scope, ReviewedMatch, build_projection, _, _ = self._api()
+        ProjectionInput, Scope, Allocation, ReviewedMatch, build_projection, _, _ = self._api()
         projection = build_projection(
             ProjectionInput(
                 bridge_result=self._bridge(outstanding_bank_items=Decimal("50.01")),
                 decisions=(self._match(),),
                 expected_statement_entry_references=("stmt-001",),
-                reviewed_matches=(self._reviewed_match(ReviewedMatch),),
+                reviewed_matches=(self._reviewed_match(Allocation, ReviewedMatch),),
                 scope=self._scope(Scope),
             )
         )
@@ -200,13 +222,13 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
 
     def test_json_and_csv_exports_preserve_exact_decimal_strings_and_next_action(self) -> None:
         """Exports keep monetary evidence exact and visible without hover-only formatting."""
-        ProjectionInput, Scope, ReviewedMatch, build_projection, render_json, render_csv = self._api()
+        ProjectionInput, Scope, Allocation, ReviewedMatch, build_projection, render_json, render_csv = self._api()
         projection = build_projection(
             ProjectionInput(
                 bridge_result=self._bridge(),
                 decisions=(self._match(),),
                 expected_statement_entry_references=("stmt-001",),
-                reviewed_matches=(self._reviewed_match(ReviewedMatch),),
+                reviewed_matches=(self._reviewed_match(Allocation, ReviewedMatch),),
                 scope=self._scope(Scope),
             )
         )
@@ -218,11 +240,15 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
         self.assertEqual(json_payload["posted_book_cash_balance"], "1200.00")
         self.assertEqual(json_payload["unexplained_difference"], "0")
         self.assertEqual(
-            json_payload["reviewed_match_evidence"][0]["allocated_amount"],
+            json_payload["reviewed_match_evidence"][0]["statement_allocations"][0][
+                "allocated_amount"
+            ],
             "100.00",
         )
         self.assertEqual(
-            json_payload["reviewed_match_evidence"][0]["journal_reference"],
+            json_payload["reviewed_match_evidence"][0]["journal_allocations"][0][
+                "source_reference"
+            ],
             "journal-001",
         )
         self.assertIn("next_action", json_payload)
@@ -237,6 +263,158 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
         self.assertEqual(rows[0]["suitable_for_period_close_review"], "true")
         self.assertIn('"allocated_amount":"100.00"', rows[0]["reviewed_match_evidence"])
         self.assertTrue(rows[0]["next_action"])
+
+    def test_close_review_preserves_one_statement_to_many_journal_allocations(self) -> None:
+        """A split match keeps every normalized journal allocation in close evidence."""
+        ProjectionInput, Scope, Allocation, ReviewedMatch, build_projection, _, _ = self._api()
+        decision = ReconciliationDecision(
+            statement_entry_reference="stmt-001",
+            decision_code="match",
+            rule_code="provider_reference",
+            matched_journal_references=("journal-001", "journal-002"),
+            allocated_amount=Decimal("150.00"),
+            exception_code=None,
+            next_action="Review and record this deterministic reconciliation proposal; do not post a journal from it.",
+            reconciliation_match_reference="reconciliation-match-split",
+        )
+        reviewed_match = ReviewedMatch(
+            reconciliation_match_reference="reconciliation-match-split",
+            candidate_reference="candidate-split",
+            candidate_statement_reference="stmt-001",
+            candidate_journal_reference="journal-001",
+            statement_amount=Decimal("150.00"),
+            journal_amount=Decimal("150.00"),
+            rule_code="provider_reference",
+            statement_allocations=(
+                Allocation("statement-allocation-split", "stmt-001", Decimal("150.00")),
+            ),
+            journal_allocations=(
+                Allocation("journal-allocation-001", "journal-001", Decimal("100.00")),
+                Allocation("journal-allocation-002", "journal-002", Decimal("50.00")),
+            ),
+        )
+
+        projection = build_projection(
+            ProjectionInput(
+                bridge_result=self._bridge(),
+                decisions=(decision,),
+                expected_statement_entry_references=("stmt-001",),
+                reviewed_matches=(reviewed_match,),
+                scope=self._scope(Scope),
+            )
+        )
+
+        self.assertEqual(len(projection.reviewed_match_evidence), 1)
+        self.assertEqual(
+            tuple(
+                allocation.source_reference
+                for allocation in projection.reviewed_match_evidence[0].journal_allocations
+            ),
+            ("journal-001", "journal-002"),
+        )
+
+    def test_close_review_preserves_many_statement_to_one_journal_allocations(self) -> None:
+        """An aggregate match binds each statement decision to one complete match record."""
+        ProjectionInput, Scope, Allocation, ReviewedMatch, build_projection, _, _ = self._api()
+        decisions = tuple(
+            ReconciliationDecision(
+                statement_entry_reference=statement_reference,
+                decision_code="match",
+                rule_code="provider_reference",
+                matched_journal_references=("journal-aggregate",),
+                allocated_amount=amount,
+                exception_code=None,
+                next_action="Review and record this deterministic reconciliation proposal; do not post a journal from it.",
+                reconciliation_match_reference="reconciliation-match-aggregate",
+            )
+            for statement_reference, amount in (
+                ("stmt-001", Decimal("60.00")),
+                ("stmt-002", Decimal("40.00")),
+            )
+        )
+        reviewed_match = ReviewedMatch(
+            reconciliation_match_reference="reconciliation-match-aggregate",
+            candidate_reference="candidate-aggregate",
+            candidate_statement_reference="stmt-001",
+            candidate_journal_reference="journal-aggregate",
+            statement_amount=Decimal("60.00"),
+            journal_amount=Decimal("100.00"),
+            rule_code="provider_reference",
+            statement_allocations=(
+                Allocation("statement-allocation-001", "stmt-001", Decimal("60.00")),
+                Allocation("statement-allocation-002", "stmt-002", Decimal("40.00")),
+            ),
+            journal_allocations=(
+                Allocation("journal-allocation-aggregate", "journal-aggregate", Decimal("100.00")),
+            ),
+        )
+
+        projection = build_projection(
+            ProjectionInput(
+                bridge_result=self._bridge(),
+                decisions=decisions,
+                expected_statement_entry_references=("stmt-001", "stmt-002"),
+                reviewed_matches=(reviewed_match,),
+                scope=self._scope(Scope),
+            )
+        )
+
+        self.assertEqual(projection.safely_matchable_candidate_count, 1)
+        self.assertEqual(
+            tuple(
+                allocation.source_reference
+                for allocation in projection.reviewed_match_evidence[0].statement_allocations
+            ),
+            ("stmt-001", "stmt-002"),
+        )
+
+    def test_close_review_deltas_preserve_large_decimal_differences_at_low_precision(self) -> None:
+        """Preceding-run deltas must retain minor-unit differences in large balances."""
+        ProjectionInput, Scope, Allocation, ReviewedMatch, build_projection, _, _ = self._api()
+        huge_reconciled = "10000000000000000000000000.000000"
+        current_outstanding_book = "12345678901234567890123456.000000"
+        preceding_outstanding_book = "12345678901234567890123455.997000"
+
+        def high_bridge(run: str, outstanding_book: str):
+            statement_closing = (
+                "22345678901234567890123456.000000"
+                if outstanding_book == current_outstanding_book
+                else "22345678901234567890123455.997000"
+            )
+            return self._bridge(
+                reconciliation_run_reference=run,
+                statement_population_reference=f"statement-{run}",
+                book_population_reference=f"book-{run}",
+                statement_opening_balance=Decimal(statement_closing),
+                statement_period_movements=Decimal("0.000000"),
+                statement_closing_balance=Decimal(statement_closing),
+                book_opening_balance=Decimal(huge_reconciled),
+                posted_cash_book_movements=Decimal("0.000000"),
+                book_closing_balance=Decimal(huge_reconciled),
+                reconciled_book_balance=Decimal(huge_reconciled),
+                outstanding_book_items=Decimal(outstanding_book),
+                outstanding_bank_items=Decimal("0.000000"),
+            )
+
+        scope = self._scope(Scope)
+        with localcontext() as context:
+            context.prec = 6
+            projection = build_projection(
+                ProjectionInput(
+                    bridge_result=high_bridge("run-current", current_outstanding_book),
+                    decisions=(self._match(),),
+                    expected_statement_entry_references=("stmt-001",),
+                    reviewed_matches=(self._reviewed_match(Allocation, ReviewedMatch),),
+                    scope=scope,
+                    preceding_bridge_result=high_bridge(
+                        "run-previous", preceding_outstanding_book
+                    ),
+                    preceding_scope=scope,
+                )
+            )
+
+        self.assertEqual(projection.outstanding_book_items_change, Decimal("0.003000"))
+        self.assertEqual(projection.unexplained_difference_change, Decimal("0"))
 
 
 if __name__ == "__main__":

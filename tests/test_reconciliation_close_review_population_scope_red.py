@@ -19,6 +19,7 @@ from accounting_information_platform.reconciliation_bridge import (
 )
 import accounting_information_platform.reconciliation_read_model as read_model
 from accounting_information_platform.reconciliation_read_model import (
+    ReconciliationAllocationEvidence,
     ReconciliationReviewedMatch,
 )
 
@@ -105,9 +106,26 @@ class ReconciliationCloseReviewPopulationScopeTests(unittest.TestCase):
     ) -> ReconciliationReviewedMatch:
         return ReconciliationReviewedMatch(
             reconciliation_match_reference=match_reference,
-            statement_entry_reference=statement_reference,
-            journal_reference=journal_reference,
-            allocated_amount=amount,
+            candidate_reference=f"candidate-{match_reference}",
+            candidate_statement_reference=statement_reference,
+            candidate_journal_reference=journal_reference,
+            statement_amount=amount,
+            journal_amount=amount,
+            rule_code="provider_reference",
+            statement_allocations=(
+                ReconciliationAllocationEvidence(
+                    allocation_reference=f"statement-allocation-{match_reference}",
+                    source_reference=statement_reference,
+                    allocated_amount=amount,
+                ),
+            ),
+            journal_allocations=(
+                ReconciliationAllocationEvidence(
+                    allocation_reference=f"journal-allocation-{match_reference}",
+                    source_reference=journal_reference,
+                    allocated_amount=amount,
+                ),
+            ),
         )
 
     def _input(
@@ -276,9 +294,26 @@ class ReconciliationCloseReviewPopulationScopeTests(unittest.TestCase):
                     reviewed_matches=(
                         ReconciliationReviewedMatch(
                             reconciliation_match_reference="reconciliation-match-substitute",
-                            statement_entry_reference="stmt-001",
-                            journal_reference="journal-substitute",
-                            allocated_amount=Decimal("99.00"),
+                            candidate_reference="candidate-substitute",
+                            candidate_statement_reference="stmt-001",
+                            candidate_journal_reference="journal-substitute",
+                            statement_amount=Decimal("99.00"),
+                            journal_amount=Decimal("99.00"),
+                            rule_code="provider_reference",
+                            statement_allocations=(
+                                ReconciliationAllocationEvidence(
+                                    allocation_reference="statement-allocation-substitute",
+                                    source_reference="stmt-001",
+                                    allocated_amount=Decimal("99.00"),
+                                ),
+                            ),
+                            journal_allocations=(
+                                ReconciliationAllocationEvidence(
+                                    allocation_reference="journal-allocation-substitute",
+                                    source_reference="journal-substitute",
+                                    allocated_amount=Decimal("99.00"),
+                                ),
+                            ),
                         ),
                     ),
                 )
@@ -306,7 +341,7 @@ class ReconciliationCloseReviewPopulationScopeTests(unittest.TestCase):
                     expected=("stmt-001",),
                     reviewed_matches=(
                         self._reviewed_match(
-                            "stmt-001", "match-001", amount=Decimal("0")
+                            "stmt-001", "reconciliation-match-001", amount=Decimal("0")
                         ),
                     ),
                 )

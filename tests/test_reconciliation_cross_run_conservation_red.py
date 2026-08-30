@@ -336,6 +336,60 @@ class PostgresCrossRunReconciliationConservationRedTests(unittest.TestCase):
             ).fetchall()
         self.assertEqual(sorted(row[0] for row in statuses), ["approved", "superseded"])
 
+    def test_proposed_match_accepts_one_statement_to_many_journal_allocations(self) -> None:
+        """A split match may allocate one statement source across several journals."""
+        run_reference = self.case.run_reference
+        first_candidate = self._insert_candidate(
+            run_reference,
+            "stmt-split",
+            "journal-split-a",
+            statement_amount="100.00",
+            journal_amount="60.00",
+        )
+        self._insert_candidate(
+            run_reference,
+            "stmt-split",
+            "journal-split-b",
+            statement_amount="100.00",
+            journal_amount="40.00",
+        )
+        match_id = self._insert_match(run_reference, first_candidate)
+        self._insert_statement_allocation(run_reference, match_id, "stmt-split", "100.00")
+        self._insert_journal_allocation(run_reference, match_id, "journal-split-a", "60.00")
+        self._insert_journal_allocation(run_reference, match_id, "journal-split-b", "40.00")
+
+        self._approve_match(run_reference, match_id)
+
+    def test_proposed_match_accepts_many_statement_to_one_journal_allocations(self) -> None:
+        """An aggregate match may combine several statement sources into one journal."""
+        run_reference = self.case.run_reference
+        first_candidate = self._insert_candidate(
+            run_reference,
+            "stmt-aggregate-a",
+            "journal-aggregate",
+            statement_amount="60.00",
+            journal_amount="100.00",
+        )
+        self._insert_candidate(
+            run_reference,
+            "stmt-aggregate-b",
+            "journal-aggregate",
+            statement_amount="40.00",
+            journal_amount="100.00",
+        )
+        match_id = self._insert_match(run_reference, first_candidate)
+        self._insert_statement_allocation(
+            run_reference, match_id, "stmt-aggregate-a", "60.00"
+        )
+        self._insert_statement_allocation(
+            run_reference, match_id, "stmt-aggregate-b", "40.00"
+        )
+        self._insert_journal_allocation(
+            run_reference, match_id, "journal-aggregate", "100.00"
+        )
+
+        self._approve_match(run_reference, match_id)
+
 
 if __name__ == "__main__":
     unittest.main()

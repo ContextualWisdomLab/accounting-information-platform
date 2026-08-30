@@ -19,6 +19,7 @@ from decimal import Decimal
 from .reconciliation_read_model import (
     _RECONCILED_CLOSE_REVIEW_NEXT_ACTION,
     ReconciliationCloseReviewProjection,
+    ReconciliationAllocationEvidence,
     ReconciliationReviewedMatch,
     render_reconciliation_close_review_json,
 )
@@ -62,6 +63,60 @@ _NEXT_ACTION = (
     "Archive this tamper-evident package with the period-close review record; "
     "obtain the separately authorized reconciliation/close decision before any accounting action."
 )
+
+
+def _snapshot_value(value: str) -> str:
+    """Encode one snapshot text value like PostgreSQL's byte-length framing."""
+    return f"{len(value.encode('utf-8'))}:{value}"
+
+
+def _reconciliation_match_snapshot_sha256(
+    tenant_account_reference: str,
+    reconciliation_run_reference: str,
+    reviewed_match: ReconciliationReviewedMatch,
+) -> str:
+    """Reproduce migration 0016's version-1 match snapshot digest exactly."""
+    statement_rows = "\n".join(
+        "|".join(
+            (
+                "statement",
+                _snapshot_value(allocation.allocation_reference),
+                _snapshot_value(allocation.source_reference),
+                _snapshot_value(str(allocation.allocated_amount)),
+            )
+        )
+        for allocation in reviewed_match.statement_allocations
+    )
+    journal_rows = "\n".join(
+        "|".join(
+            (
+                "journal",
+                _snapshot_value(allocation.allocation_reference),
+                _snapshot_value(allocation.source_reference),
+                _snapshot_value(str(allocation.allocated_amount)),
+            )
+        )
+        for allocation in reviewed_match.journal_allocations
+    )
+    snapshot = "\n".join(
+        (
+            "reconciliation_snapshot_version=1",
+            "tenant=" + _snapshot_value(tenant_account_reference),
+            "run=" + _snapshot_value(reconciliation_run_reference),
+            "match=" + _snapshot_value(reviewed_match.reconciliation_match_reference),
+            "candidate=" + _snapshot_value(reviewed_match.candidate_reference),
+            "statement_reference="
+            + _snapshot_value(reviewed_match.candidate_statement_reference),
+            "journal_reference="
+            + _snapshot_value(reviewed_match.candidate_journal_reference),
+            "statement_amount=" + _snapshot_value(str(reviewed_match.statement_amount)),
+            "journal_amount=" + _snapshot_value(str(reviewed_match.journal_amount)),
+            "rule=" + _snapshot_value(reviewed_match.rule_code),
+            "statement_allocations=" + statement_rows,
+            "journal_allocations=" + journal_rows,
+        )
+    )
+    return "sha256:" + hashlib.sha256(snapshot.encode("utf-8")).hexdigest()
 
 
 def _require_identifier(value: object, *, field_name: str) -> str:
@@ -119,6 +174,7 @@ class ReconciliationApprovalEvidence:
     reconciliation_run_reference: str
     reconciliation_match_reference: str
     approval_decision_code: str
+    source_payload_hash: str
     reconciliation_snapshot_sha256: str
     evidence_reference: str
 
@@ -140,6 +196,7 @@ class ReconciliationApprovalEvidence:
             raise ValueError(
                 "approval_decision_code must be approved or rejected"
             )
+        _require_sha256(self.source_payload_hash, field_name="approval source_payload_hash")
         _require_sha256(
             self.reconciliation_snapshot_sha256,
             field_name="reconciliation_snapshot_sha256",
@@ -225,19 +282,66 @@ def _validate_projection(projection: object) -> ReconciliationCloseReviewProject
             field_name="reviewed match reconciliation_match_reference",
         )
         _require_identifier(
-            reviewed_match.statement_entry_reference,
-            field_name="reviewed match statement_entry_reference",
+            reviewed_match.candidate_reference,
+            field_name="reviewed match candidate_reference",
         )
         _require_identifier(
-            reviewed_match.journal_reference,
-            field_name="reviewed match journal_reference",
+            reviewed_match.candidate_statement_reference,
+            field_name="reviewed match candidate_statement_reference",
         )
-        if (
-            not isinstance(reviewed_match.allocated_amount, Decimal)
-            or not reviewed_match.allocated_amount.is_finite()
-            or reviewed_match.allocated_amount <= 0
-        ):
-            raise ValueError("reviewed match evidence amount must be a positive exact Decimal")
+        _require_identifier(
+            reviewed_match.candidate_journal_reference,
+            field_name="reviewed match candidate_journal_reference",
+        )
+        _require_identifier(reviewed_match.rule_code, field_name="reviewed match rule_code")
+        for field_name in ("statement_amount", "journal_amount"):
+            value = getattr(reviewed_match, field_name)
+            if not isinstance(value, Decimal) or not value.is_finite() or value <= 0:
+                raise ValueError(
+                    "reviewed match candidate amounts must be positive exact Decimals"
+                )
+        for field_name in ("statement_allocations", "journal_allocations"):
+            allocations = getattr(reviewed_match, field_name)
+            if not isinstance(allocations, tuple) or not allocations:
+                raise ValueError(
+                    "reviewed match allocation populations must be non-empty tuples"
+                )
+            if any(
+                not isinstance(allocation, ReconciliationAllocationEvidence)
+                for allocation in allocations
+            ):
+                raise ValueError(
+                    "reviewed match allocation populations must contain structured evidence objects"
+                )
+            for allocation in allocations:
+                _require_identifier(
+                    allocation.allocation_reference,
+                    field_name=f"reviewed {field_name} allocation_reference",
+                )
+                _require_identifier(
+                    allocation.source_reference,
+                    field_name=f"reviewed {field_name} source_reference",
+                )
+                if (
+                    not isinstance(allocation.allocated_amount, Decimal)
+                    or not allocation.allocated_amount.is_finite()
+                    or allocation.allocated_amount <= 0
+                ):
+                    raise ValueError(
+                        "reviewed allocation amount must be a positive exact Decimal"
+                    )
+            if tuple(
+                allocation.allocation_reference for allocation in allocations
+            ) != tuple(
+                sorted(
+                    allocation.allocation_reference for allocation in allocations
+                )
+            ):
+                raise ValueError("reviewed allocation evidence must use deterministic ordering")
+            if len({allocation.allocation_reference for allocation in allocations}) != len(
+                allocations
+            ):
+                raise ValueError("reviewed allocation identities must be unique")
     if len(projection.reviewed_match_evidence) != projection.safely_matchable_candidate_count:
         raise ValueError(
             "reviewed match evidence must exactly cover the safely matchable proposals"
@@ -281,8 +385,8 @@ def _validate_projection(projection: object) -> ReconciliationCloseReviewProject
     bridge_unexplained_difference = _exact_decimal_sum(
         projection.reconciled_balance,
         projection.outstanding_book_items,
-        -projection.outstanding_bank_items,
-        -projection.bank_closing_balance,
+        projection.outstanding_bank_items.copy_negate(),
+        projection.bank_closing_balance.copy_negate(),
     )
     if bridge_unexplained_difference != projection.unexplained_difference:
         raise ValueError(
@@ -377,6 +481,7 @@ def _approval_mapping(
         "reconciliation_run_reference": approval.reconciliation_run_reference,
         "reconciliation_match_reference": approval.reconciliation_match_reference,
         "approval_decision_code": approval.approval_decision_code,
+        "source_payload_hash": approval.source_payload_hash,
         "reconciliation_snapshot_sha256": approval.reconciliation_snapshot_sha256,
         "evidence_reference": approval.evidence_reference,
     }
@@ -388,8 +493,8 @@ def _validate_approval_evidence(
     projection: ReconciliationCloseReviewProjection,
 ) -> tuple[ReconciliationApprovalEvidence, ...]:
     """Bind complete approved match evidence to the projection's immutable scope."""
-    if not isinstance(approval_evidence, tuple) or not approval_evidence:
-        raise ValueError("approval evidence must be a non-empty tuple")
+    if not isinstance(approval_evidence, tuple):
+        raise ValueError("approval evidence must be a tuple")
     if any(
         not isinstance(approval, ReconciliationApprovalEvidence)
         for approval in approval_evidence
@@ -408,6 +513,10 @@ def _validate_approval_evidence(
         raise ValueError(
             "approval evidence must exactly cover the projection's reviewed match population"
         )
+    reviewed_matches = {
+        reviewed_match.reconciliation_match_reference: reviewed_match
+        for reviewed_match in projection.reviewed_match_evidence
+    }
     for approval in approval_evidence:
         if (
             approval.tenant_account_reference != projection.tenant_account_reference
@@ -417,6 +526,18 @@ def _validate_approval_evidence(
             raise ValueError("approval evidence must remain in the same tenant and run scope")
         if approval.approval_decision_code != "approved":
             raise ValueError("close-package approval evidence must be approved")
+        expected_snapshot = _reconciliation_match_snapshot_sha256(
+            projection.tenant_account_reference,
+            projection.reconciliation_run_reference,
+            reviewed_matches[approval.reconciliation_match_reference],
+        )
+        if not hmac.compare_digest(
+            approval.reconciliation_snapshot_sha256,
+            expected_snapshot,
+        ):
+            raise ValueError(
+                "approval evidence snapshot must match complete reviewed match facts"
+            )
     return tuple(
         sorted(
             approval_evidence,
@@ -454,7 +575,7 @@ def _package_unsigned_mapping(
 ) -> dict[str, object]:
     """Return the canonical payload committed by ``package_sha256``."""
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "projection": json.loads(render_reconciliation_close_review_json(projection)),
         "approval_evidence": [
             _approval_mapping(approval) for approval in approval_evidence

@@ -32,7 +32,7 @@ database/migrations/0016_reconciliation_approval_evidence.sql
 database/migrations/0017_reconciliation_approval_lock_order.sql
 ```
 
-Migration `0015_reconciliation_multi_match_conservation.sql` replaces the run-wide single-approved-match shortcut from `0014` with tenant/run-scoped match identity plus exact statement/journal allocation conservation. It permits multiple independently approved matches only when no authoritative source amount is over-consumed and grants no journal-posting authority.
+Migration `0015_reconciliation_multi_match_conservation.sql` replaces the run-wide single-approved-match shortcut from `0014` with tenant/run-scoped match identity plus exact statement/journal allocation conservation. It permits multiple independently approved matches, including split and aggregate allocation populations, only when no authoritative source amount is over-consumed and grants no journal-posting authority.
 
 Migration `0016_reconciliation_approval_evidence.sql` adds immutable tenant/run/match-scoped human approval evidence. Operators first record the reviewed approval command identity, immutable object-storage source-payload hash/reference, approver and purpose, then transition the proposed match to `approved`; PostgreSQL computes and stores a SHA-256 snapshot of the candidate/allocation rows, rejects status-only or stale-snapshot approval, freezes candidate identity and later allocations, and refuses installation over existing non-proposed matches without durable approval evidence. Approval evidence grants no journal-posting, reversal, close, or policy authority.
 

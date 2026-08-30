@@ -10,7 +10,7 @@ from __future__ import annotations
 import csv
 import io
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 
 from .reconciliation import ReconciliationDecision
@@ -36,13 +36,27 @@ class ReconciliationCloseReviewScope:
 
 
 @dataclass(frozen=True, slots=True)
+class ReconciliationAllocationEvidence:
+    """One immutable normalized statement or journal allocation fact."""
+
+    allocation_reference: str
+    source_reference: str
+    allocated_amount: Decimal
+
+
+@dataclass(frozen=True, slots=True)
 class ReconciliationReviewedMatch:
-    """Durable match identity and source facts bound to one review decision."""
+    """Complete candidate and normalized allocation facts for one durable match."""
 
     reconciliation_match_reference: str
-    statement_entry_reference: str
-    journal_reference: str
-    allocated_amount: Decimal
+    candidate_reference: str
+    candidate_statement_reference: str
+    candidate_journal_reference: str
+    statement_amount: Decimal
+    journal_amount: Decimal
+    rule_code: str
+    statement_allocations: tuple[ReconciliationAllocationEvidence, ...]
+    journal_allocations: tuple[ReconciliationAllocationEvidence, ...]
 
 
 @dataclass(frozen=True)
@@ -150,66 +164,165 @@ def _validate_statement_population(
 def _validate_reviewed_match_population(
     projection_input: ReconciliationCloseReviewInput,
     *,
-    match_count: int,
     match_decisions: tuple[ReconciliationDecision, ...],
 ) -> tuple[ReconciliationReviewedMatch, ...]:
-    """Require durable match source facts for every safely matchable proposal."""
+    """Require complete normalized match facts bound to durable decisions."""
     reviewed_matches = projection_input.reviewed_matches
     if not isinstance(reviewed_matches, tuple):
         raise ValueError("reviewed match evidence must be a tuple")
-    if len(reviewed_matches) != match_count:
-        raise ValueError(
-            "reviewed match evidence must exactly cover the safely matchable proposals"
-        )
     if any(
         not isinstance(reviewed_match, ReconciliationReviewedMatch)
         for reviewed_match in reviewed_matches
     ):
         raise ValueError("reviewed match evidence must contain structured evidence objects")
-    if tuple(
-        reviewed_match.statement_entry_reference for reviewed_match in reviewed_matches
-    ) != tuple(decision.statement_entry_reference for decision in match_decisions):
+    decision_references = tuple(
+        decision.reconciliation_match_reference for decision in match_decisions
+    )
+    if any(
+        not isinstance(reference, str)
+        or not reference
+        or reference.strip() != reference
+        for reference in decision_references
+    ):
         raise ValueError(
-            "reviewed match evidence must bind to its matching decisions"
+            "reviewed match evidence requires a canonical durable decision identity"
         )
-    references: list[str] = []
-    for reviewed_match, decision in zip(reviewed_matches, match_decisions):
-        decision_match_reference = decision.reconciliation_match_reference
-        if (
-            not isinstance(decision_match_reference, str)
-            or not decision_match_reference
-            or decision_match_reference.strip() != decision_match_reference
-        ):
-            raise ValueError(
-                "reviewed match evidence requires a canonical durable decision identity"
-            )
-        if any(
-            not isinstance(value, str) or not value.strip() or value.strip() != value
-            for value in (
-                reviewed_match.reconciliation_match_reference,
-                reviewed_match.statement_entry_reference,
-                reviewed_match.journal_reference,
-            )
-        ):
-            raise ValueError("reviewed match evidence identities must be canonical non-empty strings")
-        if (
-            not isinstance(reviewed_match.allocated_amount, Decimal)
-            or not reviewed_match.allocated_amount.is_finite()
-            or reviewed_match.allocated_amount <= 0
-        ):
-            raise ValueError("reviewed match evidence amount must be a positive exact Decimal")
-        if (
-            reviewed_match.journal_reference != decision.matched_journal_references[0]
-            or reviewed_match.allocated_amount != decision.allocated_amount
-            or decision_match_reference != reviewed_match.reconciliation_match_reference
-        ):
-            raise ValueError(
-                "reviewed match evidence must bind its statement, journal, amount, and decision identity"
-            )
-        references.append(reviewed_match.reconciliation_match_reference)
+    references = tuple(
+        reviewed_match.reconciliation_match_reference for reviewed_match in reviewed_matches
+    )
+    if any(
+        not isinstance(reference, str) or not reference or reference.strip() != reference
+        for reference in references
+    ):
+        raise ValueError("reviewed match evidence identities must be canonical non-empty strings")
     if len(set(references)) != len(references):
         raise ValueError("reviewed match evidence identities must be unique")
-    return reviewed_matches
+    if set(references) != set(decision_references):
+        raise ValueError(
+            "reviewed match evidence must bind to matching decisions and exactly cover the durable match decision identities"
+        )
+
+    decisions_by_match: dict[str, tuple[ReconciliationDecision, ...]] = {}
+    for decision in match_decisions:
+        assert decision.reconciliation_match_reference is not None
+        decisions_by_match.setdefault(decision.reconciliation_match_reference, ())
+        decisions_by_match[decision.reconciliation_match_reference] += (decision,)
+
+    normalized_matches: list[ReconciliationReviewedMatch] = []
+    for reviewed_match in reviewed_matches:
+        if any(
+            not isinstance(value, str) or not value or value.strip() != value
+            for value in (
+                reviewed_match.candidate_reference,
+                reviewed_match.candidate_statement_reference,
+                reviewed_match.candidate_journal_reference,
+                reviewed_match.rule_code,
+            )
+        ):
+            raise ValueError("reviewed match candidate facts must be canonical non-empty strings")
+        for field_name in ("statement_amount", "journal_amount"):
+            value = getattr(reviewed_match, field_name)
+            if not isinstance(value, Decimal) or not value.is_finite() or value <= 0:
+                raise ValueError(
+                    "reviewed match candidate amounts must be positive exact Decimals"
+                )
+
+        normalized_allocations: dict[str, tuple[ReconciliationAllocationEvidence, ...]] = {}
+        for field_name in ("statement_allocations", "journal_allocations"):
+            allocations = getattr(reviewed_match, field_name)
+            if not isinstance(allocations, tuple) or not allocations:
+                raise ValueError(
+                    "reviewed match allocation populations must be non-empty tuples"
+                )
+            if any(
+                not isinstance(allocation, ReconciliationAllocationEvidence)
+                for allocation in allocations
+            ):
+                raise ValueError(
+                    "reviewed match allocation populations must contain structured evidence objects"
+                )
+            for allocation in allocations:
+                if any(
+                    not isinstance(value, str) or not value or value.strip() != value
+                    for value in (
+                        allocation.allocation_reference,
+                        allocation.source_reference,
+                    )
+                ):
+                    raise ValueError("reviewed allocation identities must be canonical non-empty strings")
+                if (
+                    not isinstance(allocation.allocated_amount, Decimal)
+                    or not allocation.allocated_amount.is_finite()
+                    or allocation.allocated_amount <= 0
+                ):
+                    raise ValueError(
+                        "reviewed allocation amount must be a positive exact Decimal"
+                    )
+            allocation_references = tuple(
+                allocation.allocation_reference for allocation in allocations
+            )
+            if len(set(allocation_references)) != len(allocation_references):
+                raise ValueError("reviewed allocation identities must be unique")
+            normalized_allocations[field_name] = tuple(
+                sorted(allocations, key=lambda allocation: allocation.allocation_reference)
+            )
+
+        statement_allocations = normalized_allocations["statement_allocations"]
+        journal_allocations = normalized_allocations["journal_allocations"]
+        decisions = decisions_by_match[reviewed_match.reconciliation_match_reference]
+        statement_sources = {
+            allocation.source_reference for allocation in statement_allocations
+        }
+        journal_sources = {
+            allocation.source_reference for allocation in journal_allocations
+        }
+        if (
+            reviewed_match.candidate_statement_reference not in statement_sources
+            or reviewed_match.candidate_journal_reference not in journal_sources
+        ):
+            raise ValueError(
+                "reviewed match candidate facts must be represented in their allocations"
+            )
+        covered_journal_sources: set[str] = set()
+        for decision in decisions:
+            matching_statement_amount = (
+                _exact_decimal_sum(
+                    *(
+                        allocation.allocated_amount
+                        for allocation in statement_allocations
+                        if allocation.source_reference == decision.statement_entry_reference
+                    ),
+                )
+                if decision.statement_entry_reference in statement_sources
+                else Decimal("0")
+            )
+            if matching_statement_amount != decision.allocated_amount:
+                raise ValueError(
+                    "reviewed match evidence must bind every decision to statement allocations"
+                )
+            decision_journal_sources = set(decision.matched_journal_references)
+            if not decision_journal_sources.issubset(journal_sources):
+                raise ValueError(
+                    "reviewed match evidence must bind every decision to journal allocations"
+                )
+            covered_journal_sources.update(decision_journal_sources)
+        if covered_journal_sources != journal_sources:
+            raise ValueError(
+                "reviewed match evidence must cover every normalized journal allocation"
+            )
+        normalized_matches.append(
+            replace(
+                reviewed_match,
+                statement_allocations=statement_allocations,
+                journal_allocations=journal_allocations,
+            )
+        )
+    return tuple(
+        sorted(
+            normalized_matches,
+            key=lambda reviewed_match: reviewed_match.reconciliation_match_reference,
+        )
+    )
 
 
 def build_reconciliation_close_review(
@@ -226,9 +339,6 @@ def build_reconciliation_close_review(
         for decision in projection_input.decisions
         if decision.decision_code != "match"
     )
-    match_count = sum(
-        1 for decision in projection_input.decisions if decision.decision_code == "match"
-    )
     match_decisions = tuple(
         decision
         for decision in projection_input.decisions
@@ -236,7 +346,6 @@ def build_reconciliation_close_review(
     )
     reviewed_match_evidence = _validate_reviewed_match_population(
         projection_input,
-        match_count=match_count,
         match_decisions=match_decisions,
     )
     reviewed_match_references = tuple(
@@ -266,15 +375,15 @@ def build_reconciliation_close_review(
             )
         unexplained_change = _exact_decimal_sum(
             bridge.unexplained_difference,
-            -preceding.unexplained_difference,
+            preceding.unexplained_difference.copy_negate(),
         )
         outstanding_bank_change = _exact_decimal_sum(
             bridge.outstanding_bank_items,
-            -preceding.outstanding_bank_items,
+            preceding.outstanding_bank_items.copy_negate(),
         )
         outstanding_book_change = _exact_decimal_sum(
             bridge.outstanding_book_items,
-            -preceding.outstanding_book_items,
+            preceding.outstanding_book_items.copy_negate(),
         )
 
     suitable = bridge.status_code == "reconciled" and not exceptions
@@ -308,7 +417,7 @@ def build_reconciliation_close_review(
         outstanding_bank_items=bridge.outstanding_bank_items,
         outstanding_book_items=bridge.outstanding_book_items,
         unexplained_difference=bridge.unexplained_difference,
-        safely_matchable_candidate_count=match_count,
+        safely_matchable_candidate_count=len(reviewed_match_evidence),
         reviewed_match_references=reviewed_match_references,
         exception_count=len(exceptions),
         exception_statement_entry_references=tuple(
@@ -377,6 +486,7 @@ def _projection_mapping(
     """Return a serialization-safe mapping with monetary values as exact strings."""
 
     return {
+        "schema_version": 2,
         "tenant_account_reference": projection.tenant_account_reference,
         "legal_entity_reference": projection.legal_entity_reference,
         "accounting_book_reference": projection.accounting_book_reference,
@@ -396,9 +506,28 @@ def _projection_mapping(
         "reviewed_match_evidence": tuple(
             {
                 "reconciliation_match_reference": reviewed_match.reconciliation_match_reference,
-                "statement_entry_reference": reviewed_match.statement_entry_reference,
-                "journal_reference": reviewed_match.journal_reference,
-                "allocated_amount": str(reviewed_match.allocated_amount),
+                "candidate_reference": reviewed_match.candidate_reference,
+                "candidate_statement_reference": reviewed_match.candidate_statement_reference,
+                "candidate_journal_reference": reviewed_match.candidate_journal_reference,
+                "statement_amount": str(reviewed_match.statement_amount),
+                "journal_amount": str(reviewed_match.journal_amount),
+                "rule_code": reviewed_match.rule_code,
+                "statement_allocations": tuple(
+                    {
+                        "allocation_reference": allocation.allocation_reference,
+                        "source_reference": allocation.source_reference,
+                        "allocated_amount": str(allocation.allocated_amount),
+                    }
+                    for allocation in reviewed_match.statement_allocations
+                ),
+                "journal_allocations": tuple(
+                    {
+                        "allocation_reference": allocation.allocation_reference,
+                        "source_reference": allocation.source_reference,
+                        "allocated_amount": str(allocation.allocated_amount),
+                    }
+                    for allocation in reviewed_match.journal_allocations
+                ),
             }
             for reviewed_match in projection.reviewed_match_evidence
         ),
