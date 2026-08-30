@@ -243,6 +243,29 @@ class ReconciliationCloseReviewPopulationScopeTests(unittest.TestCase):
                 )
             )
 
+    def test_reviewed_match_requires_durable_decision_identity(self) -> None:
+        """A caller cannot invent the durable match identity when a decision is unbound."""
+        decision = ReconciliationDecision(
+            statement_entry_reference="stmt-001",
+            decision_code="match",
+            rule_code="provider_reference",
+            matched_journal_references=("journal-001",),
+            allocated_amount=Decimal("100.00"),
+            exception_code=None,
+            next_action="Review the deterministic proposal; do not post a journal.",
+        )
+
+        with self.assertRaisesRegex(ValueError, "durable.*identity"):
+            read_model.build_reconciliation_close_review(
+                self._input(
+                    decisions=(decision,),
+                    expected=("stmt-001",),
+                    reviewed_matches=(
+                        self._reviewed_match("stmt-001", "caller-selected-match"),
+                    ),
+                )
+            )
+
     def test_reviewed_match_evidence_binds_statement_and_journal_decision(self) -> None:
         """A same-run match cannot replace the statement/journal decision it reviews."""
         with self.assertRaisesRegex(ValueError, "bind.*decision|decision.*bind"):

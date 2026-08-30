@@ -19,6 +19,7 @@ from decimal import Decimal
 from .reconciliation_read_model import (
     _RECONCILED_CLOSE_REVIEW_NEXT_ACTION,
     ReconciliationCloseReviewProjection,
+    ReconciliationReviewedMatch,
     render_reconciliation_close_review_json,
 )
 from .reconciliation_bridge import _exact_decimal_sum
@@ -211,6 +212,41 @@ def _validate_projection(projection: object) -> ReconciliationCloseReviewProject
         raise ValueError(
             "reviewed match identities must exactly cover the safely matchable proposals"
         )
+    if not isinstance(projection.reviewed_match_evidence, tuple):
+        raise ValueError("reviewed match evidence must be a tuple")
+    if any(
+        not isinstance(reviewed_match, ReconciliationReviewedMatch)
+        for reviewed_match in projection.reviewed_match_evidence
+    ):
+        raise ValueError("reviewed match evidence must contain structured evidence objects")
+    for reviewed_match in projection.reviewed_match_evidence:
+        _require_identifier(
+            reviewed_match.reconciliation_match_reference,
+            field_name="reviewed match reconciliation_match_reference",
+        )
+        _require_identifier(
+            reviewed_match.statement_entry_reference,
+            field_name="reviewed match statement_entry_reference",
+        )
+        _require_identifier(
+            reviewed_match.journal_reference,
+            field_name="reviewed match journal_reference",
+        )
+        if (
+            not isinstance(reviewed_match.allocated_amount, Decimal)
+            or not reviewed_match.allocated_amount.is_finite()
+            or reviewed_match.allocated_amount <= 0
+        ):
+            raise ValueError("reviewed match evidence amount must be a positive exact Decimal")
+    if len(projection.reviewed_match_evidence) != projection.safely_matchable_candidate_count:
+        raise ValueError(
+            "reviewed match evidence must exactly cover the safely matchable proposals"
+        )
+    if tuple(
+        reviewed_match.reconciliation_match_reference
+        for reviewed_match in projection.reviewed_match_evidence
+    ) != projection.reviewed_match_references:
+        raise ValueError("reviewed match evidence must bind projection match identities")
     if (
         not isinstance(projection.exception_count, int)
         or isinstance(projection.exception_count, bool)

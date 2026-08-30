@@ -18,6 +18,7 @@ from accounting_information_platform.reconciliation_close_package import (
 )
 from accounting_information_platform.reconciliation_read_model import (
     ReconciliationCloseReviewProjection,
+    ReconciliationReviewedMatch,
 )
 
 
@@ -49,6 +50,15 @@ class ReconciliationClosePackageTests(unittest.TestCase):
             exception_statement_entry_references=(),
             reviewed_match_references=tuple(
                 f"reconciliation-match-{index:02d}" for index in range(1, 9)
+            ),
+            reviewed_match_evidence=tuple(
+                ReconciliationReviewedMatch(
+                    reconciliation_match_reference=f"reconciliation-match-{index:02d}",
+                    statement_entry_reference=f"statement-entry-{index:02d}",
+                    journal_reference=f"journal-{index:02d}",
+                    allocated_amount=Decimal("100.00"),
+                )
+                for index in range(1, 9)
             ),
             unexplained_difference_change=Decimal("-500.00"),
             outstanding_bank_items_change=Decimal("0.00"),
@@ -140,6 +150,15 @@ class ReconciliationClosePackageTests(unittest.TestCase):
         self.assertEqual(
             [item["reconciliation_match_reference"] for item in payload["approval_evidence"]],
             list(first.projection.reviewed_match_references),
+        )
+        self.assertEqual(
+            payload["projection"]["reviewed_match_evidence"][0],
+            {
+                "allocated_amount": "100.00",
+                "journal_reference": "journal-01",
+                "reconciliation_match_reference": "reconciliation-match-01",
+                "statement_entry_reference": "statement-entry-01",
+            },
         )
         self.assertTrue(
             all(
@@ -419,6 +438,83 @@ class ReconciliationClosePackageTests(unittest.TestCase):
             "exception_statement_entry_references must be unique",
         )
         for projection, expected_error in zip(projections, expected_errors, strict=True):
+            with self.subTest(expected_error=expected_error):
+                with self.assertRaisesRegex(ValueError, expected_error):
+                    build_reconciliation_close_package(
+                        replace(self._input(), projection=projection)
+                    )
+
+    def test_package_requires_complete_structured_reviewed_match_evidence(self) -> None:
+        valid_evidence = self._projection().reviewed_match_evidence
+        cases = (
+            (replace(self._projection(), reviewed_match_evidence=[]), "must be a tuple"),
+            (
+                replace(self._projection(), reviewed_match_evidence=("not-structured",)),
+                "structured evidence objects",
+            ),
+            (replace(self._projection(), reviewed_match_evidence=()), "exactly cover"),
+            (
+                replace(
+                    self._projection(),
+                    reviewed_match_evidence=(
+                        replace(valid_evidence[0], allocated_amount=1.0),
+                        *valid_evidence[1:],
+                    ),
+                ),
+                "positive exact Decimal",
+            ),
+            (
+                replace(
+                    self._projection(),
+                    reviewed_match_evidence=(
+                        replace(valid_evidence[0], allocated_amount=Decimal("NaN")),
+                        *valid_evidence[1:],
+                    ),
+                ),
+                "positive exact Decimal",
+            ),
+            (
+                replace(
+                    self._projection(),
+                    reviewed_match_evidence=(
+                        replace(valid_evidence[0], allocated_amount=Decimal("0")),
+                        *valid_evidence[1:],
+                    ),
+                ),
+                "positive exact Decimal",
+            ),
+            (
+                replace(
+                    self._projection(),
+                    reviewed_match_evidence=(
+                        replace(
+                            valid_evidence[0],
+                            reconciliation_match_reference=" other",
+                        ),
+                        *valid_evidence[1:],
+                    ),
+                ),
+                "reviewed match reconciliation_match_reference",
+            ),
+            (
+                replace(
+                    self._projection(),
+                    reviewed_match_evidence=(
+                        replace(
+                            valid_evidence[0],
+                            statement_entry_reference="statement-entry-01",
+                        ),
+                        *valid_evidence[1:],
+                    ),
+                    reviewed_match_references=(
+                        "different-match",
+                        *self._projection().reviewed_match_references[1:],
+                    ),
+                ),
+                "bind projection match identities",
+            ),
+        )
+        for projection, expected_error in cases:
             with self.subTest(expected_error=expected_error):
                 with self.assertRaisesRegex(ValueError, expected_error):
                     build_reconciliation_close_package(

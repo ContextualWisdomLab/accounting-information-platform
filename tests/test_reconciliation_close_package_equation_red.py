@@ -14,6 +14,7 @@ from accounting_information_platform.reconciliation_close_package import (
 )
 from accounting_information_platform.reconciliation_read_model import (
     ReconciliationCloseReviewProjection,
+    ReconciliationReviewedMatch,
 )
 
 
@@ -57,6 +58,15 @@ class ReconciliationClosePackageEquationTests(unittest.TestCase):
             exception_statement_entry_references=(),
             reviewed_match_references=tuple(
                 f"reconciliation-match-{index:02d}" for index in range(1, 9)
+            ),
+            reviewed_match_evidence=tuple(
+                ReconciliationReviewedMatch(
+                    reconciliation_match_reference=f"reconciliation-match-{index:02d}",
+                    statement_entry_reference=f"statement-entry-{index:02d}",
+                    journal_reference=f"journal-{index:02d}",
+                    allocated_amount=Decimal("100.00"),
+                )
+                for index in range(1, 9)
             ),
             unexplained_difference_change=None,
             outstanding_bank_items_change=None,

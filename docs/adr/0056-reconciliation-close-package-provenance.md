@@ -17,11 +17,13 @@ RFC 3339 defines an Internet date/time profile of ISO 8601 and permits `Z` to de
 
 Introduce deterministic `ReconciliationClosePackage` evidence manifest schema version 3. Version 3 replaces the caller-shaped approval reference/hash pair with a complete structured approval-evidence population; reconciliation-run cutoff provenance remains a required part of the canonical digest-bound payload. The integration candidate has not been released, so no released version-1 or version-2 artifact is migrated or grandfathered.
 
-The close-review input carries each durable match in a structured
-`ReconciliationReviewedMatch` record containing its match identity and
-statement/journal/amount facts. The read model requires that record to align
-with the corresponding `ReconciliationDecision`; an independent match-reference
-tuple cannot be substituted by preserving only cardinality. The package
+The close-review input requires each matching `ReconciliationDecision` to carry
+a canonical durable match identity and carries that identity in a structured
+`ReconciliationReviewedMatch` record containing its statement/journal/amount
+facts. The read model requires that record to align with the corresponding
+decision; an independent match-reference tuple or an unbound caller-selected
+identity cannot be substituted by preserving only cardinality. The complete
+records remain in the projection and its canonical export. The package
 revalidates the public close-review projection before hashing it. All
 accounting/run/population identities must be canonical non-empty strings;
 monetary and delta values must be finite `Decimal` values; exception identities

@@ -217,6 +217,14 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
         self.assertEqual(json_payload["bank_closing_balance"], "1250.00")
         self.assertEqual(json_payload["posted_book_cash_balance"], "1200.00")
         self.assertEqual(json_payload["unexplained_difference"], "0")
+        self.assertEqual(
+            json_payload["reviewed_match_evidence"][0]["allocated_amount"],
+            "100.00",
+        )
+        self.assertEqual(
+            json_payload["reviewed_match_evidence"][0]["journal_reference"],
+            "journal-001",
+        )
         self.assertIn("next_action", json_payload)
 
         rows = list(csv.DictReader(io.StringIO(render_csv(projection))))
@@ -227,6 +235,7 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
         self.assertEqual(rows[0]["posted_book_cash_balance"], "1200.00")
         self.assertEqual(rows[0]["unexplained_difference"], "0")
         self.assertEqual(rows[0]["suitable_for_period_close_review"], "true")
+        self.assertIn('"allocated_amount":"100.00"', rows[0]["reviewed_match_evidence"])
         self.assertTrue(rows[0]["next_action"])
 
 

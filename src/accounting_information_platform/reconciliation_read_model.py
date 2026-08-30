@@ -85,6 +85,7 @@ class ReconciliationCloseReviewProjection:
     outstanding_book_items_change: Decimal | None
     suitable_for_period_close_review: bool
     next_action: str
+    reviewed_match_evidence: tuple[ReconciliationReviewedMatch, ...] = ()
 
 
 def _validate_scope(
@@ -151,7 +152,7 @@ def _validate_reviewed_match_population(
     *,
     match_count: int,
     match_decisions: tuple[ReconciliationDecision, ...],
-) -> tuple[str, ...]:
+) -> tuple[ReconciliationReviewedMatch, ...]:
     """Require durable match source facts for every safely matchable proposal."""
     reviewed_matches = projection_input.reviewed_matches
     if not isinstance(reviewed_matches, tuple):
@@ -173,6 +174,15 @@ def _validate_reviewed_match_population(
         )
     references: list[str] = []
     for reviewed_match, decision in zip(reviewed_matches, match_decisions):
+        decision_match_reference = decision.reconciliation_match_reference
+        if (
+            not isinstance(decision_match_reference, str)
+            or not decision_match_reference
+            or decision_match_reference.strip() != decision_match_reference
+        ):
+            raise ValueError(
+                "reviewed match evidence requires a canonical durable decision identity"
+            )
         if any(
             not isinstance(value, str) or not value.strip() or value.strip() != value
             for value in (
@@ -191,11 +201,7 @@ def _validate_reviewed_match_population(
         if (
             reviewed_match.journal_reference != decision.matched_journal_references[0]
             or reviewed_match.allocated_amount != decision.allocated_amount
-            or (
-                decision.reconciliation_match_reference is not None
-                and decision.reconciliation_match_reference
-                != reviewed_match.reconciliation_match_reference
-            )
+            or decision_match_reference != reviewed_match.reconciliation_match_reference
         ):
             raise ValueError(
                 "reviewed match evidence must bind its statement, journal, amount, and decision identity"
@@ -203,7 +209,7 @@ def _validate_reviewed_match_population(
         references.append(reviewed_match.reconciliation_match_reference)
     if len(set(references)) != len(references):
         raise ValueError("reviewed match evidence identities must be unique")
-    return tuple(references)
+    return reviewed_matches
 
 
 def build_reconciliation_close_review(
@@ -228,10 +234,14 @@ def build_reconciliation_close_review(
         for decision in projection_input.decisions
         if decision.decision_code == "match"
     )
-    reviewed_match_references = _validate_reviewed_match_population(
+    reviewed_match_evidence = _validate_reviewed_match_population(
         projection_input,
         match_count=match_count,
         match_decisions=match_decisions,
+    )
+    reviewed_match_references = tuple(
+        reviewed_match.reconciliation_match_reference
+        for reviewed_match in reviewed_match_evidence
     )
 
     preceding = projection_input.preceding_bridge_result
@@ -309,6 +319,7 @@ def build_reconciliation_close_review(
         outstanding_book_items_change=outstanding_book_change,
         suitable_for_period_close_review=suitable,
         next_action=next_action,
+        reviewed_match_evidence=reviewed_match_evidence,
     )
 
 
@@ -341,6 +352,13 @@ def render_reconciliation_close_review_csv(
                 if value is True
                 else "false"
                 if value is False
+                else json.dumps(
+                    value,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                if key == "reviewed_match_evidence"
                 else "|".join(value)
                 if isinstance(value, tuple)
                 else ""
@@ -375,6 +393,15 @@ def _projection_mapping(
         "unexplained_difference": str(projection.unexplained_difference),
         "safely_matchable_candidate_count": projection.safely_matchable_candidate_count,
         "reviewed_match_references": projection.reviewed_match_references,
+        "reviewed_match_evidence": tuple(
+            {
+                "reconciliation_match_reference": reviewed_match.reconciliation_match_reference,
+                "statement_entry_reference": reviewed_match.statement_entry_reference,
+                "journal_reference": reviewed_match.journal_reference,
+                "allocated_amount": str(reviewed_match.allocated_amount),
+            }
+            for reviewed_match in projection.reviewed_match_evidence
+        ),
         "exception_count": projection.exception_count,
         "exception_statement_entry_references": (
             projection.exception_statement_entry_references
