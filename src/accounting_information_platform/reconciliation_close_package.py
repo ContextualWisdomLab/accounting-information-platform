@@ -19,6 +19,7 @@ from decimal import Decimal
 from .reconciliation_read_model import (
     _RECONCILED_CLOSE_REVIEW_NEXT_ACTION,
     _validate_reviewed_allocation_conservation,
+    _validate_reviewed_population_source_capacity,
     ReconciliationCloseReviewProjection,
     ReconciliationAllocationEvidence,
     ReconciliationReviewedMatch,
@@ -91,6 +92,7 @@ def _reconciliation_match_snapshot_sha256(
         *,
         row_kind: str,
     ) -> str:
+        """Serialize one allocation row for the database-compatible snapshot digest."""
         values = [
             row_kind,
             _snapshot_value(allocation.allocation_reference),
@@ -366,6 +368,7 @@ def _validate_projection(projection: object) -> ReconciliationCloseReviewProject
             ):
                 raise ValueError("reviewed allocation identities must be unique")
         _validate_reviewed_allocation_conservation(reviewed_match)
+    _validate_reviewed_population_source_capacity(projection.reviewed_match_evidence)
     if len(projection.reviewed_match_evidence) != projection.safely_matchable_candidate_count:
         raise ValueError(
             "reviewed match evidence must exactly cover the safely matchable proposals"
