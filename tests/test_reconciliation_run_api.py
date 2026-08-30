@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import unittest
+import unittest.mock as mock
 import uuid
 from contextlib import nullcontext
-from unittest import mock
 
 import psycopg
 
@@ -517,7 +517,11 @@ class ReconciliationRunApiTests(unittest.TestCase):
         missing_policy_status, _missing_policy = self.case._http_json(
             "POST",
             "/reconciliation-runs",
-            dict(command, reconciliation_idempotency_key=f"run-policy-{uuid.uuid4().hex}", matching_policy_version=""),
+            dict(
+                command,
+                reconciliation_idempotency_key=f"run-policy-{uuid.uuid4().hex}",
+                matching_policy_version="",
+            ),
         )
         self.assertEqual(conflict_status, 409)
         self.assertEqual(bad_source_status, 422)
