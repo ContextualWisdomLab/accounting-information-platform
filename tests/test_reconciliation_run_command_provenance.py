@@ -127,6 +127,36 @@ class ReconciliationRunCommandProvenanceTests(unittest.TestCase):
             connection.commit()
         connection.rollback()
 
+    def test_database_owns_persisted_command_digest(self) -> None:
+        """Direct SQL may not persist a caller-selected format-valid command hash."""
+        statement, command = self.helper._statement_and_command()
+        scope = self.helper._assignment_scope()
+        assert scope is not None
+        connection = psycopg.connect(posting.DATABASE_URL)
+        self.addCleanup(connection.close)
+        run_id = self._insert_run(connection, scope, command)
+        supplied_digest = "sha256:" + "1" * 64
+        self._insert_command(
+            connection,
+            scope[0],
+            run_id,
+            statement["bank_statement_record_id"],
+            command["source_payload_hash"],
+        )
+        connection.commit()
+
+        persisted_digest = connection.execute(
+            """
+            SELECT reconciliation_command_hash
+            FROM accounting_core.reconciliation_run_command
+            WHERE tenant_account_id = %s
+              AND reconciliation_run_id = %s
+            """,
+            (scope[0], run_id),
+        ).fetchone()[0]
+        self.assertRegex(persisted_digest, r"^sha256:[0-9a-f]{64}$")
+        self.assertNotEqual(persisted_digest, supplied_digest)
+
     def test_command_insert_validates_a_preexisting_run(self) -> None:
         """A command inserted later must validate provenance for a legacy run row."""
         statement, command = self.helper._statement_and_command()
