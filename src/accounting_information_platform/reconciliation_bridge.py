@@ -7,7 +7,7 @@ or mutate immutable statement evidence.
 
 from __future__ import annotations
 
-from decimal import Decimal, localcontext
+from decimal import MAX_EMAX, MIN_EMIN, Decimal, localcontext
 from typing import NamedTuple
 
 
@@ -74,7 +74,7 @@ _BRIDGE_MONEY_FIELDS = (
 
 
 def _exact_decimal_sum(*values: Decimal) -> Decimal:
-    """Add finite Decimal values without ambient-context rounding."""
+    """Add finite Decimal values without ambient rounding or exponent limits."""
     minimum_exponent = min(value.as_tuple().exponent for value in values)
     aligned_precision = max(
         len(value.as_tuple().digits) + value.as_tuple().exponent - minimum_exponent
@@ -82,6 +82,8 @@ def _exact_decimal_sum(*values: Decimal) -> Decimal:
     )
     with localcontext() as context:
         context.prec = aligned_precision + len(values)
+        context.Emax = MAX_EMAX
+        context.Emin = MIN_EMIN
         return sum(values, Decimal("0"))
 
 
