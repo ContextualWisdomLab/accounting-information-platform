@@ -1,6 +1,6 @@
 # Product and technical gap baseline
 
-**Evidence refresh:** 2026-08-29 (Asia/Seoul)
+**Evidence refresh:** 2026-08-30 (Asia/Seoul)
 
 This file is the durable buyer-visible gap queue for `accounting-information-platform`.
 It records authority, dependency order, acceptance evidence, and product gaps that
@@ -34,12 +34,15 @@ JSON contracts, and a durable outbox. The accounting posting foundation, immutab
 proposal engine, exact book-to-bank bridge, read-only close-review projection, and
 durable reconciliation run/exception/evidence substrate are integrated protected
 `develop` facts. `develop` also contains the initial candidate/match/allocation
-persistence path for one approved match per run. The cross-run many-to-many
-conservation, durable approval snapshot, and close-package provenance successors
-remain open. The platform does not yet provide the complete reconciliation close
-workflow, transmit HomeTax/NTS filings, enforce purpose-bound application
-authorization, or provide a controller UI. Those omissions are explicit product
-scope, not implied successes.
+persistence path for one approved match per run. The current integration candidate
+extends that tree with cross-run many-to-many conservation, durable approval
+snapshot binding, structured close-package provenance, exact statement-balance
+evidence, and immutable reconciliation-run command evidence. Protected `develop`
+remains the release authority until that candidate passes its live gates and is
+lawfully integrated. The platform does not yet provide the complete reconciliation
+close workflow on protected `develop`, transmit HomeTax/NTS filings, enforce
+purpose-bound application authorization, or provide a controller UI. Those
+omissions are explicit product scope, not implied successes.
 
 ## Open work inventory
 
@@ -49,7 +52,7 @@ scope, not implied successes.
 | Immutable bank-statement evidence registry | First buyer-visible reconciliation input; implements the statement-evidence issue | Integrated into protected `develop`; exact replay, changed-hash conflict, parser fail-closed behavior, tenant isolation, and assignment command identity remain protected-branch invariants |
 | Documentation successor | Customer/operator README plus ADR enrichment rebuilt from the integrated foundation | Reconstructed from the exact integrated tree after the dependency roots land; stale ancestry must not merge |
 | Deterministic reconciliation and book-to-bank bridge | Second bounded reconciliation slice | Integrated into protected `develop`: deterministic proposal engine, exact bridge with finite-`Decimal` boundary, immutable-scope close-review projection, and the durable `reconciliation_run`/`reconciliation_exception`/`reconciliation_evidence` substrate with forced tenant RLS and immutable run scope. This is not the complete approval/close package. |
-| Bank-reconciliation buyer slice | Close-out of the reconciliation vertical | Closed only after cross-run candidate/match allocation conservation, immutable approval evidence, exception/approval workflow, and close-package provenance are integrated on top of the delivered substrate |
+| Bank-reconciliation buyer slice | Close-out of the reconciliation vertical | Current integration candidate contains cross-run candidate/match allocation conservation, immutable approval evidence, exception/approval workflow, and close-package provenance; close only after those controls are integrated and revalidated on protected `develop` |
 | Purpose-bound accounting authorization | Least-privilege operation authority | Versioned permission model with fail-closed decisions and immutable audit evidence |
 | Branch/release governance | Integration and release control plane | Protected `develop`/`main` effective policy including repository-owned exact-head accounting CI, independent reviews, and no normal force-push/deletion/bypass path |
 
@@ -66,9 +69,11 @@ workflow results, independent approval, and integrated release attestation.
 
 The live tracker owns the current successor sequence: multi-match conservation
 and approval, close-package provenance, exact statement-balance and run-command
-evidence, and purpose-bound authorization. Their issue numbers, exact heads,
-review decisions, workflow conclusions, and stack ancestry remain live
-integration evidence and are intentionally not copied into this durable baseline.
+evidence, and purpose-bound authorization. The current integration candidate has
+advanced the reconciliation successors together, but protected `develop` remains
+the release authority. Their issue numbers, exact heads, review decisions,
+workflow conclusions, and stack ancestry remain live integration evidence and are
+intentionally not copied into this durable baseline.
 
 ## Dependency-root order
 
@@ -103,10 +108,11 @@ integration evidence and are intentionally not copied into this durable baseline
    and evidence-eligibility-only `suitable_for_period_close_review`) plus the
    durable `reconciliation_run`/`reconciliation_exception`/
    `reconciliation_evidence` rows with forced tenant RLS and the immutable
-   evaluated-run scope guard. Open: cross-run many-to-many exact allocation
-   conservation, immutable approval snapshot evidence, and close-package
-   provenance. The initial candidate/match/allocation persistence path is already
-   present on `develop` and must not be described as wholly absent.
+   evaluated-run scope guard. The current integration candidate adds cross-run
+   many-to-many exact allocation conservation, immutable approval snapshot
+   evidence, and close-package provenance; protected `develop` still requires
+   their exact-head integration. The initial candidate/match/allocation persistence
+   path is already present on `develop` and must not be described as wholly absent.
 6. **Purpose-bound accounting authorization.** Keep tenant identity separate from
    operation authority for posting, reversal, close, tax, outbox, audit, and read
    permissions.
@@ -122,8 +128,8 @@ exact-head gates rather than leaving merge safety to convention alone.
 | P0 | Repository governance does not yet provide complete release evidence | A technically green candidate could still lack exact-head release attestation; AIP `main` now has repository-scoped protection plus the central required workflows and repository-owned Accounting Foundation CI | Protected `develop`/`main` policy with required accounting CI/security/dependency gates, independent review, thread resolution, no force-push/deletion path, and a fresh release PR proving effective policy and integrated-head evidence together |
 | P0 | Database authority must remain stronger than application intent on the integrated head | Direct SQL must never rewrite balances, tenant scope, finalized facts, or closed periods | Real PostgreSQL runtime tests for deferred balance, append-only/finalization guards, forced RLS with a restricted runtime login, DB-owned tenant binding, temporal reversal rules, and purpose-limited close authority |
 | P0 | Stateful commands require exact replay identity and immutable source evidence | Retries must not duplicate or mutate posting, reversal, close, tax, or statement-acceptance evidence | Tenant-scoped command keys, immutable source hashes/references, exact replay, changed-evidence conflict, and atomic command/outbox persistence proven in PostgreSQL |
-| P1 | Deterministic reconciliation and candidate/match allocation are partially delivered | Cash close can explain differences and safely abstain, and `develop` persists the initial one-approved-match path; cross-run active consumption still needs the full many-to-many control | Exact split/aggregate conservation with many-to-many allocation rows, temporal cutoff, concurrency safety, immutable approval evidence, exception/approval workflow, provenance, and bridge equations from bank evidence to posted cash journals. Delivered so far: deterministic proposal engine, finite-Decimal bridge, immutable-scope close-review projection, durable run/exception/evidence substrate, and initial candidate/match/allocation persistence on protected `develop` |
-| P1 | Reconciliation approval and close-package provenance are incomplete | Controllers can read an exact, exportable close-review projection, but it cannot yet prove complete approved-match coverage and immutable close-package provenance | Approval evidence must bind tenant/run/match/snapshot identity and decision, conserve active source populations across runs, and feed a canonical close-package manifest. The package remains evidence-only and cannot approve, close, or post |
+| P1 | Deterministic reconciliation and candidate/match allocation are partially delivered | Cash close can explain differences and safely abstain, and `develop` persists the initial one-approved-match path; the current integration candidate adds the full cross-run many-to-many control pending protected integration | Exact split/aggregate conservation with many-to-many allocation rows, temporal cutoff, concurrency safety, immutable approval evidence, exception/approval workflow, provenance, and bridge equations from bank evidence to posted cash journals. Delivered so far: deterministic proposal engine, finite-Decimal bridge, immutable-scope close-review projection, durable run/exception/evidence substrate, initial candidate/match/allocation persistence on protected `develop`, and the successor controls in the current integration candidate |
+| P1 | Reconciliation approval and close-package provenance are incomplete on protected `develop` | Controllers can read an exact, exportable close-review projection, while the current integration candidate additionally proves complete approved-match coverage and immutable close-package provenance | Approval evidence must bind tenant/run/match/snapshot identity and decision, conserve active source populations across runs, and feed a canonical close-package manifest. The package remains evidence-only and cannot approve, close, or post; protected `develop` integration and revalidation remain outstanding |
 | P1 | Purpose-bound authorization is absent | Tenant authentication alone is too coarse for accounting powers | Versioned operation-to-permission mapping, host identity adapter boundary, fail-closed authorization tests, immutable allow/deny audit evidence, and no caller/model-controlled promotion |
 | P1 | Production operability and release proof remain incomplete | An operator cannot yet deploy, observe, back up, and recover the service with release-grade evidence | Supported deployment boundary, migration/rollback rehearsal, outbox-drain ownership, metrics/alerts, backup/restore exercise, integrated-head signed attestations, release version, artifact/source hashes, and recovery runbook evidence |
 | P2 | No frontend/design-system surface exists | Controllers have no visual close/reconciliation workflow | Introduce Figma source of truth, reusable design tokens, Storybook inventory with scene/edge-case event definitions, exact-value tables/exports, and browser accessibility tests only when a UI is actually added |
@@ -196,8 +202,8 @@ immutable bank statement artifact
 → exact book-to-bank bridge                      [delivered; finite-Decimal boundary + bridge scope in ADR 0054]
 → durable run / exception / evidence rows        [delivered; forced RLS + run-scope guard]
 → close-review projection                        [delivered; evidence eligibility only, same-scope deltas]
-→ candidate/match allocation conservation        [partial on develop; cross-run multi-match open]
-→ reconciliation approval and close package      [open M2 slice; immutable snapshot/provenance]
+→ candidate/match allocation conservation        [current integration candidate; protected develop integration open]
+→ reconciliation approval and close package      [current integration candidate; protected develop integration open]
 ```
 
 The delivered adapter pins the supported ISO 20022 message-definition revision and
