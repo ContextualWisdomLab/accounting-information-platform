@@ -113,7 +113,8 @@ class ReconciliationClosePackageTests(unittest.TestCase):
             for index in range(1, 9)
         )
 
-    def _evidence(self) -> tuple[ReconciliationEvidenceReference, ...]:
+    def _base_evidence(self) -> tuple[ReconciliationEvidenceReference, ...]:
+        """Return required non-approval source evidence for one baseline run."""
         return (
             ReconciliationEvidenceReference(
                 evidence_kind_code="statement_artifact",
@@ -137,6 +138,24 @@ class ReconciliationClosePackageTests(unittest.TestCase):
                 knowledge_cutoff="2026-08-28T08:41:54Z",
             ),
         )
+
+    def _approval_payload_evidence(
+        self,
+        approvals: tuple[ReconciliationApprovalEvidence, ...] | None = None,
+    ) -> tuple[ReconciliationEvidenceReference, ...]:
+        """Retain the immutable payload digest referenced by every packaged approval."""
+        approval_evidence = self._approval_evidence() if approvals is None else approvals
+        return tuple(
+            ReconciliationEvidenceReference(
+                evidence_kind_code="reconciliation_approval_payload",
+                evidence_reference=approval.evidence_reference,
+                sha256_digest=approval.source_payload_hash,
+            )
+            for approval in approval_evidence
+        )
+
+    def _evidence(self) -> tuple[ReconciliationEvidenceReference, ...]:
+        return self._base_evidence() + self._approval_payload_evidence()
 
     def _input(
         self,
@@ -213,6 +232,7 @@ class ReconciliationClosePackageTests(unittest.TestCase):
             [item["evidence_kind_code"] for item in payload["evidence_references"]],
             [
                 "book_population",
+                *["reconciliation_approval_payload"] * 8,
                 "reconciliation_run",
                 "statement_artifact",
                 "statement_population",
@@ -235,7 +255,12 @@ class ReconciliationClosePackageTests(unittest.TestCase):
             reviewed_match_evidence=(),
         )
         package = build_reconciliation_close_package(
-            replace(self._input(), projection=projection, approval_evidence=())
+            replace(
+                self._input(),
+                projection=projection,
+                approval_evidence=(),
+                evidence_references=self._base_evidence(),
+            )
         )
         self.assertEqual(package.approval_evidence, ())
 
@@ -368,6 +393,10 @@ class ReconciliationClosePackageTests(unittest.TestCase):
                 self._input(),
                 projection=projection,
                 approval_evidence=(approval,),
+                evidence_references=(
+                    *self._base_evidence(),
+                    *self._approval_payload_evidence((approval,)),
+                ),
             )
         )
 
