@@ -30,6 +30,80 @@ CREATE TABLE accounting_core.reconciliation_run_command (
     UNIQUE (tenant_account_id, reconciliation_run_id)
 );
 
+-- The persisted command digest is database-owned. PostgreSQL 18 provides
+-- sha256(bytea) as a core binary-string function, so no extension or caller-
+-- supplied digest is trusted. The trigger overwrites any supplied hash with a
+-- domain-separated digest over one deterministic jsonb command projection.
+CREATE OR REPLACE FUNCTION accounting_core.assign_reconciliation_run_command_hash()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    canonical_command jsonb;
+BEGIN
+    SELECT jsonb_build_object(
+        'accounting_book_reference', accounting_book.book_name,
+        'bank_account_assignment_id', run.bank_account_assignment_id::text,
+        'bank_cutoff_at', to_char(
+            run.bank_cutoff_at AT TIME ZONE 'UTC',
+            'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+        ),
+        'bank_statement_record_id', NEW.bank_statement_record_id::text,
+        'book_cutoff_at', to_char(
+            run.book_cutoff_at AT TIME ZONE 'UTC',
+            'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+        ),
+        'knowledge_cutoff_at', to_char(
+            run.knowledge_cutoff_at AT TIME ZONE 'UTC',
+            'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+        ),
+        'legal_entity_reference', legal_entity.legal_entity_code,
+        'matching_policy_version', run.matching_policy_version,
+        'normalized_payload_hash', statement.normalized_payload_hash,
+        'reconciliation_idempotency_key', NEW.reconciliation_idempotency_key,
+        'source_payload_hash', NEW.source_payload_hash,
+        'tenant_reference', tenant.tenant_account_code
+    )
+    INTO canonical_command
+    FROM accounting_core.reconciliation_run AS run
+    JOIN accounting_core.tenant_account AS tenant
+      ON tenant.tenant_account_id = run.tenant_account_id
+    JOIN accounting_core.legal_entity_record AS legal_entity
+      ON legal_entity.tenant_account_id = run.tenant_account_id
+     AND legal_entity.legal_entity_id = run.legal_entity_id
+    JOIN accounting_core.accounting_book AS accounting_book
+      ON accounting_book.tenant_account_id = run.tenant_account_id
+     AND accounting_book.accounting_book_id = run.accounting_book_id
+    JOIN accounting_integration.bank_statement_record AS statement
+      ON statement.tenant_account_id = run.tenant_account_id
+     AND statement.bank_statement_record_id = NEW.bank_statement_record_id
+    WHERE run.tenant_account_id = NEW.tenant_account_id
+      AND run.reconciliation_run_id = NEW.reconciliation_run_id;
+
+    IF canonical_command IS NULL THEN
+        RAISE EXCEPTION
+            'reconciliation run command scope cannot be canonicalized (reconciliation_run_command_provenance)'
+            USING ERRCODE = '23514';
+    END IF;
+
+    NEW.reconciliation_command_hash := 'sha256:' || encode(
+        sha256(
+            convert_to(
+                'reconciliation_run_command:v1|' || canonical_command::text,
+                'UTF8'
+            )
+        ),
+        'hex'
+    );
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER reconciliation_run_command_hash_guard
+    BEFORE INSERT ON accounting_core.reconciliation_run_command
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.assign_reconciliation_run_command_hash();
+
 -- reconciliation_run has forced tenant RLS from migration 0013. Give this
 -- install-time check transaction-scoped visibility of historical rows, then
 -- remove that visibility before commit. Historical runs predate this command
