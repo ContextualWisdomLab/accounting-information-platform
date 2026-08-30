@@ -35,6 +35,16 @@ class ReconciliationCloseReviewScope:
     currency_code: str
 
 
+@dataclass(frozen=True, slots=True)
+class ReconciliationReviewedMatch:
+    """Durable match identity and source facts bound to one review decision."""
+
+    reconciliation_match_reference: str
+    statement_entry_reference: str
+    journal_reference: str
+    allocated_amount: Decimal
+
+
 @dataclass(frozen=True)
 class ReconciliationCloseReviewInput:
     """Inputs required to build one read-only reconciliation close-review view."""
@@ -42,7 +52,7 @@ class ReconciliationCloseReviewInput:
     bridge_result: BookToBankBridgeResult
     decisions: tuple[ReconciliationDecision, ...]
     expected_statement_entry_references: tuple[str, ...]
-    reviewed_match_references: tuple[str, ...]
+    reviewed_matches: tuple[ReconciliationReviewedMatch, ...]
     scope: ReconciliationCloseReviewScope
     preceding_bridge_result: BookToBankBridgeResult | None = None
     preceding_scope: ReconciliationCloseReviewScope | None = None
@@ -141,29 +151,59 @@ def _validate_reviewed_match_population(
     *,
     match_count: int,
     match_decisions: tuple[ReconciliationDecision, ...],
-) -> None:
-    """Require durable match identities for every safely matchable proposal."""
-    references = projection_input.reviewed_match_references
-    if not isinstance(references, tuple):
-        raise ValueError("reviewed match identities must be a tuple")
-    if any(not isinstance(value, str) or not value.strip() for value in references):
-        raise ValueError("reviewed match identities must be non-empty")
-    if len(set(references)) != len(references):
-        raise ValueError("reviewed match identities must be unique")
-    if len(references) != match_count:
+) -> tuple[str, ...]:
+    """Require durable match source facts for every safely matchable proposal."""
+    reviewed_matches = projection_input.reviewed_matches
+    if not isinstance(reviewed_matches, tuple):
+        raise ValueError("reviewed match evidence must be a tuple")
+    if len(reviewed_matches) != match_count:
         raise ValueError(
-            "reviewed match identities must exactly cover the safely matchable proposals"
+            "reviewed match evidence must exactly cover the safely matchable proposals"
         )
-    decision_references = tuple(
-        decision.reconciliation_match_reference for decision in match_decisions
-    )
     if any(
-        not isinstance(reference, str) or not reference.strip()
-        for reference in decision_references
-    ) or decision_references != references:
+        not isinstance(reviewed_match, ReconciliationReviewedMatch)
+        for reviewed_match in reviewed_matches
+    ):
+        raise ValueError("reviewed match evidence must contain structured evidence objects")
+    if tuple(
+        reviewed_match.statement_entry_reference for reviewed_match in reviewed_matches
+    ) != tuple(decision.statement_entry_reference for decision in match_decisions):
         raise ValueError(
-            "reviewed match identities must bind to their matching decisions"
+            "reviewed match evidence must bind to its matching decisions"
         )
+    references: list[str] = []
+    for reviewed_match, decision in zip(reviewed_matches, match_decisions):
+        if any(
+            not isinstance(value, str) or not value.strip() or value.strip() != value
+            for value in (
+                reviewed_match.reconciliation_match_reference,
+                reviewed_match.statement_entry_reference,
+                reviewed_match.journal_reference,
+            )
+        ):
+            raise ValueError("reviewed match evidence identities must be canonical non-empty strings")
+        if (
+            not isinstance(reviewed_match.allocated_amount, Decimal)
+            or not reviewed_match.allocated_amount.is_finite()
+            or reviewed_match.allocated_amount <= 0
+        ):
+            raise ValueError("reviewed match evidence amount must be a positive exact Decimal")
+        if (
+            reviewed_match.journal_reference != decision.matched_journal_references[0]
+            or reviewed_match.allocated_amount != decision.allocated_amount
+            or (
+                decision.reconciliation_match_reference is not None
+                and decision.reconciliation_match_reference
+                != reviewed_match.reconciliation_match_reference
+            )
+        ):
+            raise ValueError(
+                "reviewed match evidence must bind its statement, journal, amount, and decision identity"
+            )
+        references.append(reviewed_match.reconciliation_match_reference)
+    if len(set(references)) != len(references):
+        raise ValueError("reviewed match evidence identities must be unique")
+    return tuple(references)
 
 
 def build_reconciliation_close_review(
@@ -188,7 +228,7 @@ def build_reconciliation_close_review(
         for decision in projection_input.decisions
         if decision.decision_code == "match"
     )
-    _validate_reviewed_match_population(
+    reviewed_match_references = _validate_reviewed_match_population(
         projection_input,
         match_count=match_count,
         match_decisions=match_decisions,
@@ -259,7 +299,7 @@ def build_reconciliation_close_review(
         outstanding_book_items=bridge.outstanding_book_items,
         unexplained_difference=bridge.unexplained_difference,
         safely_matchable_candidate_count=match_count,
-        reviewed_match_references=projection_input.reviewed_match_references,
+        reviewed_match_references=reviewed_match_references,
         exception_count=len(exceptions),
         exception_statement_entry_references=tuple(
             decision.statement_entry_reference for decision in exceptions

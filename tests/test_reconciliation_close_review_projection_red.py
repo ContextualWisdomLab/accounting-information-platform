@@ -33,9 +33,19 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
         return (
             module.ReconciliationCloseReviewInput,
             module.ReconciliationCloseReviewScope,
+            module.ReconciliationReviewedMatch,
             module.build_reconciliation_close_review,
             module.render_reconciliation_close_review_json,
             module.render_reconciliation_close_review_csv,
+        )
+
+    @staticmethod
+    def _reviewed_match(ReviewedMatch, statement_reference: str = "stmt-001"):
+        return ReviewedMatch(
+            reconciliation_match_reference="reconciliation-match-001",
+            statement_entry_reference=statement_reference,
+            journal_reference="journal-001",
+            allocated_amount=Decimal("100.00"),
         )
 
     def _bridge(self, **overrides):
@@ -104,7 +114,7 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
 
     def test_projection_exposes_exact_values_provenance_and_unresolved_next_action(self) -> None:
         """A controller can see exact bridge facts and the work still blocking close review."""
-        ProjectionInput, Scope, build_projection, _, _ = self._api()
+        ProjectionInput, Scope, ReviewedMatch, build_projection, _, _ = self._api()
         preceding = self._bridge(
             reconciliation_run_reference="run-previous",
             statement_population_reference="statement-previous",
@@ -119,7 +129,7 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
                 bridge_result=self._bridge(),
                 decisions=(self._match(), self._exception()),
                 expected_statement_entry_references=("stmt-001", "stmt-002"),
-                reviewed_match_references=("reconciliation-match-001",),
+                reviewed_matches=(self._reviewed_match(ReviewedMatch),),
                 scope=scope,
                 preceding_bridge_result=preceding,
                 preceding_scope=scope,
@@ -153,13 +163,13 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
 
     def test_fully_reconciled_projection_is_close_review_candidate_not_an_approval(self) -> None:
         """A clean projection may be suitable evidence but must not claim approval or posting."""
-        ProjectionInput, Scope, build_projection, _, _ = self._api()
+        ProjectionInput, Scope, ReviewedMatch, build_projection, _, _ = self._api()
         projection = build_projection(
             ProjectionInput(
                 bridge_result=self._bridge(),
                 decisions=(self._match(),),
                 expected_statement_entry_references=("stmt-001",),
-                reviewed_match_references=("reconciliation-match-001",),
+                reviewed_matches=(self._reviewed_match(ReviewedMatch),),
                 scope=self._scope(Scope),
             )
         )
@@ -172,13 +182,13 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
 
     def test_non_tying_bridge_never_emits_success_shaped_close_review_evidence(self) -> None:
         """An exact bridge difference keeps the public projection fail-closed."""
-        ProjectionInput, Scope, build_projection, _, _ = self._api()
+        ProjectionInput, Scope, ReviewedMatch, build_projection, _, _ = self._api()
         projection = build_projection(
             ProjectionInput(
                 bridge_result=self._bridge(outstanding_bank_items=Decimal("50.01")),
                 decisions=(self._match(),),
                 expected_statement_entry_references=("stmt-001",),
-                reviewed_match_references=("reconciliation-match-001",),
+                reviewed_matches=(self._reviewed_match(ReviewedMatch),),
                 scope=self._scope(Scope),
             )
         )
@@ -190,13 +200,13 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
 
     def test_json_and_csv_exports_preserve_exact_decimal_strings_and_next_action(self) -> None:
         """Exports keep monetary evidence exact and visible without hover-only formatting."""
-        ProjectionInput, Scope, build_projection, render_json, render_csv = self._api()
+        ProjectionInput, Scope, ReviewedMatch, build_projection, render_json, render_csv = self._api()
         projection = build_projection(
             ProjectionInput(
                 bridge_result=self._bridge(),
                 decisions=(self._match(),),
                 expected_statement_entry_references=("stmt-001",),
-                reviewed_match_references=("reconciliation-match-001",),
+                reviewed_matches=(self._reviewed_match(ReviewedMatch),),
                 scope=self._scope(Scope),
             )
         )

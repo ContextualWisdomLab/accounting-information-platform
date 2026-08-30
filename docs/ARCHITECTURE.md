@@ -105,9 +105,11 @@ The current HTTP / library surface includes:
 
 The reconciliation close-package projection is a read-only evidence manifest. Its
 schema-versioned payload carries the complete approved match-evidence population,
-exact tenant/run/match scope, database-owned snapshot digests, immutable run
-cutoff, and source references; it cannot approve reconciliation, close a period,
-post a journal, or mutate commercial evidence.
+with each durable match identity structurally bound to the matching statement,
+journal, amount, and deterministic decision facts, plus exact tenant/run/match
+scope, database-owned snapshot digests, immutable run cutoff, and source
+references; it cannot approve reconciliation, close a period, post a journal, or
+mutate commercial evidence.
 
 Detailed request / response and behavioral contracts live in the corresponding ADRs. Read models do not become alternate posting authorities.
 
