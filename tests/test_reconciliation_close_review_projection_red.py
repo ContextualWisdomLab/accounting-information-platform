@@ -234,6 +234,7 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
         )
 
         json_payload = json.loads(render_json(projection))
+        self.assertEqual(json_payload["schema_version"], 2)
         self.assertEqual(json_payload["tenant_account_reference"], "tenant-a")
         self.assertEqual(json_payload["accounting_book_reference"], "book-a")
         self.assertEqual(json_payload["bank_closing_balance"], "1250.00")

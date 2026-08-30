@@ -351,6 +351,17 @@ def _validate_projection(projection: object) -> ReconciliationCloseReviewProject
         for reviewed_match in projection.reviewed_match_evidence
     ) != projection.reviewed_match_references:
         raise ValueError("reviewed match evidence must bind projection match identities")
+    for reviewed_match in projection.reviewed_match_evidence:
+        if reviewed_match.candidate_statement_reference not in {
+            allocation.source_reference
+            for allocation in reviewed_match.statement_allocations
+        } or reviewed_match.candidate_journal_reference not in {
+            allocation.source_reference
+            for allocation in reviewed_match.journal_allocations
+        }:
+            raise ValueError(
+                "reviewed match candidate source identities must be present in allocation populations"
+            )
     if (
         not isinstance(projection.exception_count, int)
         or isinstance(projection.exception_count, bool)

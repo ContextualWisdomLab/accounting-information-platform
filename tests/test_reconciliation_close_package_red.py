@@ -302,6 +302,98 @@ class ReconciliationClosePackageTests(unittest.TestCase):
                     build_reconciliation_close_package(
                         replace(self._input(), projection=substituted_projection)
                     )
+
+    def test_package_preserves_split_allocation_population(self) -> None:
+        """Package evidence keeps every statement and journal allocation row."""
+        original = self._projection().reviewed_match_evidence[0]
+        split = replace(
+            original,
+            reconciliation_match_reference="reconciliation-match-split",
+            candidate_reference="candidate-split",
+            candidate_statement_reference="statement-entry-split",
+            candidate_journal_reference="journal-split-01",
+            statement_amount=Decimal("150.00"),
+            journal_amount=Decimal("150.00"),
+            statement_allocations=(
+                ReconciliationAllocationEvidence(
+                    "statement-allocation-split",
+                    "statement-entry-split",
+                    Decimal("150.00"),
+                ),
+            ),
+            journal_allocations=(
+                ReconciliationAllocationEvidence(
+                    "journal-allocation-01", "journal-split-01", Decimal("100.00")
+                ),
+                ReconciliationAllocationEvidence(
+                    "journal-allocation-02", "journal-split-02", Decimal("50.00")
+                ),
+            ),
+        )
+        projection = replace(
+            self._projection(),
+            safely_matchable_candidate_count=1,
+            reviewed_match_references=("reconciliation-match-split",),
+            reviewed_match_evidence=(split,),
+        )
+        approval = ReconciliationApprovalEvidence(
+            tenant_account_reference="tenant-1",
+            reconciliation_run_reference="run-2026-08",
+            reconciliation_match_reference="reconciliation-match-split",
+            approval_decision_code="approved",
+            source_payload_hash="sha256:" + "1" * 64,
+            reconciliation_snapshot_sha256=_reconciliation_match_snapshot_sha256(
+                "tenant-1", "run-2026-08", split
+            ),
+            evidence_reference="approval-evidence-split",
+        )
+        package = build_reconciliation_close_package(
+            replace(
+                self._input(),
+                projection=projection,
+                approval_evidence=(approval,),
+            )
+        )
+
+        self.assertEqual(
+            len(package.projection.reviewed_match_evidence[0].journal_allocations),
+            2,
+        )
+
+    def test_package_requires_candidate_sources_in_allocation_population(self) -> None:
+        """Candidate source identities must be represented by allocation rows."""
+        original = self._projection().reviewed_match_evidence[0]
+        mismatched = replace(
+            original,
+            candidate_statement_reference="statement-entry-not-allocated",
+        )
+        projection = replace(
+            self._projection(),
+            safely_matchable_candidate_count=1,
+            reviewed_match_references=(mismatched.reconciliation_match_reference,),
+            reviewed_match_evidence=(mismatched,),
+        )
+        approval = ReconciliationApprovalEvidence(
+            tenant_account_reference="tenant-1",
+            reconciliation_run_reference="run-2026-08",
+            reconciliation_match_reference=mismatched.reconciliation_match_reference,
+            approval_decision_code="approved",
+            source_payload_hash="sha256:" + "1" * 64,
+            reconciliation_snapshot_sha256=_reconciliation_match_snapshot_sha256(
+                "tenant-1", "run-2026-08", mismatched
+            ),
+            evidence_reference="approval-evidence-mismatched-source",
+        )
+
+        with self.assertRaisesRegex(ValueError, "candidate source identities"):
+            build_reconciliation_close_package(
+                replace(
+                    self._input(),
+                    projection=projection,
+                    approval_evidence=(approval,),
+                )
+            )
+
     def test_approval_evidence_requires_canonical_decision_and_structure(self) -> None:
         with self.assertRaisesRegex(ValueError, "approval_decision_code"):
             ReconciliationApprovalEvidence(
