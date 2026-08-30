@@ -286,14 +286,29 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
             candidate_statement_reference="stmt-001",
             candidate_journal_reference="journal-001",
             statement_amount=Decimal("150.00"),
-            journal_amount=Decimal("150.00"),
+            journal_amount=Decimal("100.00"),
             rule_code="provider_reference",
             statement_allocations=(
-                Allocation("statement-allocation-split", "stmt-001", Decimal("150.00")),
+                Allocation(
+                    "statement-allocation-split",
+                    "stmt-001",
+                    Decimal("150.00"),
+                    Decimal("150.00"),
+                ),
             ),
             journal_allocations=(
-                Allocation("journal-allocation-001", "journal-001", Decimal("100.00")),
-                Allocation("journal-allocation-002", "journal-002", Decimal("50.00")),
+                Allocation(
+                    "journal-allocation-001",
+                    "journal-001",
+                    Decimal("100.00"),
+                    Decimal("100.00"),
+                ),
+                Allocation(
+                    "journal-allocation-002",
+                    "journal-002",
+                    Decimal("50.00"),
+                    Decimal("50.00"),
+                ),
             ),
         )
 
@@ -329,6 +344,7 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
                 exception_code=None,
                 next_action="Review and record this deterministic reconciliation proposal; do not post a journal from it.",
                 reconciliation_match_reference="reconciliation-match-aggregate",
+                contract_version="reconciliation-decision/v2",
             )
             for statement_reference, amount in (
                 ("stmt-001", Decimal("60.00")),
@@ -344,11 +360,26 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
             journal_amount=Decimal("100.00"),
             rule_code="provider_reference",
             statement_allocations=(
-                Allocation("statement-allocation-001", "stmt-001", Decimal("60.00")),
-                Allocation("statement-allocation-002", "stmt-002", Decimal("40.00")),
+                Allocation(
+                    "statement-allocation-001",
+                    "stmt-001",
+                    Decimal("60.00"),
+                    Decimal("60.00"),
+                ),
+                Allocation(
+                    "statement-allocation-002",
+                    "stmt-002",
+                    Decimal("40.00"),
+                    Decimal("40.00"),
+                ),
             ),
             journal_allocations=(
-                Allocation("journal-allocation-aggregate", "journal-aggregate", Decimal("100.00")),
+                Allocation(
+                    "journal-allocation-aggregate",
+                    "journal-aggregate",
+                    Decimal("100.00"),
+                    Decimal("100.00"),
+                ),
             ),
         )
 
@@ -380,6 +411,7 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
             allocation_reference="journal-allocation-002",
             source_reference="journal-002",
             allocated_amount=Decimal("1.00"),
+            source_capacity=Decimal("1.00"),
         )
         cases = (
             (
@@ -470,10 +502,17 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
             (
                 replace(
                     valid_match,
+                    statement_allocations=(
+                        replace(
+                            valid_match.statement_allocations[0],
+                            source_capacity=Decimal("100.00"),
+                        ),
+                    ),
                     journal_allocations=(
                         replace(
                             valid_match.journal_allocations[0],
                             allocated_amount=Decimal("99.00"),
+                            source_capacity=Decimal("100.00"),
                         ),
                         extra_journal_allocation,
                     ),
