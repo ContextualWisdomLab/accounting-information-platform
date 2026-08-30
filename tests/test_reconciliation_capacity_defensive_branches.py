@@ -263,6 +263,7 @@ class ReconciliationCapacityDefensiveBranchTests(unittest.TestCase):
         with self.subTest("shared source changes capacity across matches"):
             first = self._match(
                 match_reference="match-a",
+                candidate_statement_reference="statement-a",
                 journal_amount="10.00",
                 journal_allocations=(
                     self._allocation("j-a", "journal-shared", "5.00", "10.00"),
@@ -271,6 +272,7 @@ class ReconciliationCapacityDefensiveBranchTests(unittest.TestCase):
             )
             second = self._match(
                 match_reference="match-b",
+                candidate_statement_reference="statement-b",
                 journal_amount="11.00",
                 journal_allocations=(
                     self._allocation("j-b", "journal-shared", "5.00", "11.00"),
