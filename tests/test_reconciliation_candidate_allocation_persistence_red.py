@@ -262,6 +262,42 @@ class PostgresReconciliationAllocationRedTests(unittest.TestCase):
                 (self.scope["tenant_account_id"], self.run_reference, match_id),
             )
 
+    def test_command_provenance_requires_a_proposed_match(self) -> None:
+        """Terminal matches cannot be relabeled as command-created proposals."""
+        candidate_id = self._insert_candidate("terminal-statement", "terminal-journal")
+        match_id = self._insert_match(candidate_id)
+        self._insert_allocations(
+            match_id,
+            "terminal-statement",
+            "terminal-journal",
+            "1000.00",
+        )
+        self._approve_match(match_id)
+
+        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
+            with self.assertRaisesRegex(psycopg.errors.CheckViolation, "proposed"):
+                connection.execute(
+                    """
+                    INSERT INTO accounting_core.reconciliation_match_command (
+                        tenant_account_id, reconciliation_run_id,
+                        reconciliation_candidate_id, reconciliation_match_id,
+                        candidate_idempotency_key, candidate_command_hash,
+                        source_payload_hash, source_payload_reference
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        self.scope["tenant_account_id"],
+                        self.run_reference,
+                        candidate_id,
+                        match_id,
+                        f"terminal-command-{uuid.uuid4().hex}",
+                        "sha256:" + "1" * 64,
+                        "sha256:" + "2" * 64,
+                        "urn:cwl:object:terminal-command",
+                    ),
+                )
+
     def _record_approval(
         self,
         match_id: uuid.UUID,

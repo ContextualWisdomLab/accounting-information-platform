@@ -91,6 +91,42 @@ class ReconciliationDataModelDocumentationContractTests(unittest.TestCase):
             migration.index("ALTER COLUMN journal_amount TYPE numeric(38, 6)"),
         )
 
+    def test_precision_migration_rechecks_command_freeze_after_parent_lock(self) -> None:
+        """Allocation freeze evidence must use a snapshot taken after the match lock."""
+        migration = (
+            ROOT
+            / "database/migrations/0022_reconciliation_amount_precision.sql"
+        ).read_text(encoding="utf-8")
+        marker = (
+            "CREATE OR REPLACE FUNCTION "
+            "accounting_core.reject_reconciliation_match_command_allocation()"
+        )
+        self.assertIn(marker, migration)
+        function = migration.split(marker, 1)[1].split(
+            "CREATE TRIGGER reconciliation_candidate_capacity_guard", 1
+        )[0]
+        self.assertRegex(
+            function,
+            r"(?s)FROM accounting_core\.reconciliation_match.*?FOR UPDATE.*?IF EXISTS",
+        )
+
+    def test_precision_migration_rejects_non_proposed_command_matches(self) -> None:
+        """Command provenance can only be recorded for a still-proposed match."""
+        migration = (
+            ROOT
+            / "database/migrations/0022_reconciliation_amount_precision.sql"
+        ).read_text(encoding="utf-8")
+        function = migration.split(
+            "CREATE OR REPLACE FUNCTION accounting_core.enforce_reconciliation_match_command_allocations()",
+            1,
+        )[1].split(
+            "CREATE OR REPLACE FUNCTION accounting_core.reject_reconciliation_match_command_allocation()",
+            1,
+        )[0]
+        self.assertIn("current_match_status", function)
+        self.assertIn("match_status_code", function)
+        self.assertIn("reconciliation_match_command_status", function)
+
 
 if __name__ == "__main__":
     unittest.main()

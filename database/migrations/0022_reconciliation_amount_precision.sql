@@ -293,6 +293,7 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 DECLARE
+    current_match_status text;
     statement_allocation_count bigint;
     journal_allocation_count bigint;
     statement_allocation_total numeric;
@@ -300,12 +301,25 @@ DECLARE
     candidate_statement_amount numeric;
     candidate_journal_amount numeric;
 BEGIN
-    PERFORM 1
+    SELECT match.match_status_code
+    INTO current_match_status
     FROM accounting_core.reconciliation_match AS match
     WHERE match.tenant_account_id = NEW.tenant_account_id
       AND match.reconciliation_run_id = NEW.reconciliation_run_id
       AND match.reconciliation_match_id = NEW.reconciliation_match_id
-    FOR UPDATE;
+    FOR UPDATE OF match;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION
+            'reconciliation match command requires a match in the same tenant/run scope (reconciliation_match_command_scope_mismatch)'
+            USING ERRCODE = '23514';
+    END IF;
+
+    IF current_match_status <> 'proposed' THEN
+        RAISE EXCEPTION
+            'reconciliation match command evidence requires a proposed match; terminal matches already have review provenance (reconciliation_match_command_status)'
+            USING ERRCODE = '23514';
+    END IF;
 
     SELECT candidate.statement_amount, candidate.journal_amount
     INTO candidate_statement_amount, candidate_journal_amount
@@ -338,6 +352,42 @@ BEGIN
             USING ERRCODE = '23514';
     END IF;
 
+    RETURN NEW;
+END;
+$$;
+
+-- Recheck command evidence after acquiring the match lock. A later statement
+-- snapshot prevents an allocation from observing a stale pre-command view
+-- after it waited for a concurrent command transaction to finish.
+CREATE OR REPLACE FUNCTION accounting_core.reject_reconciliation_match_command_allocation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    PERFORM 1
+    FROM accounting_core.reconciliation_match AS match
+    WHERE match.tenant_account_id = NEW.tenant_account_id
+      AND match.reconciliation_run_id = NEW.reconciliation_run_id
+      AND match.reconciliation_match_id = NEW.reconciliation_match_id
+    FOR UPDATE OF match;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION
+            'reconciliation match command allocation requires a match in the same tenant/run scope (reconciliation_match_command_scope_mismatch)'
+            USING ERRCODE = '23514';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM accounting_core.reconciliation_match_command AS command
+        WHERE command.tenant_account_id = NEW.tenant_account_id
+          AND command.reconciliation_run_id = NEW.reconciliation_run_id
+          AND command.reconciliation_match_id = NEW.reconciliation_match_id
+    ) THEN
+        RAISE EXCEPTION
+            'reconciliation match command evidence freezes its allocation population; create a new proposed match instead (reconciliation_match_command_allocation_frozen)'
+            USING ERRCODE = '23514';
+    END IF;
     RETURN NEW;
 END;
 $$;

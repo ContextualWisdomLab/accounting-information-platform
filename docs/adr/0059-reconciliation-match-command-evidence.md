@@ -63,9 +63,13 @@ source evidence as `404`, state conflicts as `409`, and source-content or
 conservation validation failures as `422`.
 
 The database requires command insertion to observe exactly one statement and
-one journal allocation with equal exact amounts, and rejects allocation rows
-inserted after command evidence. These are evidence-integrity controls only;
-they do not turn a proposed match into an approved accounting fact.
+one journal allocation with equal exact amounts while the match is still
+`proposed`, and rejects allocation rows inserted after command evidence. The
+allocation guard locks the parent match before its command-evidence query, so
+a transaction that waited on a concurrent command cannot use a stale snapshot
+to extend the frozen allocation population. These are evidence-integrity
+controls only; they do not turn a proposed match into an approved accounting
+fact.
 
 Migration `0021_reconciliation_run_command_provenance_repair.sql` is a
 forward-only upgrade for installations that already applied migration 0019
@@ -78,8 +82,10 @@ allocation amount columns from the historical `numeric(30, 6)` definition to
 the platform-wide `numeric(38, 6)` definition. It also uses unconstrained
 PostgreSQL numeric variables in the conservation and command-allocation
 triggers, preventing aggregate overflow from masking an exact conservation
-rejection. The shared amount parser rejects values outside that same storage
-domain before a command reaches the database.
+rejection. Its forward-recreated command guard rejects provenance for terminal
+matches, and its allocation-freeze guard takes the parent match lock before
+checking command evidence. The shared amount parser rejects values outside
+that same storage domain before a command reaches the database.
 
 Historical match admission also requires the posted journal fact to be known by
 the run's `knowledge_cutoff_at`; a backdated accounting date alone is not
