@@ -11,13 +11,14 @@ from accounting_information_platform.reconciliation_bridge import (
     compute_book_to_bank_bridge,
 )
 import accounting_information_platform.reconciliation_close_package as close_package
-import accounting_information_platform.reconciliation_read_model as read_model
 from accounting_information_platform.reconciliation_read_model import (
     ReconciliationAllocationEvidence,
     ReconciliationCloseReviewInput,
     ReconciliationCloseReviewProjection,
     ReconciliationCloseReviewScope,
     ReconciliationReviewedMatch,
+    _RECONCILED_CLOSE_REVIEW_NEXT_ACTION,
+    build_reconciliation_close_review,
 )
 
 
@@ -90,7 +91,7 @@ class ReconciliationReviewedAllocationConservationTests(unittest.TestCase):
     def test_close_review_rejects_unequal_statement_and_journal_allocation_totals(self) -> None:
         """Projection construction must prove exact two-sided allocation conservation."""
         with self.assertRaisesRegex(ValueError, "allocation totals must match exactly"):
-            read_model.build_reconciliation_close_review(
+            build_reconciliation_close_review(
                 ReconciliationCloseReviewInput(
                     bridge_result=self._bridge(),
                     decisions=(self._decision(),),
@@ -131,7 +132,7 @@ class ReconciliationReviewedAllocationConservationTests(unittest.TestCase):
             outstanding_bank_items_change=None,
             outstanding_book_items_change=None,
             suitable_for_period_close_review=True,
-            next_action=read_model._RECONCILED_CLOSE_REVIEW_NEXT_ACTION,
+            next_action=_RECONCILED_CLOSE_REVIEW_NEXT_ACTION,
             reviewed_match_evidence=(self._reviewed_match(),),
         )
         with self.assertRaisesRegex(ValueError, "allocation totals must match exactly"):
