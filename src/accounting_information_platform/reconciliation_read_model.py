@@ -110,7 +110,6 @@ def _source_capacity_map(
     label: str,
 ) -> dict[str, Decimal]:
     """Validate and return authoritative capacities for normalized allocation sources."""
-    source_references = {allocation.source_reference for allocation in allocations}
     capacities: dict[str, Decimal] = {}
     for allocation in allocations:
         capacity = allocation.source_capacity
@@ -129,12 +128,6 @@ def _source_capacity_map(
                 f"reviewed {label} source capacity must be consistent for each source"
             )
         capacities[allocation.source_reference] = capacity
-
-    if require_capacities and set(capacities) != source_references:
-        raise ValueError(
-            "reviewed multi-source allocation evidence requires authoritative source capacity "
-            "for every allocated source"
-        )
 
     for source_reference, capacity in capacities.items():
         allocated_total = _exact_decimal_sum(
