@@ -62,6 +62,7 @@ class ReconciliationDecisionProvenanceTests(unittest.TestCase):
         self.assertEqual(decision.decision_code, "match")
         self.assertEqual(decision.statement_entry_reference, "statement-provenance-1")
         self.assertEqual(decision.matched_journal_references, ("journal-provenance-1",))
+        self.assertEqual(decision.contract_version, "reconciliation-decision/v1")
 
     def test_abstention_retains_statement_entry_identity(self) -> None:
         """An exception remains attributable even when no monetary evidence is consumed."""
@@ -76,6 +77,52 @@ class ReconciliationDecisionProvenanceTests(unittest.TestCase):
         self.assertEqual(decision.statement_entry_reference, "statement-provenance-1")
         self.assertEqual(decision.matched_journal_references, ())
         self.assertEqual(decision.allocated_amount, Decimal("0"))
+        self.assertEqual(decision.contract_version, "reconciliation-decision/v1")
+
+    def test_default_contract_rejects_multi_journal_match(self) -> None:
+        """Existing direct consumers retain the historical singleton match contract."""
+        with self.assertRaisesRegex(ValueError, "v1 match decision must reference exactly one journal"):
+            ReconciliationDecision(
+                statement_entry_reference="statement-provenance-1",
+                decision_code="match",
+                rule_code="provider_reference",
+                matched_journal_references=("journal-provenance-1", "journal-provenance-2"),
+                allocated_amount=Decimal("125000.00"),
+                exception_code=None,
+                next_action="Review the deterministic proposal; do not post a journal.",
+            )
+
+    def test_versioned_review_contract_explicitly_allows_multi_journal_match(self) -> None:
+        """Reviewed split evidence opts into the version that permits multiple journals."""
+        decision = ReconciliationDecision(
+            statement_entry_reference="statement-provenance-1",
+            decision_code="match",
+            rule_code="provider_reference",
+            matched_journal_references=("journal-provenance-1", "journal-provenance-2"),
+            allocated_amount=Decimal("125000.00"),
+            exception_code=None,
+            next_action="Review the approved split evidence; do not post a journal.",
+            contract_version="reconciliation-decision/v2",
+        )
+        self.assertEqual(
+            decision.matched_journal_references,
+            ("journal-provenance-1", "journal-provenance-2"),
+        )
+        self.assertEqual(decision.contract_version, "reconciliation-decision/v2")
+
+    def test_unknown_decision_contract_version_fails_closed(self) -> None:
+        """Callers cannot silently invent an incompatible reconciliation decision shape."""
+        with self.assertRaisesRegex(ValueError, "contract_version"):
+            ReconciliationDecision(
+                statement_entry_reference="statement-provenance-1",
+                decision_code="match",
+                rule_code="provider_reference",
+                matched_journal_references=("journal-provenance-1",),
+                allocated_amount=Decimal("125000.00"),
+                exception_code=None,
+                next_action="Review the deterministic proposal; do not post a journal.",
+                contract_version="reconciliation-decision/v99",
+            )
 
     def test_direct_match_construction_cannot_forge_success_shaped_evidence(self) -> None:
         """A match must carry one journal, positive exact allocation, and no exception."""
