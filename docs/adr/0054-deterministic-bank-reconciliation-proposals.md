@@ -27,7 +27,7 @@ A higher-confidence identity conflict never falls through to a weaker rule. A st
 
 Every abstention carries an exception code and an operator next action. The bounded codes are `ambiguous_reference`, `amount_mismatch`, `currency_mismatch`, `direction_mismatch`, `date_window_mismatch`, and `no_candidate`.
 
-Every returned decision, including an abstention, retains the immutable `statement_entry_reference` that produced it. A `match` carries exactly one matched journal, a finite strictly positive exact `Decimal` allocation, and no exception code. An `abstain` carries no matched journal, an exact zero `Decimal` allocation, and a non-empty exception code. Direct construction therefore cannot forge success-shaped close-review evidence.
+Every returned decision, including an abstention, retains the immutable `statement_entry_reference` that produced it. The deterministic proposal engine emits one matched journal per `match`; the durable close-review boundary also accepts a decision carrying the complete journal identity set for a persisted split/aggregate match. Every match carries a finite strictly positive exact `Decimal` allocation and no exception code. An `abstain` carries no matched journal, an exact zero `Decimal` allocation, and a non-empty exception code. Direct construction therefore cannot forge success-shaped close-review evidence.
 
 The decision object is a proposal only. It does not mutate statement evidence, post or reverse a journal, select a chart account, close a period, or alter accounting policy. Any accounting adjustment must enter the existing accounting command boundary with its own idempotency identity, immutable source evidence, period/policy/authorization checks, and authoritative posting receipt.
 

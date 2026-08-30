@@ -100,13 +100,14 @@ class ReconciliationDecision:
     allocated_amount: Decimal
     exception_code: str | None
     next_action: str
+    reconciliation_match_reference: str | None = None
 
     def __post_init__(self) -> None:
         """Reject forged success- or exception-shaped reconciliation evidence."""
         if self.decision_code == "match":
-            if len(self.matched_journal_references) != 1:
+            if not self.matched_journal_references:
                 raise ValueError(
-                    "match decision must reference exactly one journal. Rebuild the deterministic proposal from source evidence."
+                    "match decision must reference at least one journal. Rebuild the deterministic proposal from source evidence."
                 )
             try:
                 _require_positive_exact_decimal(self.allocated_amount)

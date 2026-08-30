@@ -52,6 +52,10 @@ Korea Legislation Research Institute. (2024b). *Income Tax Act* [Unofficial tran
 
 Korea Legislation Research Institute. (2024a). *Value-Added Tax Act* [Unofficial translation]. https://elaw.klri.re.kr/eng_service/lawView.do?hseq=53110&lang=ENG
 
+National Institute of Standards and Technology. (2015). *Secure Hash Standard (SHS)* (FIPS PUB 180-4). https://doi.org/10.6028/NIST.FIPS.180-4
+
+National Institute of Standards and Technology. (2023, March 7). *Decision to revise FIPS 180-4, Secure Hash Standard (SHS)*. https://csrc.nist.gov/news/2023/decision-to-revise-fips-180-4
+
 PostgreSQL Global Development Group. (2026). *PostgreSQL 18.4 release notes*. https://www.postgresql.org/docs/release/18.4/
 
 PostgreSQL Global Development Group. (2026a). *PostgreSQL 18 documentation: Advisory locks*. https://www.postgresql.org/docs/18/functions-admin.html

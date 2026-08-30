@@ -10,7 +10,7 @@ constructed.
 from __future__ import annotations
 
 import unittest
-from decimal import Decimal
+from decimal import Decimal, localcontext
 
 from accounting_information_platform.reconciliation_bridge import (
     BookToBankBridgeInput,
@@ -91,6 +91,48 @@ class BookToBankBridgeDecimalDomainTests(unittest.TestCase):
 
         self.assertEqual(result.status_code, "reconciled")
         self.assertEqual(result.unexplained_difference, Decimal("0"))
+
+    def test_low_precision_context_preserves_exact_reconciliation_tie(self) -> None:
+        """Caller precision must not turn an exact bridge tie into a false difference."""
+        with localcontext() as context:
+            context.prec = 5
+            result = compute_book_to_bank_bridge(
+                _bridge_input(
+                    statement_opening_balance=Decimal("123.456789"),
+                    statement_period_movements=Decimal("0"),
+                    statement_closing_balance=Decimal("123.456789"),
+                    book_opening_balance=Decimal("200.000000"),
+                    posted_cash_book_movements=Decimal("0"),
+                    book_closing_balance=Decimal("200.000000"),
+                    reconciled_book_balance=Decimal("200.000000"),
+                    outstanding_book_items=Decimal("0"),
+                    outstanding_bank_items=Decimal("76.543211"),
+                )
+            )
+
+        self.assertEqual(result.status_code, "reconciled")
+        self.assertEqual(result.unexplained_difference, Decimal("0"))
+
+    def test_low_precision_context_does_not_erase_real_difference(self) -> None:
+        """Caller precision must not round a real bridge difference down to zero."""
+        with localcontext() as context:
+            context.prec = 5
+            result = compute_book_to_bank_bridge(
+                _bridge_input(
+                    statement_opening_balance=Decimal("123.456789"),
+                    statement_period_movements=Decimal("0"),
+                    statement_closing_balance=Decimal("123.456789"),
+                    book_opening_balance=Decimal("200.003000"),
+                    posted_cash_book_movements=Decimal("0"),
+                    book_closing_balance=Decimal("200.003000"),
+                    reconciled_book_balance=Decimal("200.003000"),
+                    outstanding_book_items=Decimal("0"),
+                    outstanding_bank_items=Decimal("76.543211"),
+                )
+            )
+
+        self.assertNotEqual(result.status_code, "reconciled")
+        self.assertEqual(result.unexplained_difference, Decimal("0.003000"))
 
 
 if __name__ == "__main__":

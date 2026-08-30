@@ -7,7 +7,7 @@ or mutate immutable statement evidence.
 
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from typing import NamedTuple
 
 
@@ -73,6 +73,18 @@ _BRIDGE_MONEY_FIELDS = (
 )
 
 
+def _exact_decimal_sum(*values: Decimal) -> Decimal:
+    """Add finite Decimal values without ambient-context rounding."""
+    minimum_exponent = min(value.as_tuple().exponent for value in values)
+    aligned_precision = max(
+        len(value.as_tuple().digits) + value.as_tuple().exponent - minimum_exponent
+        for value in values
+    )
+    with localcontext() as context:
+        context.prec = aligned_precision + len(values)
+        return sum(values, Decimal("0"))
+
+
 def _validate_bridge_money(bridge_input: BookToBankBridgeInput) -> None:
     """Reject non-Decimal or non-finite monetary bridge evidence before arithmetic."""
     for field_name in _BRIDGE_MONEY_FIELDS:
@@ -123,21 +135,25 @@ def compute_book_to_bank_bridge(
     """Prove statement, book, and bridge equations with exact ``Decimal`` values."""
     _validate_bridge_money(bridge_input)
 
-    expected_statement_closing = (
-        bridge_input.statement_opening_balance
-        + bridge_input.statement_period_movements
+    expected_statement_closing = _exact_decimal_sum(
+        bridge_input.statement_opening_balance,
+        bridge_input.statement_period_movements,
     )
-    expected_book_closing = (
-        bridge_input.book_opening_balance + bridge_input.posted_cash_book_movements
+    expected_book_closing = _exact_decimal_sum(
+        bridge_input.book_opening_balance,
+        bridge_input.posted_cash_book_movements,
     )
-    bridge_balance = (
-        bridge_input.reconciled_book_balance
-        + bridge_input.outstanding_book_items
-        - bridge_input.outstanding_bank_items
+    bridge_balance = _exact_decimal_sum(
+        bridge_input.reconciled_book_balance,
+        bridge_input.outstanding_book_items,
+        bridge_input.outstanding_bank_items.copy_negate(),
     )
 
     if expected_statement_closing != bridge_input.statement_closing_balance:
-        difference = expected_statement_closing - bridge_input.statement_closing_balance
+        difference = _exact_decimal_sum(
+            expected_statement_closing,
+            bridge_input.statement_closing_balance.copy_negate(),
+        )
         return _result(
             bridge_input,
             bridge_balance=bridge_balance,
@@ -153,7 +169,10 @@ def compute_book_to_bank_bridge(
         )
 
     if expected_book_closing != bridge_input.book_closing_balance:
-        difference = expected_book_closing - bridge_input.book_closing_balance
+        difference = _exact_decimal_sum(
+            expected_book_closing,
+            bridge_input.book_closing_balance.copy_negate(),
+        )
         return _result(
             bridge_input,
             bridge_balance=bridge_balance,
@@ -168,7 +187,10 @@ def compute_book_to_bank_bridge(
             ),
         )
 
-    unexplained_difference = bridge_balance - bridge_input.statement_closing_balance
+    unexplained_difference = _exact_decimal_sum(
+        bridge_balance,
+        bridge_input.statement_closing_balance.copy_negate(),
+    )
     if unexplained_difference != Decimal("0"):
         return _result(
             bridge_input,
