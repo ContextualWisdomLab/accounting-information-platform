@@ -23,7 +23,7 @@ from accounting_information_platform.reconciliation_read_model import (
 
 
 class ReconciliationReviewedAllocationConservationTests(unittest.TestCase):
-    """Reject caller-shaped reviewed evidence whose two allocation sides do not tie."""
+    """Reject caller-shaped reviewed evidence whose allocations are not authoritative."""
 
     @staticmethod
     def _reviewed_match() -> ReconciliationReviewedMatch:
@@ -52,6 +52,38 @@ class ReconciliationReviewedAllocationConservationTests(unittest.TestCase):
         )
 
     @staticmethod
+    def _multi_source_match_without_capacity_evidence() -> ReconciliationReviewedMatch:
+        """Return balanced split evidence whose non-anchor source capacity is unbound."""
+        return ReconciliationReviewedMatch(
+            reconciliation_match_reference="match-split-001",
+            candidate_reference="candidate-statement-a-journal-x",
+            candidate_statement_reference="statement-a",
+            candidate_journal_reference="journal-x",
+            statement_amount=Decimal("60.00"),
+            journal_amount=Decimal("100.00"),
+            rule_code="provider_reference",
+            statement_allocations=(
+                ReconciliationAllocationEvidence(
+                    allocation_reference="statement-allocation-a",
+                    source_reference="statement-a",
+                    allocated_amount=Decimal("60.00"),
+                ),
+                ReconciliationAllocationEvidence(
+                    allocation_reference="statement-allocation-b",
+                    source_reference="statement-b",
+                    allocated_amount=Decimal("40.00"),
+                ),
+            ),
+            journal_allocations=(
+                ReconciliationAllocationEvidence(
+                    allocation_reference="journal-allocation-x",
+                    source_reference="journal-x",
+                    allocated_amount=Decimal("100.00"),
+                ),
+            ),
+        )
+
+    @staticmethod
     def _decision() -> ReconciliationDecision:
         return ReconciliationDecision(
             statement_entry_reference="statement-001",
@@ -62,6 +94,33 @@ class ReconciliationReviewedAllocationConservationTests(unittest.TestCase):
             exception_code=None,
             next_action="Review the deterministic proposal; do not post a journal.",
             reconciliation_match_reference="match-001",
+        )
+
+    @staticmethod
+    def _multi_source_decisions() -> tuple[ReconciliationDecision, ...]:
+        return (
+            ReconciliationDecision(
+                statement_entry_reference="statement-a",
+                decision_code="match",
+                rule_code="provider_reference",
+                matched_journal_references=("journal-x",),
+                allocated_amount=Decimal("60.00"),
+                exception_code=None,
+                next_action="Review the deterministic proposal; do not post a journal.",
+                reconciliation_match_reference="match-split-001",
+                contract_version="reconciliation-decision/v2",
+            ),
+            ReconciliationDecision(
+                statement_entry_reference="statement-b",
+                decision_code="match",
+                rule_code="provider_reference",
+                matched_journal_references=("journal-x",),
+                allocated_amount=Decimal("40.00"),
+                exception_code=None,
+                next_action="Review the deterministic proposal; do not post a journal.",
+                reconciliation_match_reference="match-split-001",
+                contract_version="reconciliation-decision/v2",
+            ),
         )
 
     @staticmethod
@@ -88,6 +147,16 @@ class ReconciliationReviewedAllocationConservationTests(unittest.TestCase):
             )
         )
 
+    @staticmethod
+    def _scope() -> ReconciliationCloseReviewScope:
+        return ReconciliationCloseReviewScope(
+            tenant_account_reference="tenant-001",
+            legal_entity_reference="entity-001",
+            accounting_book_reference="book-001",
+            bank_account_assignment_reference="bank-assignment-001",
+            currency_code="KRW",
+        )
+
     def test_close_review_rejects_unequal_statement_and_journal_allocation_totals(self) -> None:
         """Projection construction must prove exact two-sided allocation conservation."""
         with self.assertRaisesRegex(ValueError, "allocation totals must match exactly"):
@@ -97,13 +166,20 @@ class ReconciliationReviewedAllocationConservationTests(unittest.TestCase):
                     decisions=(self._decision(),),
                     expected_statement_entry_references=("statement-001",),
                     reviewed_matches=(self._reviewed_match(),),
-                    scope=ReconciliationCloseReviewScope(
-                        tenant_account_reference="tenant-001",
-                        legal_entity_reference="entity-001",
-                        accounting_book_reference="book-001",
-                        bank_account_assignment_reference="bank-assignment-001",
-                        currency_code="KRW",
-                    ),
+                    scope=self._scope(),
+                )
+            )
+
+    def test_multi_source_close_review_requires_authoritative_source_capacities(self) -> None:
+        """Aggregate equality cannot substitute for every allocated source's capacity."""
+        with self.assertRaisesRegex(ValueError, "source capacit"):
+            build_reconciliation_close_review(
+                ReconciliationCloseReviewInput(
+                    bridge_result=self._bridge(),
+                    decisions=self._multi_source_decisions(),
+                    expected_statement_entry_references=("statement-a", "statement-b"),
+                    reviewed_matches=(self._multi_source_match_without_capacity_evidence(),),
+                    scope=self._scope(),
                 )
             )
 
@@ -136,6 +212,37 @@ class ReconciliationReviewedAllocationConservationTests(unittest.TestCase):
             reviewed_match_evidence=(self._reviewed_match(),),
         )
         with self.assertRaisesRegex(ValueError, "allocation totals must match exactly"):
+            close_package._validate_projection(projection)
+
+    def test_close_package_requires_multi_source_capacity_evidence(self) -> None:
+        """Package verification must reject balanced but capacity-unbound split evidence."""
+        projection = ReconciliationCloseReviewProjection(
+            tenant_account_reference="tenant-001",
+            legal_entity_reference="entity-001",
+            accounting_book_reference="book-001",
+            bank_account_assignment_reference="bank-assignment-001",
+            reconciliation_run_reference="run-001",
+            statement_population_reference="statement-population-001",
+            book_population_reference="book-population-001",
+            currency_code="KRW",
+            bank_closing_balance=Decimal("100.00"),
+            posted_book_cash_balance=Decimal("100.00"),
+            reconciled_balance=Decimal("100.00"),
+            outstanding_bank_items=Decimal("0.00"),
+            outstanding_book_items=Decimal("0.00"),
+            unexplained_difference=Decimal("0.00"),
+            safely_matchable_candidate_count=1,
+            reviewed_match_references=("match-split-001",),
+            exception_count=0,
+            exception_statement_entry_references=(),
+            unexplained_difference_change=None,
+            outstanding_bank_items_change=None,
+            outstanding_book_items_change=None,
+            suitable_for_period_close_review=True,
+            next_action=_RECONCILED_CLOSE_REVIEW_NEXT_ACTION,
+            reviewed_match_evidence=(self._multi_source_match_without_capacity_evidence(),),
+        )
+        with self.assertRaisesRegex(ValueError, "source capacit"):
             close_package._validate_projection(projection)
 
 
