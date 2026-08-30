@@ -5,19 +5,22 @@ from __future__ import annotations
 import json
 import unittest
 from dataclasses import replace
-from decimal import Decimal
+from decimal import Decimal, localcontext
 
 from accounting_information_platform.reconciliation_close_package import (
     ReconciliationApprovalEvidence,
     ReconciliationClosePackage,
     ReconciliationClosePackageInput,
     ReconciliationEvidenceReference,
+    _reconciliation_match_snapshot_sha256,
     build_reconciliation_close_package,
     render_reconciliation_close_package_json,
     verify_reconciliation_close_package,
 )
 from accounting_information_platform.reconciliation_read_model import (
     ReconciliationCloseReviewProjection,
+    ReconciliationAllocationEvidence,
+    ReconciliationReviewedMatch,
 )
 
 
@@ -50,6 +53,32 @@ class ReconciliationClosePackageTests(unittest.TestCase):
             reviewed_match_references=tuple(
                 f"reconciliation-match-{index:02d}" for index in range(1, 9)
             ),
+            reviewed_match_evidence=tuple(
+                ReconciliationReviewedMatch(
+                    reconciliation_match_reference=f"reconciliation-match-{index:02d}",
+                    candidate_reference=f"candidate-{index:02d}",
+                    candidate_statement_reference=f"statement-entry-{index:02d}",
+                    candidate_journal_reference=f"journal-{index:02d}",
+                    statement_amount=Decimal("100.00"),
+                    journal_amount=Decimal("100.00"),
+                    rule_code="provider_reference",
+                    statement_allocations=(
+                        ReconciliationAllocationEvidence(
+                            allocation_reference=f"statement-allocation-{index:02d}",
+                            source_reference=f"statement-entry-{index:02d}",
+                            allocated_amount=Decimal("100.00"),
+                        ),
+                    ),
+                    journal_allocations=(
+                        ReconciliationAllocationEvidence(
+                            allocation_reference=f"journal-allocation-{index:02d}",
+                            source_reference=f"journal-{index:02d}",
+                            allocated_amount=Decimal("100.00"),
+                        ),
+                    ),
+                )
+                for index in range(1, 9)
+            ),
             unexplained_difference_change=Decimal("-500.00"),
             outstanding_bank_items_change=Decimal("0.00"),
             outstanding_book_items_change=Decimal("500.00"),
@@ -73,7 +102,12 @@ class ReconciliationClosePackageTests(unittest.TestCase):
                 reconciliation_run_reference=run,
                 reconciliation_match_reference=f"reconciliation-match-{index:02d}",
                 approval_decision_code=decision_code,
-                reconciliation_snapshot_sha256="sha256:" + "abcdef12"[index - 1] * 64,
+                source_payload_hash="sha256:" + "1234567890abcdef"[index - 1] * 64,
+                reconciliation_snapshot_sha256=_reconciliation_match_snapshot_sha256(
+                    "tenant-1",
+                    "run-2026-08",
+                    self._projection().reviewed_match_evidence[index - 1],
+                ),
                 evidence_reference=f"approval-evidence-{index}",
             )
             for index in range(1, 9)
@@ -133,13 +167,39 @@ class ReconciliationClosePackageTests(unittest.TestCase):
             render_reconciliation_close_package_json(second),
         )
         payload = json.loads(render_reconciliation_close_package_json(first))
-        self.assertEqual(payload["schema_version"], 3)
+        self.assertEqual(payload["schema_version"], 4)
         self.assertEqual(payload["package_sha256"], first.package_sha256)
         self.assertEqual(payload["projection"]["bank_closing_balance"], "1250000.00")
         self.assertEqual(payload["projection"]["unexplained_difference"], "0.00")
         self.assertEqual(
             [item["reconciliation_match_reference"] for item in payload["approval_evidence"]],
             list(first.projection.reviewed_match_references),
+        )
+        self.assertEqual(
+            payload["projection"]["reviewed_match_evidence"][0],
+            {
+                "reconciliation_match_reference": "reconciliation-match-01",
+                "candidate_journal_reference": "journal-01",
+                "candidate_reference": "candidate-01",
+                "candidate_statement_reference": "statement-entry-01",
+                "journal_allocations": [
+                    {
+                        "allocated_amount": "100.00",
+                        "allocation_reference": "journal-allocation-01",
+                        "source_reference": "journal-01",
+                    }
+                ],
+                "journal_amount": "100.00",
+                "rule_code": "provider_reference",
+                "statement_allocations": [
+                    {
+                        "allocated_amount": "100.00",
+                        "allocation_reference": "statement-allocation-01",
+                        "source_reference": "statement-entry-01",
+                    }
+                ],
+                "statement_amount": "100.00",
+            },
         )
         self.assertTrue(
             all(
@@ -164,6 +224,176 @@ class ReconciliationClosePackageTests(unittest.TestCase):
         self.assertEqual(run_evidence["knowledge_cutoff"], payload["knowledge_cutoff"])
         self.assertIn("period-close", payload["next_action"])
 
+    def test_zero_activity_reconciliation_accepts_empty_approval_evidence(self) -> None:
+        """A clean reconciliation with no matches still has packageable evidence."""
+        projection = replace(
+            self._projection(),
+            safely_matchable_candidate_count=0,
+            reviewed_match_references=(),
+            reviewed_match_evidence=(),
+        )
+        package = build_reconciliation_close_package(
+            replace(self._input(), projection=projection, approval_evidence=())
+        )
+        self.assertEqual(package.approval_evidence, ())
+
+    def test_package_equation_preserves_large_decimals_under_low_precision(self) -> None:
+        """Close-package validation must not round a valid high-precision bridge."""
+        projection = replace(
+            self._projection(),
+            bank_closing_balance=Decimal("12345678901234567890123457.000000"),
+            posted_book_cash_balance=Decimal("12345678901234567890123456.000000"),
+            reconciled_balance=Decimal("12345678901234567890123456.000000"),
+            outstanding_book_items=Decimal("1.000000"),
+            outstanding_bank_items=Decimal("0.000000"),
+        )
+        with localcontext() as context:
+            context.prec = 6
+            package = build_reconciliation_close_package(
+                replace(self._input(), projection=projection)
+            )
+        self.assertRegex(package.package_sha256, r"^sha256:[0-9a-f]{64}$")
+
+    def test_projection_facts_cannot_be_substituted_under_same_match_identity(self) -> None:
+        """A snapshot-bound approval must reject caller-shaped reviewed facts."""
+        projection = self._projection()
+        original = projection.reviewed_match_evidence[0]
+        for replacement in (
+            replace(
+                original,
+                candidate_statement_reference="statement-entry-substitute",
+                statement_allocations=(
+                    replace(
+                        original.statement_allocations[0],
+                        source_reference="statement-entry-substitute",
+                    ),
+                ),
+            ),
+            replace(
+                original,
+                candidate_journal_reference="journal-substitute",
+                journal_allocations=(
+                    replace(
+                        original.journal_allocations[0],
+                        source_reference="journal-substitute",
+                    ),
+                ),
+            ),
+            replace(
+                original,
+                statement_amount=Decimal("99.00"),
+                statement_allocations=(
+                    replace(
+                        original.statement_allocations[0],
+                        allocated_amount=Decimal("99.00"),
+                    ),
+                ),
+            ),
+        ):
+            with self.subTest(replacement=replacement):
+                substituted_projection = replace(
+                    projection,
+                    reviewed_match_evidence=(
+                        replacement,
+                        *projection.reviewed_match_evidence[1:],
+                    ),
+                )
+                with self.assertRaisesRegex(ValueError, "snapshot|reviewed match"):
+                    build_reconciliation_close_package(
+                        replace(self._input(), projection=substituted_projection)
+                    )
+
+    def test_package_preserves_split_allocation_population(self) -> None:
+        """Package evidence keeps every statement and journal allocation row."""
+        original = self._projection().reviewed_match_evidence[0]
+        split = replace(
+            original,
+            reconciliation_match_reference="reconciliation-match-split",
+            candidate_reference="candidate-split",
+            candidate_statement_reference="statement-entry-split",
+            candidate_journal_reference="journal-split-01",
+            statement_amount=Decimal("150.00"),
+            journal_amount=Decimal("150.00"),
+            statement_allocations=(
+                ReconciliationAllocationEvidence(
+                    "statement-allocation-split",
+                    "statement-entry-split",
+                    Decimal("150.00"),
+                ),
+            ),
+            journal_allocations=(
+                ReconciliationAllocationEvidence(
+                    "journal-allocation-01", "journal-split-01", Decimal("100.00")
+                ),
+                ReconciliationAllocationEvidence(
+                    "journal-allocation-02", "journal-split-02", Decimal("50.00")
+                ),
+            ),
+        )
+        projection = replace(
+            self._projection(),
+            safely_matchable_candidate_count=1,
+            reviewed_match_references=("reconciliation-match-split",),
+            reviewed_match_evidence=(split,),
+        )
+        approval = ReconciliationApprovalEvidence(
+            tenant_account_reference="tenant-1",
+            reconciliation_run_reference="run-2026-08",
+            reconciliation_match_reference="reconciliation-match-split",
+            approval_decision_code="approved",
+            source_payload_hash="sha256:" + "1" * 64,
+            reconciliation_snapshot_sha256=_reconciliation_match_snapshot_sha256(
+                "tenant-1", "run-2026-08", split
+            ),
+            evidence_reference="approval-evidence-split",
+        )
+        package = build_reconciliation_close_package(
+            replace(
+                self._input(),
+                projection=projection,
+                approval_evidence=(approval,),
+            )
+        )
+
+        self.assertEqual(
+            len(package.projection.reviewed_match_evidence[0].journal_allocations),
+            2,
+        )
+
+    def test_package_requires_candidate_sources_in_allocation_population(self) -> None:
+        """Candidate source identities must be represented by allocation rows."""
+        original = self._projection().reviewed_match_evidence[0]
+        mismatched = replace(
+            original,
+            candidate_statement_reference="statement-entry-not-allocated",
+        )
+        projection = replace(
+            self._projection(),
+            safely_matchable_candidate_count=1,
+            reviewed_match_references=(mismatched.reconciliation_match_reference,),
+            reviewed_match_evidence=(mismatched,),
+        )
+        approval = ReconciliationApprovalEvidence(
+            tenant_account_reference="tenant-1",
+            reconciliation_run_reference="run-2026-08",
+            reconciliation_match_reference=mismatched.reconciliation_match_reference,
+            approval_decision_code="approved",
+            source_payload_hash="sha256:" + "1" * 64,
+            reconciliation_snapshot_sha256=_reconciliation_match_snapshot_sha256(
+                "tenant-1", "run-2026-08", mismatched
+            ),
+            evidence_reference="approval-evidence-mismatched-source",
+        )
+
+        with self.assertRaisesRegex(ValueError, "candidate source identities"):
+            build_reconciliation_close_package(
+                replace(
+                    self._input(),
+                    projection=projection,
+                    approval_evidence=(approval,),
+                )
+            )
+
     def test_approval_evidence_requires_canonical_decision_and_structure(self) -> None:
         with self.assertRaisesRegex(ValueError, "approval_decision_code"):
             ReconciliationApprovalEvidence(
@@ -171,12 +401,23 @@ class ReconciliationClosePackageTests(unittest.TestCase):
                 reconciliation_run_reference="run-2026-08",
                 reconciliation_match_reference="reconciliation-match-01",
                 approval_decision_code="pending",
+                source_payload_hash="sha256:" + "a" * 64,
+                reconciliation_snapshot_sha256="sha256:" + "a" * 64,
+                evidence_reference="approval-evidence-1",
+            )
+        with self.assertRaisesRegex(ValueError, "source_payload_hash"):
+            ReconciliationApprovalEvidence(
+                tenant_account_reference="tenant-1",
+                reconciliation_run_reference="run-2026-08",
+                reconciliation_match_reference="reconciliation-match-01",
+                approval_decision_code="approved",
+                source_payload_hash="not-a-digest",
                 reconciliation_snapshot_sha256="sha256:" + "a" * 64,
                 evidence_reference="approval-evidence-1",
             )
 
         for approval_evidence, expected_error in (
-            ([], "non-empty tuple"),
+            ([], "must be a tuple"),
             ((object(),), "structured evidence objects"),
             (
                 (
@@ -425,6 +666,107 @@ class ReconciliationClosePackageTests(unittest.TestCase):
                         replace(self._input(), projection=projection)
                     )
 
+    def test_package_requires_complete_structured_reviewed_match_evidence(self) -> None:
+        valid_evidence = self._projection().reviewed_match_evidence
+        cases = (
+            (replace(self._projection(), reviewed_match_evidence=[]), "must be a tuple"),
+            (
+                replace(self._projection(), reviewed_match_evidence=("not-structured",)),
+                "structured evidence objects",
+            ),
+            (replace(self._projection(), reviewed_match_evidence=()), "exactly cover"),
+            (
+                replace(
+                    self._projection(),
+                    reviewed_match_evidence=(
+                        replace(
+                            valid_evidence[0],
+                            statement_allocations=(
+                                replace(
+                                    valid_evidence[0].statement_allocations[0],
+                                    allocated_amount=1.0,
+                                ),
+                            ),
+                        ),
+                        *valid_evidence[1:],
+                    ),
+                ),
+                "positive exact Decimal",
+            ),
+            (
+                replace(
+                    self._projection(),
+                    reviewed_match_evidence=(
+                        replace(
+                            valid_evidence[0],
+                            statement_allocations=(
+                                replace(
+                                    valid_evidence[0].statement_allocations[0],
+                                    allocated_amount=Decimal("NaN"),
+                                ),
+                            ),
+                        ),
+                        *valid_evidence[1:],
+                    ),
+                ),
+                "positive exact Decimal",
+            ),
+            (
+                replace(
+                    self._projection(),
+                    reviewed_match_evidence=(
+                        replace(
+                            valid_evidence[0],
+                            statement_allocations=(
+                                replace(
+                                    valid_evidence[0].statement_allocations[0],
+                                    allocated_amount=Decimal("0"),
+                                ),
+                            ),
+                        ),
+                        *valid_evidence[1:],
+                    ),
+                ),
+                "positive exact Decimal",
+            ),
+            (
+                replace(
+                    self._projection(),
+                    reviewed_match_evidence=(
+                        replace(
+                            valid_evidence[0],
+                            reconciliation_match_reference=" other",
+                        ),
+                        *valid_evidence[1:],
+                    ),
+                ),
+                "reviewed match reconciliation_match_reference",
+            ),
+            (
+                replace(
+                    self._projection(),
+                    reviewed_match_evidence=(
+                        replace(
+                            valid_evidence[0],
+                            candidate_statement_reference="statement-entry-substitute",
+                        ),
+                        *valid_evidence[1:],
+                    ),
+                    reviewed_match_references=(
+                        "different-match",
+                        *self._projection().reviewed_match_references[1:],
+                    ),
+                ),
+                "bind projection match identities",
+            ),
+        )
+        for projection, expected_error in cases:
+            with self.subTest(expected_error=expected_error):
+                with self.assertRaisesRegex(ValueError, expected_error):
+                    build_reconciliation_close_package(
+                        replace(self._input(), projection=projection)
+                    )
+
     def test_package_rejects_caller_supplied_next_action(self) -> None:
         """Close-package guidance cannot be replaced with an unauthorized action."""
         projection = replace(self._projection(), next_action="Approve and post this reconciliation")
@@ -533,7 +875,7 @@ class ReconciliationClosePackageTests(unittest.TestCase):
             tampered_approval_order,
         ):
             with self.subTest(package=package):
-                with self.assertRaisesRegex(ValueError, "package_sha256"):
+                with self.assertRaisesRegex(ValueError, "package_sha256|snapshot"):
                     render_reconciliation_close_package_json(package)
 
         with self.assertRaisesRegex(ValueError, "ReconciliationClosePackage"):
@@ -554,9 +896,10 @@ class ReconciliationClosePackageTests(unittest.TestCase):
             else evidence
             for evidence in self._approval_evidence()
         )
-        changed_approval = build_reconciliation_close_package(
-            replace(self._input(), approval_evidence=changed_approval_evidence)
-        )
+        with self.assertRaisesRegex(ValueError, "snapshot"):
+            build_reconciliation_close_package(
+                replace(self._input(), approval_evidence=changed_approval_evidence)
+            )
         changed_source = build_reconciliation_close_package(
             self._input(
                 evidence=(
@@ -570,7 +913,6 @@ class ReconciliationClosePackageTests(unittest.TestCase):
             )
         )
 
-        self.assertNotEqual(baseline.package_sha256, changed_approval.package_sha256)
         self.assertNotEqual(baseline.package_sha256, changed_source.package_sha256)
 
     def test_direct_package_construction_still_requires_canonical_integrity(self) -> None:

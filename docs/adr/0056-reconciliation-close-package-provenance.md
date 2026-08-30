@@ -15,15 +15,39 @@ RFC 3339 defines an Internet date/time profile of ISO 8601 and permits `Z` to de
 
 ## Decision
 
-Introduce deterministic `ReconciliationClosePackage` evidence manifest schema version 3. Version 3 replaces the caller-shaped approval reference/hash pair with a complete structured approval-evidence population; reconciliation-run cutoff provenance remains a required part of the canonical digest-bound payload. The integration candidate has not been released, so no released version-1 or version-2 artifact is migrated or grandfathered.
+Introduce deterministic `ReconciliationClosePackage` evidence manifest schema version 4. Version 4 retains the complete structured approval-evidence population and adds the approval command's immutable source-payload hash; reconciliation-run cutoff provenance remains a required part of the canonical digest-bound payload. The projection export is schema version 2 because it now carries normalized match facts. The integration candidate has not been released, so no released artifact is migrated or grandfathered.
 
-The close-review input binds every durable reviewed-match identity to the matching `ReconciliationDecision`; a separate reference tuple may not be substituted while preserving only cardinality. The package revalidates the public close-review projection before hashing it. All accounting/run/population identities must be canonical non-empty strings; monetary and delta values must be finite `Decimal` values; exception identities must be canonical and unique; the eligible projection must carry the canonical operator-facing next action; and the projection must be internally close-review eligible. Bridge and close-package equations use operand-derived local precision so valid `numeric(30,6)`-domain values cannot be rounded by the ambient Python decimal context. Before eligibility is accepted, the package independently re-proves the exact book-to-bank equation `reconciled_balance + outstanding_book_items - outstanding_bank_items - bank_closing_balance == unexplained_difference`; a caller-constructed projection cannot become packageable merely by asserting a zero unexplained difference. `suitable_for_period_close_review` must be true, the exception count and exception-reference population must both be empty, and the unexplained difference must be exact `Decimal("0")`. Eligibility is evidence suitability only; it is not approval or close authority.
+The close-review input requires each matching `ReconciliationDecision` to carry
+a canonical durable match identity and carries that identity in a structured
+`ReconciliationReviewedMatch` record containing candidate facts and the complete
+normalized statement/journal allocation populations. The read model requires
+every allocation and every decision to align with the corresponding durable
+match; an independent match-reference tuple or an unbound caller-selected
+identity cannot be substituted by preserving only cardinality. The complete
+records remain in the projection and its canonical export. The package
+revalidates the public close-review projection before hashing it and recomputes
+the migration 0016 version-1 snapshot digest from those records. All
+accounting/run/population identities must be canonical non-empty strings;
+monetary and delta values must be finite `Decimal` values; exception identities
+must be canonical and unique; the eligible projection must carry the canonical
+operator-facing next action; and the projection must be internally close-review
+eligible. Bridge and close-package equations use operand-derived local precision
+so valid `numeric(30,6)`-domain values cannot be rounded by the ambient Python
+decimal context. Before eligibility is accepted, the package independently
+re-proves the exact book-to-bank equation `reconciled_balance +
+outstanding_book_items - outstanding_bank_items - bank_closing_balance ==
+unexplained_difference`; a caller-constructed projection cannot become
+packageable merely by asserting a zero unexplained difference.
+`suitable_for_period_close_review` must be true, the exception count and
+exception-reference population must both be empty, and the unexplained
+difference must be exact `Decimal("0")`. Eligibility is evidence suitability
+only; it is not approval or close authority.
 
 Every package binds:
 
 - the complete deterministic close-review projection, including exact decimal-string values and immutable tenant/entity/book/bank-assignment/run/population scope;
-- the complete set of reviewed `reconciliation_match` identities carried by the close-review projection;
-- one structured approval-evidence record for every reviewed match, each carrying the exact tenant account, reconciliation run, reconciliation match, `approval_decision_code`, database-owned `reconciliation_snapshot_sha256`, and durable evidence reference;
+- the complete set of `ReconciliationReviewedMatch` records carried by the close-review projection, each binding one `reconciliation_match` identity to its candidate facts and every normalized statement/journal allocation row, with exact allocation amounts;
+- one structured approval-evidence record for every reviewed match, each carrying the exact tenant account, reconciliation run, reconciliation match, `approval_decision_code`, immutable approval-command `source_payload_hash`, database-owned `reconciliation_snapshot_sha256`, and durable evidence reference;
 - only `approval_decision_code=approved` records, with exact tenant/run scope, unique match identities, and complete cardinality against the projection's safely matchable reviewed population;
 - one `reconciliation_run` evidence reference whose identity exactly equals the projection's `reconciliation_run_reference`, whose digest identifies immutable exported run evidence, and whose `knowledge_cutoff` is the canonical UTC representation of that run's immutable `knowledge_cutoff_at`;
 - a package-level canonical UTC RFC 3339 second-precision `knowledge_cutoff` that must exactly equal the `reconciliation_run` evidence cutoff;
@@ -34,7 +58,7 @@ Every package binds:
 
 Only `reconciliation_run` evidence may carry `knowledge_cutoff`; source-artifact and population evidence cannot introduce competing cutoff claims. The calling adapter must derive the run reference, digest, and cutoff from immutable reconciliation-run evidence rather than accept an arbitrary operator/model timestamp. A mismatch between package and run cutoffs fails closed before hashing.
 
-Evidence references are unique by `(evidence_kind_code, evidence_reference)` and sorted before serialization. Approval evidence is unique by reconciliation-match identity and sorted by its tenant/run/match/evidence identity before serialization. The package serializes a stable UTF-8 JSON mapping with sorted object keys and exact decimal strings. `package_sha256` is SHA-256 over the canonical unsigned manifest, prefixed with `sha256:`. The run-evidence cutoff and complete approval-evidence population are inside that canonical manifest. Changing any approval snapshot or evidence reference, projection, run cutoff/evidence, population identity, or bound source digest therefore changes the package digest.
+Evidence references are unique by `(evidence_kind_code, evidence_reference)` and sorted before serialization. Approval evidence is unique by reconciliation-match identity and sorted by its tenant/run/match/evidence identity before serialization. The package serializes a stable UTF-8 JSON mapping with sorted object keys and exact decimal strings. `package_sha256` is SHA-256 over the canonical unsigned manifest, prefixed with `sha256:`. The run-evidence cutoff, complete approval-evidence population, and approval command source hashes are inside that canonical manifest. Changing any approval snapshot, approval source hash, normalized allocation fact, evidence reference, projection, run cutoff/evidence, population identity, or bound source digest therefore changes the package digest.
 
 `verify_reconciliation_close_package()` rebuilds the canonical manifest from the package fields and compares the committed digest before bytes are exported. `render_reconciliation_close_package_json()` always invokes that verification and therefore fails closed if a caller directly constructs or mutates a dataclass-shaped payload with a stale digest, non-canonical evidence order, a cutoff that differs from immutable run evidence, an internally inconsistent exact bridge equation, or a different next action. The package is intentionally a manifest rather than a signature: authenticity/non-repudiation remains a deployment and release evidence concern, and this slice does not claim that a bare SHA-256 digest authenticates an actor or proves possession of a private key.
 

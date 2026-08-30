@@ -295,23 +295,12 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 DECLARE
-    candidate_statement_reference text;
-    candidate_journal_reference text;
     current_match_status text;
 BEGIN
-    SELECT
-        candidate.statement_entry_reference,
-        candidate.journal_reference,
-        match.match_status_code
+    SELECT match.match_status_code
     INTO
-        candidate_statement_reference,
-        candidate_journal_reference,
         current_match_status
     FROM accounting_core.reconciliation_match AS match
-    JOIN accounting_core.reconciliation_candidate AS candidate
-      ON candidate.tenant_account_id = match.tenant_account_id
-     AND candidate.reconciliation_run_id = match.reconciliation_run_id
-     AND candidate.reconciliation_candidate_id = match.reconciliation_candidate_id
     WHERE match.tenant_account_id = NEW.tenant_account_id
       AND match.reconciliation_run_id = NEW.reconciliation_run_id
       AND match.reconciliation_match_id = NEW.reconciliation_match_id
@@ -334,15 +323,27 @@ BEGIN
     -- once, at the proposed -> approved transition below, where the full
     -- statement/journal allocation population can be evaluated atomically.
     IF TG_TABLE_NAME = 'statement_match_allocation' THEN
-        IF NEW.statement_entry_reference <> candidate_statement_reference THEN
+        IF NOT EXISTS (
+            SELECT 1
+            FROM accounting_core.reconciliation_candidate AS candidate
+            WHERE candidate.tenant_account_id = NEW.tenant_account_id
+              AND candidate.reconciliation_run_id = NEW.reconciliation_run_id
+              AND candidate.statement_entry_reference = NEW.statement_entry_reference
+        ) THEN
             RAISE EXCEPTION
-                'statement allocation does not identify the matched candidate source (reconciliation_scope_mismatch)'
+                'statement allocation does not identify a source in the reconciliation run (reconciliation_scope_mismatch)'
                 USING ERRCODE = '23514';
         END IF;
     ELSE
-        IF NEW.journal_reference <> candidate_journal_reference THEN
+        IF NOT EXISTS (
+            SELECT 1
+            FROM accounting_core.reconciliation_candidate AS candidate
+            WHERE candidate.tenant_account_id = NEW.tenant_account_id
+              AND candidate.reconciliation_run_id = NEW.reconciliation_run_id
+              AND candidate.journal_reference = NEW.journal_reference
+        ) THEN
             RAISE EXCEPTION
-                'journal allocation does not identify the matched candidate source (reconciliation_scope_mismatch)'
+                'journal allocation does not identify a source in the reconciliation run (reconciliation_scope_mismatch)'
                 USING ERRCODE = '23514';
         END IF;
     END IF;
@@ -447,6 +448,48 @@ BEGIN
        OR statement_allocation_total <> journal_allocation_total THEN
         RAISE EXCEPTION
             'approved reconciliation match requires non-empty equal statement and journal allocation totals (reconciliation_match_unbalanced)'
+            USING ERRCODE = '23514';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM accounting_core.statement_match_allocation AS statement_allocation
+        WHERE statement_allocation.tenant_account_id = NEW.tenant_account_id
+          AND statement_allocation.reconciliation_run_id = NEW.reconciliation_run_id
+          AND statement_allocation.reconciliation_match_id = NEW.reconciliation_match_id
+          AND NOT EXISTS (
+              SELECT 1
+              FROM accounting_core.journal_match_allocation AS journal_allocation
+              JOIN accounting_core.reconciliation_candidate AS candidate
+                ON candidate.tenant_account_id = journal_allocation.tenant_account_id
+               AND candidate.reconciliation_run_id = journal_allocation.reconciliation_run_id
+               AND candidate.journal_reference = journal_allocation.journal_reference
+               AND candidate.statement_entry_reference = statement_allocation.statement_entry_reference
+              WHERE journal_allocation.tenant_account_id = statement_allocation.tenant_account_id
+                AND journal_allocation.reconciliation_run_id = statement_allocation.reconciliation_run_id
+                AND journal_allocation.reconciliation_match_id = statement_allocation.reconciliation_match_id
+          )
+    ) OR EXISTS (
+        SELECT 1
+        FROM accounting_core.journal_match_allocation AS journal_allocation
+        WHERE journal_allocation.tenant_account_id = NEW.tenant_account_id
+          AND journal_allocation.reconciliation_run_id = NEW.reconciliation_run_id
+          AND journal_allocation.reconciliation_match_id = NEW.reconciliation_match_id
+          AND NOT EXISTS (
+              SELECT 1
+              FROM accounting_core.statement_match_allocation AS statement_allocation
+              JOIN accounting_core.reconciliation_candidate AS candidate
+                ON candidate.tenant_account_id = statement_allocation.tenant_account_id
+               AND candidate.reconciliation_run_id = statement_allocation.reconciliation_run_id
+               AND candidate.statement_entry_reference = statement_allocation.statement_entry_reference
+               AND candidate.journal_reference = journal_allocation.journal_reference
+              WHERE statement_allocation.tenant_account_id = journal_allocation.tenant_account_id
+                AND statement_allocation.reconciliation_run_id = journal_allocation.reconciliation_run_id
+                AND statement_allocation.reconciliation_match_id = journal_allocation.reconciliation_match_id
+          )
+    ) THEN
+        RAISE EXCEPTION
+            'approved reconciliation allocations must use source pairings proposed by candidates (reconciliation_allocation_unproposed_pairing)'
             USING ERRCODE = '23514';
     END IF;
 

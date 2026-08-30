@@ -106,9 +106,12 @@ The current HTTP / library surface includes:
 
 The reconciliation close-package projection is a read-only evidence manifest. Its
 schema-versioned payload carries the complete approved match-evidence population,
-exact tenant/run/match scope, database-owned snapshot digests, immutable run
-cutoff, and source references; it cannot approve reconciliation, close a period,
-post a journal, or mutate commercial evidence.
+with each durable match identity structurally bound to candidate facts, the
+complete normalized statement/journal allocation populations, and matching
+decisions. The package recomputes the database-owned snapshot digest and carries
+immutable approval-command source hashes, run cutoff, and source references; it
+cannot approve reconciliation, close a period, post a journal, or mutate
+commercial evidence.
 
 Detailed request / response and behavioral contracts live in the corresponding ADRs. Read models do not become alternate posting authorities.
 
@@ -137,7 +140,7 @@ Shared fiscal-calendar dates do not collapse independent accounting books into o
 12. `database/migrations/0012_bank_assignment_command_identity.sql` — tenant-scoped bank-account-assignment command identity, replay/conflict evidence, and the active book-scope uniqueness guard.
 13. `database/migrations/0013_reconciliation_run_exception_evidence.sql` — durable reconciliation-run and exception evidence required by the installed bank-reconciliation control chain.
 14. `database/migrations/0014_reconciliation_candidate_allocation.sql` — durable reconciliation candidate, single-approved match, and exact statement/journal allocation rows with forced tenant RLS.
-15. `database/migrations/0015_reconciliation_multi_match_conservation.sql` — replaces the run-wide single-approved-match shortcut with tenant/run-scoped match identity and exact statement/journal source-allocation conservation so independent matches may be approved without double-consuming source evidence.
+15. `database/migrations/0015_reconciliation_multi_match_conservation.sql` — replaces the run-wide single-approved-match shortcut with tenant/run-scoped match identity and exact statement/journal source-allocation conservation, including split and aggregate populations, so independent matches may be approved without double-consuming source evidence.
 16. `database/migrations/0016_reconciliation_approval_evidence.sql` — records immutable human reconciliation decisions and object-storage source-payload provenance, binds them to a database-computed candidate/allocation snapshot before a match can become terminal, and refuses unbound legacy terminal rows during upgrade.
 17. `database/migrations/0017_reconciliation_approval_lock_order.sql` — repairs the approval-evidence trigger to acquire the parent match row before its snapshot advisory lock, closing the approval/allocation row-advisory deadlock cycle.
 18. `database/migrations/0018_bank_statement_balance_evidence.sql` — preserves exact numeric camt.053 balance facts, including typed effective date/time distinct from statement period and system recording time, as immutable, tenant-scoped evidence for reconciliation bridge reads.

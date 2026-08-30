@@ -18,6 +18,10 @@ from accounting_information_platform.reconciliation_bridge import (
     compute_book_to_bank_bridge,
 )
 import accounting_information_platform.reconciliation_read_model as read_model
+from accounting_information_platform.reconciliation_read_model import (
+    ReconciliationAllocationEvidence,
+    ReconciliationReviewedMatch,
+)
 
 
 class ReconciliationCloseReviewPopulationScopeTests(unittest.TestCase):
@@ -57,7 +61,11 @@ class ReconciliationCloseReviewPopulationScopeTests(unittest.TestCase):
         )
 
     @staticmethod
-    def _match(statement_reference: str) -> ReconciliationDecision:
+    def _match(
+        statement_reference: str,
+        *,
+        match_reference: str | None = None,
+    ) -> ReconciliationDecision:
         return ReconciliationDecision(
             statement_entry_reference=statement_reference,
             decision_code="match",
@@ -66,9 +74,8 @@ class ReconciliationCloseReviewPopulationScopeTests(unittest.TestCase):
             allocated_amount=Decimal("100.00"),
             exception_code=None,
             next_action="Review the deterministic proposal; do not post a journal.",
-            reconciliation_match_reference=(
-                f"reconciliation-match-{statement_reference.rsplit('-', 1)[-1]}"
-            ),
+            reconciliation_match_reference=match_reference
+            or f"reconciliation-match-{statement_reference.rsplit('-', 1)[-1]}",
         )
 
     @staticmethod
@@ -89,12 +96,44 @@ class ReconciliationCloseReviewPopulationScopeTests(unittest.TestCase):
             currency_code=currency,
         )
 
+    @staticmethod
+    def _reviewed_match(
+        statement_reference: str,
+        match_reference: str,
+        *,
+        journal_reference: str = "journal-001",
+        amount: Decimal = Decimal("100.00"),
+    ) -> ReconciliationReviewedMatch:
+        return ReconciliationReviewedMatch(
+            reconciliation_match_reference=match_reference,
+            candidate_reference=f"candidate-{match_reference}",
+            candidate_statement_reference=statement_reference,
+            candidate_journal_reference=journal_reference,
+            statement_amount=amount,
+            journal_amount=amount,
+            rule_code="provider_reference",
+            statement_allocations=(
+                ReconciliationAllocationEvidence(
+                    allocation_reference=f"statement-allocation-{match_reference}",
+                    source_reference=statement_reference,
+                    allocated_amount=amount,
+                ),
+            ),
+            journal_allocations=(
+                ReconciliationAllocationEvidence(
+                    allocation_reference=f"journal-allocation-{match_reference}",
+                    source_reference=journal_reference,
+                    allocated_amount=amount,
+                ),
+            ),
+        )
+
     def _input(
         self,
         *,
         decisions: tuple[ReconciliationDecision, ...],
         expected: tuple[str, ...],
-        reviewed_match_references=None,
+        reviewed_matches=None,
         preceding=None,
         current_scope=None,
         preceding_scope=None,
@@ -107,14 +146,20 @@ class ReconciliationCloseReviewPopulationScopeTests(unittest.TestCase):
             ),
             decisions=decisions,
             expected_statement_entry_references=expected,
-            reviewed_match_references=(
+            reviewed_matches=(
                 tuple(
-                    f"reconciliation-match-{index:03d}"
+                    self._reviewed_match(
+                        decision.statement_entry_reference,
+                        decision.reconciliation_match_reference
+                        or f"reconciliation-match-{index:03d}",
+                        journal_reference=decision.matched_journal_references[0],
+                        amount=decision.allocated_amount,
+                    )
                     for index, decision in enumerate(decisions, start=1)
                     if decision.decision_code == "match"
                 )
-                if reviewed_match_references is None
-                else reviewed_match_references
+                if reviewed_matches is None
+                else reviewed_matches
             ),
             scope=current_scope or self._scope(),
             preceding_bridge_result=preceding,
@@ -132,32 +177,60 @@ class ReconciliationCloseReviewPopulationScopeTests(unittest.TestCase):
             )
 
     def test_reviewed_match_identity_container_must_be_canonical(self) -> None:
-        with self.assertRaisesRegex(ValueError, "reviewed match identities must be a tuple"):
+        with self.assertRaisesRegex(ValueError, "reviewed match evidence must be a tuple"):
             read_model.build_reconciliation_close_review(
                 self._input(
                     decisions=(self._match("stmt-001"),),
                     expected=("stmt-001",),
                     # type: ignore[arg-type]
-                    reviewed_match_references=["reconciliation-match-001"],
+                    reviewed_matches=["reconciliation-match-001"],
+                )
+            )
+        with self.assertRaisesRegex(ValueError, "structured evidence objects"):
+            read_model.build_reconciliation_close_review(
+                self._input(
+                    decisions=(self._match("stmt-001"),),
+                    expected=("stmt-001",),
+                    # type: ignore[arg-type]
+                    reviewed_matches=("not-an-evidence-record",),
                 )
             )
 
     def test_reviewed_match_identity_population_must_be_complete_and_unique(self) -> None:
-        cases = (
-            (("",), "reviewed match identities must be non-empty"),
-            (("duplicate", "duplicate"), "reviewed match identities must be unique"),
-            ((), "reviewed match identities must exactly cover"),
-        )
-        for references, expected_error in cases:
-            with self.subTest(expected_error=expected_error):
-                with self.assertRaisesRegex(ValueError, expected_error):
-                    read_model.build_reconciliation_close_review(
-                        self._input(
-                            decisions=(self._match("stmt-001"),),
-                            expected=("stmt-001",),
-                            reviewed_match_references=references,
-                        )
-                    )
+        with self.assertRaisesRegex(ValueError, "canonical non-empty"):
+            read_model.build_reconciliation_close_review(
+                self._input(
+                    decisions=(self._match("stmt-001"),),
+                    expected=("stmt-001",),
+                    reviewed_matches=(
+                        self._reviewed_match("stmt-001", ""),
+                    ),
+                )
+            )
+
+        with self.assertRaisesRegex(ValueError, "identities must be unique"):
+            read_model.build_reconciliation_close_review(
+                self._input(
+                    decisions=(
+                        self._match("stmt-001", match_reference="duplicate"),
+                        self._match("stmt-002", match_reference="duplicate"),
+                    ),
+                    expected=("stmt-001", "stmt-002"),
+                    reviewed_matches=(
+                        self._reviewed_match("stmt-001", "duplicate"),
+                        self._reviewed_match("stmt-002", "duplicate"),
+                    ),
+                )
+            )
+
+        with self.assertRaisesRegex(ValueError, "exactly cover"):
+            read_model.build_reconciliation_close_review(
+                self._input(
+                    decisions=(self._match("stmt-001"),),
+                    expected=("stmt-001",),
+                    reviewed_matches=(),
+                )
+            )
 
     def test_reviewed_match_identity_must_bind_to_its_matching_decision(self) -> None:
         """A durable match reference cannot be substituted across same-run decisions."""
@@ -177,7 +250,100 @@ class ReconciliationCloseReviewPopulationScopeTests(unittest.TestCase):
                 self._input(
                     decisions=(decision,),
                     expected=("stmt-001",),
-                    reviewed_match_references=("reconciliation-match-substitute",),
+                    reviewed_matches=(
+                        self._reviewed_match(
+                            "stmt-001",
+                            "reconciliation-match-substitute",
+                            journal_reference="journal-substitute",
+                            amount=Decimal("99.00"),
+                        ),
+                    ),
+                )
+            )
+
+    def test_reviewed_match_requires_durable_decision_identity(self) -> None:
+        """A caller cannot invent the durable match identity when a decision is unbound."""
+        decision = ReconciliationDecision(
+            statement_entry_reference="stmt-001",
+            decision_code="match",
+            rule_code="provider_reference",
+            matched_journal_references=("journal-001",),
+            allocated_amount=Decimal("100.00"),
+            exception_code=None,
+            next_action="Review the deterministic proposal; do not post a journal.",
+        )
+
+        with self.assertRaisesRegex(ValueError, "durable.*identity"):
+            read_model.build_reconciliation_close_review(
+                self._input(
+                    decisions=(decision,),
+                    expected=("stmt-001",),
+                    reviewed_matches=(
+                        self._reviewed_match("stmt-001", "caller-selected-match"),
+                    ),
+                )
+            )
+
+    def test_reviewed_match_evidence_binds_statement_and_journal_decision(self) -> None:
+        """A same-run match cannot replace the statement/journal decision it reviews."""
+        with self.assertRaisesRegex(ValueError, "bind.*decision|decision.*bind"):
+            read_model.build_reconciliation_close_review(
+                self._input(
+                    decisions=(self._match("stmt-001"),),
+                    expected=("stmt-001",),
+                    reviewed_matches=(
+                        ReconciliationReviewedMatch(
+                            reconciliation_match_reference="reconciliation-match-substitute",
+                            candidate_reference="candidate-substitute",
+                            candidate_statement_reference="stmt-001",
+                            candidate_journal_reference="journal-substitute",
+                            statement_amount=Decimal("99.00"),
+                            journal_amount=Decimal("99.00"),
+                            rule_code="provider_reference",
+                            statement_allocations=(
+                                ReconciliationAllocationEvidence(
+                                    allocation_reference="statement-allocation-substitute",
+                                    source_reference="stmt-001",
+                                    allocated_amount=Decimal("99.00"),
+                                ),
+                            ),
+                            journal_allocations=(
+                                ReconciliationAllocationEvidence(
+                                    allocation_reference="journal-allocation-substitute",
+                                    source_reference="journal-substitute",
+                                    allocated_amount=Decimal("99.00"),
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+            )
+
+    def test_reviewed_match_evidence_binds_statement_population_order(self) -> None:
+        """Reviewed evidence cannot relabel the statement decision it accompanies."""
+        with self.assertRaisesRegex(ValueError, "matching decisions"):
+            read_model.build_reconciliation_close_review(
+                self._input(
+                    decisions=(self._match("stmt-001"),),
+                    expected=("stmt-001",),
+                    reviewed_matches=(
+                        self._reviewed_match("stmt-substitute", "match-001"),
+                    ),
+                )
+            )
+
+    def test_reviewed_match_evidence_amount_must_be_positive_exact_decimal(self) -> None:
+        """Reviewed evidence cannot carry a zero allocation."""
+        with self.assertRaisesRegex(ValueError, "positive exact Decimal"):
+            read_model.build_reconciliation_close_review(
+                self._input(
+                    decisions=(self._match("stmt-001"),),
+                    expected=("stmt-001",),
+                    reviewed_matches=(
+                        self._reviewed_match(
+                            "stmt-001", "reconciliation-match-001", amount=Decimal("0")
+                        ),
+                    ),
                 )
             )
 
