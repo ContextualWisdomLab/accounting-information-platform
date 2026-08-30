@@ -100,6 +100,7 @@ class ReconciliationClosePackageCutoffBindingTests(unittest.TestCase):
         )
 
     def _evidence(self) -> tuple[ReconciliationEvidenceReference, ...]:
+        approval_evidence = self._approval_evidence()
         return (
             ReconciliationEvidenceReference(
                 evidence_kind_code="reconciliation_run",
@@ -121,6 +122,14 @@ class ReconciliationClosePackageCutoffBindingTests(unittest.TestCase):
                 evidence_kind_code="book_population",
                 evidence_reference="book-population-2026-08",
                 sha256_digest="sha256:" + "b" * 64,
+            ),
+            *tuple(
+                ReconciliationEvidenceReference(
+                    evidence_kind_code="reconciliation_approval_payload",
+                    evidence_reference=approval.evidence_reference,
+                    sha256_digest=approval.source_payload_hash,
+                )
+                for approval in approval_evidence
             ),
         )
 
