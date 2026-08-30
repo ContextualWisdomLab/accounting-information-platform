@@ -168,7 +168,9 @@ class ReconciliationClosePackageTests(unittest.TestCase):
         )
         payload = json.loads(render_reconciliation_close_package_json(first))
         self.assertEqual(payload["schema_version"], 4)
+        self.assertEqual(first.projection.reviewed_match_evidence[0].statement_allocations[0].source_capacity, None)
         self.assertEqual(payload["package_sha256"], first.package_sha256)
+        self.assertEqual(payload["projection"]["schema_version"], 2)
         self.assertEqual(payload["projection"]["bank_closing_balance"], "1250000.00")
         self.assertEqual(payload["projection"]["unexplained_difference"], "0.00")
         self.assertEqual(
@@ -311,7 +313,7 @@ class ReconciliationClosePackageTests(unittest.TestCase):
                     )
 
     def test_package_preserves_split_allocation_population(self) -> None:
-        """Package evidence keeps every statement and journal allocation row."""
+        """Package evidence keeps every allocation row and its authoritative capacity."""
         original = self._projection().reviewed_match_evidence[0]
         split = replace(
             original,
@@ -320,20 +322,27 @@ class ReconciliationClosePackageTests(unittest.TestCase):
             candidate_statement_reference="statement-entry-split",
             candidate_journal_reference="journal-split-01",
             statement_amount=Decimal("150.00"),
-            journal_amount=Decimal("150.00"),
+            journal_amount=Decimal("100.00"),
             statement_allocations=(
                 ReconciliationAllocationEvidence(
                     "statement-allocation-split",
                     "statement-entry-split",
                     Decimal("150.00"),
+                    Decimal("150.00"),
                 ),
             ),
             journal_allocations=(
                 ReconciliationAllocationEvidence(
-                    "journal-allocation-01", "journal-split-01", Decimal("100.00")
+                    "journal-allocation-01",
+                    "journal-split-01",
+                    Decimal("100.00"),
+                    Decimal("100.00"),
                 ),
                 ReconciliationAllocationEvidence(
-                    "journal-allocation-02", "journal-split-02", Decimal("50.00")
+                    "journal-allocation-02",
+                    "journal-split-02",
+                    Decimal("50.00"),
+                    Decimal("50.00"),
                 ),
             ),
         )
@@ -365,6 +374,14 @@ class ReconciliationClosePackageTests(unittest.TestCase):
         self.assertEqual(
             len(package.projection.reviewed_match_evidence[0].journal_allocations),
             2,
+        )
+        payload = json.loads(render_reconciliation_close_package_json(package))
+        self.assertEqual(payload["projection"]["schema_version"], 3)
+        self.assertEqual(
+            payload["projection"]["reviewed_match_evidence"][0]["journal_allocations"][1][
+                "source_capacity"
+            ],
+            "50.00",
         )
 
     def test_package_requires_candidate_sources_in_allocation_population(self) -> None:
