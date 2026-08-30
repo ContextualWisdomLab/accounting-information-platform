@@ -368,7 +368,6 @@ def _validate_projection(projection: object) -> ReconciliationCloseReviewProject
             ):
                 raise ValueError("reviewed allocation identities must be unique")
         _validate_reviewed_allocation_conservation(reviewed_match)
-    _validate_reviewed_population_source_capacity(projection.reviewed_match_evidence)
     if len(projection.reviewed_match_evidence) != projection.safely_matchable_candidate_count:
         raise ValueError(
             "reviewed match evidence must exactly cover the safely matchable proposals"
@@ -389,6 +388,7 @@ def _validate_projection(projection: object) -> ReconciliationCloseReviewProject
             raise ValueError(
                 "reviewed match candidate source identities must be present in allocation populations"
             )
+    _validate_reviewed_population_source_capacity(projection.reviewed_match_evidence)
     if (
         not isinstance(projection.exception_count, int)
         or isinstance(projection.exception_count, bool)
