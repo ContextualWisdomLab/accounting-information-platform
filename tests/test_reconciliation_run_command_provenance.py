@@ -8,7 +8,7 @@ import uuid
 import psycopg
 
 from tests import test_postgres_posting as posting
-from tests.test_reconciliation_run_api import ReconciliationRunApiTests
+from tests import test_reconciliation_run_api as reconciliation_run_api
 
 
 class ReconciliationRunCommandProvenanceTests(unittest.TestCase):
@@ -16,10 +16,10 @@ class ReconciliationRunCommandProvenanceTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        ReconciliationRunApiTests.setUpClass()
+        reconciliation_run_api.ReconciliationRunApiTests.setUpClass()
 
     def setUp(self) -> None:
-        self.helper = ReconciliationRunApiTests(
+        self.helper = reconciliation_run_api.ReconciliationRunApiTests(
             "test_open_run_binds_statement_scope_and_replays"
         )
         self.helper.setUp()
