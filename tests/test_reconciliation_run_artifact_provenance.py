@@ -7,10 +7,8 @@ import unittest
 import psycopg
 
 from tests import test_postgres_posting as posting
-from tests.test_reconciliation_run_api import ReconciliationRunApiTests
-from tests.test_reconciliation_run_command_provenance import (
-    ReconciliationRunCommandProvenanceTests,
-)
+from tests import test_reconciliation_run_api as reconciliation_run_api
+from tests import test_reconciliation_run_command_provenance as command_provenance
 
 
 class ReconciliationRunArtifactProvenanceTests(unittest.TestCase):
@@ -18,10 +16,10 @@ class ReconciliationRunArtifactProvenanceTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        ReconciliationRunApiTests.setUpClass()
+        reconciliation_run_api.ReconciliationRunApiTests.setUpClass()
 
     def setUp(self) -> None:
-        self.helper = ReconciliationRunApiTests(
+        self.helper = reconciliation_run_api.ReconciliationRunApiTests(
             "test_open_run_binds_statement_scope_and_replays"
         )
         self.helper.setUp()
@@ -60,10 +58,10 @@ class ReconciliationRunArtifactProvenanceTests(unittest.TestCase):
             )
             connection.commit()
 
-            run_id = ReconciliationRunCommandProvenanceTests._insert_run(
+            run_id = command_provenance.ReconciliationRunCommandProvenanceTests._insert_run(
                 connection, scope, command
             )
-            ReconciliationRunCommandProvenanceTests._insert_command(
+            command_provenance.ReconciliationRunCommandProvenanceTests._insert_command(
                 connection,
                 scope[0],
                 run_id,
