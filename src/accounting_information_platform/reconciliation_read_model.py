@@ -102,6 +102,22 @@ class ReconciliationCloseReviewProjection:
     reviewed_match_evidence: tuple[ReconciliationReviewedMatch, ...] = ()
 
 
+def _validate_reviewed_allocation_conservation(
+    reviewed_match: ReconciliationReviewedMatch,
+) -> None:
+    """Require exact equality between reviewed statement and journal allocations."""
+    statement_total = _exact_decimal_sum(
+        *(allocation.allocated_amount for allocation in reviewed_match.statement_allocations)
+    )
+    journal_total = _exact_decimal_sum(
+        *(allocation.allocated_amount for allocation in reviewed_match.journal_allocations)
+    )
+    if statement_total != journal_total:
+        raise ValueError(
+            "reviewed statement and journal allocation totals must match exactly"
+        )
+
+
 def _validate_scope(
     scope: ReconciliationCloseReviewScope,
     bridge: BookToBankBridgeResult,
@@ -269,6 +285,12 @@ def _validate_reviewed_match_population(
 
         statement_allocations = normalized_allocations["statement_allocations"]
         journal_allocations = normalized_allocations["journal_allocations"]
+        normalized_match = replace(
+            reviewed_match,
+            statement_allocations=statement_allocations,
+            journal_allocations=journal_allocations,
+        )
+        _validate_reviewed_allocation_conservation(normalized_match)
         decisions = decisions_by_match[reviewed_match.reconciliation_match_reference]
         statement_sources = {
             allocation.source_reference for allocation in statement_allocations
@@ -310,13 +332,7 @@ def _validate_reviewed_match_population(
             raise ValueError(
                 "reviewed match evidence must cover every normalized journal allocation"
             )
-        normalized_matches.append(
-            replace(
-                reviewed_match,
-                statement_allocations=statement_allocations,
-                journal_allocations=journal_allocations,
-            )
-        )
+        normalized_matches.append(normalized_match)
     return tuple(
         sorted(
             normalized_matches,
