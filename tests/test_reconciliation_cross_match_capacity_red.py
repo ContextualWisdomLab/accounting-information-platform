@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import unittest
-from dataclasses import replace
 from decimal import Decimal
 
 import accounting_information_platform.reconciliation_close_package as close_package
