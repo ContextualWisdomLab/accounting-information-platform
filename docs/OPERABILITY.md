@@ -2,7 +2,7 @@
 
 ## Deployment preconditions
 
-Use PostgreSQL 18 and keep the migration owner, application runtime login and administrative / break-glass identities separate. Apply migrations in numeric order through `0017_reconciliation_approval_lock_order.sql` before starting the service. Do not run the application with a table-owner, superuser or `BYPASSRLS` login.
+Use PostgreSQL 18 and keep the migration owner, application runtime login and administrative / break-glass identities separate. Apply migrations in numeric order through `0019_reconciliation_run_command_evidence.sql` before starting the service. Do not run the application with a table-owner, superuser or `BYPASSRLS` login.
 
 Required environment values are deployment-specific. At minimum, configure the accounting database URL and bind this AIS process to exactly one tenant reference. Secrets belong in an approved secret store; do not place database passwords, NTS credentials, bearer tokens or provider secrets in journal payloads, logs or outbox events.
 
@@ -30,6 +30,8 @@ database/migrations/0014_reconciliation_candidate_allocation.sql
 database/migrations/0015_reconciliation_multi_match_conservation.sql
 database/migrations/0016_reconciliation_approval_evidence.sql
 database/migrations/0017_reconciliation_approval_lock_order.sql
+database/migrations/0018_bank_statement_balance_evidence.sql
+database/migrations/0019_reconciliation_run_command_evidence.sql
 ```
 
 Migration `0015_reconciliation_multi_match_conservation.sql` replaces the run-wide single-approved-match shortcut from `0014` with tenant/run-scoped match identity plus exact statement/journal allocation conservation. It permits multiple independently approved matches, including split and aggregate allocation populations, only when no authoritative source amount is over-consumed and grants no journal-posting authority.
@@ -37,6 +39,10 @@ Migration `0015_reconciliation_multi_match_conservation.sql` replaces the run-wi
 Migration `0016_reconciliation_approval_evidence.sql` adds immutable tenant/run/match-scoped human approval evidence. Operators first record the reviewed approval command identity, immutable object-storage source-payload hash/reference, approver and purpose, then transition the proposed match to `approved`; PostgreSQL computes and stores a SHA-256 snapshot of the candidate/allocation rows, rejects status-only or stale-snapshot approval, freezes candidate identity and later allocations, and refuses installation over existing non-proposed matches without durable approval evidence. Approval evidence grants no journal-posting, reversal, close, or policy authority.
 
 Migration `0017_reconciliation_approval_lock_order.sql` is a forward repair for databases that already applied `0016`. It makes approval-evidence insertion lock the proposed `reconciliation_match` row before taking the per-match snapshot advisory lock, matching allocation insertion and terminal match transitions. This prevents a row/advisory deadlock under concurrent approval and allocation attempts.
+
+Migration `0018_bank_statement_balance_evidence.sql` preserves the exact numeric amount, currency, credit/debit direction, typed effective date/time, sequence, locator, source hash, and standard-versus-proprietary balance-type discriminator for every camt.053 balance. The effective date/time is distinct from statement period and system `recorded_at`; existing balance hashes remain on the statement row for compatibility. The numeric rows are immutable, forced-RLS evidence that a reconciliation bridge may read but that cannot post, reverse, or mutate a journal.
+
+Migration `0019_reconciliation_run_command_evidence.sql` records the immutable command identity that opens a reconciliation run from one persisted bank statement and active bank-account assignment. The tenant-scoped idempotency key, command hash, source hash, and object-store reference are forced-RLS evidence; new runs exclude source facts recorded after `knowledge_cutoff_at`, and a deferred database guard requires one command per run with statement-to-assignment bank-account provenance. The public run API opens only `evaluating` scope and does not match, approve, close, or post journals.
 
 Migration `0007_runtime_tenant_binding.sql` replaces caller-selected tenant authority with owner-controlled runtime-login binding. Migration `0008_fiscal_period_open_command.sql` adds forced-RLS, append-only command evidence so fiscal-period-open retries are bound to the original tenant key and source hash. Both must be installed before runtime database privileges are treated as production-ready.
 
@@ -47,7 +53,7 @@ After installation, prove with the actual runtime login that supported reads and
 The multithreaded HTTP server gives each request an independent PostgreSQL
 transaction. Each new session bounds lock waits to five seconds and idle
 transactions to sixty seconds. State-changing proposal, adjusting, reversal,
-HomeTax, period-open, and period-close commands acquire tenant-scoped
+HomeTax, period-open, period-close, and reconciliation-run commands acquire tenant-scoped
 transaction advisory locks. Posting/reversal re-read their selected period
 after acquiring the shared period lock; close selects the period row with
 `FOR UPDATE` before evaluating its package. A lock timeout rolls back the

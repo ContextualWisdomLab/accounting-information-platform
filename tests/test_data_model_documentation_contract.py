@@ -11,6 +11,9 @@ DATA_MODEL = ROOT / "docs/DATA_MODEL.md"
 ERD = ROOT / "docs/ERD.md"
 HOME_TAX_MIGRATION = ROOT / "database/migrations/0003_home_tax_submission.sql"
 BANK_STATEMENT_MIGRATION = ROOT / "database/migrations/0011_bank_statement_evidence.sql"
+BANK_STATEMENT_BALANCE_MIGRATION = (
+    ROOT / "database/migrations/0018_bank_statement_balance_evidence.sql"
+)
 
 
 class DataModelDocumentationContractTests(unittest.TestCase):
@@ -76,6 +79,20 @@ class DataModelDocumentationContractTests(unittest.TestCase):
             "bank_statement_entry",
         ):
             self.assertIn(object_name, erd)
+
+    def test_bank_statement_balance_evidence_is_documented(self) -> None:
+        """The ERD and data model expose exact balance evidence and its effective time."""
+        migration = BANK_STATEMENT_BALANCE_MIGRATION.read_text(encoding="utf-8")
+        data_model = DATA_MODEL.read_text(encoding="utf-8")
+        erd = ERD.read_text(encoding="utf-8")
+        self.assertIn("balance_effective_at", migration)
+        self.assertIn("balance_type_source_code", migration)
+        self.assertIn("balance_effective_at", data_model)
+        self.assertIn("balance_type_source_code", data_model)
+        self.assertIn(
+            "bank_statement_record ||--o{ bank_statement_balance",
+            erd,
+        )
 
 
 if __name__ == "__main__":

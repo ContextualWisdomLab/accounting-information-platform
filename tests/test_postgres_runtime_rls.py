@@ -34,6 +34,7 @@ _RLS_TABLES = (
     ("accounting_core", "bank_account_assignment"),
     ("accounting_integration", "bank_statement_artifact"),
     ("accounting_integration", "bank_statement_record"),
+    ("accounting_integration", "bank_statement_balance"),
     ("accounting_integration", "bank_statement_entry"),
     ("accounting_integration", "bank_statement_entry_detail"),
     ("accounting_core", "reconciliation_run"),
@@ -44,6 +45,7 @@ _RLS_TABLES = (
     ("accounting_core", "statement_match_allocation"),
     ("accounting_core", "journal_match_allocation"),
     ("accounting_core", "reconciliation_approval"),
+    ("accounting_core", "reconciliation_run_command"),
 )
 
 

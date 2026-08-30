@@ -25,6 +25,12 @@ class OperabilityDocumentationContractTests(unittest.TestCase):
             operability,
         )
 
+    def test_reconciliation_run_command_is_documented_as_tenant_locked(self) -> None:
+        """Run opening must be included in the tenant-scoped lock operations."""
+        operability = (ROOT / "docs" / "OPERABILITY.md").read_text(encoding="utf-8")
+
+        self.assertIn("reconciliation-run command", operability)
+
 
 if __name__ == "__main__":
     unittest.main()
