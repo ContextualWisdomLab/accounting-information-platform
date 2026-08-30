@@ -134,6 +134,16 @@ class BookToBankBridgeDecimalDomainTests(unittest.TestCase):
         self.assertNotEqual(result.status_code, "reconciled")
         self.assertEqual(result.unexplained_difference, Decimal("0.003000"))
 
+    def test_ambient_exponent_bounds_do_not_overflow_valid_bridge_values(self) -> None:
+        """Exact bridge arithmetic must not inherit restrictive caller exponent limits."""
+        with localcontext() as context:
+            context.Emax = 2
+            context.Emin = -2
+            result = compute_book_to_bank_bridge(_bridge_input())
+
+        self.assertEqual(result.status_code, "reconciled")
+        self.assertEqual(result.unexplained_difference, Decimal("0"))
+
 
 if __name__ == "__main__":
     unittest.main()
