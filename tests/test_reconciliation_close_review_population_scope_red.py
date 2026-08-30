@@ -261,6 +261,34 @@ class ReconciliationCloseReviewPopulationScopeTests(unittest.TestCase):
                 )
             )
 
+    def test_reviewed_match_evidence_binds_statement_population_order(self) -> None:
+        """Reviewed evidence cannot relabel the statement decision it accompanies."""
+        with self.assertRaisesRegex(ValueError, "matching decisions"):
+            read_model.build_reconciliation_close_review(
+                self._input(
+                    decisions=(self._match("stmt-001"),),
+                    expected=("stmt-001",),
+                    reviewed_matches=(
+                        self._reviewed_match("stmt-substitute", "match-001"),
+                    ),
+                )
+            )
+
+    def test_reviewed_match_evidence_amount_must_be_positive_exact_decimal(self) -> None:
+        """Reviewed evidence cannot carry a zero allocation."""
+        with self.assertRaisesRegex(ValueError, "positive exact Decimal"):
+            read_model.build_reconciliation_close_review(
+                self._input(
+                    decisions=(self._match("stmt-001"),),
+                    expected=("stmt-001",),
+                    reviewed_matches=(
+                        self._reviewed_match(
+                            "stmt-001", "match-001", amount=Decimal("0")
+                        ),
+                    ),
+                )
+            )
+
     def test_duplicate_or_extraneous_decision_identity_fails_closed(self) -> None:
         """One immutable statement entry must contribute exactly one decision."""
         with self.assertRaisesRegex(ValueError, "statement population"):
