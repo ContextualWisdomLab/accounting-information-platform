@@ -101,7 +101,7 @@ class PostgresReconciliationDatabaseControlHardeningRedTests(unittest.TestCase):
             match_id, "stmt-retarget-a", "journal-retarget-a", "1000.00"
         )
 
-        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
+        with psycopg.connect(posting.DATABASE_URL) as connection:
             with self.assertRaisesRegex(
                 psycopg.errors.CheckViolation,
                 "reconciliation_match_identity_immutable",
@@ -187,7 +187,7 @@ class PostgresReconciliationDatabaseControlHardeningRedTests(unittest.TestCase):
     def test_conflicting_candidate_amount_cannot_enter_concurrently(self) -> None:
         """Two runs cannot concurrently establish different capacities for one source identity."""
         second_run = uuid.uuid4()
-        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
+        with psycopg.connect(posting.DATABASE_URL) as connection:
             connection.execute(
                 """
                 INSERT INTO accounting_core.reconciliation_run (
@@ -209,6 +209,25 @@ class PostgresReconciliationDatabaseControlHardeningRedTests(unittest.TestCase):
                     self.fixture.run_reference,
                 ),
             )
+            connection.execute(
+                """
+                INSERT INTO accounting_core.reconciliation_run_command (
+                    tenant_account_id, reconciliation_run_id, bank_statement_record_id,
+                    reconciliation_idempotency_key, reconciliation_command_hash,
+                    source_payload_hash, source_payload_reference
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    self.fixture.scope["tenant_account_id"],
+                    second_run,
+                    self.fixture.statement_record["bank_statement_record_id"],
+                    f"run-evidence-{uuid.uuid4().hex}",
+                    "sha256:" + "c" * 64,
+                    self.fixture.statement_record["source_artifact_hash"],
+                    f"memory:{self.fixture.statement_record['source_artifact_hash']}",
+                ),
+            )
+            connection.commit()
 
         first_candidate = uuid.uuid4()
         second_candidate = uuid.uuid4()
@@ -276,7 +295,7 @@ class PostgresReconciliationDatabaseControlHardeningRedTests(unittest.TestCase):
         )
         self.fixture._approve_match(first_match)
 
-        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
+        with psycopg.connect(posting.DATABASE_URL) as connection:
             assignment = connection.execute(
                 """
                 SELECT bank_account_record_id, chart_account_id, valid_from
@@ -342,6 +361,25 @@ class PostgresReconciliationDatabaseControlHardeningRedTests(unittest.TestCase):
                     rollover_at,
                 ),
             )
+            connection.execute(
+                """
+                INSERT INTO accounting_core.reconciliation_run_command (
+                    tenant_account_id, reconciliation_run_id, bank_statement_record_id,
+                    reconciliation_idempotency_key, reconciliation_command_hash,
+                    source_payload_hash, source_payload_reference
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    self.fixture.scope["tenant_account_id"],
+                    second_run,
+                    self.fixture.statement_record["bank_statement_record_id"],
+                    f"run-evidence-{uuid.uuid4().hex}",
+                    "sha256:" + "c" * 64,
+                    self.fixture.statement_record["source_artifact_hash"],
+                    f"memory:{self.fixture.statement_record['source_artifact_hash']}",
+                ),
+            )
+            connection.commit()
             second_candidate = connection.execute(
                 """
                 INSERT INTO accounting_core.reconciliation_candidate (

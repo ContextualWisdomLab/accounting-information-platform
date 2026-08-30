@@ -35,6 +35,7 @@ Metering and billing remain authoritative for usage, pricing, invoice intent, pa
 | `integration_outbox` | Transactional publication evidence and append-only audit history |
 | `tax_interface` | VAT register and fail-closed HomeTax submission evidence; no NTS transport in this foundation |
 | `bank_statement_registry` | Immutable camt.053.001.14 statement/entry evidence, bank-account-to-book mapping, and host artifact locators |
+| `reconciliation_run_control` | Idempotent evaluating-run command identity over immutable statement evidence and active bank-account assignment; no matching, approval, close, or posting authority |
 
 ## Persistence and migration order
 
@@ -142,6 +143,8 @@ Shared fiscal-calendar dates do not collapse independent accounting books into o
 15. `database/migrations/0015_reconciliation_multi_match_conservation.sql` — replaces the run-wide single-approved-match shortcut with tenant/run-scoped match identity and exact statement/journal source-allocation conservation, including split and aggregate populations, so independent matches may be approved without double-consuming source evidence.
 16. `database/migrations/0016_reconciliation_approval_evidence.sql` — records immutable human reconciliation decisions and object-storage source-payload provenance, binds them to a database-computed candidate/allocation snapshot before a match can become terminal, and refuses unbound legacy terminal rows during upgrade.
 17. `database/migrations/0017_reconciliation_approval_lock_order.sql` — repairs the approval-evidence trigger to acquire the parent match row before its snapshot advisory lock, closing the approval/allocation row-advisory deadlock cycle.
+18. `database/migrations/0018_bank_statement_balance_evidence.sql` — preserves exact numeric camt.053 balance facts, including typed effective date/time distinct from statement period and system recording time, as immutable, tenant-scoped evidence for reconciliation bridge reads.
+19. `database/migrations/0019_reconciliation_run_command_evidence.sql` — records immutable tenant-scoped run-command idempotency, source hash/reference, and the statement bound to an evaluating reconciliation scope.
 
 ## Durable soft-close command evidence
 

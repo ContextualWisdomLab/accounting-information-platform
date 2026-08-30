@@ -26,7 +26,7 @@ class PostgresCrossRunReconciliationConservationRedTests(unittest.TestCase):
 
     def _insert_run(self) -> uuid.UUID:
         run_reference = uuid.uuid4()
-        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
+        with psycopg.connect(posting.DATABASE_URL) as connection:
             connection.execute(
                 "SELECT set_config('app.tenant_account_id', %s, false)",
                 (str(self.case.scope["tenant_account_id"]),),
@@ -52,7 +52,25 @@ class PostgresCrossRunReconciliationConservationRedTests(unittest.TestCase):
                     allocation.VALID_FROM,
                 ),
             )
-            connection.execute("RESET app.tenant_account_id")
+            connection.execute(
+                """
+                INSERT INTO accounting_core.reconciliation_run_command (
+                    tenant_account_id, reconciliation_run_id, bank_statement_record_id,
+                    reconciliation_idempotency_key, reconciliation_command_hash,
+                    source_payload_hash, source_payload_reference
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    self.case.scope["tenant_account_id"],
+                    run_reference,
+                    self.case.statement_record["bank_statement_record_id"],
+                    f"run-evidence-{uuid.uuid4().hex}",
+                    "sha256:" + "c" * 64,
+                    self.case.statement_record["source_artifact_hash"],
+                    f"memory:{self.case.statement_record['source_artifact_hash']}",
+                ),
+            )
+            connection.commit()
         return run_reference
 
     def _insert_candidate(
