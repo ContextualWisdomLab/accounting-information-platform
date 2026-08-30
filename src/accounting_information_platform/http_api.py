@@ -54,6 +54,7 @@ from .bank_statement import MemoryArtifactStore
 from .billing_pull import accept_billing_proposal_pull
 from .core import AccountingValidationError, IdempotencyConflictError, _require_reference
 from .reconciliation_run import accept_reconciliation_run, lookup_reconciliation_run
+from .reconciliation_match import accept_reconciliation_match, lookup_reconciliation_match
 
 
 TENANT_HEADER = "X-CWL-Tenant-Reference"
@@ -81,6 +82,7 @@ BANK_ACCOUNT_ASSIGNMENT_PATH = "/bank-account-assignments"
 BANK_STATEMENT_PATH = "/bank-statements"
 BANK_STATEMENT_ENTRY_PATH = "/bank-statement-entries"
 RECONCILIATION_RUN_PATH = "/reconciliation-runs"
+RECONCILIATION_MATCH_PATH = "/reconciliation-matches"
 RECEIVABLE_AGING_PATH = "/receivable-agings"
 PAYABLE_AGING_PATH = "/payable-agings"
 PERIOD_CLOSE_PACKAGE_PATH = "/period-close-packages"
@@ -205,6 +207,9 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         if parsed.path == RECONCILIATION_RUN_PATH:
             self._get_reconciliation_run(parsed.query)
             return
+        if parsed.path == RECONCILIATION_MATCH_PATH:
+            self._get_reconciliation_match(parsed.query)
+            return
         if parsed.path == RECEIVABLE_AGING_PATH:
             self._get_receivable_aging(parsed.query)
             return
@@ -247,7 +252,9 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             "GET /bank-statement-entries, GET /receivable-agings, "
             "GET /payable-agings, GET /period-close-packages, GET /journals, "
             "GET /journal-reversals, GET /period-closes, GET /fiscal-periods, "
-            "GET /reconciliation-runs?reconciliation_run_id=, GET /outbox-events?event_type_code=, "
+            "GET /reconciliation-runs?reconciliation_run_id=, "
+            "GET /reconciliation-matches?reconciliation_match_id=, "
+            "GET /outbox-events?event_type_code=, "
             "or GET /audit-events, then retry.",
         )
 
@@ -385,6 +392,9 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         if parsed_path == RECONCILIATION_RUN_PATH:
             self._post_reconciliation_run(raw_body)
             return
+        if parsed_path == RECONCILIATION_MATCH_PATH:
+            self._post_reconciliation_match(raw_body)
+            return
         if parsed_path == BANK_STATEMENT_ENTRY_PATH:
             self._write_error(
                 405,
@@ -419,7 +429,7 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             "unknown path. POST /journal-proposals, POST /journals, POST /journal-reversals, "
             "POST /billing-proposal-pulls, POST /period-closes, POST /home-tax-submissions, "
             "POST /bank-accounts, POST /bank-account-assignments, POST /bank-statements, "
-            "POST /reconciliation-runs, POST /fiscal-periods, "
+            "POST /reconciliation-runs, POST /reconciliation-matches, POST /fiscal-periods, "
             "or POST /outbox-events/{outbox_event_id}/publish, then retry.",
         )
 
@@ -1679,6 +1689,55 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             return
         self._write_json(200, document)
 
+    def _post_reconciliation_match(self, raw_body: bytes) -> None:
+        tenant_header = self._bound_tenant_header("reconciliation-match")
+        if tenant_header is None:
+            return
+        payload = self._read_json_object(raw_body, "a reconciliation-match command")
+        if payload is None:
+            return
+        if payload.get("tenant_reference") != tenant_header:
+            self._write_error(
+                403,
+                "reconciliation-match tenant_reference does not match X-CWL-Tenant-Reference. "
+                "Send the match to that tenant's AIS endpoint, then retry.",
+            )
+            return
+        try:
+            document = accept_reconciliation_match(
+                payload, self.server.database_url, tenant_header
+            )
+        except IdempotencyConflictError as error:
+            self._write_error(409, str(error))
+            return
+        except AccountingValidationError as error:
+            self._write_error(_reconciliation_match_status(error), str(error))
+            return
+        self._write_json(200, document)
+
+    def _get_reconciliation_match(self, query: str) -> None:
+        tenant_header = self._bound_tenant_header("reconciliation-match read")
+        if tenant_header is None:
+            return
+        match_id = _first_query(
+            parse_qs(query, keep_blank_values=True), "reconciliation_match_id"
+        )
+        if not match_id:
+            self._write_error(
+                400,
+                "reconciliation_match_id is required. "
+                "Supply that query key, then retry the reconciliation-match read.",
+            )
+            return
+        try:
+            document = lookup_reconciliation_match(
+                self.server.database_url, tenant_header, match_id
+            )
+        except AccountingValidationError as error:
+            self._write_error(_reconciliation_match_status(error), str(error))
+            return
+        self._write_json(200, document)
+
     def _post_billing_proposal_pull(self, raw_body: bytes) -> None:
         tenant_header = self._bound_tenant_header("pull")
         if tenant_header is None:
@@ -1823,6 +1882,18 @@ def _reconciliation_run_status(error: AccountingValidationError) -> int:
         return 404
     if "must be a UUID" in message or "is required" in message:
         return 400
+    return 422
+
+
+def _reconciliation_match_status(error: AccountingValidationError) -> int:
+    """Map proposed-match validation to stable HTTP boundary statuses."""
+    message = str(error)
+    if "is not recorded" in message:
+        return 404
+    if "must be a UUID" in message or "is required" in message:
+        return 400
+    if "can only be proposed" in message or "already recorded for this run" in message:
+        return 409
     return 422
 
 

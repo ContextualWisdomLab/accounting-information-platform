@@ -6,6 +6,7 @@ import hashlib
 import unittest
 import uuid
 from contextlib import nullcontext
+from pathlib import Path
 from unittest import mock
 
 import psycopg
@@ -91,10 +92,30 @@ class ReconciliationRunApiTests(unittest.TestCase):
             "bank_cutoff_at": "2026-08-24T23:59:59Z",
             "book_cutoff_at": "2026-08-24T23:59:59Z",
             "matching_policy_version": "deterministic-v1",
-            "knowledge_cutoff_at": "2026-08-25T00:00:00Z",
+            "knowledge_cutoff_at": "2026-09-01T00:00:00Z",
             "reconciliation_idempotency_key": f"run-{uuid.uuid4().hex}",
             "source_payload_hash": source_payload_hash,
         }
+
+    def _assignment_scope(self, assignment_id: str | None = None) -> tuple[object, ...]:
+        """Return the tenant-scoped identifiers needed for direct SQL controls."""
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            return connection.execute(
+                """
+                SELECT assignment.tenant_account_id,
+                       assignment.legal_entity_id,
+                       assignment.accounting_book_id,
+                       assignment.bank_account_assignment_id,
+                       account.account_currency_code
+                FROM accounting_core.bank_account_assignment AS assignment
+                JOIN accounting_core.bank_account_record AS account
+                  ON account.tenant_account_id = assignment.tenant_account_id
+                 AND account.bank_account_record_id = assignment.bank_account_record_id
+                WHERE assignment.bank_account_assignment_id = COALESCE(%s::uuid, assignment.bank_account_assignment_id)
+                  AND account.bank_account_reference = %s
+                """,
+                (assignment_id, self.account_reference),
+            ).fetchone()
 
     def test_open_run_binds_statement_scope_and_replays(self) -> None:
         """An exact command opens one evaluating run and an exact retry replays it."""
@@ -149,6 +170,237 @@ class ReconciliationRunApiTests(unittest.TestCase):
         )
         self.assertTrue(replay["replayed"])
         self.assertEqual(first["reconciliation_run_id"], replay["reconciliation_run_id"])
+
+    def test_statement_recorded_after_knowledge_cutoff_is_rejected(self) -> None:
+        """A historical run cannot include a statement learned after its cutoff."""
+        _statement, command = self._statement_and_command()
+        historical = dict(command, knowledge_cutoff_at="2026-08-25T00:00:00Z")
+        with self.assertRaisesRegex(AccountingValidationError, "not bound"):
+            accept_reconciliation_run(
+                historical, posting.DATABASE_URL, self.case.policy.tenant_reference
+            )
+
+    def test_assignment_recorded_after_knowledge_cutoff_is_rejected(self) -> None:
+        """A historical run cannot use an assignment learned after its cutoff."""
+        _statement, command = self._statement_and_command()
+        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
+            connection.execute(
+                """
+                UPDATE accounting_core.bank_account_assignment
+                SET recorded_at = '2026-09-02T00:00:00Z'
+                WHERE bank_account_assignment_id = (
+                    SELECT assignment.bank_account_assignment_id
+                    FROM accounting_core.bank_account_assignment AS assignment
+                    JOIN accounting_core.bank_account_record AS account
+                      ON account.tenant_account_id = assignment.tenant_account_id
+                     AND account.bank_account_record_id = assignment.bank_account_record_id
+                    WHERE account.bank_account_reference = %s
+                )
+                """,
+                (self.account_reference,),
+            )
+        historical = dict(command, knowledge_cutoff_at="2026-09-01T00:00:00Z")
+        with self.assertRaisesRegex(AccountingValidationError, "not bound"):
+            accept_reconciliation_run(
+                historical, posting.DATABASE_URL, self.case.policy.tenant_reference
+            )
+
+    def test_database_rejects_orphan_reconciliation_run_at_commit(self) -> None:
+        """A run cannot commit without exactly one immutable command-evidence row."""
+        _statement, command = self._statement_and_command()
+        scope = self._assignment_scope()
+        assert scope is not None
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            with self.assertRaisesRegex(psycopg.Error, "exactly one command"):
+                connection.execute(
+                    """
+                    INSERT INTO accounting_core.reconciliation_run (
+                        tenant_account_id, legal_entity_id, accounting_book_id,
+                        bank_account_assignment_id, currency_code, bank_cutoff_at,
+                        book_cutoff_at, matching_policy_version, knowledge_cutoff_at,
+                        run_status_code
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'evaluating')
+                    """,
+                    (
+                        scope[0],
+                        scope[1],
+                        scope[2],
+                        scope[3],
+                        scope[4],
+                        command["bank_cutoff_at"],
+                        command["book_cutoff_at"],
+                        command["matching_policy_version"],
+                        command["knowledge_cutoff_at"],
+                    ),
+                )
+                connection.commit()
+
+    def test_database_rejects_command_for_different_bank_account_at_commit(self) -> None:
+        """A run command cannot bind evidence from another bank account."""
+        _statement, command = self._statement_and_command()
+        second_account_reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
+        accept_bank_account_record(
+            {
+                "tenant_reference": self.case.policy.tenant_reference,
+                "bank_account_reference": second_account_reference,
+                "account_currency_code": "KRW",
+                "account_identifier": "acct-opaque-fixture-only",
+            },
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+        )
+        second_statement = accept_bank_statement_evidence(
+            {
+                "tenant_reference": self.case.policy.tenant_reference,
+                "bank_account_reference": second_account_reference,
+                "message_definition_identifier": CAMT053_MESSAGE_DEFINITION,
+                "statement_payload": load_canonical_statement_fixture()
+                .replace(b"Invoice 1001", b"Invoice 1999", 1)
+                .decode("utf-8"),
+                "ingestion_idempotency_key": f"statement-run-second-{uuid.uuid4().hex}",
+            },
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            artifact_store=self.store,
+        )
+        scope = self._assignment_scope()
+        assert scope is not None
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            with self.assertRaisesRegex(psycopg.Error, "bank account provenance"):
+                connection.execute(
+                    """
+                    WITH inserted_run AS (
+                        INSERT INTO accounting_core.reconciliation_run (
+                            tenant_account_id, legal_entity_id, accounting_book_id,
+                            bank_account_assignment_id, currency_code, bank_cutoff_at,
+                            book_cutoff_at, matching_policy_version, knowledge_cutoff_at,
+                            run_status_code
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'evaluating')
+                        RETURNING tenant_account_id, reconciliation_run_id
+                    )
+                    INSERT INTO accounting_core.reconciliation_run_command (
+                        tenant_account_id, reconciliation_run_id,
+                        bank_statement_record_id, reconciliation_idempotency_key,
+                        reconciliation_command_hash, source_payload_hash,
+                        source_payload_reference
+                    )
+                    SELECT tenant_account_id, reconciliation_run_id, %s, %s, %s, %s, %s
+                    FROM inserted_run
+                    """,
+                    (
+                        scope[0],
+                        scope[1],
+                        scope[2],
+                        scope[3],
+                        scope[4],
+                        command["bank_cutoff_at"],
+                        command["book_cutoff_at"],
+                        command["matching_policy_version"],
+                        command["knowledge_cutoff_at"],
+                        second_statement["bank_statement_record_id"],
+                        f"direct-provenance-{uuid.uuid4().hex}",
+                        "sha256:" + "1" * 64,
+                        second_statement["source_artifact_hash"],
+                        f"memory:{second_statement['source_artifact_hash']}",
+                    ),
+                )
+                connection.commit()
+
+    def test_database_rejects_wrong_command_added_to_legacy_run(self) -> None:
+        """A command added to a pre-existing run still proves bank-account provenance."""
+        _statement, command = self._statement_and_command()
+        second_account_reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
+        accept_bank_account_record(
+            {
+                "tenant_reference": self.case.policy.tenant_reference,
+                "bank_account_reference": second_account_reference,
+                "account_currency_code": "KRW",
+                "account_identifier": "acct-opaque-fixture-only",
+            },
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+        )
+        second_statement = accept_bank_statement_evidence(
+            {
+                "tenant_reference": self.case.policy.tenant_reference,
+                "bank_account_reference": second_account_reference,
+                "message_definition_identifier": CAMT053_MESSAGE_DEFINITION,
+                "statement_payload": load_canonical_statement_fixture()
+                .replace(b"BANK-STMT-2026-08-24", b"BANK-STMT-LEGACY-2", 1)
+                .decode("utf-8"),
+                "ingestion_idempotency_key": f"statement-run-legacy-{uuid.uuid4().hex}",
+            },
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            artifact_store=self.store,
+        )
+        scope = self._assignment_scope()
+        assert scope is not None
+        provenance_repair = (
+            Path(__file__).resolve().parents[1]
+            / "database/migrations/0021_reconciliation_run_command_provenance_repair.sql"
+        )
+        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
+            connection.execute(
+                "DROP TRIGGER IF EXISTS reconciliation_run_command_provenance_insert_guard "
+                "ON accounting_core.reconciliation_run_command"
+            )
+            connection.execute(provenance_repair.read_text(encoding="utf-8"))
+            connection.execute(
+                "ALTER TABLE accounting_core.reconciliation_run "
+                "DISABLE TRIGGER reconciliation_run_command_provenance_guard"
+            )
+            run_id = connection.execute(
+                """
+                INSERT INTO accounting_core.reconciliation_run (
+                    tenant_account_id, legal_entity_id, accounting_book_id,
+                    bank_account_assignment_id, currency_code, bank_cutoff_at,
+                    book_cutoff_at, matching_policy_version, knowledge_cutoff_at,
+                    run_status_code
+                )
+                VALUES (%s, %s, %s, %s, 'KRW', %s, %s, %s, %s, 'evaluating')
+                RETURNING reconciliation_run_id
+                """,
+                (
+                    scope[0],
+                    scope[1],
+                    scope[2],
+                    scope[3],
+                    command["bank_cutoff_at"],
+                    command["book_cutoff_at"],
+                    command["matching_policy_version"],
+                    command["knowledge_cutoff_at"],
+                ),
+            ).fetchone()[0]
+            connection.execute(
+                "ALTER TABLE accounting_core.reconciliation_run "
+                "ENABLE TRIGGER reconciliation_run_command_provenance_guard"
+            )
+        with self.assertRaisesRegex(psycopg.Error, "bank account provenance"):
+            with psycopg.connect(posting.DATABASE_URL) as connection:
+                connection.execute(
+                    """
+                    INSERT INTO accounting_core.reconciliation_run_command (
+                        tenant_account_id, reconciliation_run_id,
+                        bank_statement_record_id, reconciliation_idempotency_key,
+                        reconciliation_command_hash, source_payload_hash,
+                        source_payload_reference
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        scope[0],
+                        run_id,
+                        second_statement["bank_statement_record_id"],
+                        f"legacy-provenance-{uuid.uuid4().hex}",
+                        "sha256:" + "6" * 64,
+                        second_statement["source_artifact_hash"],
+                        f"memory:{second_statement['source_artifact_hash']}",
+                    ),
+                )
+                connection.commit()
 
     def test_wrong_source_hash_fails_before_run_persistence(self) -> None:
         """A run cannot claim a different immutable bank-statement source."""
@@ -205,7 +457,7 @@ class ReconciliationRunApiTests(unittest.TestCase):
         before_start = dict(
             command,
             bank_cutoff_at="2026-08-22T23:59:59Z",
-            knowledge_cutoff_at="2026-08-25T00:00:00Z",
+            knowledge_cutoff_at="2026-09-01T00:00:00Z",
         )
         with self.assertRaisesRegex(AccountingValidationError, "before the statement period"):
             accept_reconciliation_run(
@@ -214,7 +466,7 @@ class ReconciliationRunApiTests(unittest.TestCase):
         before_end = dict(
             command,
             bank_cutoff_at="2026-08-24T12:00:00Z",
-            knowledge_cutoff_at="2026-08-25T00:00:00Z",
+            knowledge_cutoff_at="2026-09-01T00:00:00Z",
         )
         with self.assertRaisesRegex(
             AccountingValidationError, "before the statement period end"

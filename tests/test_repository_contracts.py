@@ -17,6 +17,7 @@ from scripts.validate_repository import (
     APPEND_ONLY_JOURNAL_MUTATION_ERROR,
     COVERAGE_CP313_MANYLINUX_X86_64_WHEEL_HASH,
     COVERAGE_UNIVERSAL_WHEEL_HASH,
+    PSYCOPG_BINARY_CP314_MANYLINUX_X86_64_WHEEL_HASH,
     main,
     find_mutable_action_references,
     find_placeholder_tokens,
@@ -366,7 +367,32 @@ class RepositoryContractTests(unittest.TestCase):
         )
         self.assertEqual(
             universal_only,
-            ("coverage must pin the CPython 3.13 manylinux x86_64 wheel hash",),
+            (
+                "coverage must pin the CPython 3.13 manylinux x86_64 wheel hash",
+                "psycopg-binary must pin the CPython 3.14 manylinux x86_64 wheel hash",
+            ),
+        )
+
+        quality_requirements = (ROOT / "requirements-quality.txt").read_text(
+            encoding="utf-8"
+        )
+        psycopg_binary_stanza = re.search(
+            r"(?ms)^psycopg-binary==3\.3\.4 \\\n"
+            r"(?:    --hash=sha256:[0-9a-f]{64}(?: \\\n|\n))+",
+            quality_requirements,
+        )
+        self.assertIsNotNone(psycopg_binary_stanza)
+        self.assertIn(
+            f"--hash=sha256:{PSYCOPG_BINARY_CP314_MANYLINUX_X86_64_WHEEL_HASH}",
+            psycopg_binary_stanza.group(0) if psycopg_binary_stanza else "",
+        )
+        without_cp314 = quality_requirements.replace(
+            f"    --hash=sha256:{PSYCOPG_BINARY_CP314_MANYLINUX_X86_64_WHEEL_HASH}\n",
+            "",
+        )
+        self.assertIn(
+            "psycopg-binary must pin the CPython 3.14 manylinux x86_64 wheel hash",
+            validate_quality_requirements(without_cp314),
         )
 
         orphan_and_unpinned = validate_quality_requirements(
@@ -405,7 +431,8 @@ class RepositoryContractTests(unittest.TestCase):
             "psycopg==3.3.4 --hash=sha256:"
             "b6bbc25ccf05c8fad3b061d9db2ef0909a555171b84b07f29458a447253d679a\n"
             "psycopg-binary==3.3.4 --hash=sha256:"
-            "c677c4ad433cb7150c8cd304a0769ae3bcfbe5ea0676eb53faa7b1443b16d0d3\n"
+            "c677c4ad433cb7150c8cd304a0769ae3bcfbe5ea0676eb53faa7b1443b16d0d3 "
+            f"--hash=sha256:{PSYCOPG_BINARY_CP314_MANYLINUX_X86_64_WHEEL_HASH}\n"
             "# comment and blank lines are ignored\n\n"
         )
         self.assertEqual(inline_valid, ())

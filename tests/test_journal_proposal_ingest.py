@@ -209,6 +209,27 @@ class JournalProposalIngestTests(unittest.TestCase):
         self.assertEqual(two.lines[0].debit_amount, Decimal("25000.50"))
         self.assertEqual(two.lines[1].credit_amount, Decimal("25000.50"))
 
+    def test_more_than_numeric_precision_fails_closed_without_rounding(self) -> None:
+        """An amount wider than numeric(38, 6) cannot reach persistence."""
+        too_wide = self._billing_proposal()
+        too_wide_amount = "1" + "0" * 32
+        too_wide["lines"][0]["debit_amount"] = too_wide_amount
+        too_wide["lines"][1]["credit_amount"] = too_wide_amount
+
+        with self.assertRaisesRegex(
+            AccountingValidationError, "supported monetary precision"
+        ):
+            ingest_journal_proposal(too_wide)
+
+        maximum = self._billing_proposal()
+        maximum_amount = "9" * 32 + ".999999"
+        maximum["lines"][0]["debit_amount"] = maximum_amount
+        maximum["lines"][1]["credit_amount"] = maximum_amount
+        self.assertEqual(
+            ingest_journal_proposal(maximum).lines[0].debit_amount,
+            Decimal(maximum_amount),
+        )
+
     def test_proposal_contract_version_must_be_a_non_bool_int(self) -> None:
         """Bool and non-int contract versions fail closed before posting."""
         bool_version = self._billing_proposal(proposal_contract_version=True)

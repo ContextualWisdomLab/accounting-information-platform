@@ -32,6 +32,12 @@ This is review evidence only; it never becomes journal-posting authority.
 
 Any approved adjusting-journal proposal must re-enter the existing accounting command boundary with its own idempotency key, immutable source evidence, open-period checks, policy resolution, purpose-bound authorization, and authoritative posting receipt.
 
+The current bounded persistence seam exposes `POST /reconciliation-matches` and
+`GET /reconciliation-matches?reconciliation_match_id=` for one exact 1:1
+proposed match. It persists candidate, match, statement allocation, journal
+allocation, and command provenance atomically; it remains review evidence only.
+The existing many-to-many planner and human approval controls stay separate.
+
 ## Later commercial increments
 
 After deterministic reconciliation is integrated, continue with purpose-bound accounting authorization, multi-currency/FX, consolidation and intercompany, fixed assets, revenue-recognition support, tax interfaces, management reporting, and operational/recovery hardening. Each increment must preserve tenant isolation, database-owned invariants where feasible, exact decimal arithmetic, append-only accounting facts, and source-to-receipt provenance.

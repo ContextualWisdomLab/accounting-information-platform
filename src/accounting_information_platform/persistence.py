@@ -6340,6 +6340,33 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             f"{run_command_migration_path}. Restore "
             "database/migrations/0019_reconciliation_run_command_evidence.sql, then retry."
         )
+    match_command_migration_path = (
+        migration_path.parent / "0020_reconciliation_match_command_evidence.sql"
+    )
+    if not match_command_migration_path.is_file():
+        raise AccountingValidationError(
+            "Reconciliation match-command evidence migration is missing at "
+            f"{match_command_migration_path}. Restore "
+            "database/migrations/0020_reconciliation_match_command_evidence.sql, then retry."
+        )
+    run_command_provenance_repair_migration_path = (
+        migration_path.parent / "0021_reconciliation_run_command_provenance_repair.sql"
+    )
+    if not run_command_provenance_repair_migration_path.is_file():
+        raise AccountingValidationError(
+            "Reconciliation run-command provenance repair migration is missing at "
+            f"{run_command_provenance_repair_migration_path}. Restore "
+            "database/migrations/0021_reconciliation_run_command_provenance_repair.sql, then retry."
+        )
+    amount_precision_migration_path = (
+        migration_path.parent / "0022_reconciliation_amount_precision.sql"
+    )
+    if not amount_precision_migration_path.is_file():
+        raise AccountingValidationError(
+            "Reconciliation amount-precision migration is missing at "
+            f"{amount_precision_migration_path}. Restore "
+            "database/migrations/0022_reconciliation_amount_precision.sql, then retry."
+        )
     psycopg = _import_psycopg()
     try:
         with psycopg.connect(
@@ -6377,6 +6404,15 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             )
             connection.execute(
                 run_command_migration_path.read_text(encoding="utf-8")
+            )
+            connection.execute(
+                match_command_migration_path.read_text(encoding="utf-8")
+            )
+            connection.execute(
+                run_command_provenance_repair_migration_path.read_text(encoding="utf-8")
+            )
+            connection.execute(
+                amount_precision_migration_path.read_text(encoding="utf-8")
             )
     except Exception as error:
         raise AccountingValidationError(

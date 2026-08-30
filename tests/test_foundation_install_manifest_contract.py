@@ -147,6 +147,72 @@ class FoundationInstallManifestContractTests(unittest.TestCase):
                 self.assertIn(migration_nineteen, text)
                 self.assertLess(text.index(migration_eighteen), text.index(migration_nineteen))
 
+    def test_required_files_and_install_docs_include_match_command_evidence(self) -> None:
+        """Proposed-match command evidence follows the immutable run command chain."""
+        migration_nineteen = "database/migrations/0019_reconciliation_run_command_evidence.sql"
+        migration_twenty = "database/migrations/0020_reconciliation_match_command_evidence.sql"
+        self.assertIn(migration_twenty, set(REQUIRED_FILES))
+        for relative_path in ("docs/OPERABILITY.md", "docs/ARCHITECTURE.md"):
+            with self.subTest(relative_path=relative_path):
+                text = (ROOT / relative_path).read_text(encoding="utf-8")
+                self.assertIn(migration_nineteen, text)
+                self.assertIn(migration_twenty, text)
+                self.assertLess(text.index(migration_nineteen), text.index(migration_twenty))
+
+    def test_required_files_and_install_docs_include_run_provenance_repair(self) -> None:
+        """Existing installations receive the command provenance trigger repair."""
+        migration_twenty = "database/migrations/0020_reconciliation_match_command_evidence.sql"
+        migration_twenty_one = (
+            "database/migrations/0021_reconciliation_run_command_provenance_repair.sql"
+        )
+        self.assertIn(migration_twenty_one, set(REQUIRED_FILES))
+        for relative_path in ("docs/OPERABILITY.md", "docs/ARCHITECTURE.md"):
+            with self.subTest(relative_path=relative_path):
+                text = (ROOT / relative_path).read_text(encoding="utf-8")
+                self.assertIn(migration_twenty, text)
+                self.assertIn(migration_twenty_one, text)
+                self.assertLess(text.index(migration_twenty), text.index(migration_twenty_one))
+
+    def test_required_files_and_install_docs_include_amount_precision_repair(self) -> None:
+        """Existing installations receive the reconciliation precision repair."""
+        migration_twenty_one = (
+            "database/migrations/0021_reconciliation_run_command_provenance_repair.sql"
+        )
+        migration_twenty_two = "database/migrations/0022_reconciliation_amount_precision.sql"
+        self.assertIn(migration_twenty_two, set(REQUIRED_FILES))
+        for relative_path in ("docs/OPERABILITY.md", "docs/ARCHITECTURE.md"):
+            with self.subTest(relative_path=relative_path):
+                text = (ROOT / relative_path).read_text(encoding="utf-8")
+                self.assertIn(migration_twenty_one, text)
+                self.assertIn(migration_twenty_two, text)
+                self.assertLess(text.index(migration_twenty_one), text.index(migration_twenty_two))
+
+    def test_run_provenance_repair_rejects_existing_mismatches(self) -> None:
+        """The upgrade must fail closed on already stored cross-bank commands."""
+        migration = (
+            ROOT
+            / "database/migrations/0021_reconciliation_run_command_provenance_repair.sql"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "reconciliation_run_command_provenance_upgrade_visibility",
+            migration,
+        )
+        for policy in (
+            "reconciliation_run_command_provenance_run_upgrade_visibility",
+            "reconciliation_run_command_provenance_assignment_upgrade_visibility",
+            "reconciliation_run_command_provenance_statement_upgrade_visibility",
+        ):
+            with self.subTest(policy=policy):
+                self.assertIn(policy, migration)
+        self.assertIn(
+            "statement.bank_account_record_id IS DISTINCT FROM assignment.bank_account_record_id",
+            migration,
+        )
+        self.assertIn(
+            "existing reconciliation run command provenance is invalid",
+            migration,
+        )
+
     def test_install_fails_closed_when_approval_snapshot_migration_is_missing(self) -> None:
         """The canonical loader may not silently stop before database-owned approval evidence."""
         original_is_file = Path.is_file
@@ -206,6 +272,54 @@ class FoundationInstallManifestContractTests(unittest.TestCase):
 
         with patch.object(Path, "is_file", is_file):
             with self.assertRaises(AccountingValidationError):
+                apply_foundation_migration(
+                    "postgresql://unused",
+                    ROOT / "database/migrations/0001_accounting_foundation.sql",
+                )
+
+    def test_install_fails_closed_when_match_command_migration_is_missing(self) -> None:
+        """The canonical loader may not persist proposed matches without command evidence."""
+        original_is_file = Path.is_file
+
+        def is_file(path: Path) -> bool:
+            if path.name == "0020_reconciliation_match_command_evidence.sql":
+                return False
+            return original_is_file(path)
+
+        with patch.object(Path, "is_file", is_file):
+            with self.assertRaises(AccountingValidationError):
+                apply_foundation_migration(
+                    "postgresql://unused",
+                    ROOT / "database/migrations/0001_accounting_foundation.sql",
+                )
+
+    def test_install_fails_closed_when_run_provenance_repair_is_missing(self) -> None:
+        """The canonical loader must apply the existing-installation trigger repair."""
+        original_is_file = Path.is_file
+
+        def is_file(path: Path) -> bool:
+            if path.name == "0021_reconciliation_run_command_provenance_repair.sql":
+                return False
+            return original_is_file(path)
+
+        with patch.object(Path, "is_file", is_file):
+            with self.assertRaisesRegex(AccountingValidationError, "provenance repair"):
+                apply_foundation_migration(
+                    "postgresql://unused",
+                    ROOT / "database/migrations/0001_accounting_foundation.sql",
+                )
+
+    def test_install_fails_closed_when_amount_precision_migration_is_missing(self) -> None:
+        """The canonical loader must apply the reconciliation precision repair."""
+        original_is_file = Path.is_file
+
+        def is_file(path: Path) -> bool:
+            if path.name == "0022_reconciliation_amount_precision.sql":
+                return False
+            return original_is_file(path)
+
+        with patch.object(Path, "is_file", is_file):
+            with self.assertRaisesRegex(AccountingValidationError, "amount-precision"):
                 apply_foundation_migration(
                     "postgresql://unused",
                     ROOT / "database/migrations/0001_accounting_foundation.sql",

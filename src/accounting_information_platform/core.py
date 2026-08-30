@@ -22,6 +22,7 @@ from typing import Mapping, Sequence
 _CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 _CURRENCY_PATTERN = re.compile(r"^[A-Z]{3}$")
 _DECIMAL_PATTERN = re.compile(r"^(0|[1-9][0-9]*)(\.[0-9]{1,6})?$")
+_MAX_STORAGE_AMOUNT = Decimal("9" * 32 + ".999999")
 _HASH_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _PROPOSAL_ID_PATTERN = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
@@ -703,7 +704,7 @@ def _reversal_command_hash(
 
 
 def _parse_amount(value: Decimal | str) -> Decimal:
-    """Parse a canonical non-negative decimal with at most six fractional digits."""
+    """Parse a canonical amount within the PostgreSQL numeric(38, 6) domain."""
     text = str(value)
     if _DECIMAL_PATTERN.fullmatch(text) is None:
         raise AccountingValidationError(
@@ -716,6 +717,10 @@ def _parse_amount(value: Decimal | str) -> Decimal:
         raise AccountingValidationError(
             "amount is not a valid decimal. Supply a canonical non-negative decimal string, then retry ingest."
         ) from error
+    if amount > _MAX_STORAGE_AMOUNT:
+        raise AccountingValidationError(
+            "amount exceeds the supported monetary precision. Supply an amount within numeric(38, 6), then retry ingest."
+        )
     return amount
 
 
