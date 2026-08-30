@@ -263,7 +263,7 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
         self.assertEqual(rows[0]["posted_book_cash_balance"], "1200.00")
         self.assertEqual(rows[0]["unexplained_difference"], "0")
         self.assertEqual(rows[0]["suitable_for_period_close_review"], "true")
-        self.assertIn('"allocated_amount":"100.00"', rows[0]["reviewed_match_evidence"])
+        self.assertIn('\"allocated_amount\":\"100.00\"', rows[0]["reviewed_match_evidence"])
         self.assertTrue(rows[0]["next_action"])
 
     def test_close_review_preserves_one_statement_to_many_journal_allocations(self) -> None:
@@ -451,6 +451,12 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
                             allocated_amount=Decimal("99.00"),
                         ),
                     ),
+                    journal_allocations=(
+                        replace(
+                            valid_match.journal_allocations[0],
+                            allocated_amount=Decimal("99.00"),
+                        ),
+                    ),
                 ),
                 self._match(),
                 "bind every decision to statement allocations",
@@ -464,7 +470,10 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
                 replace(
                     valid_match,
                     journal_allocations=(
-                        valid_match.journal_allocations[0],
+                        replace(
+                            valid_match.journal_allocations[0],
+                            allocated_amount=Decimal("99.00"),
+                        ),
                         extra_journal_allocation,
                     ),
                 ),
