@@ -42,6 +42,7 @@ class ReconciliationAllocationEvidence:
     allocation_reference: str
     source_reference: str
     allocated_amount: Decimal
+    source_capacity: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,10 +103,58 @@ class ReconciliationCloseReviewProjection:
     reviewed_match_evidence: tuple[ReconciliationReviewedMatch, ...] = ()
 
 
+def _source_capacity_map(
+    allocations: tuple[ReconciliationAllocationEvidence, ...],
+    *,
+    require_capacities: bool,
+    label: str,
+) -> dict[str, Decimal]:
+    """Validate and return authoritative capacities for normalized allocation sources."""
+    source_references = {allocation.source_reference for allocation in allocations}
+    capacities: dict[str, Decimal] = {}
+    for allocation in allocations:
+        capacity = allocation.source_capacity
+        if capacity is None:
+            if require_capacities:
+                raise ValueError(
+                    "reviewed multi-source allocation evidence requires authoritative "
+                    "source capacity for every allocated source"
+                )
+            continue
+        if not isinstance(capacity, Decimal) or not capacity.is_finite() or capacity <= 0:
+            raise ValueError("reviewed source capacity must be a positive exact Decimal")
+        existing = capacities.get(allocation.source_reference)
+        if existing is not None and existing != capacity:
+            raise ValueError(
+                f"reviewed {label} source capacity must be consistent for each source"
+            )
+        capacities[allocation.source_reference] = capacity
+
+    if require_capacities and set(capacities) != source_references:
+        raise ValueError(
+            "reviewed multi-source allocation evidence requires authoritative source capacity "
+            "for every allocated source"
+        )
+
+    for source_reference, capacity in capacities.items():
+        allocated_total = _exact_decimal_sum(
+            *(
+                allocation.allocated_amount
+                for allocation in allocations
+                if allocation.source_reference == source_reference
+            )
+        )
+        if allocated_total > capacity:
+            raise ValueError(
+                f"reviewed {label} allocation exceeds authoritative source capacity"
+            )
+    return capacities
+
+
 def _validate_reviewed_allocation_conservation(
     reviewed_match: ReconciliationReviewedMatch,
 ) -> None:
-    """Require exact equality between reviewed statement and journal allocations."""
+    """Require exact equality and authoritative per-source allocation capacity."""
     statement_total = _exact_decimal_sum(
         *(allocation.allocated_amount for allocation in reviewed_match.statement_allocations)
     )
@@ -116,6 +165,58 @@ def _validate_reviewed_allocation_conservation(
         raise ValueError(
             "reviewed statement and journal allocation totals must match exactly"
         )
+
+    statement_sources = {
+        allocation.source_reference for allocation in reviewed_match.statement_allocations
+    }
+    journal_sources = {
+        allocation.source_reference for allocation in reviewed_match.journal_allocations
+    }
+    require_capacities = len(statement_sources) > 1 or len(journal_sources) > 1
+    statement_capacities = _source_capacity_map(
+        reviewed_match.statement_allocations,
+        require_capacities=require_capacities,
+        label="statement",
+    )
+    journal_capacities = _source_capacity_map(
+        reviewed_match.journal_allocations,
+        require_capacities=require_capacities,
+        label="journal",
+    )
+
+    if require_capacities:
+        if (
+            statement_capacities.get(reviewed_match.candidate_statement_reference)
+            != reviewed_match.statement_amount
+            or journal_capacities.get(reviewed_match.candidate_journal_reference)
+            != reviewed_match.journal_amount
+        ):
+            raise ValueError(
+                "reviewed anchor source capacity must match the database-owned candidate amount"
+            )
+    else:
+        if statement_total > reviewed_match.statement_amount:
+            raise ValueError(
+                "reviewed statement allocation exceeds authoritative source capacity"
+            )
+        if journal_total > reviewed_match.journal_amount:
+            raise ValueError(
+                "reviewed journal allocation exceeds authoritative source capacity"
+            )
+        if statement_capacities and (
+            statement_capacities.get(reviewed_match.candidate_statement_reference)
+            != reviewed_match.statement_amount
+        ):
+            raise ValueError(
+                "reviewed statement source capacity must match the database-owned candidate amount"
+            )
+        if journal_capacities and (
+            journal_capacities.get(reviewed_match.candidate_journal_reference)
+            != reviewed_match.journal_amount
+        ):
+            raise ValueError(
+                "reviewed journal source capacity must match the database-owned candidate amount"
+            )
 
 
 def _validate_scope(
@@ -273,6 +374,14 @@ def _validate_reviewed_match_population(
                 ):
                     raise ValueError(
                         "reviewed allocation amount must be a positive exact Decimal"
+                    )
+                if allocation.source_capacity is not None and (
+                    not isinstance(allocation.source_capacity, Decimal)
+                    or not allocation.source_capacity.is_finite()
+                    or allocation.source_capacity <= 0
+                ):
+                    raise ValueError(
+                        "reviewed source capacity must be a positive exact Decimal"
                     )
             allocation_references = tuple(
                 allocation.allocation_reference for allocation in allocations
@@ -496,13 +605,33 @@ def render_reconciliation_close_review_csv(
     return output.getvalue()
 
 
+def _allocation_mapping(allocation: ReconciliationAllocationEvidence) -> dict[str, str]:
+    """Return one exact-value allocation mapping, including bound capacity when present."""
+    mapping = {
+        "allocation_reference": allocation.allocation_reference,
+        "source_reference": allocation.source_reference,
+        "allocated_amount": str(allocation.allocated_amount),
+    }
+    if allocation.source_capacity is not None:
+        mapping["source_capacity"] = str(allocation.source_capacity)
+    return mapping
+
+
 def _projection_mapping(
     projection: ReconciliationCloseReviewProjection,
 ) -> dict[str, object]:
     """Return a serialization-safe mapping with monetary values as exact strings."""
+    has_source_capacity = any(
+        allocation.source_capacity is not None
+        for reviewed_match in projection.reviewed_match_evidence
+        for allocation in (
+            *reviewed_match.statement_allocations,
+            *reviewed_match.journal_allocations,
+        )
+    )
 
     return {
-        "schema_version": 2,
+        "schema_version": 3 if has_source_capacity else 2,
         "tenant_account_reference": projection.tenant_account_reference,
         "legal_entity_reference": projection.legal_entity_reference,
         "accounting_book_reference": projection.accounting_book_reference,
@@ -529,19 +658,11 @@ def _projection_mapping(
                 "journal_amount": str(reviewed_match.journal_amount),
                 "rule_code": reviewed_match.rule_code,
                 "statement_allocations": tuple(
-                    {
-                        "allocation_reference": allocation.allocation_reference,
-                        "source_reference": allocation.source_reference,
-                        "allocated_amount": str(allocation.allocated_amount),
-                    }
+                    _allocation_mapping(allocation)
                     for allocation in reviewed_match.statement_allocations
                 ),
                 "journal_allocations": tuple(
-                    {
-                        "allocation_reference": allocation.allocation_reference,
-                        "source_reference": allocation.source_reference,
-                        "allocated_amount": str(allocation.allocated_amount),
-                    }
+                    _allocation_mapping(allocation)
                     for allocation in reviewed_match.journal_allocations
                 ),
             }
