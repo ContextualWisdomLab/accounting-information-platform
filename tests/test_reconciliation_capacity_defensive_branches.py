@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import unittest
+import unittest.mock as mock
 from decimal import Decimal
-from unittest import mock
 
 import accounting_information_platform.reconciliation_close_package as close_package
 from accounting_information_platform.reconciliation import ReconciliationDecision
