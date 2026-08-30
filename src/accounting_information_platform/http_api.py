@@ -252,7 +252,9 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             "GET /bank-statement-entries, GET /receivable-agings, "
             "GET /payable-agings, GET /period-close-packages, GET /journals, "
             "GET /journal-reversals, GET /period-closes, GET /fiscal-periods, "
-            "GET /reconciliation-runs?reconciliation_run_id=, GET /outbox-events?event_type_code=, "
+            "GET /reconciliation-runs?reconciliation_run_id=, "
+            "GET /reconciliation-matches?reconciliation_match_id=, "
+            "GET /outbox-events?event_type_code=, "
             "or GET /audit-events, then retry.",
         )
 

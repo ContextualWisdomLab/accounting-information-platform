@@ -1017,6 +1017,9 @@ import accounting_information_platform
             f"/reconciliation-matches?reconciliation_match_id={uuid.uuid4()}",
             None,
         )
+        unknown_status, unknown = self.case._http_json(
+            "GET", "/unsupported-reconciliation-resource", None
+        )
         self.assertEqual(status, 200)
         self.assertEqual(read_status, 200)
         self.assertEqual(read["reconciliation_match_id"], created["reconciliation_match_id"])
@@ -1031,6 +1034,11 @@ import accounting_information_platform
         self.assertEqual(missing_get_header_status, 400)
         self.assertEqual(invalid_id_status, 400)
         self.assertEqual(missing_status, 404)
+        self.assertEqual(unknown_status, 404)
+        self.assertIn(
+            "GET /reconciliation-matches?reconciliation_match_id=",
+            unknown["error_message"],
+        )
 
 
 if __name__ == "__main__":
