@@ -15,6 +15,11 @@ from typing import Iterable
 
 
 _CREDIT_DEBIT_CODES = frozenset({"CRDT", "DBIT"})
+_RECONCILIATION_DECISION_V1 = "reconciliation-decision/v1"
+_RECONCILIATION_DECISION_V2 = "reconciliation-decision/v2"
+_RECONCILIATION_DECISION_VERSIONS = frozenset(
+    {_RECONCILIATION_DECISION_V1, _RECONCILIATION_DECISION_V2}
+)
 
 
 def _require_credit_debit_code(value: str) -> None:
@@ -91,7 +96,13 @@ class DeterministicMatchPolicy:
 
 @dataclass(frozen=True, slots=True)
 class ReconciliationDecision:
-    """Return a reviewable match proposal or an explicit fail-closed abstention."""
+    """Return a versioned reviewable proposal or fail-closed abstention.
+
+    ``reconciliation-decision/v1`` preserves the original deterministic contract:
+    every match references exactly one journal. Reviewed split evidence must opt
+    into ``reconciliation-decision/v2`` explicitly before carrying more than one
+    journal reference. Deterministic proposal generation remains v1.
+    """
 
     statement_entry_reference: str
     decision_code: str
@@ -101,10 +112,22 @@ class ReconciliationDecision:
     exception_code: str | None
     next_action: str
     reconciliation_match_reference: str | None = None
+    contract_version: str = _RECONCILIATION_DECISION_V1
 
     def __post_init__(self) -> None:
-        """Reject forged success- or exception-shaped reconciliation evidence."""
+        """Reject forged or silently incompatible reconciliation evidence."""
+        if self.contract_version not in _RECONCILIATION_DECISION_VERSIONS:
+            raise ValueError(
+                "contract_version must be reconciliation-decision/v1 or reconciliation-decision/v2. Use a supported repository-owned reconciliation decision contract."
+            )
         if self.decision_code == "match":
+            if (
+                self.contract_version == _RECONCILIATION_DECISION_V1
+                and len(self.matched_journal_references) != 1
+            ):
+                raise ValueError(
+                    "v1 match decision must reference exactly one journal. Use reconciliation-decision/v2 explicitly for reviewed split evidence."
+                )
             if not self.matched_journal_references:
                 raise ValueError(
                     "match decision must reference at least one journal. Rebuild the deterministic proposal from source evidence."
