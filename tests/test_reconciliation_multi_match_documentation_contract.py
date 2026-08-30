@@ -9,6 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ADR = ROOT / "docs/adr/0054-deterministic-bank-reconciliation-proposals.md"
+CLOSE_PACKAGE_ADR = ROOT / "docs/adr/0056-reconciliation-close-package-provenance.md"
 BASELINE = ROOT / "docs/product-technical-gap-baseline.md"
 CHANGELOG = ROOT / "CHANGELOG.md"
 
@@ -37,6 +38,19 @@ class ReconciliationMultiMatchDocumentationContractTests(unittest.TestCase):
             "Remaining bounded work includes explicit durable approval evidence/state transitions",
             text,
         )
+
+    def test_close_package_adr_documents_conditional_projection_and_snapshot_versions(self) -> None:
+        """ADR 0056 must name the v3/v2 multi-source evidence contracts now emitted by code."""
+        text = CLOSE_PACKAGE_ADR.read_text(encoding="utf-8")
+        for phrase in (
+            "projection export is schema version 3",
+            "schema version 2",
+            "reconciliation snapshot version 2",
+            "reconciliation snapshot version 1",
+            "source capacity",
+            "multi-source",
+        ):
+            self.assertIn(phrase, text)
 
     def test_product_baseline_distinguishes_current_tree_from_remaining_close_package(self) -> None:
         """The product gap queue must not call delivered 0015-0017 controls future work."""
