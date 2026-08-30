@@ -104,6 +104,7 @@ class ReconciliationClosePackageEquationTests(unittest.TestCase):
             ),
         )
 
+        approvals = self._approval_evidence()
         evidence = (
             ReconciliationEvidenceReference(
                 evidence_kind_code="statement_artifact",
@@ -126,13 +127,21 @@ class ReconciliationClosePackageEquationTests(unittest.TestCase):
                 sha256_digest="sha256:" + "e" * 64,
                 knowledge_cutoff="2026-08-28T08:41:54Z",
             ),
+            *tuple(
+                ReconciliationEvidenceReference(
+                    evidence_kind_code="reconciliation_approval_payload",
+                    evidence_reference=approval.evidence_reference,
+                    sha256_digest=approval.source_payload_hash,
+                )
+                for approval in approvals
+            ),
         )
 
         with self.assertRaisesRegex(ValueError, "exact book-to-bank bridge equation"):
             build_reconciliation_close_package(
                 ReconciliationClosePackageInput(
                     projection=projection,
-                    approval_evidence=self._approval_evidence(),
+                    approval_evidence=approvals,
                     knowledge_cutoff="2026-08-28T08:41:54Z",
                     evidence_references=evidence,
                 )
@@ -145,7 +154,7 @@ class ReconciliationClosePackageEquationTests(unittest.TestCase):
         package = build_reconciliation_close_package(
             ReconciliationClosePackageInput(
                 projection=valid_projection,
-                approval_evidence=self._approval_evidence(),
+                approval_evidence=approvals,
                 knowledge_cutoff="2026-08-28T08:41:54Z",
                 evidence_references=evidence,
             )
