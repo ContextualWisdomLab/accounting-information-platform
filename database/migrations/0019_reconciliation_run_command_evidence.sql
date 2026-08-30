@@ -30,6 +30,44 @@ CREATE TABLE accounting_core.reconciliation_run_command (
     UNIQUE (tenant_account_id, reconciliation_run_id)
 );
 
+-- reconciliation_run has forced tenant RLS from migration 0013. Give this
+-- install-time check transaction-scoped visibility of historical rows, then
+-- remove that visibility before commit. Historical runs predate this command
+-- table, so their command provenance cannot be fabricated safely: refuse the
+-- upgrade and require the operator to resolve/reconstruct durable evidence.
+CREATE POLICY reconciliation_run_command_upgrade_visibility
+    ON accounting_core.reconciliation_run
+    FOR SELECT
+    TO current_user
+    USING (true);
+
+CREATE OR REPLACE FUNCTION accounting_core.reconciliation_run_command_upgrade_guard()
+RETURNS void
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM accounting_core.reconciliation_run AS run
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM accounting_core.reconciliation_run_command AS command
+            WHERE command.tenant_account_id = run.tenant_account_id
+              AND command.reconciliation_run_id = run.reconciliation_run_id
+        )
+    ) THEN
+        RAISE EXCEPTION
+            'migration 0019 requires durable command evidence for existing reconciliation runs; reconstruct retained provenance before retrying (reconciliation_run_command_upgrade_required)'
+            USING ERRCODE = '23514';
+    END IF;
+END;
+$$;
+
+SELECT accounting_core.reconciliation_run_command_upgrade_guard();
+DROP FUNCTION accounting_core.reconciliation_run_command_upgrade_guard();
+DROP POLICY reconciliation_run_command_upgrade_visibility
+    ON accounting_core.reconciliation_run;
+
 CREATE INDEX reconciliation_run_command_statement_index
     ON accounting_core.reconciliation_run_command (
         tenant_account_id,
