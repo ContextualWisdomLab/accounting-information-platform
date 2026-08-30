@@ -390,6 +390,23 @@ class PostgresCrossRunReconciliationConservationRedTests(unittest.TestCase):
 
         self._approve_match(run_reference, match_id)
 
+    def test_approval_rejects_an_unproposed_source_pair(self) -> None:
+        """Approval cannot invent a source pairing from unrelated candidates."""
+        run_reference = self.case.run_reference
+        first_candidate = self._insert_candidate(
+            run_reference,
+            "stmt-pair-a",
+            "journal-pair-x",
+        )
+        self._insert_candidate(run_reference, "stmt-pair-b", "journal-pair-y")
+        match_id = self._insert_match(run_reference, first_candidate)
+        self._insert_balanced_allocations(
+            run_reference, match_id, "stmt-pair-a", "journal-pair-y"
+        )
+
+        with self.assertRaises(psycopg.errors.CheckViolation):
+            self._approve_match(run_reference, match_id)
+
 
 if __name__ == "__main__":
     unittest.main()

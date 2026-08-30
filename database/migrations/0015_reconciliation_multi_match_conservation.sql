@@ -451,6 +451,48 @@ BEGIN
             USING ERRCODE = '23514';
     END IF;
 
+    IF EXISTS (
+        SELECT 1
+        FROM accounting_core.statement_match_allocation AS statement_allocation
+        WHERE statement_allocation.tenant_account_id = NEW.tenant_account_id
+          AND statement_allocation.reconciliation_run_id = NEW.reconciliation_run_id
+          AND statement_allocation.reconciliation_match_id = NEW.reconciliation_match_id
+          AND NOT EXISTS (
+              SELECT 1
+              FROM accounting_core.journal_match_allocation AS journal_allocation
+              JOIN accounting_core.reconciliation_candidate AS candidate
+                ON candidate.tenant_account_id = journal_allocation.tenant_account_id
+               AND candidate.reconciliation_run_id = journal_allocation.reconciliation_run_id
+               AND candidate.journal_reference = journal_allocation.journal_reference
+               AND candidate.statement_entry_reference = statement_allocation.statement_entry_reference
+              WHERE journal_allocation.tenant_account_id = statement_allocation.tenant_account_id
+                AND journal_allocation.reconciliation_run_id = statement_allocation.reconciliation_run_id
+                AND journal_allocation.reconciliation_match_id = statement_allocation.reconciliation_match_id
+          )
+    ) OR EXISTS (
+        SELECT 1
+        FROM accounting_core.journal_match_allocation AS journal_allocation
+        WHERE journal_allocation.tenant_account_id = NEW.tenant_account_id
+          AND journal_allocation.reconciliation_run_id = NEW.reconciliation_run_id
+          AND journal_allocation.reconciliation_match_id = NEW.reconciliation_match_id
+          AND NOT EXISTS (
+              SELECT 1
+              FROM accounting_core.statement_match_allocation AS statement_allocation
+              JOIN accounting_core.reconciliation_candidate AS candidate
+                ON candidate.tenant_account_id = statement_allocation.tenant_account_id
+               AND candidate.reconciliation_run_id = statement_allocation.reconciliation_run_id
+               AND candidate.statement_entry_reference = statement_allocation.statement_entry_reference
+               AND candidate.journal_reference = journal_allocation.journal_reference
+              WHERE statement_allocation.tenant_account_id = journal_allocation.tenant_account_id
+                AND statement_allocation.reconciliation_run_id = journal_allocation.reconciliation_run_id
+                AND statement_allocation.reconciliation_match_id = journal_allocation.reconciliation_match_id
+          )
+    ) THEN
+        RAISE EXCEPTION
+            'approved reconciliation allocations must use source pairings proposed by candidates (reconciliation_allocation_unproposed_pairing)'
+            USING ERRCODE = '23514';
+    END IF;
+
     FOR source_row IN
         SELECT allocation.statement_entry_reference,
                SUM(allocation.allocated_amount) AS allocation_amount
