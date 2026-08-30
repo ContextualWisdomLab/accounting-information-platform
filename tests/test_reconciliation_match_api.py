@@ -439,6 +439,36 @@ import accounting_information_platform
                     ),
                 )
 
+    def test_match_command_freeze_marker_cannot_be_cleared_or_rewritten(self) -> None:
+        """The durable parent freeze survives direct marker tampering attempts."""
+        command = self._command()
+        document = accept_reconciliation_match(
+            command, posting.DATABASE_URL, self.case.policy.tenant_reference
+        )
+        match_id = document["reconciliation_match_id"]
+        update = """
+            UPDATE accounting_core.reconciliation_match
+            SET command_evidence_recorded_at = %s
+            WHERE tenant_account_id = %s
+              AND reconciliation_run_id = %s
+              AND reconciliation_match_id = %s
+        """
+        for replacement in (None, datetime.now(timezone.utc)):
+            with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
+                with self.assertRaisesRegex(
+                    psycopg.errors.CheckViolation,
+                    "command.*marker.*immutable",
+                ):
+                    connection.execute(
+                        update,
+                        (
+                            replacement,
+                            self.case.tenant_id,
+                            command["reconciliation_run_id"],
+                            match_id,
+                        ),
+                    )
+
     def test_match_command_serializes_concurrent_allocation_inserts(self) -> None:
         """A concurrent allocation cannot commit around the command freeze."""
         command = self._command()

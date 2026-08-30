@@ -148,6 +148,24 @@ class ReconciliationDataModelDocumentationContractTests(unittest.TestCase):
         )[1].split("CREATE TRIGGER reconciliation_candidate_capacity_guard", 1)[0]
         self.assertIn("command_evidence_recorded_at IS NOT NULL", function)
 
+    def test_precision_migration_makes_command_freeze_marker_immutable(self) -> None:
+        """Direct callers cannot clear or rewrite a command freeze marker."""
+        migration = (
+            ROOT
+            / "database/migrations/0022_reconciliation_amount_precision.sql"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "CREATE OR REPLACE FUNCTION "
+            "accounting_core.reconciliation_match_command_marker_immutability()",
+            migration,
+        )
+        self.assertIn(
+            "BEFORE UPDATE OF command_evidence_recorded_at",
+            migration,
+        )
+        self.assertIn("OLD.command_evidence_recorded_at IS NOT NULL", migration)
+        self.assertIn("reconciliation_match_command_marker_immutable", migration)
+
 
 if __name__ == "__main__":
     unittest.main()

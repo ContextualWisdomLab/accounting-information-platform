@@ -49,6 +49,48 @@ DROP POLICY reconciliation_match_command_marker_match_upgrade_visibility
 DROP POLICY reconciliation_match_command_marker_source_upgrade_visibility
     ON accounting_core.reconciliation_match_command;
 
+CREATE OR REPLACE FUNCTION accounting_core.reconciliation_match_command_marker_immutability()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    command_recorded_at timestamptz;
+BEGIN
+    IF NEW.command_evidence_recorded_at IS NOT DISTINCT FROM OLD.command_evidence_recorded_at THEN
+        RETURN NEW;
+    END IF;
+
+    IF OLD.command_evidence_recorded_at IS NOT NULL THEN
+        RAISE EXCEPTION
+            'reconciliation match command evidence marker is immutable (reconciliation_match_command_marker_immutable)'
+            USING ERRCODE = '23514';
+    END IF;
+
+    IF NEW.command_evidence_recorded_at IS NULL THEN
+        RETURN NEW;
+    END IF;
+
+    SELECT command.recorded_at
+    INTO command_recorded_at
+    FROM accounting_core.reconciliation_match_command AS command
+    WHERE command.tenant_account_id = NEW.tenant_account_id
+      AND command.reconciliation_run_id = NEW.reconciliation_run_id
+      AND command.reconciliation_match_id = NEW.reconciliation_match_id;
+
+    IF NOT FOUND OR command_recorded_at IS DISTINCT FROM NEW.command_evidence_recorded_at THEN
+        RAISE EXCEPTION
+            'reconciliation match command evidence marker must be written by command evidence (reconciliation_match_command_marker_immutable)'
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER reconciliation_match_command_marker_immutability_guard
+BEFORE UPDATE OF command_evidence_recorded_at
+ON accounting_core.reconciliation_match
+FOR EACH ROW EXECUTE FUNCTION accounting_core.reconciliation_match_command_marker_immutability();
+
 -- Keep aggregate variables unconstrained so an over-consumption comparison
 -- remains an exact rejection instead of overflowing before the guard runs.
 CREATE OR REPLACE FUNCTION accounting_core.reconciliation_match_approval_conservation_guard()
