@@ -282,9 +282,16 @@ class ReconciliationClosePackageTests(unittest.TestCase):
             replace(
                 original,
                 statement_amount=Decimal("99.00"),
+                journal_amount=Decimal("99.00"),
                 statement_allocations=(
                     replace(
                         original.statement_allocations[0],
+                        allocated_amount=Decimal("99.00"),
+                    ),
+                ),
+                journal_allocations=(
+                    replace(
+                        original.journal_allocations[0],
                         allocated_amount=Decimal("99.00"),
                     ),
                 ),
