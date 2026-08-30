@@ -163,6 +163,40 @@ class ReconciliationRunCommandProvenanceTests(unittest.TestCase):
             connection.commit()
         connection.rollback()
 
+    def test_migration_rejects_a_commandless_preexisting_run(self) -> None:
+        """Upgrade may not hide a historical run that lacks reconstructable command evidence."""
+        _statement, command = self.helper._statement_and_command()
+        scope = self.helper._assignment_scope()
+        assert scope is not None
+        migration_sql = (
+            posting.ROOT / "database/migrations/0019_reconciliation_run_command_evidence.sql"
+        ).read_text(encoding="utf-8")
+        self.assertTrue(migration_sql.startswith("BEGIN;\n"))
+        self.assertTrue(migration_sql.rstrip().endswith("COMMIT;"))
+        migration_body = migration_sql.removeprefix("BEGIN;\n").rsplit("\nCOMMIT;", 1)[0]
+
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            # Transactionally reconstruct the pre-0019 schema boundary. The
+            # context manager rolls the catalog back if this RED assertion
+            # fails, so no shared fixture state escapes the test.
+            connection.execute(
+                """
+                DROP TRIGGER reconciliation_run_command_provenance_guard
+                ON accounting_core.reconciliation_run
+                """
+            )
+            connection.execute(
+                "DROP TABLE accounting_core.reconciliation_run_command CASCADE"
+            )
+            self._insert_run(connection, scope, command)
+
+            with self.assertRaisesRegex(
+                psycopg.errors.CheckViolation,
+                "reconciliation_run_command_upgrade_required",
+            ):
+                connection.execute(migration_body)
+            connection.rollback()
+
 
 if __name__ == "__main__":
     unittest.main()
