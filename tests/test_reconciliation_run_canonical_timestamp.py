@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import unittest
+import unittest.mock as mock
 import uuid
-from unittest import mock
 
 from accounting_information_platform import AccountingValidationError, accept_reconciliation_run
 from accounting_information_platform.reconciliation_run import _command_hash, _parse_timestamp
