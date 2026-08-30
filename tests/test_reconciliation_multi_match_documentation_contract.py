@@ -71,6 +71,7 @@ class ReconciliationMultiMatchDocumentationContractTests(unittest.TestCase):
             "non-empty statement",
             "non-empty journal",
             "exactly equal",
+            "source pairings that an immutable candidate proposed",
             "approved",
         ):
             self.assertIn(phrase, entry)
