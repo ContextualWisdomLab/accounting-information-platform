@@ -76,32 +76,46 @@ def _reconciliation_match_snapshot_sha256(
     reconciliation_run_reference: str,
     reviewed_match: ReconciliationReviewedMatch,
 ) -> str:
-    """Reproduce migration 0016's version-1 match snapshot digest exactly."""
+    """Reproduce database-owned v1/v2 reconciliation match snapshot digests exactly."""
+    _validate_reviewed_allocation_conservation(reviewed_match)
+    statement_sources = {
+        allocation.source_reference for allocation in reviewed_match.statement_allocations
+    }
+    journal_sources = {
+        allocation.source_reference for allocation in reviewed_match.journal_allocations
+    }
+    snapshot_version = 2 if len(statement_sources) > 1 or len(journal_sources) > 1 else 1
+
+    def allocation_row(
+        allocation: ReconciliationAllocationEvidence,
+        *,
+        row_kind: str,
+    ) -> str:
+        values = [
+            row_kind,
+            _snapshot_value(allocation.allocation_reference),
+            _snapshot_value(allocation.source_reference),
+            _snapshot_value(str(allocation.allocated_amount)),
+        ]
+        if snapshot_version == 2:
+            if allocation.source_capacity is None:
+                raise ValueError(
+                    "version-2 reconciliation snapshot requires authoritative source capacity"
+                )
+            values.append(_snapshot_value(str(allocation.source_capacity)))
+        return "|".join(values)
+
     statement_rows = "\n".join(
-        "|".join(
-            (
-                "statement",
-                _snapshot_value(allocation.allocation_reference),
-                _snapshot_value(allocation.source_reference),
-                _snapshot_value(str(allocation.allocated_amount)),
-            )
-        )
+        allocation_row(allocation, row_kind="statement")
         for allocation in reviewed_match.statement_allocations
     )
     journal_rows = "\n".join(
-        "|".join(
-            (
-                "journal",
-                _snapshot_value(allocation.allocation_reference),
-                _snapshot_value(allocation.source_reference),
-                _snapshot_value(str(allocation.allocated_amount)),
-            )
-        )
+        allocation_row(allocation, row_kind="journal")
         for allocation in reviewed_match.journal_allocations
     )
     snapshot = "\n".join(
         (
-            "reconciliation_snapshot_version=1",
+            f"reconciliation_snapshot_version={snapshot_version}",
             "tenant=" + _snapshot_value(tenant_account_reference),
             "run=" + _snapshot_value(reconciliation_run_reference),
             "match=" + _snapshot_value(reviewed_match.reconciliation_match_reference),
@@ -330,6 +344,14 @@ def _validate_projection(projection: object) -> ReconciliationCloseReviewProject
                 ):
                     raise ValueError(
                         "reviewed allocation amount must be a positive exact Decimal"
+                    )
+                if allocation.source_capacity is not None and (
+                    not isinstance(allocation.source_capacity, Decimal)
+                    or not allocation.source_capacity.is_finite()
+                    or allocation.source_capacity <= 0
+                ):
+                    raise ValueError(
+                        "reviewed source capacity must be a positive exact Decimal"
                     )
             if tuple(
                 allocation.allocation_reference for allocation in allocations
