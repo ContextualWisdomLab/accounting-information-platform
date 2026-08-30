@@ -501,6 +501,7 @@ BEGIN
           AND allocation.reconciliation_run_id = NEW.reconciliation_run_id
           AND allocation.reconciliation_match_id = NEW.reconciliation_match_id
         GROUP BY allocation.statement_entry_reference
+        ORDER BY allocation.statement_entry_reference
     LOOP
         conservation_key := concat_ws(
             ':',
@@ -568,6 +569,7 @@ BEGIN
           AND allocation.reconciliation_run_id = NEW.reconciliation_run_id
           AND allocation.reconciliation_match_id = NEW.reconciliation_match_id
         GROUP BY allocation.journal_reference
+        ORDER BY allocation.journal_reference
     LOOP
         conservation_key := concat_ws(
             ':',
