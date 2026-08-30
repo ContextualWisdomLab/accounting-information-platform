@@ -14,6 +14,245 @@ BEGIN;
 -- complete allocated bipartite graph is reachable from the match's anchor
 -- candidate. It is invoked before immutable approval evidence is inserted and
 -- again at the terminal proposed -> approved transition.
+--
+-- Snapshot version 2 extends the database-owned digest for split/aggregate
+-- reviewed matches with the authoritative source capacity of every allocated
+-- statement and journal source. One-to-one evidence remains version 1 for
+-- compatibility. Capacity is derived from immutable candidate facts in the
+-- same tenant/run scope; callers cannot supply or override it.
+ALTER TABLE accounting_core.reconciliation_approval
+    DROP CONSTRAINT reconciliation_approval_reconciliation_snapshot_version_check,
+    ADD CONSTRAINT reconciliation_approval_reconciliation_snapshot_version_check
+        CHECK (reconciliation_snapshot_version IN (1, 2));
+
+CREATE OR REPLACE FUNCTION accounting_core.reconciliation_match_snapshot_version(
+    snapshot_tenant_account_id uuid,
+    snapshot_reconciliation_run_id uuid,
+    snapshot_reconciliation_match_id uuid
+)
+RETURNS integer
+LANGUAGE sql
+STABLE
+AS $$
+WITH source_counts AS (
+    SELECT
+        (
+            SELECT COUNT(DISTINCT allocation.statement_entry_reference)
+            FROM accounting_core.statement_match_allocation AS allocation
+            WHERE allocation.tenant_account_id = snapshot_tenant_account_id
+              AND allocation.reconciliation_run_id = snapshot_reconciliation_run_id
+              AND allocation.reconciliation_match_id = snapshot_reconciliation_match_id
+        ) AS statement_source_count,
+        (
+            SELECT COUNT(DISTINCT allocation.journal_reference)
+            FROM accounting_core.journal_match_allocation AS allocation
+            WHERE allocation.tenant_account_id = snapshot_tenant_account_id
+              AND allocation.reconciliation_run_id = snapshot_reconciliation_run_id
+              AND allocation.reconciliation_match_id = snapshot_reconciliation_match_id
+        ) AS journal_source_count
+)
+SELECT CASE
+    WHEN statement_source_count > 1 OR journal_source_count > 1 THEN 2
+    ELSE 1
+END
+FROM source_counts;
+$$;
+
+CREATE OR REPLACE FUNCTION accounting_core.reconciliation_match_snapshot_hash(
+    snapshot_tenant_account_id uuid,
+    snapshot_reconciliation_run_id uuid,
+    snapshot_reconciliation_match_id uuid
+)
+RETURNS text
+LANGUAGE sql
+STABLE
+AS $$
+WITH snapshot_version AS (
+    SELECT accounting_core.reconciliation_match_snapshot_version(
+        snapshot_tenant_account_id,
+        snapshot_reconciliation_run_id,
+        snapshot_reconciliation_match_id
+    ) AS version_number
+), candidate_row AS (
+    SELECT
+        candidate.reconciliation_candidate_id,
+        candidate.statement_entry_reference,
+        candidate.journal_reference,
+        candidate.statement_amount,
+        candidate.journal_amount,
+        candidate.rule_code
+    FROM accounting_core.reconciliation_match AS match
+    JOIN accounting_core.reconciliation_candidate AS candidate
+      ON candidate.tenant_account_id = match.tenant_account_id
+     AND candidate.reconciliation_run_id = match.reconciliation_run_id
+     AND candidate.reconciliation_candidate_id = match.reconciliation_candidate_id
+    WHERE match.tenant_account_id = snapshot_tenant_account_id
+      AND match.reconciliation_run_id = snapshot_reconciliation_run_id
+      AND match.reconciliation_match_id = snapshot_reconciliation_match_id
+), statement_capacity AS (
+    SELECT
+        allocation.statement_entry_reference AS source_reference,
+        MIN(candidate.statement_amount) AS source_capacity,
+        MAX(candidate.statement_amount) AS maximum_source_capacity
+    FROM accounting_core.statement_match_allocation AS allocation
+    LEFT JOIN accounting_core.reconciliation_candidate AS candidate
+      ON candidate.tenant_account_id = allocation.tenant_account_id
+     AND candidate.reconciliation_run_id = allocation.reconciliation_run_id
+     AND candidate.statement_entry_reference = allocation.statement_entry_reference
+    WHERE allocation.tenant_account_id = snapshot_tenant_account_id
+      AND allocation.reconciliation_run_id = snapshot_reconciliation_run_id
+      AND allocation.reconciliation_match_id = snapshot_reconciliation_match_id
+    GROUP BY allocation.statement_entry_reference
+), journal_capacity AS (
+    SELECT
+        allocation.journal_reference AS source_reference,
+        MIN(candidate.journal_amount) AS source_capacity,
+        MAX(candidate.journal_amount) AS maximum_source_capacity
+    FROM accounting_core.journal_match_allocation AS allocation
+    LEFT JOIN accounting_core.reconciliation_candidate AS candidate
+      ON candidate.tenant_account_id = allocation.tenant_account_id
+     AND candidate.reconciliation_run_id = allocation.reconciliation_run_id
+     AND candidate.journal_reference = allocation.journal_reference
+    WHERE allocation.tenant_account_id = snapshot_tenant_account_id
+      AND allocation.reconciliation_run_id = snapshot_reconciliation_run_id
+      AND allocation.reconciliation_match_id = snapshot_reconciliation_match_id
+    GROUP BY allocation.journal_reference
+), capacity_guard AS (
+    SELECT
+        NOT EXISTS (
+            SELECT 1
+            FROM statement_capacity
+            WHERE source_capacity IS NULL
+               OR source_capacity <> maximum_source_capacity
+        )
+        AND NOT EXISTS (
+            SELECT 1
+            FROM journal_capacity
+            WHERE source_capacity IS NULL
+               OR source_capacity <> maximum_source_capacity
+        ) AS complete_and_consistent
+), statement_rows AS (
+    SELECT COALESCE(
+        string_agg(
+            concat_ws(
+                '|',
+                'statement',
+                accounting_core.reconciliation_snapshot_value(
+                    allocation.reconciliation_allocation_id::text
+                ),
+                accounting_core.reconciliation_snapshot_value(
+                    allocation.statement_entry_reference
+                ),
+                accounting_core.reconciliation_snapshot_value(
+                    allocation.allocated_amount::text
+                ),
+                CASE
+                    WHEN snapshot_version.version_number = 2 THEN
+                        accounting_core.reconciliation_snapshot_value(
+                            statement_capacity.source_capacity::text
+                        )
+                    ELSE NULL
+                END
+            ),
+            E'\n' ORDER BY allocation.reconciliation_allocation_id
+        ),
+        ''
+    ) AS snapshot_value
+    FROM accounting_core.statement_match_allocation AS allocation
+    JOIN statement_capacity
+      ON statement_capacity.source_reference = allocation.statement_entry_reference
+    CROSS JOIN snapshot_version
+    WHERE allocation.tenant_account_id = snapshot_tenant_account_id
+      AND allocation.reconciliation_run_id = snapshot_reconciliation_run_id
+      AND allocation.reconciliation_match_id = snapshot_reconciliation_match_id
+), journal_rows AS (
+    SELECT COALESCE(
+        string_agg(
+            concat_ws(
+                '|',
+                'journal',
+                accounting_core.reconciliation_snapshot_value(
+                    allocation.reconciliation_allocation_id::text
+                ),
+                accounting_core.reconciliation_snapshot_value(
+                    allocation.journal_reference
+                ),
+                accounting_core.reconciliation_snapshot_value(
+                    allocation.allocated_amount::text
+                ),
+                CASE
+                    WHEN snapshot_version.version_number = 2 THEN
+                        accounting_core.reconciliation_snapshot_value(
+                            journal_capacity.source_capacity::text
+                        )
+                    ELSE NULL
+                END
+            ),
+            E'\n' ORDER BY allocation.reconciliation_allocation_id
+        ),
+        ''
+    ) AS snapshot_value
+    FROM accounting_core.journal_match_allocation AS allocation
+    JOIN journal_capacity
+      ON journal_capacity.source_reference = allocation.journal_reference
+    CROSS JOIN snapshot_version
+    WHERE allocation.tenant_account_id = snapshot_tenant_account_id
+      AND allocation.reconciliation_run_id = snapshot_reconciliation_run_id
+      AND allocation.reconciliation_match_id = snapshot_reconciliation_match_id
+)
+SELECT CASE
+    WHEN candidate_row.reconciliation_candidate_id IS NULL THEN NULL
+    WHEN snapshot_version.version_number = 2
+         AND capacity_guard.complete_and_consistent IS DISTINCT FROM TRUE THEN NULL
+    ELSE 'sha256:' || encode(
+        sha256(
+            convert_to(
+                concat_ws(
+                    E'\n',
+                    'reconciliation_snapshot_version=' || snapshot_version.version_number::text,
+                    'tenant=' || accounting_core.reconciliation_snapshot_value(
+                        snapshot_tenant_account_id::text
+                    ),
+                    'run=' || accounting_core.reconciliation_snapshot_value(
+                        snapshot_reconciliation_run_id::text
+                    ),
+                    'match=' || accounting_core.reconciliation_snapshot_value(
+                        snapshot_reconciliation_match_id::text
+                    ),
+                    'candidate=' || accounting_core.reconciliation_snapshot_value(
+                        candidate_row.reconciliation_candidate_id::text
+                    ),
+                    'statement_reference=' || accounting_core.reconciliation_snapshot_value(
+                        candidate_row.statement_entry_reference
+                    ),
+                    'journal_reference=' || accounting_core.reconciliation_snapshot_value(
+                        candidate_row.journal_reference
+                    ),
+                    'statement_amount=' || accounting_core.reconciliation_snapshot_value(
+                        candidate_row.statement_amount::text
+                    ),
+                    'journal_amount=' || accounting_core.reconciliation_snapshot_value(
+                        candidate_row.journal_amount::text
+                    ),
+                    'rule=' || accounting_core.reconciliation_snapshot_value(
+                        candidate_row.rule_code
+                    ),
+                    'statement_allocations=' || statement_rows.snapshot_value,
+                    'journal_allocations=' || journal_rows.snapshot_value
+                ),
+                'UTF8'
+            )
+        ),
+        'hex'
+    )
+END
+FROM candidate_row
+CROSS JOIN snapshot_version
+CROSS JOIN capacity_guard
+CROSS JOIN statement_rows
+CROSS JOIN journal_rows;
+$$;
+
 CREATE OR REPLACE FUNCTION accounting_core.reconciliation_match_candidate_graph_guard(
     guard_tenant_account_id uuid,
     guard_reconciliation_run_id uuid,
@@ -233,7 +472,12 @@ BEGIN
         );
     END IF;
 
-    NEW.reconciliation_snapshot_version := 1;
+    NEW.reconciliation_snapshot_version :=
+        accounting_core.reconciliation_match_snapshot_version(
+            NEW.tenant_account_id,
+            NEW.reconciliation_run_id,
+            NEW.reconciliation_match_id
+        );
     NEW.reconciliation_snapshot_hash :=
         accounting_core.reconciliation_match_snapshot_hash(
             NEW.tenant_account_id,
@@ -242,9 +486,127 @@ BEGIN
         );
     IF NEW.reconciliation_snapshot_hash IS NULL THEN
         RAISE EXCEPTION
-            'reconciliation approval evidence has no reviewable candidate snapshot (reconciliation_snapshot_missing)'
+            'reconciliation approval evidence has no complete reviewable candidate/source-capacity snapshot (reconciliation_snapshot_missing)'
             USING ERRCODE = '23514';
     END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION accounting_core.reconciliation_match_requires_approval()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    required_decision text;
+    required_snapshot_version integer;
+BEGIN
+    PERFORM accounting_core.reconciliation_match_snapshot_lock(
+        NEW.tenant_account_id,
+        NEW.reconciliation_run_id,
+        NEW.reconciliation_match_id
+    );
+
+    IF TG_OP = 'UPDATE'
+       AND (
+           NEW.tenant_account_id IS DISTINCT FROM OLD.tenant_account_id
+           OR NEW.reconciliation_run_id IS DISTINCT FROM OLD.reconciliation_run_id
+           OR NEW.reconciliation_match_id IS DISTINCT FROM OLD.reconciliation_match_id
+           OR NEW.reconciliation_candidate_id IS DISTINCT FROM OLD.reconciliation_candidate_id
+       ) THEN
+        PERFORM accounting_core.reconciliation_match_snapshot_lock(
+            OLD.tenant_account_id,
+            OLD.reconciliation_run_id,
+            OLD.reconciliation_match_id
+        );
+        IF EXISTS (
+            SELECT 1
+            FROM accounting_core.reconciliation_approval AS approval
+            WHERE approval.tenant_account_id = OLD.tenant_account_id
+              AND approval.reconciliation_run_id = OLD.reconciliation_run_id
+              AND approval.reconciliation_match_id = OLD.reconciliation_match_id
+        ) OR EXISTS (
+            SELECT 1
+            FROM accounting_core.statement_match_allocation AS allocation
+            WHERE allocation.tenant_account_id = OLD.tenant_account_id
+              AND allocation.reconciliation_run_id = OLD.reconciliation_run_id
+              AND allocation.reconciliation_match_id = OLD.reconciliation_match_id
+        ) OR EXISTS (
+            SELECT 1
+            FROM accounting_core.journal_match_allocation AS allocation
+            WHERE allocation.tenant_account_id = OLD.tenant_account_id
+              AND allocation.reconciliation_run_id = OLD.reconciliation_run_id
+              AND allocation.reconciliation_match_id = OLD.reconciliation_match_id
+        ) THEN
+            RAISE EXCEPTION
+                'reviewed reconciliation match identity is immutable; supersede the match instead (reconciliation_match_identity_immutable)'
+                USING ERRCODE = '23514';
+        END IF;
+    END IF;
+
+    IF TG_OP = 'UPDATE'
+       AND OLD.match_status_code IN ('approved', 'rejected', 'superseded') THEN
+        IF NEW.approved_at IS DISTINCT FROM OLD.approved_at THEN
+            RAISE EXCEPTION
+                'reviewed reconciliation match evidence is immutable; supersede the match instead (reconciliation_review_terminal)'
+                USING ERRCODE = '23514';
+        END IF;
+        IF NEW.match_status_code = OLD.match_status_code THEN
+            RETURN NEW;
+        END IF;
+
+        IF OLD.match_status_code IN ('approved', 'rejected')
+           AND NEW.match_status_code = 'superseded' THEN
+            RETURN NEW;
+        END IF;
+
+        RAISE EXCEPTION
+            'reviewed reconciliation match cannot reopen or change decision; supersede it instead (reconciliation_review_terminal)'
+            USING ERRCODE = '23514';
+    END IF;
+
+    IF NEW.match_status_code NOT IN ('approved', 'rejected') THEN
+        RETURN NEW;
+    END IF;
+
+    required_decision := NEW.match_status_code;
+    required_snapshot_version := accounting_core.reconciliation_match_snapshot_version(
+        NEW.tenant_account_id,
+        NEW.reconciliation_run_id,
+        NEW.reconciliation_match_id
+    );
+
+    IF required_decision = 'approved' AND NEW.approved_at IS NULL THEN
+        RAISE EXCEPTION
+            'approved reconciliation match requires approved_at and durable approved evidence (reconciliation_approval_required)'
+            USING ERRCODE = '23514';
+    END IF;
+
+    IF required_decision = 'rejected' AND NEW.approved_at IS NOT NULL THEN
+        RAISE EXCEPTION
+            'rejected reconciliation match cannot carry approved_at (reconciliation_approval_required)'
+            USING ERRCODE = '23514';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM accounting_core.reconciliation_approval AS approval
+        WHERE approval.tenant_account_id = NEW.tenant_account_id
+          AND approval.reconciliation_run_id = NEW.reconciliation_run_id
+          AND approval.reconciliation_match_id = NEW.reconciliation_match_id
+          AND approval.approval_decision_code = required_decision
+          AND approval.reconciliation_snapshot_version = required_snapshot_version
+          AND approval.reconciliation_snapshot_hash = accounting_core.reconciliation_match_snapshot_hash(
+              NEW.tenant_account_id,
+              NEW.reconciliation_run_id,
+              NEW.reconciliation_match_id
+          )
+    ) THEN
+        RAISE EXCEPTION
+            'reviewed reconciliation match requires durable decision-consistent approval evidence bound to the current snapshot (reconciliation_approval_required)'
+            USING ERRCODE = '23514';
+    END IF;
+
     RETURN NEW;
 END;
 $$;
