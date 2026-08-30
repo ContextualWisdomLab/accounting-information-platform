@@ -18,6 +18,7 @@ from decimal import Decimal
 
 from .reconciliation_read_model import (
     _RECONCILED_CLOSE_REVIEW_NEXT_ACTION,
+    _validate_reviewed_allocation_conservation,
     ReconciliationCloseReviewProjection,
     ReconciliationAllocationEvidence,
     ReconciliationReviewedMatch,
@@ -342,6 +343,7 @@ def _validate_projection(projection: object) -> ReconciliationCloseReviewProject
                 allocations
             ):
                 raise ValueError("reviewed allocation identities must be unique")
+        _validate_reviewed_allocation_conservation(reviewed_match)
     if len(projection.reviewed_match_evidence) != projection.safely_matchable_candidate_count:
         raise ValueError(
             "reviewed match evidence must exactly cover the safely matchable proposals"
