@@ -110,6 +110,23 @@ class ReconciliationDecisionProvenanceTests(unittest.TestCase):
         )
         self.assertEqual(decision.contract_version, "reconciliation-decision/v2")
 
+    def test_versioned_review_contract_rejects_empty_journal_population(self) -> None:
+        """Reviewed v2 match evidence still requires at least one journal."""
+        with self.assertRaisesRegex(
+            ValueError,
+            "match decision must reference at least one journal",
+        ):
+            ReconciliationDecision(
+                statement_entry_reference="statement-provenance-1",
+                decision_code="match",
+                rule_code="provider_reference",
+                matched_journal_references=(),
+                allocated_amount=Decimal("125000.00"),
+                exception_code=None,
+                next_action="Review the approved split evidence; do not post a journal.",
+                contract_version="reconciliation-decision/v2",
+            )
+
     def test_unknown_decision_contract_version_fails_closed(self) -> None:
         """Callers cannot silently invent an incompatible reconciliation decision shape."""
         with self.assertRaisesRegex(ValueError, "contract_version"):
