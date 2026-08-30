@@ -759,6 +759,77 @@ class ReconciliationClosePackageTests(unittest.TestCase):
                 ),
                 "bind projection match identities",
             ),
+            (
+                replace(
+                    self._projection(),
+                    reviewed_match_evidence=(
+                        replace(valid_evidence[0], statement_amount=Decimal("0")),
+                        *valid_evidence[1:],
+                    ),
+                ),
+                "positive exact Decimals",
+            ),
+            (
+                replace(
+                    self._projection(),
+                    reviewed_match_evidence=(
+                        replace(valid_evidence[0], statement_allocations=()),
+                        *valid_evidence[1:],
+                    ),
+                ),
+                "non-empty tuples",
+            ),
+            (
+                replace(
+                    self._projection(),
+                    reviewed_match_evidence=(
+                        replace(
+                            valid_evidence[0], statement_allocations=("not-structured",)
+                        ),
+                        *valid_evidence[1:],
+                    ),
+                ),
+                "structured evidence objects",
+            ),
+            (
+                replace(
+                    self._projection(),
+                    reviewed_match_evidence=(
+                        replace(
+                            valid_evidence[0],
+                            statement_allocations=(
+                                valid_evidence[0].statement_allocations[0],
+                                replace(
+                                    valid_evidence[0].statement_allocations[0],
+                                    allocation_reference="statement-allocation-00",
+                                    source_reference="statement-entry-00",
+                                ),
+                            ),
+                        ),
+                        *valid_evidence[1:],
+                    ),
+                ),
+                "deterministic ordering",
+            ),
+            (
+                replace(
+                    self._projection(),
+                    reviewed_match_evidence=(
+                        replace(
+                            valid_evidence[0],
+                            statement_allocations=(
+                                valid_evidence[0].statement_allocations[0],
+                                replace(
+                                    valid_evidence[0].statement_allocations[0],
+                                    source_reference="statement-entry-00",
+                                ),
+                            ),
+                        ),
+                        *valid_evidence[1:],
+                    ),
+                ),
+                "identities must be unique",
+            ),
         )
         for projection, expected_error in cases:
             with self.subTest(expected_error=expected_error):

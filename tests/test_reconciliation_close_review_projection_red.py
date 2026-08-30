@@ -14,6 +14,7 @@ import importlib
 import io
 import json
 import unittest
+from dataclasses import replace
 from decimal import Decimal, localcontext
 
 from accounting_information_platform.reconciliation import ReconciliationDecision
@@ -368,6 +369,121 @@ class ReconciliationCloseReviewProjectionTests(unittest.TestCase):
             ),
             ("stmt-001", "stmt-002"),
         )
+
+    def test_close_review_rejects_malformed_reviewed_match_evidence(self) -> None:
+        """Malformed reviewed evidence cannot enter the buyer-facing projection."""
+        ProjectionInput, Scope, Allocation, ReviewedMatch, build_projection, _, _ = self._api()
+        valid_match = self._reviewed_match(Allocation, ReviewedMatch)
+
+        extra_journal_allocation = Allocation(
+            allocation_reference="journal-allocation-002",
+            source_reference="journal-002",
+            allocated_amount=Decimal("1.00"),
+        )
+        cases = (
+            (
+                replace(valid_match, candidate_reference=" candidate-001"),
+                self._match(),
+                "candidate facts must be canonical",
+            ),
+            (
+                replace(valid_match, statement_allocations=()),
+                self._match(),
+                "non-empty tuples",
+            ),
+            (
+                replace(valid_match, statement_allocations=("not-structured",)),
+                self._match(),
+                "structured evidence objects",
+            ),
+            (
+                replace(
+                    valid_match,
+                    statement_allocations=(
+                        replace(
+                            valid_match.statement_allocations[0],
+                            source_reference=" stmt-001",
+                        ),
+                    ),
+                ),
+                self._match(),
+                "identities must be canonical",
+            ),
+            (
+                replace(
+                    valid_match,
+                    statement_allocations=(
+                        replace(
+                            valid_match.statement_allocations[0],
+                            allocated_amount=Decimal("0"),
+                        ),
+                    ),
+                ),
+                self._match(),
+                "positive exact Decimal",
+            ),
+            (
+                replace(
+                    valid_match,
+                    statement_allocations=(
+                        valid_match.statement_allocations[0],
+                        replace(
+                            valid_match.statement_allocations[0],
+                            allocation_reference="statement-allocation-001",
+                            source_reference="stmt-002",
+                        ),
+                    ),
+                ),
+                self._match(),
+                "identities must be unique",
+            ),
+            (
+                replace(valid_match, candidate_statement_reference="stmt-missing"),
+                self._match(),
+                "represented in their allocations",
+            ),
+            (
+                replace(
+                    valid_match,
+                    statement_allocations=(
+                        replace(
+                            valid_match.statement_allocations[0],
+                            allocated_amount=Decimal("99.00"),
+                        ),
+                    ),
+                ),
+                self._match(),
+                "bind every decision to statement allocations",
+            ),
+            (
+                valid_match,
+                replace(self._match(), matched_journal_references=("journal-missing",)),
+                "bind every decision to journal allocations",
+            ),
+            (
+                replace(
+                    valid_match,
+                    journal_allocations=(
+                        valid_match.journal_allocations[0],
+                        extra_journal_allocation,
+                    ),
+                ),
+                self._match(),
+                "cover every normalized journal allocation",
+            ),
+        )
+        for reviewed_match, decision, expected_error in cases:
+            with self.subTest(expected_error=expected_error):
+                with self.assertRaisesRegex(ValueError, expected_error):
+                    build_projection(
+                        ProjectionInput(
+                            bridge_result=self._bridge(),
+                            decisions=(decision,),
+                            expected_statement_entry_references=("stmt-001",),
+                            reviewed_matches=(reviewed_match,),
+                            scope=self._scope(Scope),
+                        )
+                    )
 
     def test_close_review_deltas_preserve_large_decimal_differences_at_low_precision(self) -> None:
         """Preceding-run deltas must retain minor-unit differences in large balances."""
