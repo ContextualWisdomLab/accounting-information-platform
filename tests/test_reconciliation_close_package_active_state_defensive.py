@@ -277,10 +277,15 @@ class ReconciliationClosePackageActiveStateDefensiveTests(unittest.TestCase):
         verified_input = verified_builder.call_args.args[0]
         self.assertEqual(
             tuple(
-                evidence.evidence_reference
+                (evidence.evidence_kind_code, evidence.evidence_reference)
                 for evidence in verified_input.evidence_references
             ),
-            ("run-1", "artifact-1", "database-owned:approved"),
+            (
+                ("reconciliation_run", "run-1"),
+                ("statement_artifact", "artifact-1"),
+                ("reconciliation_snapshot_tenant", "tenant-id"),
+                ("reconciliation_match_state", "database-owned:approved"),
+            ),
         )
 
 
