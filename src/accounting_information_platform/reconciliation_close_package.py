@@ -40,6 +40,7 @@ _REQUIRED_EVIDENCE_KINDS = frozenset(
         "book_population",
     }
 )
+_SNAPSHOT_TENANT_EVIDENCE_KIND = "reconciliation_snapshot_tenant"
 _PROJECTION_IDENTITY_FIELDS = (
     "tenant_account_reference",
     "legal_entity_reference",
@@ -137,6 +138,21 @@ def _reconciliation_match_snapshot_sha256(
         )
     )
     return "sha256:" + hashlib.sha256(snapshot.encode("utf-8")).hexdigest()
+
+
+def _snapshot_tenant_identity_sha256(
+    tenant_reference: str,
+    tenant_account_id: str,
+) -> str:
+    """Bind the public tenant reference to PostgreSQL's internal snapshot identity."""
+    payload = "\n".join(
+        (
+            "reconciliation_snapshot_tenant_version=1",
+            "tenant_reference=" + _snapshot_value(tenant_reference),
+            "tenant_account_id=" + _snapshot_value(tenant_account_id),
+        )
+    )
+    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _require_identifier(value: object, *, field_name: str) -> str:
@@ -247,6 +263,59 @@ class ReconciliationClosePackage:
     evidence_references: tuple[ReconciliationEvidenceReference, ...]
     package_sha256: str
     next_action: str
+
+
+def _snapshot_tenant_identity_evidence(
+    *,
+    tenant_reference: str,
+    tenant_account_id: object,
+) -> ReconciliationEvidenceReference:
+    """Create package evidence for PostgreSQL's internal approval-snapshot tenant identity."""
+    tenant_account_id_text = _require_identifier(
+        str(tenant_account_id),
+        field_name="snapshot tenant_account_id",
+    )
+    return ReconciliationEvidenceReference(
+        evidence_kind_code=_SNAPSHOT_TENANT_EVIDENCE_KIND,
+        evidence_reference=tenant_account_id_text,
+        sha256_digest=_snapshot_tenant_identity_sha256(
+            tenant_reference,
+            tenant_account_id_text,
+        ),
+    )
+
+
+def _snapshot_tenant_identity_from_evidence(
+    evidence_references: object,
+    *,
+    projection: ReconciliationCloseReviewProjection,
+) -> str:
+    """Resolve the database snapshot tenant identity while preserving legacy pure fixtures."""
+    if not isinstance(evidence_references, tuple):
+        return projection.tenant_account_reference
+    identity_evidence = tuple(
+        evidence
+        for evidence in evidence_references
+        if isinstance(evidence, ReconciliationEvidenceReference)
+        and evidence.evidence_kind_code == _SNAPSHOT_TENANT_EVIDENCE_KIND
+    )
+    if not identity_evidence:
+        return projection.tenant_account_reference
+    if len(identity_evidence) != 1:
+        raise ValueError(
+            "evidence_references must include at most one reconciliation_snapshot_tenant evidence"
+        )
+    evidence = identity_evidence[0]
+    expected_digest = _snapshot_tenant_identity_sha256(
+        projection.tenant_account_reference,
+        evidence.evidence_reference,
+    )
+    if not hmac.compare_digest(evidence.sha256_digest, expected_digest):
+        raise ValueError(
+            "reconciliation_snapshot_tenant evidence must bind the public tenant reference "
+            "to the database snapshot identity"
+        )
+    return evidence.evidence_reference
 
 
 def _validate_projection(projection: object) -> ReconciliationCloseReviewProjection:
@@ -542,6 +611,7 @@ def _validate_approval_evidence(
     approval_evidence: object,
     *,
     projection: ReconciliationCloseReviewProjection,
+    snapshot_tenant_identity: str | None = None,
 ) -> tuple[ReconciliationApprovalEvidence, ...]:
     """Bind complete approved match evidence to the projection's immutable scope."""
     if not isinstance(approval_evidence, tuple):
@@ -568,6 +638,9 @@ def _validate_approval_evidence(
         reviewed_match.reconciliation_match_reference: reviewed_match
         for reviewed_match in projection.reviewed_match_evidence
     }
+    snapshot_tenant_identity = (
+        snapshot_tenant_identity or projection.tenant_account_reference
+    )
     for approval in approval_evidence:
         if (
             approval.tenant_account_reference != projection.tenant_account_reference
@@ -578,7 +651,7 @@ def _validate_approval_evidence(
         if approval.approval_decision_code != "approved":
             raise ValueError("close-package approval evidence must be approved")
         expected_snapshot = _reconciliation_match_snapshot_sha256(
-            projection.tenant_account_reference,
+            snapshot_tenant_identity,
             projection.reconciliation_run_reference,
             reviewed_matches[approval.reconciliation_match_reference],
         )
@@ -713,9 +786,14 @@ def _build_reconciliation_close_package_from_verified_state(
     if not isinstance(package_input, ReconciliationClosePackageInput):
         raise ValueError("package_input must be a ReconciliationClosePackageInput")
     projection = _validate_projection(package_input.projection)
+    snapshot_tenant_identity = _snapshot_tenant_identity_from_evidence(
+        package_input.evidence_references,
+        projection=projection,
+    )
     approval_evidence = _validate_approval_evidence(
         package_input.approval_evidence,
         projection=projection,
+        snapshot_tenant_identity=snapshot_tenant_identity,
     )
     knowledge_cutoff = _require_knowledge_cutoff(package_input.knowledge_cutoff)
     ordered_evidence = _validate_and_order_evidence(
@@ -945,6 +1023,10 @@ def build_reconciliation_close_package(
     ledger = PostgresPostingLedger(database_url, tenant_reference)
     with ledger._session() as connection:
         tenant_account_id = ledger._require_tenant(connection)
+        authoritative_snapshot_tenant = _snapshot_tenant_identity_evidence(
+            tenant_reference=tenant_reference,
+            tenant_account_id=tenant_account_id,
+        )
         authoritative_state = _database_owned_match_state_evidence(
             connection,
             tenant_account_id,
@@ -984,7 +1066,12 @@ def build_reconciliation_close_package(
             evidence
             for evidence in package_input.evidence_references
             if evidence.evidence_kind_code
-            not in {"reconciliation_run", "statement_artifact", "reconciliation_match_state"}
+            not in {
+                "reconciliation_run",
+                "statement_artifact",
+                "reconciliation_match_state",
+                _SNAPSHOT_TENANT_EVIDENCE_KIND,
+            }
         )
         verified_input = ReconciliationClosePackageInput(
             projection=package_input.projection,
@@ -992,7 +1079,11 @@ def build_reconciliation_close_package(
             knowledge_cutoff=authoritative_run.knowledge_cutoff,
             evidence_references=(
                 retained_evidence
-                + (authoritative_run, authoritative_artifact)
+                + (
+                    authoritative_run,
+                    authoritative_artifact,
+                    authoritative_snapshot_tenant,
+                )
                 + authoritative_state
             ),
         )
