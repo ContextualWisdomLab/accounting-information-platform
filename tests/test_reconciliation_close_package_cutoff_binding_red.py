@@ -131,6 +131,16 @@ class ReconciliationClosePackageCutoffBindingTests(unittest.TestCase):
                 )
                 for approval in approval_evidence
             ),
+            *tuple(
+                ReconciliationEvidenceReference(
+                    evidence_kind_code="reconciliation_match_state",
+                    evidence_reference=(
+                        f"{approval.reconciliation_match_reference}:approved"
+                    ),
+                    sha256_digest="sha256:" + str(index) * 64,
+                )
+                for index, approval in enumerate(approval_evidence, start=1)
+            ),
         )
 
     def test_package_rejects_cutoff_not_equal_to_immutable_run_evidence(self) -> None:
