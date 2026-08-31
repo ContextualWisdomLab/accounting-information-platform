@@ -1,0 +1,77 @@
+name: Temporary PR29 authoritative run provenance repair
+
+on:
+  push:
+    branches:
+      - fix/reconciliation-multi-match-conservation
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repair head
+        uses: actions/checkout@631c942040754b6e095e929c1677c07e10ed4f87
+        with:
+          ref: ${{ github.sha }}
+      - name: Apply narrow close-package provenance repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/accounting_information_platform/reconciliation_close_package.py")
+          text = path.read_text()
+
+          def replace_once(old: str, new: str) -> None:
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"expected one replacement site, found {count}: {old[:80]!r}")
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              "from .persistence import PostgresPostingLedger",
+              "from .persistence import PostgresPostingLedger, _format_timestamp",
+          )
+          replace_once(
+              '_UTC_SECOND_PATTERN = re.compile(r"^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$")',
+              '_UTC_CANONICAL_PATTERN = re.compile(\n'
+              '    r"^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{6})?Z$"\n'
+              ')',
+          )
+          replace_once(
+              '''def _require_knowledge_cutoff(value: object) -> str:\n    """Require a canonical UTC RFC 3339 second precision knowledge cutoff."""\n    if not isinstance(value, str) or _UTC_SECOND_PATTERN.fullmatch(value) is None:\n        raise ValueError("knowledge_cutoff must be canonical UTC RFC 3339 at second precision")\n    try:\n        datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")\n    except ValueError as exc:\n        raise ValueError("knowledge_cutoff must name a real UTC calendar instant") from exc\n    return value\n''',
+              '''def _require_knowledge_cutoff(value: object) -> str:\n    """Require the canonical UTC precision emitted by persisted reconciliation runs."""\n    if not isinstance(value, str) or _UTC_CANONICAL_PATTERN.fullmatch(value) is None:\n        raise ValueError(\n            "knowledge_cutoff must be canonical UTC RFC 3339 at whole-second or "\n            "six-digit microsecond precision"\n        )\n    try:\n        datetime.fromisoformat(value[:-1] + "+00:00")\n    except ValueError as exc:\n        raise ValueError("knowledge_cutoff must name a real UTC calendar instant") from exc\n    return value\n''',
+          )
+          replace_once(
+              '''    reconciliation_runs = tuple(\n        evidence\n        for evidence in evidence_references\n        if evidence.evidence_kind_code == "reconciliation_run"\n    )\n    statement_populations = tuple(\n''',
+              '''    reconciliation_runs = tuple(\n        evidence\n        for evidence in evidence_references\n        if evidence.evidence_kind_code == "reconciliation_run"\n    )\n    statement_artifacts = tuple(\n        evidence\n        for evidence in evidence_references\n        if evidence.evidence_kind_code == "statement_artifact"\n    )\n    statement_populations = tuple(\n''',
+          )
+          replace_once(
+              '''    if len(reconciliation_runs) != 1:\n        raise ValueError("evidence_references must include exactly one reconciliation_run evidence")\n    if len(statement_populations) != 1:\n''',
+              '''    if len(reconciliation_runs) != 1:\n        raise ValueError("evidence_references must include exactly one reconciliation_run evidence")\n    if len(statement_artifacts) != 1:\n        raise ValueError("evidence_references must include exactly one statement_artifact evidence")\n    if len(statement_populations) != 1:\n''',
+          )
+
+          helper = '''\n\ndef _database_owned_run_source_evidence(\n    connection: object,\n    tenant_account_id: object,\n    *,\n    tenant_reference: str,\n    reconciliation_run_reference: str,\n) -> tuple[ReconciliationEvidenceReference, ReconciliationEvidenceReference]:\n    """Load the immutable run cutoff, command digest, and retained statement artifact."""\n    rows = connection.execute(\n        """\n        SELECT run_record.knowledge_cutoff_at,\n               run_command.reconciliation_command_hash,\n               run_command.source_payload_hash,\n               run_command.source_payload_reference,\n               statement_record.source_artifact_hash,\n               statement_artifact.source_artifact_hash,\n               statement_artifact.artifact_store_reference\n        FROM accounting_core.reconciliation_run AS run_record\n        JOIN accounting_core.reconciliation_run_command AS run_command\n          ON run_command.tenant_account_id = run_record.tenant_account_id\n         AND run_command.reconciliation_run_id = run_record.reconciliation_run_id\n        JOIN accounting_integration.bank_statement_record AS statement_record\n          ON statement_record.tenant_account_id = run_command.tenant_account_id\n         AND statement_record.bank_statement_record_id = run_command.bank_statement_record_id\n        JOIN accounting_integration.bank_statement_artifact AS statement_artifact\n          ON statement_artifact.tenant_account_id = statement_record.tenant_account_id\n         AND statement_artifact.bank_statement_artifact_id =\n             statement_record.bank_statement_artifact_id\n        WHERE run_record.tenant_account_id = %s\n          AND run_record.reconciliation_run_id::text = %s\n        FOR SHARE OF run_record, run_command, statement_record, statement_artifact\n        """,\n        (tenant_account_id, reconciliation_run_reference),\n    ).fetchall()\n    if len(rows) != 1:\n        raise ValueError(\n            "database-owned reconciliation run evidence must resolve exactly one "\n            "run command and statement artifact"\n        )\n    (\n        knowledge_cutoff_at,\n        reconciliation_command_hash,\n        command_source_hash,\n        command_source_reference,\n        statement_source_hash,\n        artifact_source_hash,\n        artifact_store_reference,\n    ) = rows[0]\n    if not hmac.compare_digest(str(command_source_hash), str(statement_source_hash)):\n        raise ValueError(\n            "database-owned reconciliation run command source hash must match "\n            "the retained statement record"\n        )\n    if not hmac.compare_digest(str(statement_source_hash), str(artifact_source_hash)):\n        raise ValueError(\n            "database-owned retained statement artifact hash must match "\n            "the statement record"\n        )\n    if str(command_source_reference) != str(artifact_store_reference):\n        raise ValueError(\n            "database-owned retained statement artifact reference must match "\n            "the reconciliation run command"\n        )\n    run_evidence = ReconciliationEvidenceReference(\n        evidence_kind_code="reconciliation_run",\n        evidence_reference=reconciliation_run_reference,\n        sha256_digest=str(reconciliation_command_hash),\n        knowledge_cutoff=_format_timestamp(knowledge_cutoff_at),\n    )\n    statement_artifact_evidence = ReconciliationEvidenceReference(\n        evidence_kind_code="statement_artifact",\n        evidence_reference=str(artifact_store_reference),\n        sha256_digest=str(artifact_source_hash),\n    )\n    return run_evidence, statement_artifact_evidence\n'''
+          replace_once("\n\ndef build_reconciliation_close_package(\n", helper + "\n\ndef build_reconciliation_close_package(\n")
+
+          replace_once(
+              '''        authoritative_state = _database_owned_match_state_evidence(\n            connection,\n            tenant_account_id,\n            tenant_reference=tenant_reference,\n            reconciliation_run_reference=package_input.projection.reconciliation_run_reference,\n            approval_evidence=package_input.approval_evidence,\n        )\n        retained_evidence = tuple(\n            evidence\n            for evidence in package_input.evidence_references\n            if evidence.evidence_kind_code != "reconciliation_match_state"\n        )\n        verified_input = ReconciliationClosePackageInput(\n            projection=package_input.projection,\n            approval_evidence=package_input.approval_evidence,\n            knowledge_cutoff=package_input.knowledge_cutoff,\n            evidence_references=retained_evidence + authoritative_state,\n        )\n''',
+              '''        authoritative_state = _database_owned_match_state_evidence(\n            connection,\n            tenant_account_id,\n            tenant_reference=tenant_reference,\n            reconciliation_run_reference=package_input.projection.reconciliation_run_reference,\n            approval_evidence=package_input.approval_evidence,\n        )\n        authoritative_run, authoritative_artifact = _database_owned_run_source_evidence(\n            connection,\n            tenant_account_id,\n            tenant_reference=tenant_reference,\n            reconciliation_run_reference=package_input.projection.reconciliation_run_reference,\n        )\n        packaged_runs = tuple(\n            evidence\n            for evidence in package_input.evidence_references\n            if evidence.evidence_kind_code == "reconciliation_run"\n        )\n        packaged_artifacts = tuple(\n            evidence\n            for evidence in package_input.evidence_references\n            if evidence.evidence_kind_code == "statement_artifact"\n        )\n        if package_input.knowledge_cutoff != authoritative_run.knowledge_cutoff:\n            raise ValueError(\n                "knowledge_cutoff must match the database-owned reconciliation run cutoff"\n            )\n        if len(packaged_runs) != 1 or packaged_runs[0] != authoritative_run:\n            raise ValueError(\n                "database-owned reconciliation run evidence must match the packaged run evidence"\n            )\n        if len(packaged_artifacts) != 1 or packaged_artifacts[0] != authoritative_artifact:\n            raise ValueError(\n                "database-owned statement artifact evidence must match the packaged artifact evidence"\n            )\n        retained_evidence = tuple(\n            evidence\n            for evidence in package_input.evidence_references\n            if evidence.evidence_kind_code\n            not in {"reconciliation_run", "statement_artifact", "reconciliation_match_state"}\n        )\n        verified_input = ReconciliationClosePackageInput(\n            projection=package_input.projection,\n            approval_evidence=package_input.approval_evidence,\n            knowledge_cutoff=authoritative_run.knowledge_cutoff,\n            evidence_references=(\n                retained_evidence\n                + (authoritative_run, authoritative_artifact)\n                + authoritative_state\n            ),\n        )\n''',
+          )
+
+          path.write_text(text)
+          PY
+          rm .github/workflows/tmp-pr29-authoritative-run-repair.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/accounting_information_platform/reconciliation_close_package.py \
+            .github/workflows/tmp-pr29-authoritative-run-repair.yml
+          git diff --cached --check
+          git commit -m "fix: bind close package to persisted run provenance"
+          git push origin HEAD:fix/reconciliation-multi-match-conservation
