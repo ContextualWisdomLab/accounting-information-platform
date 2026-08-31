@@ -28,11 +28,22 @@ class PostgresReconciliationClosePackageActiveStateTests(unittest.TestCase):
         self.addCleanup(self.fixture.doCleanups)
         self.addCleanup(self.fixture.tearDown)
 
-    def _approved_evidence(self) -> tuple[object, ReconciliationApprovalEvidence]:
-        candidate_id = self.fixture._insert_candidate("stmt-close-state", "journal-close-state")
+    def _approved_evidence(
+        self,
+        suffix: str = "close-state",
+    ) -> tuple[object, ReconciliationApprovalEvidence]:
+        statement_reference = f"stmt-{suffix}"
+        journal_reference = f"journal-{suffix}"
+        candidate_id = self.fixture._insert_candidate(
+            statement_reference,
+            journal_reference,
+        )
         match_id = self.fixture._insert_match(candidate_id)
         self.fixture._insert_allocations(
-            match_id, "stmt-close-state", "journal-close-state", "1000.00"
+            match_id,
+            statement_reference,
+            journal_reference,
+            "1000.00",
         )
         self.fixture._approve_match(match_id)
         with psycopg.connect(posting.DATABASE_URL) as connection:
@@ -57,7 +68,10 @@ class PostgresReconciliationClosePackageActiveStateTests(unittest.TestCase):
         )
         return match_id, approval
 
-    def _load(self, approval: ReconciliationApprovalEvidence):
+    def _load_population(
+        self,
+        approval_evidence: tuple[ReconciliationApprovalEvidence, ...],
+    ):
         ledger = PostgresPostingLedger(
             posting.DATABASE_URL, self.fixture.case.policy.tenant_reference
         )
@@ -68,8 +82,11 @@ class PostgresReconciliationClosePackageActiveStateTests(unittest.TestCase):
                 tenant_account_id,
                 tenant_reference=self.fixture.case.policy.tenant_reference,
                 reconciliation_run_reference=str(self.fixture.run_reference),
-                approval_evidence=(approval,),
+                approval_evidence=approval_evidence,
             )
+
+    def _load(self, approval: ReconciliationApprovalEvidence):
+        return self._load_population((approval,))
 
     def test_superseded_match_cannot_be_repackaged_from_immutable_approval(self) -> None:
         match_id, approval = self._approved_evidence()
@@ -90,6 +107,21 @@ class PostgresReconciliationClosePackageActiveStateTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "database-owned match state"):
             self._load(approval)
+
+    def test_packaged_approvals_must_cover_every_active_approved_match(self) -> None:
+        first_match, first_approval = self._approved_evidence("population-first")
+        second_match, second_approval = self._approved_evidence("population-second")
+
+        with self.assertRaisesRegex(ValueError, "active approved match population"):
+            self._load_population(())
+        with self.assertRaisesRegex(ValueError, "active approved match population"):
+            self._load_population((first_approval,))
+
+        state = self._load_population((first_approval, second_approval))
+        self.assertEqual(
+            {evidence.evidence_reference for evidence in state},
+            {f"{first_match}:approved", f"{second_match}:approved"},
+        )
 
 
 if __name__ == "__main__":
