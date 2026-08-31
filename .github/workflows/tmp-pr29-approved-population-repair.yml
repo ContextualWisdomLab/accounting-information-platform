@@ -1,0 +1,121 @@
+name: Temporary PR29 approved-population repair
+
+on:
+  push:
+    branches:
+      - fix/reconciliation-multi-match-conservation
+    paths:
+      - .github/workflows/tmp-pr29-approved-population-repair.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tmp-pr29-approved-population-repair
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out triggering head
+        uses: actions/checkout@631c942040754b6e095e929c1677c07e10ed4f87
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+      - name: Verify single-writer head
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          remote_sha="$(git ls-remote origin refs/heads/fix/reconciliation-multi-match-conservation | cut -f1)"
+          test "$remote_sha" = "$GITHUB_SHA"
+      - name: Apply narrow complete-population repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/accounting_information_platform/reconciliation_close_package.py")
+          text = path.read_text()
+          old = '''    if not approval_evidence:
+              return ()
+          match_references = [
+              approval.reconciliation_match_reference for approval in approval_evidence
+          ]
+          rows = connection.execute(
+              """
+              SELECT match.reconciliation_match_id::text,
+                     match.match_status_code,
+                     approval.approval_decision_code,
+                     approval.source_payload_hash,
+                     approval.source_payload_reference,
+                     approval.reconciliation_snapshot_hash
+              FROM accounting_core.reconciliation_match AS match
+              JOIN accounting_core.reconciliation_approval AS approval
+                ON approval.tenant_account_id = match.tenant_account_id
+               AND approval.reconciliation_run_id = match.reconciliation_run_id
+               AND approval.reconciliation_match_id = match.reconciliation_match_id
+              WHERE match.tenant_account_id = %s
+                AND match.reconciliation_run_id::text = %s
+                AND match.reconciliation_match_id::text = ANY(%s)
+              FOR SHARE OF match
+              """,
+              (tenant_account_id, reconciliation_run_reference, match_references),
+          ).fetchall()
+          rows_by_match = {str(row[0]): row for row in rows}
+          if set(rows_by_match) != set(match_references):
+              raise ValueError(
+                  "database-owned match state must exactly cover every packaged approval"
+              )
+          '''
+          new = '''    match_references = [
+              approval.reconciliation_match_reference for approval in approval_evidence
+          ]
+          rows = connection.execute(
+              """
+              SELECT match.reconciliation_match_id::text,
+                     match.match_status_code,
+                     approval.approval_decision_code,
+                     approval.source_payload_hash,
+                     approval.source_payload_reference,
+                     approval.reconciliation_snapshot_hash
+              FROM accounting_core.reconciliation_match AS match
+              LEFT JOIN accounting_core.reconciliation_approval AS approval
+                ON approval.tenant_account_id = match.tenant_account_id
+               AND approval.reconciliation_run_id = match.reconciliation_run_id
+               AND approval.reconciliation_match_id = match.reconciliation_match_id
+              WHERE match.tenant_account_id = %s
+                AND match.reconciliation_run_id::text = %s
+              FOR SHARE OF match
+              """,
+              (tenant_account_id, reconciliation_run_reference),
+          ).fetchall()
+          rows_by_match = {str(row[0]): row for row in rows}
+          active_approved_match_references = {
+              str(row[0]) for row in rows if row[1] == "approved"
+          }
+          if active_approved_match_references != set(match_references):
+              raise ValueError(
+                  "database-owned match state must exactly match the active approved match population"
+              )
+          '''
+          if text.count(old) != 1:
+              raise SystemExit("expected exact current-head match-state block once")
+          path.write_text(text.replace(old, new))
+          PY
+          git diff --check
+      - name: Normalize repair into canonical branch and remove helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote_sha="$(git ls-remote origin refs/heads/fix/reconciliation-multi-match-conservation | cut -f1)"
+          test "$remote_sha" = "$GITHUB_SHA"
+          git rm .github/workflows/tmp-pr29-approved-population-repair.yml
+          git add src/accounting_information_platform/reconciliation_close_package.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "fix: bind close package to complete approved population"
+          git push origin HEAD:fix/reconciliation-multi-match-conservation
