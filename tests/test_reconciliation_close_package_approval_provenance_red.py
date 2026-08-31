@@ -197,6 +197,23 @@ class ReconciliationClosePackageApprovalProvenanceRedTests(unittest.TestCase):
                 replace(package_input, evidence_references=superseded)
             )
 
+    def test_caller_forged_approved_state_reference_is_not_authoritative(self) -> None:
+        """An arbitrary digest plus an approved-shaped label cannot prove live database state."""
+        package_input = self._input()
+        forged_state = tuple(
+            replace(
+                evidence,
+                sha256_digest="sha256:" + "f" * 64,
+            )
+            if evidence.evidence_kind_code == "reconciliation_match_state"
+            else evidence
+            for evidence in package_input.evidence_references
+        )
+        with self.assertRaisesRegex(ValueError, "database-owned match state"):
+            build_reconciliation_close_package(
+                replace(package_input, evidence_references=forged_state)
+            )
+
     def test_matching_approval_payload_reference_and_digest_remain_packageable(self) -> None:
         """The provenance control preserves valid close-package construction."""
         package = build_reconciliation_close_package(self._input())
