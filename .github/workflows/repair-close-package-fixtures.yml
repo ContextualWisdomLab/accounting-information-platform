@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   repair:
-    if: github.event.head_commit.message == 'chore: run close-package fixture repair'
+    if: "${{ github.event.head_commit.message == 'chore: fix temporary close-package fixture repair' }}"
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
