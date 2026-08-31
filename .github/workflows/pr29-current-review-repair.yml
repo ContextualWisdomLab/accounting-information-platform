@@ -1,0 +1,157 @@
+name: PR29 current-review repair
+
+on:
+  push:
+    branches:
+      - fix/reconciliation-multi-match-conservation
+    paths:
+      - .github/workflows/pr29-current-review-repair.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Verify repair parent
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "c3dd73b2bc301321806f0662621aaeca60a5958f"
+
+      - name: Apply reviewed causal repairs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              target = Path(path)
+              text = target.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one replacement target, found {count}")
+              target.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          replace_once(
+              "src/accounting_information_platform/http_api.py",
+              '    if "must be a UUID" in message or "is required" in message:\n        return 400\n',
+              '    if "must be a UUID" in message:\n        return 400\n',
+          )
+
+          replace_once(
+              "src/accounting_information_platform/reconciliation_read_model.py",
+              '    covered_journal_sources: set[str] = set()\n    for decision in matching_decisions:\n',
+              '    covered_statement_sources: set[str] = set()\n    covered_journal_sources: set[str] = set()\n    for decision in matching_decisions:\n',
+          )
+          replace_once(
+              "src/accounting_information_platform/reconciliation_read_model.py",
+              '        decision_journal_sources = set(decision.matched_journal_references)\n',
+              '        covered_statement_sources.add(decision.statement_entry_reference)\n        decision_journal_sources = set(decision.matched_journal_references)\n',
+          )
+          replace_once(
+              "src/accounting_information_platform/reconciliation_read_model.py",
+              '    if covered_journal_sources != journal_sources:\n        raise ValueError(\n            "reconciliation matching decisions must cover every normalized journal allocation source."\n        )\n',
+              '    if covered_statement_sources != statement_sources:\n        raise ValueError(\n            "reconciliation matching decisions must cover every normalized statement allocation source."\n        )\n    if covered_journal_sources != journal_sources:\n        raise ValueError(\n            "reconciliation matching decisions must cover every normalized journal allocation source."\n        )\n',
+          )
+
+          replace_once(
+              "tests/test_reconciliation_run_api.py",
+              '            self.assertEqual(missing_policy_status, 400)\n',
+              '            self.assertEqual(missing_policy_status, 422)\n',
+          )
+
+          replace_once(
+              "tests/test_foundation_install_manifest_contract.py",
+              '''        for relative_path in ("docs/OPERABILITY.md", "docs/ARCHITECTURE.md"):\n            with self.subTest(relative_path=relative_path):\n                text = (ROOT / relative_path).read_text(encoding="utf-8")\n                self.assertIn(migration_eighteen, text)\n                self.assertIn(migration_nineteen, text)\n                self.assertLess(text.index(migration_eighteen), text.index(migration_nineteen))\n''',
+              '''        for relative_path in ("docs/OPERABILITY.md", "docs/ARCHITECTURE.md"):\n            with self.subTest(relative_path=relative_path):\n                text = (ROOT / relative_path).read_text(encoding="utf-8")\n                if relative_path == "docs/OPERABILITY.md":\n                    install_section = text.split("## Database installation", 1)[1]\n                    install_block = install_section.split("```text", 1)[1].split("```", 1)[0]\n                else:\n                    install_section = text.split("## Persistence and migration order", 1)[1]\n                    install_block = install_section.split("`0005_closed_period_guard.sql` makes", 1)[0]\n                self.assertIn(migration_eighteen, install_block)\n                self.assertIn(migration_nineteen, install_block)\n                self.assertLess(\n                    install_block.index(migration_eighteen),\n                    install_block.index(migration_nineteen),\n                )\n''',
+          )
+
+          replace_once(
+              "tests/test_operability_documentation_contract.py",
+              '''        operability = OPERABILITY.read_text(encoding="utf-8")\n        self.assertIn("reconciliation-run command", operability)\n''',
+              '''        operability = " ".join(OPERABILITY.read_text(encoding="utf-8").split())\n        self.assertIn(\n            "reconciliation-run commands acquire tenant-scoped transaction advisory locks",\n            operability,\n        )\n''',
+          )
+
+          approval_test = "tests/test_reconciliation_close_package_approval_provenance_red.py"
+          replace_once(
+              approval_test,
+              '    build_reconciliation_close_package as build_authoritative_reconciliation_close_package,\n',
+              '',
+          )
+          replace_once(
+              approval_test,
+              '''    def test_caller_forged_approved_state_reference_is_not_authoritative(self) -> None:\n        """An arbitrary digest plus an approved-shaped label cannot prove live database state."""\n        package_input = self._input()\n        forged_state = tuple(\n            replace(\n                evidence,\n                sha256_digest="sha256:" + "f" * 64,\n            )\n            if evidence.evidence_kind_code == "reconciliation_match_state"\n            else evidence\n            for evidence in package_input.evidence_references\n        )\n        with self.assertRaisesRegex(ValueError, "database-owned match state"):\n            build_authoritative_reconciliation_close_package(\n                replace(package_input, evidence_references=forged_state)\n            )\n\n''',
+              '',
+          )
+
+          lock_test = "tests/test_reconciliation_lock_order_red.py"
+          replace_once(
+              lock_test,
+              '''        blocker_pid: int,\n        message: str,\n    ) -> None:\n        """Wait for an exact PostgreSQL blocking edge instead of relying on sleeps."""\n        deadline = time.monotonic() + 5\n        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as monitor:\n            while time.monotonic() < deadline:\n                if monitor.execute(\n                    "SELECT %s = ANY(pg_blocking_pids(%s))",\n                    (blocker_pid, blocked_pid),\n                ).fetchone()[0]:\n                    return\n        self.fail(message)\n''',
+              '''        blocker_pid: int | None,\n        message: str,\n    ) -> None:\n        """Wait for the expected PostgreSQL blocking edge without busy-spinning."""\n        deadline = time.monotonic() + 5\n        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as monitor:\n            while time.monotonic() < deadline:\n                blockers = monitor.execute(\n                    "SELECT pg_blocking_pids(%s)",\n                    (blocked_pid,),\n                ).fetchone()[0]\n                if blockers and (blocker_pid is None or blocker_pid in blockers):\n                    return\n                time.sleep(0.01)\n        self.fail(message)\n''',
+          )
+          replace_once(
+              lock_test,
+              '''            # On the repaired path the allocation waits on the approval's parent-row\n            # lock. On the predecessor path it acquires that row and then joins the\n            # advisory-lock wait queue. Either way it must be blocked before release.\n            deadline = time.monotonic() + 5\n            with psycopg.connect(posting.DATABASE_URL, autocommit=True) as monitor:\n                while time.monotonic() < deadline:\n                    blockers = monitor.execute(\n                        "SELECT pg_blocking_pids(%s)", (allocation_pid,)\n                    ).fetchone()[0]\n                    if blockers:\n                        break\n                else:\n                    self.fail("Concurrent allocation never reached a controlled lock boundary.")\n''',
+              '''            # On the repaired path the allocation waits on the approval's parent-row\n            # lock. On the predecessor path it acquires that row and then joins the\n            # advisory-lock wait queue. Either way it must be blocked before release.\n            self._wait_until_blocked_by(\n                blocked_pid=allocation_pid,\n                blocker_pid=None,\n                message="Concurrent allocation never reached a controlled lock boundary.",\n            )\n''',
+          )
+
+          architecture = Path("docs/ARCHITECTURE.md")
+          text = architecture.read_text(encoding="utf-8")
+          late_start = text.index("8. `database/migrations/0008_fiscal_period_open_command.sql`")
+          late_end = text.index("\n## Durable soft-close command evidence", late_start)
+          migration_tail = text[late_start:late_end].rstrip() + "\n"
+          text = text[:late_start] + text[late_end + 1:]
+          insertion = "7. `database/migrations/0007_runtime_tenant_binding.sql` — database-controlled runtime login-to-tenant binding consumed by forced-RLS policy evaluation.\n"
+          if text.count(insertion) != 1:
+              raise SystemExit("docs/ARCHITECTURE.md: migration insertion anchor changed")
+          text = text.replace(insertion, insertion + migration_tail, 1)
+          read_anchor = "- fail-closed HomeTax submission evidence and receipt history.\n"
+          if text.count(read_anchor) != 1:
+              raise SystemExit("docs/ARCHITECTURE.md: read-model anchor changed")
+          text = text.replace(
+              read_anchor,
+              read_anchor
+              + "- tenant-scoped reconciliation-run open/read lookup with immutable command replay evidence; the run surface evaluates matching evidence but never posts journals or closes periods.\n",
+              1,
+          )
+          architecture.write_text(text, encoding="utf-8")
+
+          adr = Path("docs/adr/0056-reconciliation-close-package-provenance.md")
+          text = adr.read_text(encoding="utf-8")
+          section_start = text.index("## Authoritative active-match state at construction")
+          section = text[section_start:].strip() + "\n\n"
+          text = text[:section_start].rstrip() + "\n\n"
+          references = text.index("## References")
+          text = text[:references] + section + text[references:]
+          adr.write_text(text, encoding="utf-8")
+          PY
+
+      - name: Normalize repair into canonical branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/pr29-current-review-repair.yml
+          git add \
+            src/accounting_information_platform/http_api.py \
+            src/accounting_information_platform/reconciliation_read_model.py \
+            tests/test_reconciliation_run_api.py \
+            tests/test_foundation_install_manifest_contract.py \
+            tests/test_operability_documentation_contract.py \
+            tests/test_reconciliation_close_package_approval_provenance_red.py \
+            tests/test_reconciliation_lock_order_red.py \
+            docs/ARCHITECTURE.md \
+            docs/adr/0056-reconciliation-close-package-provenance.md
+          git diff --cached --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "fix: address current reconciliation review findings"
+          git push origin HEAD:fix/reconciliation-multi-match-conservation
