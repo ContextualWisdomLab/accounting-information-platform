@@ -415,8 +415,8 @@ DECLARE
     current_status text;
     statement_allocation_count bigint;
     journal_allocation_count bigint;
-    statement_allocation_total numeric(30, 6);
-    journal_allocation_total numeric(30, 6);
+    statement_allocation_total numeric;
+    journal_allocation_total numeric;
 BEGIN
     -- Establish the canonical reconciliation lock order before taking the
     -- snapshot lock. The FK later requests a compatible lock from this same
