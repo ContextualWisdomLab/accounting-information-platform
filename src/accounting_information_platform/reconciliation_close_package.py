@@ -624,6 +624,29 @@ def _validate_approval_payload_provenance(
             )
 
 
+def _validate_active_match_state_evidence(
+    approval_evidence: tuple[ReconciliationApprovalEvidence, ...],
+    evidence_references: tuple[ReconciliationEvidenceReference, ...],
+) -> None:
+    """Require retained evidence that every packaged match remains currently approved."""
+    state_evidence = tuple(
+        evidence
+        for evidence in evidence_references
+        if evidence.evidence_kind_code == "reconciliation_match_state"
+    )
+    expected_references = {
+        f"{approval.reconciliation_match_reference}:approved"
+        for approval in approval_evidence
+    }
+    actual_references = {
+        evidence.evidence_reference for evidence in state_evidence
+    }
+    if actual_references != expected_references:
+        raise ValueError(
+            "current match state evidence must exactly prove every packaged approval remains approved"
+        )
+
+
 def _evidence_mapping(
     evidence: ReconciliationEvidenceReference,
 ) -> dict[str, object]:
@@ -687,6 +710,7 @@ def build_reconciliation_close_package(
         projection=projection,
     )
     _validate_approval_payload_provenance(approval_evidence, ordered_evidence)
+    _validate_active_match_state_evidence(approval_evidence, ordered_evidence)
     run_evidence = next(
         evidence
         for evidence in ordered_evidence
