@@ -32,10 +32,12 @@ class _Connection:
 
     def __init__(self, rows: list[tuple[object, ...]]) -> None:
         self.rows = rows
+        self.query: str | None = None
         self.parameters: tuple[object, ...] | None = None
 
-    def execute(self, _query: str, parameters: tuple[object, ...]) -> _Rows:
-        """Record parameters and return the configured rows."""
+    def execute(self, query: str, parameters: tuple[object, ...]) -> _Rows:
+        """Record the query and parameters, then return the configured rows."""
+        self.query = query
         self.parameters = parameters
         return _Rows(self.rows)
 
@@ -113,20 +115,20 @@ class ReconciliationClosePackageActiveStateDefensiveTests(unittest.TestCase):
     def test_empty_approval_population_requires_no_database_state_rows(self) -> None:
         self.assertEqual(self._load([], ()), ())
 
-    def test_database_rows_must_exactly_cover_packaged_approvals(self) -> None:
+    def test_database_active_population_must_exactly_match_packaged_approvals(self) -> None:
         approval = self._approval()
-        with self.assertRaisesRegex(ValueError, "exactly cover every packaged approval"):
+        with self.assertRaisesRegex(ValueError, "active approved match population"):
             self._load([], (approval,))
 
-    def test_match_and_approval_must_both_remain_approved(self) -> None:
+    def test_superseded_match_is_removed_from_active_population(self) -> None:
         approval = self._approval()
-        for row in (
-            self._row(approval, status="superseded"),
-            self._row(approval, decision="rejected"),
-        ):
-            with self.subTest(row=row):
-                with self.assertRaisesRegex(ValueError, "must remain approved"):
-                    self._load([row], (approval,))
+        with self.assertRaisesRegex(ValueError, "active approved match population"):
+            self._load([self._row(approval, status="superseded")], (approval,))
+
+    def test_active_match_still_requires_approved_decision_evidence(self) -> None:
+        approval = self._approval()
+        with self.assertRaisesRegex(ValueError, "must remain approved"):
+            self._load([self._row(approval, decision="rejected")], (approval,))
 
     def test_database_payload_hash_must_match_packaged_approval(self) -> None:
         approval = self._approval()
@@ -152,7 +154,7 @@ class ReconciliationClosePackageActiveStateDefensiveTests(unittest.TestCase):
                 (approval,),
             )
 
-    def test_database_state_evidence_is_deterministic_and_query_is_tenant_scoped(self) -> None:
+    def test_database_state_evidence_is_deterministic_and_query_is_run_scoped(self) -> None:
         second = self._approval("match-2")
         first = self._approval("match-1")
         connection = _Connection([self._row(second), self._row(first)])
@@ -167,10 +169,11 @@ class ReconciliationClosePackageActiveStateDefensiveTests(unittest.TestCase):
             tuple(evidence.evidence_reference for evidence in state),
             ("match-1:approved", "match-2:approved"),
         )
-        self.assertEqual(
-            connection.parameters,
-            ("tenant-id", "run-1", ["match-2", "match-1"]),
-        )
+        self.assertEqual(connection.parameters, ("tenant-id", "run-1"))
+        self.assertIsNotNone(connection.query)
+        query = connection.query or ""
+        self.assertIn("match.reconciliation_run_id::text = %s", query)
+        self.assertNotIn("ANY", query.upper())
         self.assertTrue(
             all(evidence.sha256_digest.startswith("sha256:") for evidence in state)
         )
