@@ -187,6 +187,12 @@ class ReconciliationClosePackageActiveStateDefensiveTests(unittest.TestCase):
             knowledge_cutoff="2026-08-31T00:00:00Z",
             evidence_references=(
                 ReconciliationEvidenceReference(
+                    evidence_kind_code="reconciliation_run",
+                    evidence_reference="run-1",
+                    sha256_digest="sha256:" + "2" * 64,
+                    knowledge_cutoff="2026-08-31T00:00:00Z",
+                ),
+                ReconciliationEvidenceReference(
                     evidence_kind_code="statement_artifact",
                     evidence_reference="artifact-1",
                     sha256_digest="sha256:" + "e" * 64,
@@ -214,6 +220,16 @@ class ReconciliationClosePackageActiveStateDefensiveTests(unittest.TestCase):
 
     def test_public_builder_discards_caller_state_and_uses_database_owned_state(self) -> None:
         package_input = self._package_input()
+        authoritative_run = next(
+            evidence
+            for evidence in package_input.evidence_references
+            if evidence.evidence_kind_code == "reconciliation_run"
+        )
+        authoritative_artifact = next(
+            evidence
+            for evidence in package_input.evidence_references
+            if evidence.evidence_kind_code == "statement_artifact"
+        )
         authoritative_state = ReconciliationEvidenceReference(
             evidence_kind_code="reconciliation_match_state",
             evidence_reference="database-owned:approved",
@@ -227,6 +243,11 @@ class ReconciliationClosePackageActiveStateDefensiveTests(unittest.TestCase):
                 "_database_owned_match_state_evidence",
                 return_value=(authoritative_state,),
             ) as state_loader,
+            mock.patch.object(
+                close_package,
+                "_database_owned_run_source_evidence",
+                return_value=(authoritative_run, authoritative_artifact),
+            ) as run_loader,
             mock.patch.object(
                 close_package,
                 "_build_reconciliation_close_package_from_verified_state",
@@ -247,13 +268,19 @@ class ReconciliationClosePackageActiveStateDefensiveTests(unittest.TestCase):
             reconciliation_run_reference="run-1",
             approval_evidence=(),
         )
+        run_loader.assert_called_once_with(
+            _Ledger.connection,
+            "tenant-id",
+            tenant_reference="tenant-1",
+            reconciliation_run_reference="run-1",
+        )
         verified_input = verified_builder.call_args.args[0]
         self.assertEqual(
             tuple(
                 evidence.evidence_reference
                 for evidence in verified_input.evidence_references
             ),
-            ("artifact-1", "database-owned:approved"),
+            ("run-1", "artifact-1", "database-owned:approved"),
         )
 
 
