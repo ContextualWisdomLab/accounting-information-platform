@@ -105,6 +105,14 @@ jobs:
           if text.count(old) != 1:
               raise SystemExit("expected exact current-head match-state block once")
           path.write_text(text.replace(old, new))
+
+          adr_path = Path("docs/adr/0056-reconciliation-close-package-provenance.md")
+          adr = adr_path.read_text()
+          old_adr = "It discards any caller-supplied `reconciliation_snapshot_tenant` evidence"
+          new_adr = "Caller-supplied `reconciliation_snapshot_tenant` evidence is discarded"
+          if adr.count(old_adr) != 1:
+              raise SystemExit("expected exact current-head snapshot-tenant ADR sentence once")
+          adr_path.write_text(adr.replace(old_adr, new_adr))
           PY
           git diff --check
       - name: Normalize repair into canonical branch and remove helper
@@ -114,7 +122,7 @@ jobs:
           remote_sha="$(git ls-remote origin refs/heads/fix/reconciliation-multi-match-conservation | cut -f1)"
           test "$remote_sha" = "$GITHUB_SHA"
           git rm .github/workflows/tmp-pr29-approved-population-repair.yml
-          git add src/accounting_information_platform/reconciliation_close_package.py
+          git add src/accounting_information_platform/reconciliation_close_package.py docs/adr/0056-reconciliation-close-package-provenance.md
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "fix: bind close package to complete approved population"
