@@ -1,0 +1,146 @@
+name: Temporary PR29 active-state repair
+
+on:
+  push:
+    branches:
+      - fix/reconciliation-multi-match-conservation
+    paths:
+      - .github/workflows/tmp-pr29-active-state-repair.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout canonical PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/reconciliation-multi-match-conservation
+          fetch-depth: 0
+      - name: Normalize authoritative close-package state repair
+        shell: python
+        run: |
+          from pathlib import Path
+
+          module = Path("src/accounting_information_platform/reconciliation_close_package.py")
+          text = module.read_text(encoding="utf-8")
+          expected_import = "from .reconciliation_bridge import _exact_decimal_sum\n"
+          replacement_import = (
+              "from .reconciliation_bridge import _exact_decimal_sum\n"
+              "from .persistence import PostgresPostingLedger\n"
+          )
+          if "from .persistence import PostgresPostingLedger" not in text:
+              if expected_import not in text:
+                  raise SystemExit("expected reconciliation_close_package import anchor missing")
+              text = text.replace(expected_import, replacement_import, 1)
+
+          old_def = (
+              "def build_reconciliation_close_package(\n"
+              "    package_input: ReconciliationClosePackageInput,\n"
+              ") -> ReconciliationClosePackage:\n"
+              "    \"\"\"Build a deterministic package only from close-review-eligible evidence.\"\"\"\n"
+          )
+          new_def = (
+              "def _build_reconciliation_close_package_from_verified_state(\n"
+              "    package_input: ReconciliationClosePackageInput,\n"
+              ") -> ReconciliationClosePackage:\n"
+              "    \"\"\"Build a deterministic package from already database-verified state evidence.\"\"\"\n"
+          )
+          if "def _build_reconciliation_close_package_from_verified_state(" not in text:
+              if old_def not in text:
+                  raise SystemExit("expected close-package builder anchor missing")
+              text = text.replace(old_def, new_def, 1)
+
+          verify_anchor = "\n\ndef verify_reconciliation_close_package("
+          authoritative_block = '''\n\ndef _database_owned_match_state_evidence(\n    connection: object,\n    tenant_account_id: object,\n    *,\n    tenant_reference: str,\n    reconciliation_run_reference: str,\n    approval_evidence: tuple[ReconciliationApprovalEvidence, ...],\n) -> tuple[ReconciliationEvidenceReference, ...]:\n    \"\"\"Read and bind the currently approved database state for every packaged match.\"\"\"\n    if not approval_evidence:\n        return ()\n    match_references = [\n        approval.reconciliation_match_reference for approval in approval_evidence\n    ]\n    rows = connection.execute(\n        \"\"\"\n        SELECT match.reconciliation_match_id::text,\n               match.match_status_code,\n               approval.approval_decision_code,\n               approval.source_payload_hash,\n               approval.source_payload_reference,\n               approval.reconciliation_snapshot_hash\n        FROM accounting_core.reconciliation_match AS match\n        JOIN accounting_core.reconciliation_approval AS approval\n          ON approval.tenant_account_id = match.tenant_account_id\n         AND approval.reconciliation_run_id = match.reconciliation_run_id\n         AND approval.reconciliation_match_id = match.reconciliation_match_id\n        WHERE match.tenant_account_id = %s\n          AND match.reconciliation_run_id::text = %s\n          AND match.reconciliation_match_id::text = ANY(%s)\n        FOR SHARE OF match\n        \"\"\",\n        (tenant_account_id, reconciliation_run_reference, match_references),\n    ).fetchall()\n    rows_by_match = {str(row[0]): row for row in rows}\n    if set(rows_by_match) != set(match_references):\n        raise ValueError(\n            \"database-owned match state must exactly cover every packaged approval\"\n        )\n\n    state_evidence: list[ReconciliationEvidenceReference] = []\n    for approval in approval_evidence:\n        row = rows_by_match[approval.reconciliation_match_reference]\n        (\n            _match_reference,\n            match_status_code,\n            approval_decision_code,\n            source_payload_hash,\n            source_payload_reference,\n            reconciliation_snapshot_hash,\n        ) = row\n        if match_status_code != \"approved\" or approval_decision_code != \"approved\":\n            raise ValueError(\n                \"database-owned match state must remain approved when the close package is built\"\n            )\n        if not hmac.compare_digest(str(source_payload_hash), approval.source_payload_hash):\n            raise ValueError(\n                \"database-owned approval payload hash must match packaged approval evidence\"\n            )\n        if str(source_payload_reference) != approval.evidence_reference:\n            raise ValueError(\n                \"database-owned approval payload reference must match packaged approval evidence\"\n            )\n        if not hmac.compare_digest(\n            str(reconciliation_snapshot_hash),\n            approval.reconciliation_snapshot_sha256,\n        ):\n            raise ValueError(\n                \"database-owned approval snapshot must match packaged approval evidence\"\n            )\n        state_payload = \"\\n\".join(\n            (\n                \"reconciliation_match_state_version=1\",\n                \"tenant=\" + _snapshot_value(tenant_reference),\n                \"run=\" + _snapshot_value(reconciliation_run_reference),\n                \"match=\" + _snapshot_value(approval.reconciliation_match_reference),\n                \"status=\" + _snapshot_value(str(match_status_code)),\n                \"approval_snapshot=\" + _snapshot_value(str(reconciliation_snapshot_hash)),\n            )\n        )\n        state_evidence.append(\n            ReconciliationEvidenceReference(\n                evidence_kind_code=\"reconciliation_match_state\",\n                evidence_reference=(\n                    f\"{approval.reconciliation_match_reference}:approved\"\n                ),\n                sha256_digest=\"sha256:\"\n                + hashlib.sha256(state_payload.encode(\"utf-8\")).hexdigest(),\n            )\n        )\n    return tuple(\n        sorted(state_evidence, key=lambda evidence: evidence.evidence_reference)\n    )\n\n\ndef build_reconciliation_close_package(\n    package_input: ReconciliationClosePackageInput,\n    *,\n    database_url: str | None = None,\n    tenant_reference: str | None = None,\n) -> ReconciliationClosePackage:\n    \"\"\"Build close evidence only while its reviewed matches remain approved in PostgreSQL.\"\"\"\n    if not isinstance(package_input, ReconciliationClosePackageInput):\n        raise ValueError(\"package_input must be a ReconciliationClosePackageInput\")\n    if not database_url or not tenant_reference:\n        raise ValueError(\n            \"database-owned match state verification is required to build a close package\"\n        )\n    if tenant_reference != package_input.projection.tenant_account_reference:\n        raise ValueError(\n            \"database-owned match state tenant must match the close-package projection\"\n        )\n    ledger = PostgresPostingLedger(database_url, tenant_reference)\n    with ledger._session() as connection:\n        tenant_account_id = ledger._require_tenant(connection)\n        authoritative_state = _database_owned_match_state_evidence(\n            connection,\n            tenant_account_id,\n            tenant_reference=tenant_reference,\n            reconciliation_run_reference=package_input.projection.reconciliation_run_reference,\n            approval_evidence=package_input.approval_evidence,\n        )\n        retained_evidence = tuple(\n            evidence\n            for evidence in package_input.evidence_references\n            if evidence.evidence_kind_code != \"reconciliation_match_state\"\n        )\n        verified_input = ReconciliationClosePackageInput(\n            projection=package_input.projection,\n            approval_evidence=package_input.approval_evidence,\n            knowledge_cutoff=package_input.knowledge_cutoff,\n            evidence_references=retained_evidence + authoritative_state,\n        )\n        return _build_reconciliation_close_package_from_verified_state(verified_input)\n'''
+          if "def _database_owned_match_state_evidence(" not in text:
+              if verify_anchor not in text:
+                  raise SystemExit("verify anchor missing")
+              text = text.replace(verify_anchor, authoritative_block + verify_anchor, 1)
+
+          verify_call = "        rebuilt = build_reconciliation_close_package(\n"
+          private_verify_call = (
+              "        rebuilt = _build_reconciliation_close_package_from_verified_state(\n"
+          )
+          if verify_call in text:
+              text = text.replace(verify_call, private_verify_call, 1)
+          module.write_text(text, encoding="utf-8")
+
+          unit_paths = [
+              "tests/test_reconciliation_close_package_cutoff_binding_red.py",
+              "tests/test_reconciliation_close_package_equation_red.py",
+              "tests/test_reconciliation_close_package_red.py",
+              "tests/test_reconciliation_close_package_approval_provenance_red.py",
+          ]
+          for name in unit_paths:
+              path = Path(name)
+              unit = path.read_text(encoding="utf-8")
+              if "_build_reconciliation_close_package_from_verified_state as build_reconciliation_close_package" not in unit:
+                  unit = unit.replace(
+                      "    build_reconciliation_close_package,\n",
+                      "    _build_reconciliation_close_package_from_verified_state as build_reconciliation_close_package,\n",
+                      1,
+                  )
+              if name.endswith("approval_provenance_red.py"):
+                  import_anchor = (
+                      "    _build_reconciliation_close_package_from_verified_state as build_reconciliation_close_package,\n"
+                  )
+                  if "build_reconciliation_close_package as build_authoritative_reconciliation_close_package" not in unit:
+                      unit = unit.replace(
+                          import_anchor,
+                          import_anchor
+                          + "    build_reconciliation_close_package as build_authoritative_reconciliation_close_package,\n",
+                          1,
+                      )
+                  unit = unit.replace(
+                      "        with self.assertRaisesRegex(ValueError, \"database-owned match state\"):\n"
+                      "            build_reconciliation_close_package(\n"
+                      "                replace(package_input, evidence_references=forged_state)\n"
+                      "            )\n",
+                      "        with self.assertRaisesRegex(ValueError, \"database-owned match state\"):\n"
+                      "            build_authoritative_reconciliation_close_package(\n"
+                      "                replace(package_input, evidence_references=forged_state)\n"
+                      "            )\n",
+                      1,
+                  )
+              path.write_text(unit, encoding="utf-8")
+
+          pg_test = Path("tests/test_reconciliation_close_package_active_state_postgres.py")
+          pg_test.write_text('''"""PostgreSQL proof that close-package state evidence cannot reuse superseded approvals."""\n\nfrom __future__ import annotations\n\nimport unittest\n\nimport psycopg\n\nfrom accounting_information_platform.persistence import PostgresPostingLedger\nfrom accounting_information_platform.reconciliation_close_package import (\n    ReconciliationApprovalEvidence,\n    _database_owned_match_state_evidence,\n)\nfrom tests import test_postgres_posting as posting\nfrom tests import test_reconciliation_candidate_allocation_persistence_red as allocation\n\n\nclass PostgresReconciliationClosePackageActiveStateTests(unittest.TestCase):\n    \"\"\"Bind packaged approvals to the authoritative current PostgreSQL match state.\"\"\"\n\n    @classmethod\n    def setUpClass(cls) -> None:\n        posting.PostgresPostingTests.setUpClass()\n\n    def setUp(self) -> None:\n        self.fixture = allocation.PostgresReconciliationAllocationRedTests(\"setUp\")\n        self.fixture.setUp()\n        self.addCleanup(self.fixture.doCleanups)\n        self.addCleanup(self.fixture.tearDown)\n\n    def _approved_evidence(self) -> tuple[object, ReconciliationApprovalEvidence]:\n        candidate_id = self.fixture._insert_candidate(\"stmt-close-state\", \"journal-close-state\")\n        match_id = self.fixture._insert_match(candidate_id)\n        self.fixture._insert_allocations(\n            match_id, \"stmt-close-state\", \"journal-close-state\", \"1000.00\"\n        )\n        self.fixture._approve_match(match_id)\n        with psycopg.connect(posting.DATABASE_URL) as connection:\n            row = connection.execute(\n                \"\"\"\n                SELECT source_payload_hash, source_payload_reference, reconciliation_snapshot_hash\n                FROM accounting_core.reconciliation_approval\n                WHERE tenant_account_id = %s\n                  AND reconciliation_run_id = %s\n                  AND reconciliation_match_id = %s\n                \"\"\",\n                (self.fixture.scope[\"tenant_account_id\"], self.fixture.run_reference, match_id),\n            ).fetchone()\n        approval = ReconciliationApprovalEvidence(\n            tenant_account_reference=self.fixture.case.policy.tenant_reference,\n            reconciliation_run_reference=str(self.fixture.run_reference),\n            reconciliation_match_reference=str(match_id),\n            approval_decision_code=\"approved\",\n            source_payload_hash=str(row[0]),\n            reconciliation_snapshot_sha256=str(row[2]),\n            evidence_reference=str(row[1]),\n        )\n        return match_id, approval\n\n    def _load(self, approval: ReconciliationApprovalEvidence):\n        ledger = PostgresPostingLedger(\n            posting.DATABASE_URL, self.fixture.case.policy.tenant_reference\n        )\n        with ledger._session() as connection:\n            tenant_account_id = ledger._require_tenant(connection)\n            return _database_owned_match_state_evidence(\n                connection,\n                tenant_account_id,\n                tenant_reference=self.fixture.case.policy.tenant_reference,\n                reconciliation_run_reference=str(self.fixture.run_reference),\n                approval_evidence=(approval,),\n            )\n\n    def test_superseded_match_cannot_be_repackaged_from_immutable_approval(self) -> None:\n        match_id, approval = self._approved_evidence()\n        state = self._load(approval)\n        self.assertEqual(state[0].evidence_reference, f\"{match_id}:approved\")\n\n        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:\n            connection.execute(\n                \"\"\"\n                UPDATE accounting_core.reconciliation_match\n                SET match_status_code = 'superseded'\n                WHERE tenant_account_id = %s\n                  AND reconciliation_run_id = %s\n                  AND reconciliation_match_id = %s\n                \"\"\",\n                (self.fixture.scope[\"tenant_account_id\"], self.fixture.run_reference, match_id),\n            )\n\n        with self.assertRaisesRegex(ValueError, \"database-owned match state\"):\n            self._load(approval)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n''', encoding="utf-8")
+
+          adr = Path("docs/adr/0056-reconciliation-close-package-provenance.md")
+          adr_text = adr.read_text(encoding="utf-8")
+          marker = "## Authoritative active-match state at construction"
+          if marker not in adr_text:
+              adr_text += '''\n\n## Authoritative active-match state at construction\n\nThe customer-facing close-package builder does not trust caller-supplied `reconciliation_match_state` labels or digests. It opens a tenant-bound PostgreSQL transaction, locks the referenced current match rows for shared read, and requires the current database status plus the immutable `reconciliation_approval` decision, source-payload identity, and database-owned reconciliation snapshot to agree with every packaged approval. The builder discards caller-shaped match-state evidence and derives the packaged state digest from the database-owned row while the shared lock is held. A match that has moved to `superseded` therefore cannot be repackaged from its still-immutable historical approval.\n\nPure canonical rebuilding remains an internal verification primitive for an already constructed evidence package; it is not an authority-bearing construction path and cannot replace the database-backed active-state check.\n'''
+              adr.write_text(adr_text, encoding="utf-8")
+
+          changelog = Path("CHANGELOG.md")
+          change_text = changelog.read_text(encoding="utf-8")
+          bullet = "- Close-package construction now revalidates every approved reconciliation match against the tenant-scoped current PostgreSQL row and immutable approval snapshot under a shared transaction lock; caller-shaped match-state labels/digests are discarded, and superseded matches cannot be repackaged from historical approval evidence.\n"
+          if bullet not in change_text:
+              change_text = change_text.replace("## [Unreleased]\n\n", "## [Unreleased]\n\n" + bullet, 1)
+              changelog.write_text(change_text, encoding="utf-8")
+      - name: Run focused provenance tests
+        run: |
+          python -m unittest \
+            tests.test_reconciliation_close_package_approval_provenance_red \
+            tests.test_reconciliation_close_package_cutoff_binding_red \
+            tests.test_reconciliation_close_package_equation_red \
+            tests.test_reconciliation_close_package_red
+      - name: Commit normalized repair to canonical PR branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md docs/adr/0056-reconciliation-close-package-provenance.md \
+            src/accounting_information_platform/reconciliation_close_package.py \
+            tests/test_reconciliation_close_package_approval_provenance_red.py \
+            tests/test_reconciliation_close_package_cutoff_binding_red.py \
+            tests/test_reconciliation_close_package_equation_red.py \
+            tests/test_reconciliation_close_package_red.py \
+            tests/test_reconciliation_close_package_active_state_postgres.py
+          git diff --cached --check
+          git commit -m "fix: bind close packages to authoritative match state"
+          git push origin HEAD:fix/reconciliation-multi-match-conservation
