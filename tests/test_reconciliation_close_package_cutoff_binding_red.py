@@ -11,7 +11,7 @@ from accounting_information_platform.reconciliation_close_package import (
     ReconciliationClosePackageInput,
     ReconciliationEvidenceReference,
     _reconciliation_match_snapshot_sha256,
-    build_reconciliation_close_package,
+    _build_reconciliation_close_package_from_verified_state as build_reconciliation_close_package,
 )
 from accounting_information_platform.reconciliation_read_model import (
     ReconciliationCloseReviewProjection,

@@ -82,3 +82,10 @@ National Institute of Standards and Technology. (2015). *Secure Hash Standard (S
 National Institute of Standards and Technology. (2023, March 7). *Decision to revise FIPS 180-4, Secure Hash Standard (SHS)*. https://csrc.nist.gov/news/2023/decision-to-revise-fips-180-4
 
 World Wide Web Consortium. (2013). *PROV-O: The PROV ontology*. https://www.w3.org/TR/prov-o/
+
+
+## Authoritative active-match state at construction
+
+The customer-facing close-package builder does not trust caller-supplied `reconciliation_match_state` labels or digests. It opens a tenant-bound PostgreSQL transaction, locks the referenced current match rows for shared read, and requires the current database status plus the immutable `reconciliation_approval` decision, source-payload identity, and database-owned reconciliation snapshot to agree with every packaged approval. The builder discards caller-shaped match-state evidence and derives the packaged state digest from the database-owned row while the shared lock is held. A match that has moved to `superseded` therefore cannot be repackaged from its still-immutable historical approval.
+
+Pure canonical rebuilding remains an internal verification primitive for an already constructed evidence package; it is not an authority-bearing construction path and cannot replace the database-backed active-state check.

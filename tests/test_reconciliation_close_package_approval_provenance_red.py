@@ -11,7 +11,8 @@ from accounting_information_platform.reconciliation_close_package import (
     ReconciliationClosePackageInput,
     ReconciliationEvidenceReference,
     _reconciliation_match_snapshot_sha256,
-    build_reconciliation_close_package,
+    _build_reconciliation_close_package_from_verified_state as build_reconciliation_close_package,
+    build_reconciliation_close_package as build_authoritative_reconciliation_close_package,
 )
 from accounting_information_platform.reconciliation_read_model import (
     ReconciliationAllocationEvidence,
@@ -210,7 +211,7 @@ class ReconciliationClosePackageApprovalProvenanceRedTests(unittest.TestCase):
             for evidence in package_input.evidence_references
         )
         with self.assertRaisesRegex(ValueError, "database-owned match state"):
-            build_reconciliation_close_package(
+            build_authoritative_reconciliation_close_package(
                 replace(package_input, evidence_references=forged_state)
             )
 

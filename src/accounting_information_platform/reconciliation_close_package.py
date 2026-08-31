@@ -26,6 +26,7 @@ from .reconciliation_read_model import (
     render_reconciliation_close_review_json,
 )
 from .reconciliation_bridge import _exact_decimal_sum
+from .persistence import PostgresPostingLedger
 
 _SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _UTC_SECOND_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
@@ -693,10 +694,10 @@ def _canonical_json_bytes(payload: dict[str, object]) -> bytes:
     ).encode("utf-8")
 
 
-def build_reconciliation_close_package(
+def _build_reconciliation_close_package_from_verified_state(
     package_input: ReconciliationClosePackageInput,
 ) -> ReconciliationClosePackage:
-    """Build a deterministic package only from close-review-eligible evidence."""
+    """Build a deterministic package from already database-verified state evidence."""
     if not isinstance(package_input, ReconciliationClosePackageInput):
         raise ValueError("package_input must be a ReconciliationClosePackageInput")
     projection = _validate_projection(package_input.projection)
@@ -740,13 +741,149 @@ def build_reconciliation_close_package(
     )
 
 
+def _database_owned_match_state_evidence(
+    connection: object,
+    tenant_account_id: object,
+    *,
+    tenant_reference: str,
+    reconciliation_run_reference: str,
+    approval_evidence: tuple[ReconciliationApprovalEvidence, ...],
+) -> tuple[ReconciliationEvidenceReference, ...]:
+    """Read and bind the currently approved database state for every packaged match."""
+    if not approval_evidence:
+        return ()
+    match_references = [
+        approval.reconciliation_match_reference for approval in approval_evidence
+    ]
+    rows = connection.execute(
+        """
+        SELECT match.reconciliation_match_id::text,
+               match.match_status_code,
+               approval.approval_decision_code,
+               approval.source_payload_hash,
+               approval.source_payload_reference,
+               approval.reconciliation_snapshot_hash
+        FROM accounting_core.reconciliation_match AS match
+        JOIN accounting_core.reconciliation_approval AS approval
+          ON approval.tenant_account_id = match.tenant_account_id
+         AND approval.reconciliation_run_id = match.reconciliation_run_id
+         AND approval.reconciliation_match_id = match.reconciliation_match_id
+        WHERE match.tenant_account_id = %s
+          AND match.reconciliation_run_id::text = %s
+          AND match.reconciliation_match_id::text = ANY(%s)
+        FOR SHARE OF match
+        """,
+        (tenant_account_id, reconciliation_run_reference, match_references),
+    ).fetchall()
+    rows_by_match = {str(row[0]): row for row in rows}
+    if set(rows_by_match) != set(match_references):
+        raise ValueError(
+            "database-owned match state must exactly cover every packaged approval"
+        )
+
+    state_evidence: list[ReconciliationEvidenceReference] = []
+    for approval in approval_evidence:
+        row = rows_by_match[approval.reconciliation_match_reference]
+        (
+            _match_reference,
+            match_status_code,
+            approval_decision_code,
+            source_payload_hash,
+            source_payload_reference,
+            reconciliation_snapshot_hash,
+        ) = row
+        if match_status_code != "approved" or approval_decision_code != "approved":
+            raise ValueError(
+                "database-owned match state must remain approved when the close package is built"
+            )
+        if not hmac.compare_digest(str(source_payload_hash), approval.source_payload_hash):
+            raise ValueError(
+                "database-owned approval payload hash must match packaged approval evidence"
+            )
+        if str(source_payload_reference) != approval.evidence_reference:
+            raise ValueError(
+                "database-owned approval payload reference must match packaged approval evidence"
+            )
+        if not hmac.compare_digest(
+            str(reconciliation_snapshot_hash),
+            approval.reconciliation_snapshot_sha256,
+        ):
+            raise ValueError(
+                "database-owned approval snapshot must match packaged approval evidence"
+            )
+        state_payload = "\n".join(
+            (
+                "reconciliation_match_state_version=1",
+                "tenant=" + _snapshot_value(tenant_reference),
+                "run=" + _snapshot_value(reconciliation_run_reference),
+                "match=" + _snapshot_value(approval.reconciliation_match_reference),
+                "status=" + _snapshot_value(str(match_status_code)),
+                "approval_snapshot=" + _snapshot_value(str(reconciliation_snapshot_hash)),
+            )
+        )
+        state_evidence.append(
+            ReconciliationEvidenceReference(
+                evidence_kind_code="reconciliation_match_state",
+                evidence_reference=(
+                    f"{approval.reconciliation_match_reference}:approved"
+                ),
+                sha256_digest="sha256:"
+                + hashlib.sha256(state_payload.encode("utf-8")).hexdigest(),
+            )
+        )
+    return tuple(
+        sorted(state_evidence, key=lambda evidence: evidence.evidence_reference)
+    )
+
+
+def build_reconciliation_close_package(
+    package_input: ReconciliationClosePackageInput,
+    *,
+    database_url: str | None = None,
+    tenant_reference: str | None = None,
+) -> ReconciliationClosePackage:
+    """Build close evidence only while its reviewed matches remain approved in PostgreSQL."""
+    if not isinstance(package_input, ReconciliationClosePackageInput):
+        raise ValueError("package_input must be a ReconciliationClosePackageInput")
+    if not database_url or not tenant_reference:
+        raise ValueError(
+            "database-owned match state verification is required to build a close package"
+        )
+    if tenant_reference != package_input.projection.tenant_account_reference:
+        raise ValueError(
+            "database-owned match state tenant must match the close-package projection"
+        )
+    ledger = PostgresPostingLedger(database_url, tenant_reference)
+    with ledger._session() as connection:
+        tenant_account_id = ledger._require_tenant(connection)
+        authoritative_state = _database_owned_match_state_evidence(
+            connection,
+            tenant_account_id,
+            tenant_reference=tenant_reference,
+            reconciliation_run_reference=package_input.projection.reconciliation_run_reference,
+            approval_evidence=package_input.approval_evidence,
+        )
+        retained_evidence = tuple(
+            evidence
+            for evidence in package_input.evidence_references
+            if evidence.evidence_kind_code != "reconciliation_match_state"
+        )
+        verified_input = ReconciliationClosePackageInput(
+            projection=package_input.projection,
+            approval_evidence=package_input.approval_evidence,
+            knowledge_cutoff=package_input.knowledge_cutoff,
+            evidence_references=retained_evidence + authoritative_state,
+        )
+        return _build_reconciliation_close_package_from_verified_state(verified_input)
+
+
 def verify_reconciliation_close_package(package: ReconciliationClosePackage) -> None:
     """Fail closed unless a package is canonical and matches its committed SHA-256."""
     if not isinstance(package, ReconciliationClosePackage):
         raise ValueError("package must be a ReconciliationClosePackage")
     _require_sha256(package.package_sha256, field_name="package_sha256")
     try:
-        rebuilt = build_reconciliation_close_package(
+        rebuilt = _build_reconciliation_close_package_from_verified_state(
             ReconciliationClosePackageInput(
                 projection=package.projection,
                 approval_evidence=package.approval_evidence,
