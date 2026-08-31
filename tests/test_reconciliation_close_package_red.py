@@ -143,9 +143,9 @@ class ReconciliationClosePackageTests(unittest.TestCase):
         self,
         approvals: tuple[ReconciliationApprovalEvidence, ...] | None = None,
     ) -> tuple[ReconciliationEvidenceReference, ...]:
-        """Retain the immutable payload digest referenced by every packaged approval."""
+        """Retain approval payload digests and current approved match-state evidence."""
         approval_evidence = self._approval_evidence() if approvals is None else approvals
-        return tuple(
+        payload_evidence = tuple(
             ReconciliationEvidenceReference(
                 evidence_kind_code="reconciliation_approval_payload",
                 evidence_reference=approval.evidence_reference,
@@ -153,6 +153,15 @@ class ReconciliationClosePackageTests(unittest.TestCase):
             )
             for approval in approval_evidence
         )
+        match_state_evidence = tuple(
+            ReconciliationEvidenceReference(
+                evidence_kind_code="reconciliation_match_state",
+                evidence_reference=f"{approval.reconciliation_match_reference}:approved",
+                sha256_digest=approval.reconciliation_snapshot_sha256,
+            )
+            for approval in approval_evidence
+        )
+        return payload_evidence + match_state_evidence
 
     def _evidence(self) -> tuple[ReconciliationEvidenceReference, ...]:
         return self._base_evidence() + self._approval_payload_evidence()
@@ -233,6 +242,7 @@ class ReconciliationClosePackageTests(unittest.TestCase):
             [
                 "book_population",
                 *["reconciliation_approval_payload"] * 8,
+                *["reconciliation_match_state"] * 8,
                 "reconciliation_run",
                 "statement_artifact",
                 "statement_population",
