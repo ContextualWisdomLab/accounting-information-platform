@@ -135,6 +135,16 @@ class ReconciliationClosePackageEquationTests(unittest.TestCase):
                 )
                 for approval in approvals
             ),
+            *tuple(
+                ReconciliationEvidenceReference(
+                    evidence_kind_code="reconciliation_match_state",
+                    evidence_reference=(
+                        f"{approval.reconciliation_match_reference}:approved"
+                    ),
+                    sha256_digest="sha256:" + str(index) * 64,
+                )
+                for index, approval in enumerate(approvals, start=1)
+            ),
         )
 
         with self.assertRaisesRegex(ValueError, "exact book-to-bank bridge equation"):
