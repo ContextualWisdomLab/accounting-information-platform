@@ -26,10 +26,12 @@ from .reconciliation_read_model import (
     render_reconciliation_close_review_json,
 )
 from .reconciliation_bridge import _exact_decimal_sum
-from .persistence import PostgresPostingLedger
+from .persistence import PostgresPostingLedger, _format_timestamp
 
 _SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
-_UTC_SECOND_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+_UTC_CANONICAL_PATTERN = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{6})?Z$"
+)
 _REQUIRED_EVIDENCE_KINDS = frozenset(
     {
         "reconciliation_run",
@@ -152,11 +154,14 @@ def _require_sha256(value: object, *, field_name: str) -> str:
 
 
 def _require_knowledge_cutoff(value: object) -> str:
-    """Require a canonical UTC RFC 3339 second precision knowledge cutoff."""
-    if not isinstance(value, str) or _UTC_SECOND_PATTERN.fullmatch(value) is None:
-        raise ValueError("knowledge_cutoff must be canonical UTC RFC 3339 at second precision")
+    """Require the canonical UTC precision emitted by persisted reconciliation runs."""
+    if not isinstance(value, str) or _UTC_CANONICAL_PATTERN.fullmatch(value) is None:
+        raise ValueError(
+            "knowledge_cutoff must be canonical UTC RFC 3339 at whole-second or "
+            "six-digit microsecond precision"
+        )
     try:
-        datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+        datetime.fromisoformat(value[:-1] + "+00:00")
     except ValueError as exc:
         raise ValueError("knowledge_cutoff must name a real UTC calendar instant") from exc
     return value
@@ -469,6 +474,11 @@ def _validate_and_order_evidence(
         for evidence in evidence_references
         if evidence.evidence_kind_code == "reconciliation_run"
     )
+    statement_artifacts = tuple(
+        evidence
+        for evidence in evidence_references
+        if evidence.evidence_kind_code == "statement_artifact"
+    )
     statement_populations = tuple(
         evidence
         for evidence in evidence_references
@@ -481,6 +491,8 @@ def _validate_and_order_evidence(
     )
     if len(reconciliation_runs) != 1:
         raise ValueError("evidence_references must include exactly one reconciliation_run evidence")
+    if len(statement_artifacts) != 1:
+        raise ValueError("evidence_references must include exactly one statement_artifact evidence")
     if len(statement_populations) != 1:
         raise ValueError("evidence_references must include exactly one statement_population evidence")
     if len(book_populations) != 1:
@@ -836,6 +848,83 @@ def _database_owned_match_state_evidence(
     )
 
 
+def _database_owned_run_source_evidence(
+    connection: object,
+    tenant_account_id: object,
+    *,
+    tenant_reference: str,
+    reconciliation_run_reference: str,
+) -> tuple[ReconciliationEvidenceReference, ReconciliationEvidenceReference]:
+    """Load the immutable run cutoff, command digest, and retained statement artifact."""
+    rows = connection.execute(
+        """
+        SELECT run_record.knowledge_cutoff_at,
+               run_command.reconciliation_command_hash,
+               run_command.source_payload_hash,
+               run_command.source_payload_reference,
+               statement_record.source_artifact_hash,
+               statement_artifact.source_artifact_hash,
+               statement_artifact.artifact_store_reference
+        FROM accounting_core.reconciliation_run AS run_record
+        JOIN accounting_core.reconciliation_run_command AS run_command
+          ON run_command.tenant_account_id = run_record.tenant_account_id
+         AND run_command.reconciliation_run_id = run_record.reconciliation_run_id
+        JOIN accounting_integration.bank_statement_record AS statement_record
+          ON statement_record.tenant_account_id = run_command.tenant_account_id
+         AND statement_record.bank_statement_record_id = run_command.bank_statement_record_id
+        JOIN accounting_integration.bank_statement_artifact AS statement_artifact
+          ON statement_artifact.tenant_account_id = statement_record.tenant_account_id
+         AND statement_artifact.bank_statement_artifact_id =
+             statement_record.bank_statement_artifact_id
+        WHERE run_record.tenant_account_id = %s
+          AND run_record.reconciliation_run_id::text = %s
+        FOR SHARE OF run_record, run_command, statement_record, statement_artifact
+        """,
+        (tenant_account_id, reconciliation_run_reference),
+    ).fetchall()
+    if len(rows) != 1:
+        raise ValueError(
+            "database-owned reconciliation run evidence must resolve exactly one "
+            "run command and statement artifact"
+        )
+    (
+        knowledge_cutoff_at,
+        reconciliation_command_hash,
+        command_source_hash,
+        command_source_reference,
+        statement_source_hash,
+        artifact_source_hash,
+        artifact_store_reference,
+    ) = rows[0]
+    if not hmac.compare_digest(str(command_source_hash), str(statement_source_hash)):
+        raise ValueError(
+            "database-owned reconciliation run command source hash must match "
+            "the retained statement record"
+        )
+    if not hmac.compare_digest(str(statement_source_hash), str(artifact_source_hash)):
+        raise ValueError(
+            "database-owned retained statement artifact hash must match "
+            "the statement record"
+        )
+    if str(command_source_reference) != str(artifact_store_reference):
+        raise ValueError(
+            "database-owned retained statement artifact reference must match "
+            "the reconciliation run command"
+        )
+    run_evidence = ReconciliationEvidenceReference(
+        evidence_kind_code="reconciliation_run",
+        evidence_reference=reconciliation_run_reference,
+        sha256_digest=str(reconciliation_command_hash),
+        knowledge_cutoff=_format_timestamp(knowledge_cutoff_at),
+    )
+    statement_artifact_evidence = ReconciliationEvidenceReference(
+        evidence_kind_code="statement_artifact",
+        evidence_reference=str(artifact_store_reference),
+        sha256_digest=str(artifact_source_hash),
+    )
+    return run_evidence, statement_artifact_evidence
+
+
 def build_reconciliation_close_package(
     package_input: ReconciliationClosePackageInput,
     *,
@@ -863,16 +952,49 @@ def build_reconciliation_close_package(
             reconciliation_run_reference=package_input.projection.reconciliation_run_reference,
             approval_evidence=package_input.approval_evidence,
         )
+        authoritative_run, authoritative_artifact = _database_owned_run_source_evidence(
+            connection,
+            tenant_account_id,
+            tenant_reference=tenant_reference,
+            reconciliation_run_reference=package_input.projection.reconciliation_run_reference,
+        )
+        packaged_runs = tuple(
+            evidence
+            for evidence in package_input.evidence_references
+            if evidence.evidence_kind_code == "reconciliation_run"
+        )
+        packaged_artifacts = tuple(
+            evidence
+            for evidence in package_input.evidence_references
+            if evidence.evidence_kind_code == "statement_artifact"
+        )
+        if package_input.knowledge_cutoff != authoritative_run.knowledge_cutoff:
+            raise ValueError(
+                "knowledge_cutoff must match the database-owned reconciliation run cutoff"
+            )
+        if len(packaged_runs) != 1 or packaged_runs[0] != authoritative_run:
+            raise ValueError(
+                "database-owned reconciliation run evidence must match the packaged run evidence"
+            )
+        if len(packaged_artifacts) != 1 or packaged_artifacts[0] != authoritative_artifact:
+            raise ValueError(
+                "database-owned statement artifact evidence must match the packaged artifact evidence"
+            )
         retained_evidence = tuple(
             evidence
             for evidence in package_input.evidence_references
-            if evidence.evidence_kind_code != "reconciliation_match_state"
+            if evidence.evidence_kind_code
+            not in {"reconciliation_run", "statement_artifact", "reconciliation_match_state"}
         )
         verified_input = ReconciliationClosePackageInput(
             projection=package_input.projection,
             approval_evidence=package_input.approval_evidence,
-            knowledge_cutoff=package_input.knowledge_cutoff,
-            evidence_references=retained_evidence + authoritative_state,
+            knowledge_cutoff=authoritative_run.knowledge_cutoff,
+            evidence_references=(
+                retained_evidence
+                + (authoritative_run, authoritative_artifact)
+                + authoritative_state
+            ),
         )
         return _build_reconciliation_close_package_from_verified_state(verified_input)
 
