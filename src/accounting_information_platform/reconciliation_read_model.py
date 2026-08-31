@@ -457,6 +457,7 @@ def _validate_reviewed_match_population(
             raise ValueError(
                 "reviewed match candidate facts must be represented in their allocations"
             )
+        covered_statement_sources: set[str] = set()
         covered_journal_sources: set[str] = set()
         for decision in decisions:
             matching_statement_amount = (
@@ -474,12 +475,17 @@ def _validate_reviewed_match_population(
                 raise ValueError(
                     "reviewed match evidence must bind every decision to statement allocations"
                 )
+            covered_statement_sources.add(decision.statement_entry_reference)
             decision_journal_sources = set(decision.matched_journal_references)
             if not decision_journal_sources.issubset(journal_sources):
                 raise ValueError(
                     "reviewed match evidence must bind every decision to journal allocations"
                 )
             covered_journal_sources.update(decision_journal_sources)
+        if covered_statement_sources != statement_sources:
+            raise ValueError(
+                "reviewed match evidence must cover every normalized statement allocation"
+            )
         if covered_journal_sources != journal_sources:
             raise ValueError(
                 "reviewed match evidence must cover every normalized journal allocation"

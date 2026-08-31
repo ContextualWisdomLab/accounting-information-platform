@@ -143,9 +143,18 @@ class FoundationInstallManifestContractTests(unittest.TestCase):
         for relative_path in ("docs/OPERABILITY.md", "docs/ARCHITECTURE.md"):
             with self.subTest(relative_path=relative_path):
                 text = (ROOT / relative_path).read_text(encoding="utf-8")
-                self.assertIn(migration_eighteen, text)
-                self.assertIn(migration_nineteen, text)
-                self.assertLess(text.index(migration_eighteen), text.index(migration_nineteen))
+                if relative_path == "docs/OPERABILITY.md":
+                    install_section = text.split("## Database installation", 1)[1]
+                    install_block = install_section.split("```text", 1)[1].split("```", 1)[0]
+                else:
+                    install_section = text.split("## Persistence and migration order", 1)[1]
+                    install_block = install_section.split("`0005_closed_period_guard.sql` makes", 1)[0]
+                self.assertIn(migration_eighteen, install_block)
+                self.assertIn(migration_nineteen, install_block)
+                self.assertLess(
+                    install_block.index(migration_eighteen),
+                    install_block.index(migration_nineteen),
+                )
 
     def test_install_fails_closed_when_approval_snapshot_migration_is_missing(self) -> None:
         """The canonical loader may not silently stop before database-owned approval evidence."""

@@ -16,8 +16,8 @@ from accounting_information_platform.reconciliation_bridge import (
     BookToBankBridgeInput,
     compute_book_to_bank_bridge,
 )
-import accounting_information_platform.reconciliation_read_model as read_model
 from accounting_information_platform.reconciliation_read_model import (
+    build_reconciliation_close_review,
     ReconciliationAllocationEvidence,
     ReconciliationCloseReviewInput,
     ReconciliationCloseReviewScope,
@@ -123,7 +123,7 @@ class CurrentHeadReviewRegressionTests(unittest.TestCase):
             ValueError,
             "cover every normalized statement allocation",
         ):
-            read_model.build_reconciliation_close_review(projection_input)
+            build_reconciliation_close_review(projection_input)
 
 
 if __name__ == "__main__":

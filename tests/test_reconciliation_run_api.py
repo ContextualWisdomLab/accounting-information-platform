@@ -528,7 +528,7 @@ class ReconciliationRunApiTests(unittest.TestCase):
         self.assertEqual(missing_id_status, 400)
         self.assertEqual(invalid_id_status, 400)
         self.assertEqual(missing_status, 404)
-        self.assertEqual(missing_policy_status, 400)
+        self.assertEqual(missing_policy_status, 422)
 
     def test_run_command_evidence_is_immutable(self) -> None:
         """The database trigger prevents mutation of recorded run command evidence."""

@@ -1821,7 +1821,7 @@ def _reconciliation_run_status(error: AccountingValidationError) -> int:
     message = str(error)
     if "is not recorded" in message:
         return 404
-    if "must be a UUID" in message or "is required" in message:
+    if "must be a UUID" in message:
         return 400
     return 422
 

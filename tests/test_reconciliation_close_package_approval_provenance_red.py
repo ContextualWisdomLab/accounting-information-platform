@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import unittest
+import unittest.mock as mock
+from contextlib import contextmanager
 from dataclasses import replace
 from decimal import Decimal
 
+from accounting_information_platform import reconciliation_close_package as close_package
 from accounting_information_platform.reconciliation_close_package import (
     ReconciliationApprovalEvidence,
     ReconciliationClosePackageInput,
@@ -199,21 +202,51 @@ class ReconciliationClosePackageApprovalProvenanceRedTests(unittest.TestCase):
             )
 
     def test_caller_forged_approved_state_reference_is_not_authoritative(self) -> None:
-        """An arbitrary digest plus an approved-shaped label cannot prove live database state."""
+        """Caller-shaped approved evidence cannot override a superseded database match."""
         package_input = self._input()
         forged_state = tuple(
-            replace(
-                evidence,
-                sha256_digest="sha256:" + "f" * 64,
-            )
+            replace(evidence, sha256_digest="sha256:" + "f" * 64)
             if evidence.evidence_kind_code == "reconciliation_match_state"
             else evidence
             for evidence in package_input.evidence_references
         )
-        with self.assertRaisesRegex(ValueError, "database-owned match state"):
-            build_authoritative_reconciliation_close_package(
-                replace(package_input, evidence_references=forged_state)
-            )
+        approval = package_input.approval_evidence[0]
+
+        class Rows:
+            def fetchall(self):
+                return [
+                    (
+                        approval.reconciliation_match_reference,
+                        "superseded",
+                        "approved",
+                        approval.source_payload_hash,
+                        approval.evidence_reference,
+                        approval.reconciliation_snapshot_sha256,
+                    )
+                ]
+
+        class Connection:
+            def execute(self, _query, _parameters):
+                return Rows()
+
+        class Ledger:
+            def __init__(self, _database_url, _tenant_reference):
+                pass
+
+            @contextmanager
+            def _session(self):
+                yield Connection()
+
+            def _require_tenant(self, _connection):
+                return "tenant-id"
+
+        with mock.patch.object(close_package, "PostgresPostingLedger", Ledger):
+            with self.assertRaisesRegex(ValueError, "must remain approved"):
+                build_authoritative_reconciliation_close_package(
+                    replace(package_input, evidence_references=forged_state),
+                    database_url="postgresql://example",
+                    tenant_reference="tenant-1",
+                )
 
     def test_matching_approval_payload_reference_and_digest_remain_packageable(self) -> None:
         """The provenance control preserves valid close-package construction."""
