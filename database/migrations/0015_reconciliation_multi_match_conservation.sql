@@ -398,8 +398,8 @@ DECLARE
     current_currency_code text;
     statement_allocation_count bigint;
     journal_allocation_count bigint;
-    statement_allocation_total numeric(30, 6);
-    journal_allocation_total numeric(30, 6);
+    statement_allocation_total numeric;
+    journal_allocation_total numeric;
 BEGIN
     IF NEW.match_status_code <> 'approved'
        OR (TG_OP = 'UPDATE' AND OLD.match_status_code = 'approved') THEN
