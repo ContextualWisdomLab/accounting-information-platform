@@ -40,38 +40,14 @@ jobs:
 
           path = Path("src/accounting_information_platform/reconciliation_close_package.py")
           text = path.read_text()
-          old = '''    if not approval_evidence:
-              return ()
-          match_references = [
-              approval.reconciliation_match_reference for approval in approval_evidence
-          ]
-          rows = connection.execute(
-              """
-              SELECT match.reconciliation_match_id::text,
-                     match.match_status_code,
-                     approval.approval_decision_code,
-                     approval.source_payload_hash,
-                     approval.source_payload_reference,
-                     approval.reconciliation_snapshot_hash
-              FROM accounting_core.reconciliation_match AS match
-              JOIN accounting_core.reconciliation_approval AS approval
-                ON approval.tenant_account_id = match.tenant_account_id
-               AND approval.reconciliation_run_id = match.reconciliation_run_id
-               AND approval.reconciliation_match_id = match.reconciliation_match_id
-              WHERE match.tenant_account_id = %s
-                AND match.reconciliation_run_id::text = %s
-                AND match.reconciliation_match_id::text = ANY(%s)
-              FOR SHARE OF match
-              """,
-              (tenant_account_id, reconciliation_run_reference, match_references),
-          ).fetchall()
-          rows_by_match = {str(row[0]): row for row in rows}
-          if set(rows_by_match) != set(match_references):
-              raise ValueError(
-                  "database-owned match state must exactly cover every packaged approval"
-              )
-          '''
-          new = '''    match_references = [
+          function_start = text.index("def _database_owned_match_state_evidence(")
+          old_start = text.index(
+              "    if not approval_evidence:\n        return ()\n",
+              function_start,
+          )
+          state_evidence_marker = "    state_evidence: list[ReconciliationEvidenceReference] = []\n"
+          old_end = text.index(state_evidence_marker, old_start)
+          replacement = '''    match_references = [
               approval.reconciliation_match_reference for approval in approval_evidence
           ]
           rows = connection.execute(
@@ -101,10 +77,9 @@ jobs:
               raise ValueError(
                   "database-owned match state must exactly match the active approved match population"
               )
+
           '''
-          if text.count(old) != 1:
-              raise SystemExit("expected exact current-head match-state block once")
-          path.write_text(text.replace(old, new))
+          path.write_text(text[:old_start] + replacement + text[old_end:])
 
           adr_path = Path("docs/adr/0056-reconciliation-close-package-provenance.md")
           adr = adr_path.read_text()
