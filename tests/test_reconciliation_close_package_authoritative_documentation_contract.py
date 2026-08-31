@@ -22,6 +22,14 @@ class ReconciliationClosePackageAuthoritativeDocumentationTests(unittest.TestCas
         self.assertNotIn("second-precision `knowledge_cutoff`", adr)
         self.assertNotIn("at least one immutable `statement_artifact`", adr)
 
+    def test_adr_binds_postgresql_snapshot_identity_without_granting_authority(self) -> None:
+        adr = _ADR_PATH.read_text(encoding="utf-8")
+        self.assertIn("`reconciliation_snapshot_tenant`", adr)
+        self.assertIn("internal `tenant_account_id`", adr)
+        self.assertIn("Caller-supplied `reconciliation_snapshot_tenant` evidence", adr)
+        self.assertIn("not accepted as a bearer secret", adr)
+        self.assertIn("posting authority", adr)
+
 
 if __name__ == "__main__":
     unittest.main()
