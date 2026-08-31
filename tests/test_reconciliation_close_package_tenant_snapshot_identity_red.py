@@ -11,6 +11,8 @@ from accounting_information_platform.reconciliation_close_package import (
     ReconciliationEvidenceReference,
     _build_reconciliation_close_package_from_verified_state,
     _reconciliation_match_snapshot_sha256,
+    _snapshot_tenant_identity_evidence,
+    _snapshot_tenant_identity_from_evidence,
     _snapshot_value,
     verify_reconciliation_close_package,
 )
@@ -22,9 +24,16 @@ from tests.test_reconciliation_close_package_cutoff_binding_red import (
 class ReconciliationClosePackageTenantSnapshotIdentityTests(unittest.TestCase):
     """Require package verification to use the internal tenant identity used by PostgreSQL."""
 
-    def test_database_snapshot_uses_bound_internal_tenant_identity(self) -> None:
+    @staticmethod
+    def _fixture() -> tuple[
+        ReconciliationClosePackageCutoffBindingTests,
+        object,
+    ]:
         fixture = ReconciliationClosePackageCutoffBindingTests()
-        projection = fixture._projection()
+        return fixture, fixture._projection()
+
+    def test_database_snapshot_uses_bound_internal_tenant_identity(self) -> None:
+        fixture, projection = self._fixture()
         internal_tenant_id = "11111111-2222-4333-8444-555555555555"
         reviewed_by_match = {
             reviewed.reconciliation_match_reference: reviewed
@@ -83,6 +92,48 @@ class ReconciliationClosePackageTenantSnapshotIdentityTests(unittest.TestCase):
                 if item.evidence_kind_code == "reconciliation_snapshot_tenant"
             ),
             internal_tenant_id,
+        )
+
+    def test_database_snapshot_tenant_binding_rejects_forged_digest(self) -> None:
+        _, projection = self._fixture()
+        evidence = _snapshot_tenant_identity_evidence(
+            tenant_reference=projection.tenant_account_reference,
+            tenant_account_id="11111111-2222-4333-8444-555555555555",
+        )
+        forged = replace(evidence, sha256_digest="sha256:" + "0" * 64)
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "must bind the public tenant reference",
+        ):
+            _snapshot_tenant_identity_from_evidence((forged,), projection=projection)
+
+    def test_database_snapshot_tenant_binding_rejects_ambiguous_identity(self) -> None:
+        _, projection = self._fixture()
+        first = _snapshot_tenant_identity_evidence(
+            tenant_reference=projection.tenant_account_reference,
+            tenant_account_id="11111111-2222-4333-8444-555555555555",
+        )
+        second = _snapshot_tenant_identity_evidence(
+            tenant_reference=projection.tenant_account_reference,
+            tenant_account_id="66666666-7777-4888-8999-aaaaaaaaaaaa",
+        )
+
+        with self.assertRaisesRegex(ValueError, "at most one"):
+            _snapshot_tenant_identity_from_evidence(
+                (first, second),
+                projection=projection,
+            )
+
+    def test_pure_verifier_fallback_remains_public_tenant_reference(self) -> None:
+        _, projection = self._fixture()
+        self.assertEqual(
+            _snapshot_tenant_identity_from_evidence((), projection=projection),
+            projection.tenant_account_reference,
+        )
+        self.assertEqual(
+            _snapshot_tenant_identity_from_evidence([], projection=projection),
+            projection.tenant_account_reference,
         )
 
 
