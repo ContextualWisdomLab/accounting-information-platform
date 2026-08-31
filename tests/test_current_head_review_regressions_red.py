@@ -58,7 +58,7 @@ class CurrentHeadReviewRegressionTests(unittest.TestCase):
             candidate_reference="candidate-001",
             candidate_statement_reference="stmt-001",
             candidate_journal_reference="journal-001",
-            statement_amount=Decimal("100.00"),
+            statement_amount=Decimal("150.00"),
             journal_amount=Decimal("150.00"),
             rule_code="provider_reference",
             statement_allocations=(

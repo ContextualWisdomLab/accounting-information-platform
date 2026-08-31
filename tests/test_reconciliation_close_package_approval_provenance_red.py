@@ -241,7 +241,10 @@ class ReconciliationClosePackageApprovalProvenanceRedTests(unittest.TestCase):
                 return "tenant-id"
 
         with mock.patch.object(close_package, "PostgresPostingLedger", Ledger):
-            with self.assertRaisesRegex(ValueError, "must remain approved"):
+            with self.assertRaisesRegex(
+                ValueError,
+                "active approved match population",
+            ):
                 build_authoritative_reconciliation_close_package(
                     replace(package_input, evidence_references=forged_state),
                     database_url="postgresql://example",
