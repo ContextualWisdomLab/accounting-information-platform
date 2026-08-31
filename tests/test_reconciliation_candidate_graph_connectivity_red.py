@@ -259,6 +259,41 @@ class PostgresReconciliationCandidateGraphConnectivityRedTests(unittest.TestCase
         self._assert_snapshot_version(match_id, approval, 2)
         self._finalize_approval(match_id)
 
+    def test_connected_high_value_totals_can_exceed_one_source_numeric_domain(self) -> None:
+        """Balanced aggregate approval must not narrow the sum to one source value domain."""
+        source_amount = "600000000000000000000000.000000"
+        anchor = self.fixture._insert_candidate(
+            "stmt-wide-a",
+            "journal-wide-x",
+            statement_amount=source_amount,
+            journal_amount=source_amount,
+        )
+        self.fixture._insert_candidate(
+            "stmt-wide-a",
+            "journal-wide-y",
+            statement_amount=source_amount,
+            journal_amount=source_amount,
+        )
+        self.fixture._insert_candidate(
+            "stmt-wide-b",
+            "journal-wide-y",
+            statement_amount=source_amount,
+            journal_amount=source_amount,
+        )
+        match_id = self.fixture._insert_match(anchor)
+        self._allocate_statements(
+            match_id,
+            (("stmt-wide-a", source_amount), ("stmt-wide-b", source_amount)),
+        )
+        self._allocate_journals(
+            match_id,
+            (("journal-wide-x", source_amount), ("journal-wide-y", source_amount)),
+        )
+
+        approval = self._record_approved_evidence(match_id)
+        self._assert_snapshot_version(match_id, approval, 2)
+        self._finalize_approval(match_id)
+
 
 if __name__ == "__main__":
     unittest.main()
