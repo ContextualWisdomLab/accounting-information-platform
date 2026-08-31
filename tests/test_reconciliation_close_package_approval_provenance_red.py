@@ -98,7 +98,7 @@ class ReconciliationClosePackageApprovalProvenanceRedTests(unittest.TestCase):
         )
 
     def _source_evidence(self) -> tuple[ReconciliationEvidenceReference, ...]:
-        """Return required source evidence plus retained approval-command evidence."""
+        """Return required source, approval, and current match-state evidence."""
         return (
             ReconciliationEvidenceReference(
                 evidence_kind_code="statement_artifact",
@@ -125,6 +125,11 @@ class ReconciliationClosePackageApprovalProvenanceRedTests(unittest.TestCase):
                 evidence_kind_code="reconciliation_approval_payload",
                 evidence_reference="approval-command-evidence-01",
                 sha256_digest="sha256:" + "1" * 64,
+            ),
+            ReconciliationEvidenceReference(
+                evidence_kind_code="reconciliation_match_state",
+                evidence_reference="reconciliation-match-01:approved",
+                sha256_digest="sha256:" + "2" * 64,
             ),
         )
 
@@ -160,6 +165,36 @@ class ReconciliationClosePackageApprovalProvenanceRedTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "approval source payload evidence"):
             build_reconciliation_close_package(
                 replace(package_input, evidence_references=without_approval_payload)
+            )
+
+    def test_current_match_state_evidence_is_required_for_every_reviewed_approval(self) -> None:
+        """A close package must prove each approved match is still active."""
+        package_input = self._input()
+        without_match_state = tuple(
+            evidence
+            for evidence in package_input.evidence_references
+            if evidence.evidence_kind_code != "reconciliation_match_state"
+        )
+        with self.assertRaisesRegex(ValueError, "current match state evidence"):
+            build_reconciliation_close_package(
+                replace(package_input, evidence_references=without_match_state)
+            )
+
+    def test_superseded_match_state_cannot_reuse_immutable_approval(self) -> None:
+        """A retired match cannot be packaged merely because its approval row remains immutable."""
+        package_input = self._input()
+        superseded = tuple(
+            replace(
+                evidence,
+                evidence_reference="reconciliation-match-01:superseded",
+            )
+            if evidence.evidence_kind_code == "reconciliation_match_state"
+            else evidence
+            for evidence in package_input.evidence_references
+        )
+        with self.assertRaisesRegex(ValueError, "current match state evidence"):
+            build_reconciliation_close_package(
+                replace(package_input, evidence_references=superseded)
             )
 
     def test_matching_approval_payload_reference_and_digest_remain_packageable(self) -> None:
