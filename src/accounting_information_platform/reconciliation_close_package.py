@@ -839,9 +839,7 @@ def _database_owned_match_state_evidence(
     reconciliation_run_reference: str,
     approval_evidence: tuple[ReconciliationApprovalEvidence, ...],
 ) -> tuple[ReconciliationEvidenceReference, ...]:
-    """Read and bind the currently approved database state for every packaged match."""
-    if not approval_evidence:
-        return ()
+    """Read and bind the complete active-approved database state for the run."""
     match_references = [
         approval.reconciliation_match_reference for approval in approval_evidence
     ]
@@ -854,21 +852,23 @@ def _database_owned_match_state_evidence(
                approval.source_payload_reference,
                approval.reconciliation_snapshot_hash
         FROM accounting_core.reconciliation_match AS match
-        JOIN accounting_core.reconciliation_approval AS approval
+        LEFT JOIN accounting_core.reconciliation_approval AS approval
           ON approval.tenant_account_id = match.tenant_account_id
          AND approval.reconciliation_run_id = match.reconciliation_run_id
          AND approval.reconciliation_match_id = match.reconciliation_match_id
         WHERE match.tenant_account_id = %s
           AND match.reconciliation_run_id::text = %s
-          AND match.reconciliation_match_id::text = ANY(%s)
         FOR SHARE OF match
         """,
-        (tenant_account_id, reconciliation_run_reference, match_references),
+        (tenant_account_id, reconciliation_run_reference),
     ).fetchall()
     rows_by_match = {str(row[0]): row for row in rows}
-    if set(rows_by_match) != set(match_references):
+    active_approved_match_references = {
+        str(row[0]) for row in rows if row[1] == "approved"
+    }
+    if active_approved_match_references != set(match_references):
         raise ValueError(
-            "database-owned match state must exactly cover every packaged approval"
+            "database-owned match state must exactly match the active approved match population"
         )
 
     state_evidence: list[ReconciliationEvidenceReference] = []
