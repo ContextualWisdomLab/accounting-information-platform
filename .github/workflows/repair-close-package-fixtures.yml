@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   repair:
-    if: "${{ github.event.head_commit.message == 'chore: fix temporary close-package fixture repair' }}"
+    if: "${{ github.event.head_commit.message == 'chore: repair fixture normalizer matching' }}"
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -19,76 +19,69 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-      - name: Verify and normalize close-package fixtures
+      - name: Normalize close-package fixtures
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
+          import re
 
           path = Path('tests/test_reconciliation_close_package_red.py')
           text = path.read_text(encoding='utf-8')
+          replacement = "\n".join(
+              [
+                  "    def _approval_payload_evidence(",
+                  "        self,",
+                  "        approvals: tuple[ReconciliationApprovalEvidence, ...] | None = None,",
+                  "    ) -> tuple[ReconciliationEvidenceReference, ...]:",
+                  "        \"\"\"Retain approval payload digests and current approved match-state evidence.\"\"\"",
+                  "        approval_evidence = self._approval_evidence() if approvals is None else approvals",
+                  "        payload_evidence = tuple(",
+                  "            ReconciliationEvidenceReference(",
+                  "                evidence_kind_code=\"reconciliation_approval_payload\",",
+                  "                evidence_reference=approval.evidence_reference,",
+                  "                sha256_digest=approval.source_payload_hash,",
+                  "            )",
+                  "            for approval in approval_evidence",
+                  "        )",
+                  "        match_state_evidence = tuple(",
+                  "            ReconciliationEvidenceReference(",
+                  "                evidence_kind_code=\"reconciliation_match_state\",",
+                  "                evidence_reference=f\"{approval.reconciliation_match_reference}:approved\",",
+                  "                sha256_digest=approval.reconciliation_snapshot_sha256,",
+                  "            )",
+                  "            for approval in approval_evidence",
+                  "        )",
+                  "        return payload_evidence + match_state_evidence",
+                  "",
+                  "    def _evidence",
+              ]
+          )
+          text, helper_count = re.subn(
+              r"(?ms)^    def _approval_payload_evidence\(.*?^    def _evidence",
+              replacement,
+              text,
+          )
+          if helper_count != 1:
+              raise SystemExit(f'expected one approval helper; found {helper_count}')
 
-          old_helper = '''    def _approval_payload_evidence(
-              self,
-              approvals: tuple[ReconciliationApprovalEvidence, ...] | None = None,
-          ) -> tuple[ReconciliationEvidenceReference, ...]:
-              """Retain the immutable payload digest referenced by every packaged approval."""
-              approval_evidence = self._approval_evidence() if approvals is None else approvals
-              return tuple(
-                  ReconciliationEvidenceReference(
-                      evidence_kind_code="reconciliation_approval_payload",
-                      evidence_reference=approval.evidence_reference,
-                      sha256_digest=approval.source_payload_hash,
-                  )
-                  for approval in approval_evidence
-              )
-          '''
-          new_helper = '''    def _approval_payload_evidence(
-              self,
-              approvals: tuple[ReconciliationApprovalEvidence, ...] | None = None,
-          ) -> tuple[ReconciliationEvidenceReference, ...]:
-              """Retain approval payload digests and current approved match-state evidence."""
-              approval_evidence = self._approval_evidence() if approvals is None else approvals
-              payload_evidence = tuple(
-                  ReconciliationEvidenceReference(
-                      evidence_kind_code="reconciliation_approval_payload",
-                      evidence_reference=approval.evidence_reference,
-                      sha256_digest=approval.source_payload_hash,
-                  )
-                  for approval in approval_evidence
-              )
-              match_state_evidence = tuple(
-                  ReconciliationEvidenceReference(
-                      evidence_kind_code="reconciliation_match_state",
-                      evidence_reference=(
-                          f"{approval.reconciliation_match_reference}:approved"
-                      ),
-                      sha256_digest=approval.reconciliation_snapshot_sha256,
-                  )
-                  for approval in approval_evidence
-              )
-              return payload_evidence + match_state_evidence
-          '''
-          if text.count(old_helper) != 1:
-              raise SystemExit('expected exactly one approval-evidence helper to normalize')
-          text = text.replace(old_helper, new_helper)
-
-          old_kinds = '''                *["reconciliation_approval_payload"] * 8,
-                          "reconciliation_run",
-          '''
-          new_kinds = '''                *["reconciliation_approval_payload"] * 8,
-                          *["reconciliation_match_state"] * 8,
-                          "reconciliation_run",
-          '''
+          old_kinds = (
+              '                *["reconciliation_approval_payload"] * 8,\n'
+              '                "reconciliation_run",'
+          )
+          new_kinds = (
+              '                *["reconciliation_approval_payload"] * 8,\n'
+              '                *["reconciliation_match_state"] * 8,\n'
+              '                "reconciliation_run",'
+          )
           if text.count(old_kinds) != 1:
-              raise SystemExit('expected exactly one evidence-kind assertion to normalize')
+              raise SystemExit('expected one evidence-kind assertion')
           text = text.replace(old_kinds, new_kinds)
           path.write_text(text, encoding='utf-8')
           PY
           rm .github/workflows/repair-close-package-fixtures.yml
           git diff --check
-          git diff -- tests/test_reconciliation_close_package_red.py
       - name: Commit normalized fixture on the canonical PR branch
         shell: bash
         run: |
