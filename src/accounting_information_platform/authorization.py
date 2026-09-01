@@ -18,7 +18,7 @@ from typing import Mapping
 from .core import _require_code, _require_reference
 
 
-AUTHORIZATION_POLICY_VERSION = "accounting-authorization-v1"
+AUTHORIZATION_POLICY_VERSION = "accounting-authorization-v2"
 _PERMISSION_PATTERN = re.compile(r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$")
 _PRINCIPAL_KINDS = frozenset(("human", "service", "agent"))
 
