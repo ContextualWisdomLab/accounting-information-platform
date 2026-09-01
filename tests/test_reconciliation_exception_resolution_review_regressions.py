@@ -60,6 +60,20 @@ class ReconciliationExceptionResolutionReviewRegressionTests(unittest.TestCase):
         self.assertIn("resolution_status_code <> 'open'", migration)
         self.assertLess(migration.index(marker), migration.index("CREATE TABLE"))
 
+    def test_upgrade_preflight_can_see_forced_rls_history(self) -> None:
+        """Migration-owner preflight visibility cannot be filtered by tenant forced RLS."""
+        migration = _MIGRATION.read_text(encoding="utf-8")
+        policy = "CREATE POLICY reconciliation_exception_resolution_upgrade_visibility"
+        marker = "reconciliation_exception_resolution_legacy_terminal_preflight"
+        drop_policy = "DROP POLICY reconciliation_exception_resolution_upgrade_visibility"
+        self.assertIn(policy, migration)
+        self.assertIn("ON accounting_core.reconciliation_exception", migration)
+        self.assertIn("FOR SELECT\n    TO current_user\n    USING (true);", migration)
+        self.assertIn(drop_policy, migration)
+        self.assertLess(migration.index(policy), migration.index(marker))
+        self.assertLess(migration.index(marker), migration.index(drop_policy))
+        self.assertLess(migration.index(drop_policy), migration.index("ALTER TABLE"))
+
     def test_open_exception_control_evidence_is_frozen_from_creation(self) -> None:
         """Maker evidence cannot be rewritten before the checker command is recorded."""
         migration = _MIGRATION.read_text(encoding="utf-8")
