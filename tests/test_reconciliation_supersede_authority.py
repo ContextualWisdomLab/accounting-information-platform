@@ -15,20 +15,23 @@ from tests.test_reconciliation_run_api import ReconciliationRunApiTests
 
 ROOT = Path(__file__).resolve().parents[1]
 APPROVAL_MIGRATION = ROOT / "database/migrations/0016_reconciliation_approval_evidence.sql"
+LOCK_ORDER_MIGRATION = ROOT / "database/migrations/0017_reconciliation_approval_lock_order.sql"
 
 
 class ReconciliationSupersedeContractTests(unittest.TestCase):
     """Keep supersession a reviewed-state transition rather than a bypass state."""
 
-    def test_migration_requires_reviewed_predecessor_for_superseded_status(self) -> None:
-        """The database trigger must reject direct or unreviewed supersession."""
-        sql = APPROVAL_MIGRATION.read_text(encoding="utf-8")
-        self.assertIn("IF NEW.match_status_code = 'superseded' THEN", sql)
-        self.assertIn(
-            "OLD.match_status_code NOT IN ('approved', 'rejected', 'superseded')",
-            sql,
-        )
-        self.assertIn("reconciliation_supersede_requires_reviewed_decision", sql)
+    def test_migrations_require_reviewed_predecessor_for_superseded_status(self) -> None:
+        """Every definition of the approval trigger must retain supersession authority."""
+        for migration_path in (APPROVAL_MIGRATION, LOCK_ORDER_MIGRATION):
+            with self.subTest(migration=migration_path.name):
+                sql = migration_path.read_text(encoding="utf-8")
+                self.assertIn("IF NEW.match_status_code = 'superseded' THEN", sql)
+                self.assertIn(
+                    "OLD.match_status_code NOT IN ('approved', 'rejected', 'superseded')",
+                    sql,
+                )
+                self.assertIn("reconciliation_supersede_requires_reviewed_decision", sql)
 
 
 class ReconciliationSupersedeAuthorityPostgresTests(unittest.TestCase):
