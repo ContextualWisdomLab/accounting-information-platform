@@ -315,7 +315,7 @@ Both integration and release branches require ordinary branch/ruleset protection
 
 **Gap:** tenant authentication alone is too coarse for posting, reversal, reconciliation completion, period close, tax, outbox publication and audit access.
 
-**Action:** integrate the versioned operation→permission model and trusted principal adapter; preserve the explicit `complete_reconciliation` → `accounting.complete_reconciliation` permission before exposing the buyer-facing lifecycle route. Record durable allow/deny evidence and ensure malformed requests cannot bypass authorization.
+**Action:** integrate the versioned operation→permission model and trusted principal adapter; add an explicit `complete_reconciliation` → `accounting.complete_reconciliation` permission before exposing the buyer-facing lifecycle route. Record durable allow/deny evidence and ensure malformed requests cannot bypass authorization.
 
 ### P0 — governance and runner/reviewer reliability
 
