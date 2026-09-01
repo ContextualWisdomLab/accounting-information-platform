@@ -31,8 +31,15 @@ PostgreSQL Global Development Group. (2026). *PostgreSQL 18 documentation: Syste
 | Review completeness | Service and database transition trigger reject proposed matches and approved/rejected matches without decision-consistent approval snapshot | Unit cases and migration trigger contract |
 | Exception completeness | Service and DB trigger reject `resolution_status_code='open'` | Unit + PostgreSQL evidence-freeze path |
 | Exact monetary authority | Service invokes `_database_owned_close_projection_evidence()` inside the lifecycle transaction and hashes its source-population identities and exact bridge fields | Existing real PostgreSQL population/bridge tests plus lifecycle bridge-failure regression |
+| Currency authority | The locked `reconciliation_run` row supplies `currency_code` to the transition snapshot digest; the close-projection helper is not treated as the owner of run scope | Regression constructs a bridge object with no currency attribute and still hashes successfully when the locked run currency is supplied |
 | Post-transition immutability | Candidate/match/allocation/approval/exception trigger paths acquire the same run lock and reject writes when run is reconciled | PostgreSQL late-exception insert must fail after supported transition |
 | Atomic publication evidence | Transition command, status update, and `reconciliation_run_reconciled` outbox row share one transaction | PostgreSQL test reads all three after command completion |
+
+## Current-head causal repair
+
+The initial lifecycle implementation computed `reconciliation_snapshot_hash` with `bridge.currency_code`. The dependency-root `_DatabaseOwnedCloseProjectionEvidence` deliberately owns statement/book populations and exact bridge arithmetic but does not expose `currency_code`; currency is already immutable reconciliation-run scope. A real lifecycle execution could therefore reach a fully tied bridge and then fail with an `AttributeError` while building the transition digest, even though unit doubles happened to carry an extra `currency_code` attribute.
+
+The repair follows the existing authority model instead of widening the bridge helper: the already locked `reconciliation_run` query now returns `currency_code`, and the transition digest receives that database-owned run-scope value explicitly. A focused regression intentionally omits currency from the bridge object so future refactors cannot silently reintroduce the projection-shape dependency. The compatibility fallback inside the private digest helper exists only for existing direct unit callers; the production lifecycle path passes the locked run currency explicitly.
 
 ## Deliberate limitation
 
