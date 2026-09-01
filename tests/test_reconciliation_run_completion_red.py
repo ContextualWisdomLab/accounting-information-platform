@@ -1,4 +1,4 @@
-"""RED contracts for evidence-backed reconciliation-run completion.
+"""RED/GREEN contracts for evidence-backed reconciliation-run completion.
 
 A run may become ``reconciled`` only through a tenant-scoped, idempotent command
 whose outcome is derived from persisted reconciliation evidence. Direct status
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import psycopg
 
-from accounting_information_platform import reconciliation_run
+from accounting_information_platform import accept_reconciliation_run_completion
 from tests import test_postgres_posting as posting
 from tests import test_reconciliation_candidate_allocation_persistence_red as allocation
 
@@ -26,15 +26,8 @@ class ReconciliationRunCompletionContractTests(unittest.TestCase):
 
     def test_completion_migration_and_public_command_exist(self) -> None:
         """The lifecycle repair must be explicit in schema and application code."""
-        self.assertTrue(
-            MIGRATION.exists(),
-            "Add migration 0020 with immutable completion evidence and a database status guard.",
-        )
-        completion = getattr(reconciliation_run, "accept_reconciliation_run_completion", None)
-        self.assertTrue(
-            callable(completion),
-            "Expose an evidence-derived accept_reconciliation_run_completion command.",
-        )
+        self.assertTrue(MIGRATION.exists())
+        self.assertTrue(callable(accept_reconciliation_run_completion))
 
 
 @unittest.skipUnless(
@@ -42,11 +35,17 @@ class ReconciliationRunCompletionContractTests(unittest.TestCase):
     "RED until reconciliation-run completion evidence is installed",
 )
 class PostgresReconciliationRunCompletionRedTests(unittest.TestCase):
-    """Prove PostgreSQL rejects an unaudited transition to reconciled."""
+    """Prove PostgreSQL rejects unaudited or incomplete completion attempts."""
 
     @classmethod
     def setUpClass(cls) -> None:
         posting.PostgresPostingTests.setUpClass()
+        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as connection:
+            exists = connection.execute(
+                "SELECT to_regclass('accounting_core.reconciliation_run_completion_command')"
+            ).fetchone()[0]
+            if exists is None:
+                connection.execute(MIGRATION.read_text(encoding="utf-8"))
 
     def setUp(self) -> None:
         self.fixture = allocation.PostgresReconciliationAllocationRedTests("setUp")
@@ -71,6 +70,19 @@ class PostgresReconciliationRunCompletionRedTests(unittest.TestCase):
                     """,
                     (self.fixture.scope["tenant_account_id"], self.fixture.run_reference),
                 )
+
+    def test_completion_rejects_run_without_approved_review_evidence(self) -> None:
+        """Opening a run is not enough to manufacture reconciled accounting evidence."""
+        with self.assertRaisesRegex(Exception, "approved reconciliation match"):
+            accept_reconciliation_run_completion(
+                {
+                    "tenant_reference": self.fixture.case.policy.tenant_reference,
+                    "reconciliation_run_id": str(self.fixture.run_reference),
+                    "completion_idempotency_key": "completion-missing-review",
+                },
+                posting.DATABASE_URL,
+                self.fixture.case.policy.tenant_reference,
+            )
 
 
 if __name__ == "__main__":
