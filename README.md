@@ -19,13 +19,13 @@ Billing, payment, payroll, commerce, and operational systems describe economic e
 | Reconciliation | Persist book-to-bank reconciliation runs, proposals, exceptions and evidence |
 | Financial reads | Trial balance, ledger and supported financial-reporting projections |
 | Bank evidence | Preserve normalized bank-statement evidence with source provenance |
-| Auditability | Return posting/hold/rejection/reversal evidence without conflating source and book authority |
+| Auditability | Preserve posting, reversal, reconciliation and source-evidence lineage without conflating source and book authority |
 
 ## Current maturity
 
 The current source tree is package version `0.1.0` and is explicitly **Pre-Alpha**. It contains an executable reference core, normalized PostgreSQL persistence, closed JSON contracts, a mountable HTTP surface, reconciliation foundations, and product/security/operability documentation.
 
-It is **not** a turnkey hosted accounting service and does not automatically start an HTTP listener. Current source also does not claim complete jurisdiction-specific compliance, live tax-authority submission, consolidation, foreign-exchange accounting, revenue schedules, or production certification. See the [product and technical gap baseline](docs/product-technical-gap-baseline.md) for evidence-bound readiness and remaining work.
+It is **not** a turnkey hosted accounting service and does not automatically start an HTTP listener. Current source also does not claim complete jurisdiction-specific compliance, live tax-authority submission, consolidation, foreign-exchange accounting, revenue schedules, production certification, or complete purpose-bound lifecycle authorization. See the [product and technical gap baseline](docs/product-technical-gap-baseline.md) for evidence-bound readiness and remaining work.
 
 ## Authority boundary
 
@@ -41,7 +41,7 @@ Metering Billing Platform or other approved producer
 ├──────────────────────────────────┤
 │ policy + period resolution       │
 │ chart-account role mapping       │
-│ posting / hold / rejection       │
+│ posting / fail-closed admission  │
 │ reversal and reconciliation      │
 │ ledger / reporting evidence      │
 └───────────────┬──────────────────┘
@@ -83,7 +83,7 @@ The essential flow is:
 
 1. An approved producer submits a balanced proposal with tenant/legal-entity identity, evidence hash, semantic account roles and an idempotency key.
 2. Accounting resolves policy and chart accounts under the effective book/period boundary.
-3. The platform posts, holds, or rejects and returns an accounting receipt.
+3. The current reference core either posts a valid proposal and returns its receipt or fails closed with a validation/idempotency error. `held` and `rejected` are reserved receipt-contract outcomes for the broader service milestone; this README does not claim they are emitted by the current admission path.
 4. Exact replay returns the existing outcome; conflicting reuse fails closed.
 5. Corrections preserve the original accounting evidence and use an explicit reversal path.
 
@@ -91,9 +91,11 @@ See [`docs/ACCOUNTING_BOUNDARY.md`](docs/ACCOUNTING_BOUNDARY.md) and [`docs/TRD.
 
 ## Reconciliation
 
-The current foundation includes an evidence-preserving book-to-bank reconciliation boundary rather than treating matching as an irreversible side effect. Bank statements are registered as immutable source evidence, entries are normalized, deterministic candidate relationships are recorded, and reconciliation runs retain exceptions and evidence for later review.
+The integrated foundation includes an **immutable camt.053.001.14 bank-statement evidence registry**, a **deterministic reconciliation proposal engine**, an **exact book-to-bank bridge**, and **durable reconciliation runs, exceptions, and evidence**. These capabilities preserve independent bank evidence and review lineage rather than treating matching as an irreversible side effect.
 
-Approval, close-package provenance, broader many-to-many allocation, and buyer-facing workflow completeness remain explicit gaps where the durable baseline says they are not yet complete.
+Reconciliation completion hardening is still stacked beyond the protected foundation. Full cross-run many-to-many allocation, complete purpose-bound lifecycle authorization, close-package provenance, and buyer-facing workflow completeness remain explicit gaps where the durable baseline says they are not yet complete.
+
+Implementation-specific migration and table identities stay in the [data model](docs/DATA_MODEL.md), migration chain, and product-gap baseline rather than customer-facing copy.
 
 ## Architecture at a glance
 
@@ -122,20 +124,22 @@ The in-memory reference model is a correctness oracle; durable PostgreSQL behavi
 
 Accounting data is high-integrity business evidence. The current design therefore emphasizes:
 
-- tenant- and legal-entity-scoped authority;
+- tenant- and legal-entity-scoped data boundaries;
 - immutable posting and append-only correction paths;
 - exact idempotency and payload-evidence binding;
 - database-enforced integrity and row-level isolation where applicable;
-- explicit authorization before lifecycle-changing actions;
 - traceable reconciliation evidence and exceptions;
 - separation of source-system facts from accounting policy decisions;
+- fail-closed behavior where required operation authority is not yet implemented;
 - no unsupported certification or jurisdictional-compliance claims.
+
+Purpose-bound application authorization for high-impact lifecycle operations remains an open commercialization requirement. Tenant authentication alone must not be represented as permission to complete reconciliation, post, reverse, approve, close, or perform another privileged accounting action. The durable baseline requires the explicit operation→permission contract and trusted identity adapter before those buyer-facing lifecycle routes are treated as complete.
 
 See [`docs/SECURITY.md`](docs/SECURITY.md) and [`docs/OPERABILITY.md`](docs/OPERABILITY.md) for the operational controls and recovery boundaries.
 
 ## Standards and research basis
 
-Accounting, data, provenance, architecture, financial-message, database-isolation, and software-engineering decisions are traced in [`docs/doctoring/STANDARD_TRACEABILITY.md`](docs/doctoring/STANDARD_TRACEABILITY.md) with APA 7 references in [`docs/doctoring/REFERENCES.md`](docs/doctoring/REFERENCES.md). The README intentionally does not duplicate that bibliography, so research authority has one durable home.
+Accounting, data, provenance, architecture, financial-message, database-isolation, and software-engineering decisions are traced in [`docs/doctoring/STANDARD_TRACEABILITY.md`](docs/doctoring/STANDARD_TRACEABILITY.md) with the canonical APA 7 bibliography in [`docs/doctoring/REFERENCES.md`](docs/doctoring/REFERENCES.md). The README intentionally does not duplicate version-specific bibliography entries; for example, the canonical references file carries the repository's current `PostgreSQL 18.6 release notes` citation and `https://www.postgresql.org/docs/release/18.6/` source.
 
 ## Documentation map
 
