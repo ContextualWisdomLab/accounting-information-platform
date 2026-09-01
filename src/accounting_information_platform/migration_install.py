@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .core import AccountingValidationError
+from . import persistence as _persistence
 from .persistence import (
     _import_psycopg,
     apply_foundation_migration as _apply_foundation_migration,
@@ -35,6 +36,13 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             "Reconciliation exception-resolution migration failed. Inspect the PostgreSQL "
             "error, restore a clean database, then retry the complete foundation migration."
         ) from error
+
+
+# A large integration-test surface historically imports the loader from the
+# persistence module directly. During this stacked migration, keep that legacy
+# import path pointed at the exported complete-chain loader so isolated suites
+# cannot stop at 0019 and accidentally depend on test discovery order.
+_persistence.apply_foundation_migration = apply_foundation_migration
 
 
 __all__ = ["apply_foundation_migration"]
