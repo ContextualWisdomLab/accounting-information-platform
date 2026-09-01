@@ -82,6 +82,7 @@ from .reconciliation_close_package import (
     render_reconciliation_close_package_json,
     verify_reconciliation_close_package,
 )
+from .reconciliation_completion import accept_reconciliation_completion
 from .reconciliation_run import accept_reconciliation_run, lookup_reconciliation_run
 from .reconciliation_read_model import (
     ReconciliationAllocationEvidence,
@@ -129,6 +130,7 @@ __all__ = [
     "accept_journal_reversal",
     "accept_period_close",
     "accept_period_open",
+    "accept_reconciliation_completion",
     "accept_reconciliation_run",
     "accept_pulled_proposals",
     "apply_foundation_migration",
