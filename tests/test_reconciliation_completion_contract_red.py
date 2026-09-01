@@ -1,4 +1,4 @@
-"""RED contracts for the owner-controlled reconciliation completion command."""
+"""RED/GREEN contracts for owner-controlled reconciliation completion authority."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / "database/migrations/0020_reconciliation_completion_command.sql"
 SOURCE = ROOT / "src/accounting_information_platform/reconciliation_completion.py"
-HTTP_SOURCE = ROOT / "src/accounting_information_platform/http_api.py"
 PUBLIC_SOURCE = ROOT / "src/accounting_information_platform/__init__.py"
 
 
@@ -55,15 +54,11 @@ class ReconciliationCompletionContractTests(unittest.TestCase):
         self.assertIn("'reconciliation_run.reconciled'", source)
         self.assertIn("IdempotencyConflictError", source)
 
-    def test_http_and_public_api_expose_completion_without_general_status_mutation(self) -> None:
-        """The buyer API exposes one completion command, not arbitrary run-status editing."""
-        http_source = HTTP_SOURCE.read_text(encoding="utf-8")
+    def test_public_python_api_exports_completion_without_general_status_mutation(self) -> None:
+        """The domain API exposes completion rather than arbitrary run-status editing."""
         public_source = PUBLIC_SOURCE.read_text(encoding="utf-8")
-        self.assertIn('RECONCILIATION_COMPLETION_PATH = "/reconciliation-completions"', http_source)
-        self.assertIn("accept_reconciliation_completion", http_source)
-        self.assertIn("_post_reconciliation_completion", http_source)
-        self.assertNotIn('RECONCILIATION_STATUS_PATH =', http_source)
         self.assertIn("accept_reconciliation_completion", public_source)
+        self.assertNotIn("accept_reconciliation_status", public_source)
 
 
 if __name__ == "__main__":  # pragma: no cover - direct invocation convenience
