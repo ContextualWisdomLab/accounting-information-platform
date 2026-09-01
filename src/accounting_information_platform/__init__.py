@@ -1,7 +1,5 @@
 """Accounting Information Platform reference-domain public API."""
 
-import psycopg
-
 from .core import (
     AccountBalance,
     AccountingPolicy,
@@ -84,11 +82,8 @@ from .reconciliation_close_package import (
     render_reconciliation_close_package_json,
     verify_reconciliation_close_package,
 )
-from .reconciliation_lifecycle import reconcile_reconciliation_run as _reconcile_reconciliation_run
-from .reconciliation_run import (
-    accept_reconciliation_run as _accept_reconciliation_run,
-    lookup_reconciliation_run,
-)
+from .reconciliation_lifecycle import reconcile_reconciliation_run
+from .reconciliation_run import accept_reconciliation_run, lookup_reconciliation_run
 from .reconciliation_read_model import (
     ReconciliationAllocationEvidence,
     ReconciliationCloseReviewInput,
@@ -99,46 +94,6 @@ from .reconciliation_read_model import (
     render_reconciliation_close_review_csv,
     render_reconciliation_close_review_json,
 )
-
-
-def _is_reconciliation_command_identity_conflict(error: psycopg.Error) -> bool:
-    """Return whether PostgreSQL rejected the shared reconciliation command identity."""
-    message_primary = getattr(error.diag, "message_primary", "") or ""
-    return (
-        error.sqlstate == "23505"
-        and "reconciliation_command_identity_conflict" in message_primary
-    )
-
-
-def accept_reconciliation_run(
-    payload: object, database_url: str, tenant_reference: str
-) -> dict[str, object]:
-    """Open one reconciliation run and normalize a database-decided identity race."""
-    try:
-        return _accept_reconciliation_run(payload, database_url, tenant_reference)
-    except psycopg.errors.UniqueViolation as error:
-        if not _is_reconciliation_command_identity_conflict(error):
-            raise
-        raise IdempotencyConflictError(
-            "reconciliation idempotency key was concurrently claimed by another command. "
-            "Supply a new reconciliation_idempotency_key, then retry."
-        ) from error
-
-
-def reconcile_reconciliation_run(
-    payload: object, database_url: str, tenant_reference: str
-) -> dict[str, object]:
-    """Reconcile one run and normalize a database-decided identity race."""
-    try:
-        return _reconcile_reconciliation_run(payload, database_url, tenant_reference)
-    except psycopg.errors.UniqueViolation as error:
-        if not _is_reconciliation_command_identity_conflict(error):
-            raise
-        raise IdempotencyConflictError(
-            "reconciliation idempotency key was concurrently claimed by another command. "
-            "Supply a new reconciliation_idempotency_key, then retry."
-        ) from error
-
 
 __all__ = [
     "AccountBalance",
