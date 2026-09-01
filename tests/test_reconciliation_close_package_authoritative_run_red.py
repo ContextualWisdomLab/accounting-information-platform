@@ -91,7 +91,6 @@ class ReconciliationClosePackageAuthoritativeRunTests(unittest.TestCase):
                 close_package,
                 "_database_owned_run_source_evidence",
                 run_loader,
-                create=True,
             ),
             mock.patch.object(
                 close_package,

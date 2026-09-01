@@ -76,10 +76,15 @@ class ReconciliationClosePackageTenantSnapshotIdentityTests(unittest.TestCase):
             else item
             for item in fixture._evidence()
         ) + (tenant_identity_evidence,)
+        run_evidence = next(
+            item
+            for item in evidence
+            if item.evidence_kind_code == "reconciliation_run"
+        )
         package_input = ReconciliationClosePackageInput(
             projection=projection,
             approval_evidence=approvals,
-            knowledge_cutoff="2026-08-28T08:41:54Z",
+            knowledge_cutoff=run_evidence.knowledge_cutoff,
             evidence_references=evidence,
         )
 
