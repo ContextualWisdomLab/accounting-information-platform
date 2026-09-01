@@ -18,7 +18,7 @@ from typing import Mapping
 from .core import _require_code, _require_reference
 
 
-AUTHORIZATION_POLICY_VERSION = "accounting-authorization-v2"
+AUTHORIZATION_POLICY_VERSION = "accounting-authorization-v3"
 _PERMISSION_PATTERN = re.compile(r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$")
 _PRINCIPAL_KINDS = frozenset(("human", "service", "agent"))
 
@@ -55,6 +55,7 @@ _OPERATION_PERMISSIONS: Mapping[str, str] = MappingProxyType(
         "soft_close_period": "accounting.soft_close_period",
         "hard_close_period": "accounting.hard_close_period",
         "complete_reconciliation": "accounting.complete_reconciliation",
+        "resolve_reconciliation_exception": "accounting.resolve_reconciliation_exception",
         "publish_outbox": "accounting.publish_outbox",
         "submit_tax_artifact": "accounting.submit_tax_artifact",
         "manage_bank_account": "accounting.manage_bank_account",
@@ -71,6 +72,7 @@ _HIGH_IMPACT_OPERATIONS = frozenset(
         "soft_close_period",
         "hard_close_period",
         "complete_reconciliation",
+        "resolve_reconciliation_exception",
         "publish_outbox",
         "submit_tax_artifact",
         "manage_bank_account",
