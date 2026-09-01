@@ -109,8 +109,7 @@ class ReconciliationClosePackageAuthoritativeRunTests(unittest.TestCase):
             mock.patch.object(
                 close_package,
                 "_validate_database_owned_exception_state",
-                create=True,
-            ),
+            ) as exception_validator,
             mock.patch.object(
                 close_package,
                 "_build_reconciliation_close_package_from_verified_state",
@@ -128,6 +127,12 @@ class ReconciliationClosePackageAuthoritativeRunTests(unittest.TestCase):
             "tenant-id",
             tenant_reference=self.projection.tenant_account_reference,
             reconciliation_run_reference=self.projection.reconciliation_run_reference,
+        )
+        exception_validator.assert_called_once_with(
+            _Ledger.connection,
+            "tenant-id",
+            reconciliation_run_reference=self.projection.reconciliation_run_reference,
+            projection=package_input.projection,
         )
         return verified_builder.call_args.args[0]
 
