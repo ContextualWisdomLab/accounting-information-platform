@@ -9,7 +9,11 @@ import uuid
 
 import psycopg
 
-from accounting_information_platform import accept_reconciliation_run, reconcile_reconciliation_run
+from accounting_information_platform import (
+    AccountingValidationError,
+    accept_reconciliation_run,
+    reconcile_reconciliation_run,
+)
 from accounting_information_platform import reconciliation_close_package as close_package
 from tests import test_postgres_posting as posting
 from tests.test_reconciliation_lifecycle_postgres import _bridge
@@ -71,6 +75,48 @@ class ReconciliationLifecycleAggregateMembershipPostgresTests(unittest.TestCase)
                 posting.DATABASE_URL,
                 self.fixture.case.policy.tenant_reference,
             )
+
+    def test_raw_exception_resolution_cannot_authorize_reconciliation(self) -> None:
+        """A naked status rewrite is not maker-checker evidence for finalization."""
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            tenant_id = self._tenant_id(connection)
+            exception_id = connection.execute(
+                """
+                INSERT INTO accounting_core.reconciliation_exception (
+                    tenant_account_id,
+                    reconciliation_run_id,
+                    exception_code,
+                    owner_reference,
+                    next_action,
+                    effective_at,
+                    resolution_status_code
+                )
+                VALUES (%s, %s, 'reviewed_difference',
+                        'urn:cwl:principal:test_controller',
+                        'Resolve through the named maker-checker command.', %s, 'open')
+                RETURNING reconciliation_exception_id
+                """,
+                (
+                    tenant_id,
+                    self.opened["reconciliation_run_id"],
+                    datetime(2026, 9, 1, 11, 58, tzinfo=timezone.utc),
+                ),
+            ).fetchone()[0]
+            connection.execute(
+                """
+                UPDATE accounting_core.reconciliation_exception
+                SET resolution_status_code = 'resolved'
+                WHERE tenant_account_id = %s
+                  AND reconciliation_exception_id = %s
+                """,
+                (tenant_id, exception_id),
+            )
+
+        with self.assertRaisesRegex(
+            AccountingValidationError,
+            "resolution-command evidence",
+        ):
+            self._reconcile()
 
     def test_reconciled_exception_cannot_move_to_another_run(self) -> None:
         """A row cannot escape a reconciled aggregate by rewriting its run foreign key."""
