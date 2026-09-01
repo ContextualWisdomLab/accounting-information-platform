@@ -262,7 +262,8 @@ REVOKE ALL ON accounting_core.reconciliation_run_command FROM PUBLIC;
 -- immutable lifecycle command rather than treating a direct status UPDATE as a
 -- supported owner-control path. The transition binds the exact source/review
 -- snapshot digest calculated by the application from database-owned facts plus
--- actor, purpose, effective time, and idempotency evidence.
+-- actor, purpose, effective time, idempotency evidence, and replayable source-
+-- population identities.
 CREATE TABLE accounting_core.reconciliation_run_transition_command (
     reconciliation_run_transition_command_id uuid PRIMARY KEY DEFAULT uuidv7(),
     tenant_account_id uuid NOT NULL,
@@ -273,6 +274,10 @@ CREATE TABLE accounting_core.reconciliation_run_transition_command (
         CHECK (target_run_status_code = 'reconciled'),
     reconciliation_snapshot_hash text NOT NULL
         CHECK (reconciliation_snapshot_hash ~ '^sha256:[0-9a-f]{64}$'),
+    statement_population_reference text NOT NULL
+        CHECK (statement_population_reference ~ '^sha256:[0-9a-f]{64}$'),
+    book_population_reference text NOT NULL
+        CHECK (book_population_reference ~ '^sha256:[0-9a-f]{64}$'),
     reconciliation_transition_command_hash text NOT NULL
         CHECK (reconciliation_transition_command_hash ~ '^sha256:[0-9a-f]{64}$'),
     actor_reference text NOT NULL CHECK (btrim(actor_reference) <> ''),
@@ -408,6 +413,7 @@ BEGIN
 
     SELECT jsonb_build_object(
         'actor_reference', NEW.actor_reference,
+        'book_population_reference', NEW.book_population_reference,
         'effective_at', to_char(
             NEW.effective_at AT TIME ZONE 'UTC',
             'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
@@ -417,6 +423,7 @@ BEGIN
         'reconciliation_idempotency_key', NEW.reconciliation_transition_idempotency_key,
         'reconciliation_run_id', NEW.reconciliation_run_id::text,
         'reconciliation_snapshot_hash', NEW.reconciliation_snapshot_hash,
+        'statement_population_reference', NEW.statement_population_reference,
         'target_run_status_code', NEW.target_run_status_code,
         'tenant_reference', tenant.tenant_account_code
     )
