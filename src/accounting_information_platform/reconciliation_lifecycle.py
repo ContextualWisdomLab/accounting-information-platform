@@ -2,7 +2,7 @@
 
 A lifecycle command can mark one reviewed run ``reconciled`` only after the
 PostgreSQL-owned statement/book populations form an exact bridge, every terminal
-match has durable decision evidence, and no exception lacks durable maker-checker
+match has durable decision evidence, and every exception has durable maker-checker
 resolution-command evidence. This module cannot post or reverse journals, close
 periods, or change accounting policy.
 """
@@ -150,7 +150,14 @@ def reconcile_reconciliation_run(
             )
 
         match_state, exception_state = _load_review_control_state(connection, tenant_id, run_id)
-        _validate_review_control_state(match_state, exception_state)
+        exception_resolution_state = _load_exception_resolution_state(
+            connection, tenant_id, run_id
+        )
+        _validate_review_control_state(
+            match_state,
+            exception_state,
+            exception_resolution_state,
+        )
 
         from .reconciliation_close_package import (  # pylint: disable=import-outside-toplevel
             _database_owned_close_projection_evidence,
@@ -191,6 +198,7 @@ def reconcile_reconciliation_run(
             match_state,
             exception_state,
             currency_code=authoritative_currency_code,
+            exception_resolution_state=exception_resolution_state,
         )
         transition_id, transition_hash, _recorded_at = connection.execute(
             """
@@ -320,11 +328,35 @@ def _load_review_control_state(
     )
 
 
+def _load_exception_resolution_state(
+    connection: object, tenant_id: UUID, run_id: UUID
+) -> tuple[tuple[str, str, str, str, str], ...]:
+    """Load immutable maker-checker resolution evidence in stable exception order."""
+    rows = connection.execute(
+        """
+        SELECT reconciliation_exception_id::text,
+               target_resolution_status_code,
+               resolution_evidence_reference,
+               resolution_evidence_hash,
+               reconciliation_exception_resolution_command_hash
+        FROM accounting_core.reconciliation_exception_resolution_command
+        WHERE tenant_account_id = %s AND reconciliation_run_id = %s
+        ORDER BY reconciliation_exception_id
+        """,
+        (tenant_id, run_id),
+    ).fetchall()
+    return tuple(
+        (str(row[0]), str(row[1]), str(row[2]), str(row[3]), str(row[4]))
+        for row in rows
+    )
+
+
 def _validate_review_control_state(
     match_state: tuple[tuple[str, str, str, str], ...],
     exception_state: tuple[tuple[str, str, str], ...],
+    exception_resolution_state: tuple[tuple[str, str, str, str, str], ...] = (),
 ) -> None:
-    """Reject incomplete reviews and exception states without command authority."""
+    """Reject incomplete reviews and exceptions lacking command authority."""
     for match_reference, status_code, decision_code, snapshot_hash in match_state:
         if status_code == "proposed":
             raise AccountingValidationError(
@@ -338,17 +370,28 @@ def _validate_review_control_state(
                 f"reconciliation match {match_reference} lacks decision-consistent immutable approval evidence. "
                 "Restore the reviewed decision evidence, then retry reconciliation."
             )
+    resolution_by_exception = {
+        row[0]: row[1:] for row in exception_resolution_state
+    }
     for exception_reference, exception_code, resolution_status in exception_state:
         if resolution_status == "open":
             raise AccountingValidationError(
                 f"reconciliation exception {exception_reference} ({exception_code}) is still open. "
-                "Keep the run in review until a named maker-checker resolution command is available."
+                "Resolve or supersede it through the named maker-checker command, then retry reconciliation."
             )
-        raise AccountingValidationError(
-            f"reconciliation exception {exception_reference} ({exception_code}) is marked "
-            f"{resolution_status} without durable resolution-command evidence. Keep the run in "
-            "review; do not treat a mutable exception status as reconciliation authority."
-        )
+        resolution_evidence = resolution_by_exception.get(exception_reference)
+        if (
+            resolution_evidence is None
+            or resolution_evidence[0] != resolution_status
+            or not resolution_evidence[1]
+            or not resolution_evidence[2]
+            or not resolution_evidence[3]
+        ):
+            raise AccountingValidationError(
+                f"reconciliation exception {exception_reference} ({exception_code}) is marked "
+                f"{resolution_status} without matching durable resolution-command evidence. "
+                "Restore the original maker-checker command evidence, then retry reconciliation."
+            )
 
 
 def _transition_snapshot_hash(
@@ -359,8 +402,9 @@ def _transition_snapshot_hash(
     exception_state: tuple[tuple[str, str, str], ...],
     *,
     currency_code: str | None = None,
+    exception_resolution_state: tuple[tuple[str, str, str, str, str], ...] = (),
 ) -> str:
-    """Bind run scope, exact populations, bridge arithmetic, and review state to one digest."""
+    """Bind run scope, populations, bridge arithmetic, and review authority to one digest."""
     authoritative_currency_code = (
         currency_code if currency_code is not None else str(bridge.currency_code)
     )
@@ -369,6 +413,7 @@ def _transition_snapshot_hash(
         "book_opening_balance": str(bridge.book_opening_balance),
         "book_population_reference": bridge.book_population_reference,
         "currency_code": authoritative_currency_code,
+        "exception_resolution_state": exception_resolution_state,
         "exception_state": exception_state,
         "match_state": match_state,
         "outstanding_bank_items": str(bridge.outstanding_bank_items),
