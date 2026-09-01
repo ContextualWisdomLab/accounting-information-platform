@@ -2,6 +2,8 @@
 
 Status: accepted architecture; physical package migration is in progress and must not be mistaken for shipped package separation.
 
+Decision record: [ADR 0059 — Accounting bounded-context map and architectural fitness](adr/0059-accounting-bounded-context-map.md).
+
 This document makes accounting responsibility, context relationships, and current physical ownership explicit. It is an architecture description for the modular monolith; it does not authorize another service to write accounting tables or make a statutory accounting decision.
 
 ## Subdomains
