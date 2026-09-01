@@ -6,6 +6,9 @@ import unittest
 from datetime import datetime, timezone
 
 from accounting_information_platform import reconciliation_close_package as close_package
+from accounting_information_platform.reconciliation_read_model import (
+    ReconciliationCloseReviewScope,
+)
 
 
 class _RowsResult:
@@ -35,7 +38,7 @@ class _RowsConnection:
 
 
 class ReconciliationClosePackageAuthoritativeRunLoaderTests(unittest.TestCase):
-    """Require exact run-command and retained-artifact provenance from PostgreSQL."""
+    """Require exact run-command, scope, and retained-artifact provenance from PostgreSQL."""
 
     tenant_id = "tenant-id"
     tenant_reference = "tenant-acme"
@@ -43,6 +46,10 @@ class ReconciliationClosePackageAuthoritativeRunLoaderTests(unittest.TestCase):
     command_digest = "sha256:" + "1" * 64
     artifact_digest = "sha256:" + "2" * 64
     artifact_reference = "artifact-store:bank-statement-001"
+    legal_entity_reference = "entity-acme"
+    accounting_book_reference = "primary-book"
+    bank_account_assignment_reference = "11111111-1111-1111-1111-111111111111"
+    currency_code = "KRW"
     cutoff = datetime(2026, 8, 31, 0, 0, 0, 123456, tzinfo=timezone.utc)
 
     def _row(
@@ -62,6 +69,10 @@ class ReconciliationClosePackageAuthoritativeRunLoaderTests(unittest.TestCase):
             statement_source_hash or self.artifact_digest,
             artifact_source_hash or self.artifact_digest,
             artifact_store_reference or self.artifact_reference,
+            self.legal_entity_reference,
+            self.accounting_book_reference,
+            self.bank_account_assignment_reference,
+            self.currency_code,
         )
 
     def _load(self, rows: list[tuple[object, ...]]):
@@ -74,7 +85,7 @@ class ReconciliationClosePackageAuthoritativeRunLoaderTests(unittest.TestCase):
         )
         return connection, evidence
 
-    def test_loader_returns_canonical_fractional_cutoff_and_exact_source_evidence(self) -> None:
+    def test_loader_returns_canonical_fractional_cutoff_exact_source_and_scope(self) -> None:
         connection, evidence = self._load([self._row()])
         self.assertEqual(
             connection.parameters,
@@ -82,7 +93,9 @@ class ReconciliationClosePackageAuthoritativeRunLoaderTests(unittest.TestCase):
         )
         self.assertIn("reconciliation_run_command", connection.query or "")
         self.assertIn("bank_statement_artifact", connection.query or "")
-        run_evidence, artifact_evidence = evidence
+        self.assertIn("legal_entity_record", connection.query or "")
+        self.assertIn("accounting_book", connection.query or "")
+        run_evidence, artifact_evidence, run_scope = evidence
         self.assertEqual(run_evidence.evidence_kind_code, "reconciliation_run")
         self.assertEqual(run_evidence.evidence_reference, self.run_reference)
         self.assertEqual(run_evidence.sha256_digest, self.command_digest)
@@ -90,6 +103,16 @@ class ReconciliationClosePackageAuthoritativeRunLoaderTests(unittest.TestCase):
         self.assertEqual(artifact_evidence.evidence_kind_code, "statement_artifact")
         self.assertEqual(artifact_evidence.evidence_reference, self.artifact_reference)
         self.assertEqual(artifact_evidence.sha256_digest, self.artifact_digest)
+        self.assertEqual(
+            run_scope,
+            ReconciliationCloseReviewScope(
+                tenant_account_reference=self.tenant_reference,
+                legal_entity_reference=self.legal_entity_reference,
+                accounting_book_reference=self.accounting_book_reference,
+                bank_account_assignment_reference=self.bank_account_assignment_reference,
+                currency_code=self.currency_code,
+            ),
+        )
 
     def test_loader_rejects_missing_run_command_or_artifact(self) -> None:
         with self.assertRaisesRegex(ValueError, "exactly one run command and statement artifact"):
