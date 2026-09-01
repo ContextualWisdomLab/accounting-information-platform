@@ -21,6 +21,7 @@ from .reconciliation_read_model import (
     _validate_reviewed_allocation_conservation,
     _validate_reviewed_population_source_capacity,
     ReconciliationCloseReviewProjection,
+    ReconciliationCloseReviewScope,
     ReconciliationAllocationEvidence,
     ReconciliationReviewedMatch,
     render_reconciliation_close_review_json,
@@ -932,8 +933,12 @@ def _database_owned_run_source_evidence(
     *,
     tenant_reference: str,
     reconciliation_run_reference: str,
-) -> tuple[ReconciliationEvidenceReference, ReconciliationEvidenceReference]:
-    """Load the immutable run cutoff, command digest, and retained statement artifact."""
+) -> tuple[
+    ReconciliationEvidenceReference,
+    ReconciliationEvidenceReference,
+    ReconciliationCloseReviewScope,
+]:
+    """Load immutable run scope, command digest, cutoff, and retained statement artifact."""
     rows = connection.execute(
         """
         SELECT run_record.knowledge_cutoff_at,
@@ -942,7 +947,11 @@ def _database_owned_run_source_evidence(
                run_command.source_payload_reference,
                statement_record.source_artifact_hash,
                statement_artifact.source_artifact_hash,
-               statement_artifact.artifact_store_reference
+               statement_artifact.artifact_store_reference,
+               legal_entity.legal_entity_code,
+               accounting_book.book_name,
+               run_record.bank_account_assignment_id::text,
+               run_record.currency_code
         FROM accounting_core.reconciliation_run AS run_record
         JOIN accounting_core.reconciliation_run_command AS run_command
           ON run_command.tenant_account_id = run_record.tenant_account_id
@@ -954,9 +963,16 @@ def _database_owned_run_source_evidence(
           ON statement_artifact.tenant_account_id = statement_record.tenant_account_id
          AND statement_artifact.bank_statement_artifact_id =
              statement_record.bank_statement_artifact_id
+        JOIN accounting_core.legal_entity_record AS legal_entity
+          ON legal_entity.tenant_account_id = run_record.tenant_account_id
+         AND legal_entity.legal_entity_id = run_record.legal_entity_id
+        JOIN accounting_core.accounting_book AS accounting_book
+          ON accounting_book.tenant_account_id = run_record.tenant_account_id
+         AND accounting_book.accounting_book_id = run_record.accounting_book_id
         WHERE run_record.tenant_account_id = %s
           AND run_record.reconciliation_run_id::text = %s
-        FOR SHARE OF run_record, run_command, statement_record, statement_artifact
+        FOR SHARE OF run_record, run_command, statement_record, statement_artifact,
+                     legal_entity, accounting_book
         """,
         (tenant_account_id, reconciliation_run_reference),
     ).fetchall()
@@ -973,6 +989,10 @@ def _database_owned_run_source_evidence(
         statement_source_hash,
         artifact_source_hash,
         artifact_store_reference,
+        legal_entity_reference,
+        accounting_book_reference,
+        bank_account_assignment_reference,
+        currency_code,
     ) = rows[0]
     if not hmac.compare_digest(str(command_source_hash), str(statement_source_hash)):
         raise ValueError(
@@ -1000,7 +1020,41 @@ def _database_owned_run_source_evidence(
         evidence_reference=str(artifact_store_reference),
         sha256_digest=str(artifact_source_hash),
     )
-    return run_evidence, statement_artifact_evidence
+    run_scope = ReconciliationCloseReviewScope(
+        tenant_account_reference=tenant_reference,
+        legal_entity_reference=str(legal_entity_reference),
+        accounting_book_reference=str(accounting_book_reference),
+        bank_account_assignment_reference=str(bank_account_assignment_reference),
+        currency_code=str(currency_code),
+    )
+    return run_evidence, statement_artifact_evidence, run_scope
+
+
+def _validate_database_owned_exception_state(
+    connection: object,
+    tenant_account_id: object,
+    *,
+    reconciliation_run_reference: str,
+    projection: ReconciliationCloseReviewProjection,
+) -> None:
+    """Require the projection to disclose every currently open database exception."""
+    rows = connection.execute(
+        """
+        SELECT reconciliation_exception_id::text,
+               resolution_status_code
+        FROM accounting_core.reconciliation_exception
+        WHERE tenant_account_id = %s
+          AND reconciliation_run_id::text = %s
+        ORDER BY reconciliation_exception_id
+        FOR SHARE
+        """,
+        (tenant_account_id, reconciliation_run_reference),
+    ).fetchall()
+    open_exception_count = sum(1 for row in rows if row[1] == "open")
+    if open_exception_count != projection.exception_count:
+        raise ValueError(
+            "database-owned unresolved exception population must match the close-package projection"
+        )
 
 
 def build_reconciliation_close_package(
@@ -1009,7 +1063,7 @@ def build_reconciliation_close_package(
     database_url: str | None = None,
     tenant_reference: str | None = None,
 ) -> ReconciliationClosePackage:
-    """Build close evidence only while its reviewed matches remain approved in PostgreSQL."""
+    """Build close evidence only while its reviewed state remains authoritative in PostgreSQL."""
     if not isinstance(package_input, ReconciliationClosePackageInput):
         raise ValueError("package_input must be a ReconciliationClosePackageInput")
     if not database_url or not tenant_reference:
@@ -1034,11 +1088,34 @@ def build_reconciliation_close_package(
             reconciliation_run_reference=package_input.projection.reconciliation_run_reference,
             approval_evidence=package_input.approval_evidence,
         )
-        authoritative_run, authoritative_artifact = _database_owned_run_source_evidence(
+        (
+            authoritative_run,
+            authoritative_artifact,
+            authoritative_scope,
+        ) = _database_owned_run_source_evidence(
             connection,
             tenant_account_id,
             tenant_reference=tenant_reference,
             reconciliation_run_reference=package_input.projection.reconciliation_run_reference,
+        )
+        projection_scope = ReconciliationCloseReviewScope(
+            tenant_account_reference=package_input.projection.tenant_account_reference,
+            legal_entity_reference=package_input.projection.legal_entity_reference,
+            accounting_book_reference=package_input.projection.accounting_book_reference,
+            bank_account_assignment_reference=(
+                package_input.projection.bank_account_assignment_reference
+            ),
+            currency_code=package_input.projection.currency_code,
+        )
+        if projection_scope != authoritative_scope:
+            raise ValueError(
+                "database-owned reconciliation run scope must match the close-package projection"
+            )
+        _validate_database_owned_exception_state(
+            connection,
+            tenant_account_id,
+            reconciliation_run_reference=package_input.projection.reconciliation_run_reference,
+            projection=package_input.projection,
         )
         packaged_runs = tuple(
             evidence
