@@ -1,5 +1,7 @@
 # Accounting Information Platform
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/ContextualWisdomLab/accounting-information-platform)
+
 **Evidence-backed accounting posting and financial reporting control plane.**
 
 Accounting Information Platform is ContextualWisdomLab's statutory accounting boundary. It accepts evidence-backed journal proposals from approved source systems, resolves legal entity, accounting book, fiscal period, currency, chart-account roles, and policy, and returns an authoritative accounting outcome. A balanced proposal is not a posted journal.
