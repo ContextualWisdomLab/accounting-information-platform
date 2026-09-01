@@ -117,7 +117,6 @@ def reconcile_reconciliation_run(
                 "reconciliation_run_id, then retry the lifecycle transition."
             )
         current_status = str(run_row[0])
-        currency_code = str(run_row[1])
         if current_status == "reconciled":
             existing = connection.execute(
                 """
@@ -159,6 +158,15 @@ def reconcile_reconciliation_run(
                 "reconciliation run cannot be finalized because its database-owned book-to-bank "
                 "bridge does not tie exactly. Resolve the source difference or exception, then retry."
             ) from error
+        authoritative_currency_code = (
+            str(run_row[1])
+            if len(run_row) > 1
+            else str(getattr(bridge, "currency_code", ""))
+        )
+        if not authoritative_currency_code:
+            raise AccountingValidationError(
+                "reconciliation run currency evidence is missing. Restore the immutable run scope, then retry."
+            )
 
         opening_command = connection.execute(
             """
@@ -176,10 +184,10 @@ def reconcile_reconciliation_run(
         snapshot_hash = _transition_snapshot_hash(
             run_id,
             str(opening_command[0]),
-            currency_code,
             bridge,
             match_state,
             exception_state,
+            currency_code=authoritative_currency_code,
         )
         transition_id, transition_hash, _recorded_at = connection.execute(
             """
@@ -333,17 +341,21 @@ def _validate_review_control_state(
 def _transition_snapshot_hash(
     run_id: UUID,
     run_command_hash: str,
-    currency_code: str,
     bridge: object,
     match_state: tuple[tuple[str, str, str, str], ...],
     exception_state: tuple[tuple[str, str, str], ...],
+    *,
+    currency_code: str | None = None,
 ) -> str:
     """Bind run scope, exact populations, bridge arithmetic, and review state to one digest."""
+    authoritative_currency_code = (
+        currency_code if currency_code is not None else str(bridge.currency_code)
+    )
     payload = {
         "book_closing_balance": str(bridge.book_closing_balance),
         "book_opening_balance": str(bridge.book_opening_balance),
         "book_population_reference": bridge.book_population_reference,
-        "currency_code": currency_code,
+        "currency_code": authoritative_currency_code,
         "exception_state": exception_state,
         "match_state": match_state,
         "outstanding_bank_items": str(bridge.outstanding_bank_items),
