@@ -156,12 +156,12 @@ jobs:
       - name: Verify focused request authorization GREEN
         run: |
           set -euo pipefail
-          PYTHONPATH=. python3 -m unittest -v \
+          PYTHONPATH=src:. python3 -m unittest -v \
             tests.test_authorization \
             tests.test_request_scoped_authorization_context \
             tests.test_reconciliation_completion_authorization_contract
-          PYTHONPATH=. python3 scripts/validate_repository.py .
-          python3 -m compileall -q src tests/test_request_scoped_authorization_context.py
+          PYTHONPATH=src:. python3 scripts/validate_repository.py .
+          PYTHONPATH=src:. python3 -m compileall -q src tests/test_request_scoped_authorization_context.py
           test ! -e .github/workflows/tmp-pr34-request-principal-green.yml
           git diff --check
 
