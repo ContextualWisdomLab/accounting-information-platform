@@ -21,6 +21,8 @@ _RECORDED_AT = datetime(2026, 9, 1, 12, 1, tzinfo=timezone.utc)
 _COMMAND_HASH = "sha256:" + "a" * 64
 _TRANSITION_HASH = "sha256:" + "b" * 64
 _SNAPSHOT_HASH = "sha256:" + "c" * 64
+_RESOLUTION_EVIDENCE_HASH = "sha256:" + "d" * 64
+_RESOLUTION_COMMAND_HASH = "sha256:" + "e" * 64
 _STATEMENT_POPULATION_HASH = "sha256:" + "1" * 64
 _BOOK_POPULATION_HASH = "sha256:" + "2" * 64
 
@@ -50,6 +52,7 @@ class _Connection:
         self.existing_transition_key: str | None = None
         self.match_rows: list[tuple[object, ...]] = []
         self.exception_rows: list[tuple[object, ...]] = []
+        self.resolution_rows: list[tuple[object, ...]] = []
         self.run_command_hash: str | None = _COMMAND_HASH
         self.transition_document: tuple[object, ...] | None = (
             _TRANSITION_ID,
@@ -98,6 +101,11 @@ class _Connection:
             )
         if "FROM accounting_core.reconciliation_match AS reviewed_match" in normalized:
             return _Rows(self.match_rows)
+        if (
+            "FROM accounting_core.reconciliation_exception_resolution_command"
+            in normalized
+        ):
+            return _Rows(self.resolution_rows)
         if "FROM accounting_core.reconciliation_exception" in normalized:
             return _Rows(self.exception_rows)
         if (
@@ -238,6 +246,26 @@ class ReconciliationLifecycleTests(unittest.TestCase):
         self.assertIn("INSERT INTO accounting_integration.outbox_event", sql)
         self.assertIn("UPDATE accounting_core.reconciliation_run", sql)
 
+    def test_resolved_exception_with_matching_command_can_finalize(self) -> None:
+        """Terminal exception state becomes authority only with its named command."""
+        _Ledger.connection.exception_rows = [
+            ("exception-a", "amount_mismatch", "resolved")
+        ]
+        _Ledger.connection.resolution_rows = [
+            (
+                "exception-a",
+                "resolved",
+                "urn:cwl:evidence:reconciliation-exception:exception-a",
+                _RESOLUTION_EVIDENCE_HASH,
+                _RESOLUTION_COMMAND_HASH,
+            )
+        ]
+
+        result = self._reconcile()
+
+        self.assertEqual(result["run_status_code"], "reconciled")
+        self.bridge_mock.assert_called_once()
+
     def test_exact_transition_replays_without_rebuilding_bridge(self) -> None:
         """An exact lifecycle key replays the durable transition receipt."""
         _Ledger.connection.prior_transition = (
@@ -340,6 +368,23 @@ class ReconciliationLifecycleTests(unittest.TestCase):
                 ):
                     self._reconcile()
 
+    def test_resolution_command_target_must_match_exception_status(self) -> None:
+        """A resolved row cannot borrow a supersession command as authority."""
+        _Ledger.connection.exception_rows = [
+            ("exception-a", "amount_mismatch", "resolved")
+        ]
+        _Ledger.connection.resolution_rows = [
+            (
+                "exception-a",
+                "superseded",
+                "urn:cwl:evidence:reconciliation-exception:exception-a",
+                _RESOLUTION_EVIDENCE_HASH,
+                _RESOLUTION_COMMAND_HASH,
+            )
+        ]
+        with self.assertRaisesRegex(AccountingValidationError, "matching durable"):
+            self._reconcile()
+
     def test_non_tying_bridge_is_actionable_validation_failure(self) -> None:
         """The lifecycle API converts exact-bridge failures to buyer-actionable validation."""
         self.bridge_mock.side_effect = ValueError("database-owned bridge does not tie")
@@ -400,15 +445,32 @@ class ReconciliationLifecycleTests(unittest.TestCase):
             match_state=(("match-a", "approved", "approved", "sha256:" + "4" * 64),),
             exception_state=(),
         )
+        changed_resolution = lifecycle._transition_snapshot_hash(
+            run_id=_RUN_ID,
+            run_command_hash=_COMMAND_HASH,
+            bridge=_bridge(),
+            match_state=(),
+            exception_state=(("exception-a", "amount_mismatch", "resolved"),),
+            exception_resolution_state=(
+                (
+                    "exception-a",
+                    "resolved",
+                    "urn:cwl:evidence:reconciliation-exception:exception-a",
+                    _RESOLUTION_EVIDENCE_HASH,
+                    _RESOLUTION_COMMAND_HASH,
+                ),
+            ),
+        )
         self.assertRegex(baseline, r"^sha256:[0-9a-f]{64}$")
         self.assertNotEqual(baseline, changed)
+        self.assertNotEqual(baseline, changed_resolution)
 
 
 class ReconciliationLifecycleMigrationContractTests(unittest.TestCase):
-    """Keep database status authority and lifecycle serialization in migration 0019."""
+    """Keep database status and exception-resolution authority in forward migrations."""
 
     def test_migration_persists_transition_and_rejects_direct_reconciled_status(self) -> None:
-        """The unreleased migration carries immutable transition, lock, and status guards."""
+        """Migration 0019 carries immutable transition, lock, and status guards."""
         from pathlib import Path
 
         root = Path(__file__).resolve().parents[1]
@@ -420,6 +482,23 @@ class ReconciliationLifecycleMigrationContractTests(unittest.TestCase):
         self.assertIn("acquire_reconciliation_run_lifecycle_lock", migration)
         self.assertIn("reconciliation_lifecycle_frozen", migration)
         self.assertIn("reconciliation_match_snapshot_hash", migration)
+        self.assertIn("FORCE ROW LEVEL SECURITY", migration)
+
+    def test_exception_resolution_migration_requires_named_maker_checker_command(self) -> None:
+        """Migration 0020 replaces mutable exception status with durable command authority."""
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        migration = (
+            root / "database/migrations/0020_reconciliation_exception_resolution_command.sql"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "CREATE TABLE accounting_core.reconciliation_exception_resolution_command",
+            migration,
+        )
+        self.assertIn("reconciliation_exception_maker_checker_required", migration)
+        self.assertIn("reconciliation_exception_resolution_command_required", migration)
+        self.assertIn("reconciliation_exception_resolution_atomic_pair", migration)
         self.assertIn("FORCE ROW LEVEL SECURITY", migration)
 
 
