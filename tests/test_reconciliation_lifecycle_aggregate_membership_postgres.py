@@ -118,9 +118,8 @@ class ReconciliationLifecycleAggregateMembershipPostgresTests(unittest.TestCase)
         ):
             self._reconcile()
 
-    def test_reconciled_exception_cannot_move_to_another_run(self) -> None:
-        """A row cannot escape a reconciled aggregate by rewriting its run foreign key."""
-        exception_id = None
+    def test_exception_cannot_move_to_another_run_before_reconciliation(self) -> None:
+        """Aggregate membership is immutable even before the lifecycle transition."""
         with psycopg.connect(posting.DATABASE_URL) as connection:
             exception_id = connection.execute(
                 """
@@ -135,7 +134,7 @@ class ReconciliationLifecycleAggregateMembershipPostgresTests(unittest.TestCase)
                 )
                 VALUES (%s, %s, 'reviewed_difference',
                         'urn:cwl:principal:test_controller',
-                        'Retain the reviewed resolution evidence.', %s, 'resolved')
+                        'Keep the exception on its owning run.', %s, 'open')
                 RETURNING reconciliation_exception_id
                 """,
                 (
@@ -144,8 +143,6 @@ class ReconciliationLifecycleAggregateMembershipPostgresTests(unittest.TestCase)
                     datetime(2026, 9, 1, 11, 59, tzinfo=timezone.utc),
                 ),
             ).fetchone()[0]
-
-        self._reconcile()
 
         destination_run_id = uuid.uuid4()
         with psycopg.connect(posting.DATABASE_URL) as connection:
