@@ -37,6 +37,31 @@ class _RowsConnection:
         return _RowsResult(self.rows)
 
 
+class _StatusAwareRowsConnection(_RowsConnection):
+    """Return run status only when production SQL actually requests it."""
+
+    def __init__(self, row: tuple[object, ...], run_status_code: str) -> None:
+        super().__init__([row])
+        self.row = row
+        self.run_status_code = run_status_code
+
+    def execute(self, query: str, parameters: tuple[object, ...]) -> _RowsResult:
+        """Expose status in the database row only for a status-aware query."""
+        self.query = query
+        self.parameters = parameters
+        if "run_record.run_status_code" in query:
+            return _RowsResult(
+                [
+                    (
+                        self.row[0],
+                        self.run_status_code,
+                        *self.row[1:],
+                    )
+                ]
+            )
+        return _RowsResult([self.row])
+
+
 class ReconciliationClosePackageAuthoritativeRunLoaderTests(unittest.TestCase):
     """Require exact run-command, scope, and retained-artifact provenance from PostgreSQL."""
 
@@ -119,6 +144,30 @@ class ReconciliationClosePackageAuthoritativeRunLoaderTests(unittest.TestCase):
                 currency_code=self.currency_code,
             ),
         )
+
+    def test_loader_rejects_non_reconciled_database_status(self) -> None:
+        for run_status_code in (
+            "evaluating",
+            "review_required",
+            "not_reconciled",
+            "superseded",
+        ):
+            with self.subTest(run_status_code=run_status_code):
+                connection = _StatusAwareRowsConnection(self._row(), run_status_code)
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "database-owned reconciliation run must be reconciled",
+                ):
+                    close_package._database_owned_run_source_evidence(
+                        connection,
+                        self.tenant_id,
+                        tenant_reference=self.tenant_reference,
+                        reconciliation_run_reference=self.run_reference,
+                    )
+                self.assertIn(
+                    "run_record.run_status_code",
+                    connection.query or "",
+                )
 
     def test_loader_rejects_missing_run_command_or_artifact(self) -> None:
         with self.assertRaisesRegex(ValueError, "exactly one run command and statement artifact"):
