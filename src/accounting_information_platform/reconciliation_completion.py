@@ -40,7 +40,7 @@ def accept_reconciliation_run_completion(
         )
 
     ledger = PostgresPostingLedger(database_url, tenant_reference)
-    with ledger._session() as connection:
+    with ledger._consistent_read_session() as connection:
         tenant_id = ledger._require_tenant(connection)
         ledger._acquire_command_lock(
             connection,
