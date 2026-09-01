@@ -1,225 +1,162 @@
 # Accounting Information Platform
 
-The Accounting Information Platform is Contextual Wisdom Lab's statutory
-accounting boundary. It consumes evidence-backed journal proposals from billing
-and other source systems, resolves legal entity, accounting book, chart
-accounts, fiscal period, currency, and policy, and returns an authoritative
-posting receipt. A balanced proposal is not a posted journal.
+**Evidence-backed accounting posting and financial reporting control plane.**
 
-This repository is a separate deployable product. It does not require
-[Naruon](https://github.com/ContextualWisdomLab/naruon), the Metering Billing
-Platform, or any other sibling checkout to exist, clone, or run. Naruon is the
-CWL composition hub that may later receive this product; composition is
-optional and is not a runtime dependency.
+Accounting Information Platform is ContextualWisdomLab's statutory accounting boundary. It accepts evidence-backed journal proposals from approved source systems, resolves legal entity, accounting book, fiscal period, currency, chart-account roles, and policy, and returns an authoritative accounting outcome. A balanced proposal is not a posted journal.
 
-## Current readiness
+The product is independently deployable and does not require Naruon, Metering Billing Platform, or another sibling repository to be cloned or running. Other products integrate through explicit contracts rather than shared application tables.
 
-This tree is the first executable foundation (Python package
-`accounting-information-platform` 0.1.0, Development Status: Pre-Alpha). It is
-not a hosted service and does not start an HTTP listener.
+## Why it exists
 
-What is present:
+Billing, payment, payroll, commerce, and operational systems describe economic events. They should not silently decide the final book treatment. Accounting Information Platform creates a dedicated control boundary for deciding what is posted, under which policy and period, with replay-safe evidence and preserved audit lineage.
 
-- a dependency-free Python reference core for exact-decimal proposal
-  validation, policy checks, idempotent posting, append-only reversal, and
-  trial-balance aggregation;
-- closed JSON Schema Draft 2020-12 contracts for the journal proposal, policy
-  manifest, and posting receipt;
-- a PostgreSQL 18.4-oriented normalized migration with tenant-scoped foreign
-  keys and row-level security;
-- `PostgresPostingLedger` and `apply_foundation_migration`, which persist the
-  same posting, replay, reversal, and trial-balance invariants through that
-  migration in one commit boundary;
-- a stdlib HTTP surface for proposal acceptance, posting receipts, journals,
-  reversals, period close/open, trial balances, financial statements, ledgers,
-  aging, VAT/HomeTax rejection receipts, outbox, audit, and catalog reads;
-- an immutable camt.053.001.14 bank-statement evidence registry with normalized
-  entries and external artifact provenance;
-- a deterministic reconciliation proposal engine, exact book-to-bank bridge,
-  and durable reconciliation runs, exceptions, and evidence;
-- product, architecture, security, and standards documents listed below.
+| Need | What the platform owns |
+| --- | --- |
+| Journal authority | Validate and post evidence-backed journal proposals or fail closed |
+| Policy resolution | Resolve effective accounting policy, chart roles, currency and fiscal period |
+| Replay safety | Distinguish exact idempotent replay from conflicting reuse |
+| Immutable correction | Reverse through equal-and-opposite accounting entries rather than destructive edits |
+| Reconciliation | Persist book-to-bank reconciliation runs, proposals, exceptions and evidence |
+| Financial reads | Trial balance, ledger and supported financial-reporting projections |
+| Bank evidence | Preserve normalized bank-statement evidence with source provenance |
+| Auditability | Return posting/hold/rejection/reversal evidence without conflating source and book authority |
 
-What is not present: an automatically started listener, gRPC or live event
-transport, foreign exchange, revenue schedules, full cross-run many-to-many
-allocation, reconciliation approval and close-package provenance,
-consolidation, tax calculation, or live HomeTax/NTS transmission. The outbox
-is durable but this tree does not publish it to a bus. The in-memory
-`PostingLedger` remains the reference oracle that the PostgreSQL adapter must
-match.
+## Current maturity
 
-The initial milestone does not claim production compliance with a
-jurisdiction's accounting, tax, or statutory reporting rules. It establishes
-controls and traceability needed to implement reviewed policies without
-changing the journal authority model.
+The current source tree is package version `0.1.0` and is explicitly **Pre-Alpha**. It contains an executable reference core, normalized PostgreSQL persistence, closed JSON contracts, a mountable HTTP surface, reconciliation foundations, and product/security/operability documentation.
 
-## What the product does
-
-Finance teams can take a versioned `accounting_journal_proposal` from an
-approved source, detect exact replay versus conflicting reuse of an
-idempotency key, resolve tenant / legal entity / book / period / currency /
-account-role / policy versions, post a balanced immutable journal or fail
-closed, reverse without destroying the original, produce a trial balance that
-ties to the included journal population, and return an
-`accounting_posting_receipt`.
-
-The current reference core posts a valid proposal or raises
-`AccountingValidationError` / `IdempotencyConflictError`. The posting-receipt
-contract also enumerates `held`, `rejected`, and `reversed` for the service
-milestone. Reversal in the reference core appends an equal-and-opposite
-journal and preserves lineage; it does not update or delete the original.
-
-Source systems describe economic events. This platform determines book
-treatment. Invoice issuance, payment capture, and provider payout do not by
-themselves determine revenue recognition.
+It is **not** a turnkey hosted accounting service and does not automatically start an HTTP listener. Current source also does not claim complete jurisdiction-specific compliance, live tax-authority submission, consolidation, foreign-exchange accounting, revenue schedules, or production certification. See the [product and technical gap baseline](docs/product-technical-gap-baseline.md) for evidence-bound readiness and remaining work.
 
 ## Authority boundary
 
 ```text
-CWL products
-  -> source facts
-  -> Metering Billing Platform
-  -> accounting_journal_proposal
-  -> Accounting Information Platform
-  -> posted journal / hold / rejection / reversal
-  -> accounting_posting_receipt
-  -> trial balance and financial reporting
+Source systems
+  │ economic / commercial facts
+  ▼
+Metering Billing Platform or other approved producer
+  │ versioned accounting_journal_proposal
+  ▼
+┌──────────────────────────────────┐
+│ Accounting Information Platform  │
+├──────────────────────────────────┤
+│ policy + period resolution       │
+│ chart-account role mapping       │
+│ posting / hold / rejection       │
+│ reversal and reconciliation      │
+│ ledger / reporting evidence      │
+└───────────────┬──────────────────┘
+                │ accounting_posting_receipt
+                ▼
+        consuming applications
 ```
 
-The Metering Billing Platform owns usage, pricing, invoice intent,
-collections, refunds, provider settlement, commercial reconciliation, and the
-authoritative `accounting_journal_proposal` schema. This repository owns legal
-books, posted journals, fiscal-period control, chart-account resolution,
-reversals, trial balances, the `accounting_policy_manifest` schema, and the
-`accounting_posting_receipt` schema.
+Source systems retain authority for the business events they produce. This repository owns legal books, posted journals, fiscal-period control, final chart-account resolution, accounting reversals, reconciliation records, trial balances, and its accounting policy/receipt contracts.
 
-A proposal may name semantic roles such as `accounts_receivable` or
-`usage_revenue`. Accounting maps those roles to chart accounts under an
-effective policy version. Source systems cannot bypass that mapping by sending
-chart-account identifiers or by writing journal tables.
+A source system may propose semantic roles such as `accounts_receivable` or `usage_revenue`; it cannot bypass accounting policy by choosing final chart-account identifiers or writing journal tables directly.
 
-## Independent run
+## Install and verify
 
-The foundation runs from this repository alone. Do not clone Naruon, the
-Metering Billing Platform, or any other sibling to verify it.
-
-Requires Python 3.13+. Quality tooling is hash-locked in
-`requirements-quality.txt`. The reference core has no runtime package
-dependencies.
+Requires Python 3.13 or newer. The reference core has no runtime package dependencies.
 
 ```bash
-python3 -m pip install --only-binary=:all: --require-hashes -r requirements-quality.txt
-PYTHONPATH=src:. python3 -m unittest discover -s tests -p 'test_*.py' -v
-PYTHONPATH=src:. python3 -m coverage run --branch -m unittest discover -s tests -p 'test_*.py'
-python3 -m coverage report --fail-under=100 --show-missing
-python3 scripts/validate_repository.py .
-python3 -m compileall -q src scripts tests
 python3 -m pip install --no-deps --no-build-isolation -e .
-python3 -m pip wheel --no-deps --no-build-isolation -w dist .
+PYTHONPATH=src:. python3 -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
-These commands do not automatically open an application HTTP port and do not
-contact Naruon. To embed the stdlib HTTP surface, call the exported server
-factory/runner and provide the tenant-bound host boundary explicitly.
-`unittest` discovery also runs `tests/test_postgres_posting.py`, which needs a
-reachable PostgreSQL 18 instance and `ACCOUNTING_DATABASE_URL` (CI uses
-`postgresql://postgres:postgres@127.0.0.1:5432/accounting_test` and applies
-the checked-in migration chain through `database/migrations/0014_reconciliation_candidate_allocation.sql`). Persistence is still
-local to this repository; it is not a Naruon or sibling checkout.
+For the repository's full reproducible quality contract, including hash-locked tooling, 100% coverage gates, PostgreSQL-backed tests and repository validation, follow [`docs/TEST_STRATEGY.md`](docs/TEST_STRATEGY.md) and the current CI workflow rather than copying an abbreviated command list from this README.
 
-Optional import smoke after the editable install above:
+Some persistence tests require a reachable PostgreSQL 18 instance and `ACCOUNTING_DATABASE_URL`; the test strategy documents that boundary explicitly.
 
-```bash
-python3 -c "import accounting_information_platform as aip; assert aip.PostingLedger.__name__ == 'PostingLedger'"
+## Integrate a producer or consumer
+
+Integration uses versioned contracts under [`schemas/`](schemas/) and the documented HTTP/in-process boundary. No sibling should write accounting tables or depend on an undeclared payload.
+
+The three primary contract responsibilities are:
+
+| Contract | Authority |
+| --- | --- |
+| Journal proposal | Approved source / Metering Billing Platform |
+| Accounting policy manifest | Accounting Information Platform |
+| Posting receipt | Accounting Information Platform |
+
+The essential flow is:
+
+1. An approved producer submits a balanced proposal with tenant/legal-entity identity, evidence hash, semantic account roles and an idempotency key.
+2. Accounting resolves policy and chart accounts under the effective book/period boundary.
+3. The platform posts, holds, or rejects and returns an accounting receipt.
+4. Exact replay returns the existing outcome; conflicting reuse fails closed.
+5. Corrections preserve the original accounting evidence and use an explicit reversal path.
+
+See [`docs/ACCOUNTING_BOUNDARY.md`](docs/ACCOUNTING_BOUNDARY.md) and [`docs/TRD.md`](docs/TRD.md) for the full contract and transport requirements.
+
+## Reconciliation
+
+The current foundation includes an evidence-preserving book-to-bank reconciliation boundary rather than treating matching as an irreversible side effect. Bank statements are registered as immutable source evidence, entries are normalized, deterministic candidate relationships are recorded, and reconciliation runs retain exceptions and evidence for later review.
+
+Approval, close-package provenance, broader many-to-many allocation, and buyer-facing workflow completeness remain explicit gaps where the durable baseline says they are not yet complete.
+
+## Architecture at a glance
+
+```text
+Contracts / source evidence
+          │
+          ▼
+┌───────────────────────────────┐
+│ Accounting application layer │
+│ validation + policy control   │
+├───────────────────────────────┤
+│ Posting aggregate            │
+│ Reversal boundary            │
+│ Reconciliation boundary      │
+│ Reporting projections        │
+└──────────────┬────────────────┘
+               │
+        PostgreSQL authority
+               │
+        audit / outbox evidence
 ```
 
-## How a sibling calls this platform
+The in-memory reference model is a correctness oracle; durable PostgreSQL behavior must preserve the same accounting invariants. The repository's [architecture](docs/ARCHITECTURE.md), [data model](docs/DATA_MODEL.md), and [ADR](docs/adr/0001-accounting-authority.md) documents define the transactional and DDD boundaries.
 
-The stdlib HTTP surface is available for a host to mount; no listener starts
-automatically, and no gRPC or live event transport is published. When a
-sibling—including Naruon as composition hub—integrates, it uses the versioned
-file contracts in `schemas/` and the documented HTTP/in-process boundary rather
-than a private table or undeclared payload.
+## Security and control posture
 
-| Contract | Authority | Path |
-|---|---|---|
-| Journal proposal | Metering Billing Platform | `schemas/accounting-journal-proposal.schema.json` |
-| Policy manifest | Accounting Information Platform | `schemas/accounting-policy-manifest.schema.json` |
-| Posting receipt | Accounting Information Platform | `schemas/accounting-posting-receipt.schema.json` |
+Accounting data is high-integrity business evidence. The current design therefore emphasizes:
 
-Contract identities (`$id`) are schema identifiers, not hosted URLs:
+- tenant- and legal-entity-scoped authority;
+- immutable posting and append-only correction paths;
+- exact idempotency and payload-evidence binding;
+- database-enforced integrity and row-level isolation where applicable;
+- explicit authorization before lifecycle-changing actions;
+- traceable reconciliation evidence and exceptions;
+- separation of source-system facts from accounting policy decisions;
+- no unsupported certification or jurisdictional-compliance claims.
 
-- `https://schemas.contextualwisdomlab.org/metering-billing/accounting-journal-proposal/v1`
-- `https://schemas.contextualwisdomlab.org/accounting/policy-manifest/v1`
-- `https://schemas.contextualwisdomlab.org/accounting/posting-receipt/v1`
+See [`docs/SECURITY.md`](docs/SECURITY.md) and [`docs/OPERABILITY.md`](docs/OPERABILITY.md) for the operational controls and recovery boundaries.
 
-Call rules that already exist in those contracts and the reference core:
+## Standards and research basis
 
-1. Submit a balanced `accounting_journal_proposal` with an idempotency key,
-   SHA-256 source-payload hash, tenant and legal-entity URNs, semantic account
-   roles, and proposal status in `draft` / `validated` / `exported` /
-   `rejected`. The proposal status enumeration does not include `posted`.
-2. This platform resolves policy and chart accounts, then returns an
-   `accounting_posting_receipt`. Only a receipt may carry `posted`, `held`,
-   `rejected`, or `reversed`.
-3. Exact replay of the same idempotency key and payload hash returns the
-   original receipt. Reuse of the key with a different hash fails closed.
-4. Naruon, billing, or any other sibling may compose this product by producing
-   the proposal contract and consuming the receipt contract. They do not write
-   journals, choose final chart-account identifiers, or require this process to
-   start inside Naruon.
+Accounting, data, provenance, architecture, financial-message, database-isolation, and software-engineering decisions are traced in [`docs/doctoring/STANDARD_TRACEABILITY.md`](docs/doctoring/STANDARD_TRACEABILITY.md) with APA 7 references in [`docs/doctoring/REFERENCES.md`](docs/doctoring/REFERENCES.md). The README intentionally does not duplicate that bibliography, so research authority has one durable home.
 
-The in-process calls are `PostingLedger.post(proposal, policy)` (reference
-core) and
-`PostgresPostingLedger.post(proposal, policy)` (durable). Both also expose
-`reverse(...)` and `trial_balance(...)`. A transactional outbox row is written
-in the PostgreSQL posting transaction; nothing in this tree publishes those
-events onto a live bus. The same boundary exposes `POST /journals` for
-AIS-owned adjustments and `GET /financial-statements`, `GET /trial-balances`,
-`GET /account-ledgers`, and the aging/reporting routes for buyer-facing reads.
+## Documentation map
 
-## Standards already cited
+| Goal | Start here |
+| --- | --- |
+| Product requirements | [`docs/PRD.md`](docs/PRD.md) |
+| Technical requirements | [`docs/TRD.md`](docs/TRD.md) |
+| Accounting/billing ownership | [`docs/ACCOUNTING_BOUNDARY.md`](docs/ACCOUNTING_BOUNDARY.md) |
+| Architecture | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
+| Data model | [`docs/DATA_MODEL.md`](docs/DATA_MODEL.md) |
+| Product/technical gaps | [`docs/product-technical-gap-baseline.md`](docs/product-technical-gap-baseline.md) |
+| Security | [`docs/SECURITY.md`](docs/SECURITY.md) |
+| Operability | [`docs/OPERABILITY.md`](docs/OPERABILITY.md) |
+| Test strategy | [`docs/TEST_STRATEGY.md`](docs/TEST_STRATEGY.md) |
+| Standards traceability | [`docs/doctoring/STANDARD_TRACEABILITY.md`](docs/doctoring/STANDARD_TRACEABILITY.md) |
+| Contributor guidance | [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) |
 
-The product documents already trace these authorities. Citations follow APA
-7th as recorded in [`docs/doctoring/REFERENCES.md`](docs/doctoring/REFERENCES.md).
-This README does not add literature beyond that set.
+## Contributing
 
-Cloud Native Computing Foundation. (2022). *CloudEvents specification, version 1.0.2*. https://github.com/cloudevents/spec
-
-Financial Accounting Standards Board. (2024). *Accounting Standards Codification Topic 606: Revenue from contracts with customers*. https://asc.fasb.org/topic&trid=2121986
-
-IFRS Foundation. (2024). *IFRS 18 presentation and disclosure in financial statements*. https://www.ifrs.org/projects/completed-projects/2024/primary-financial-statements/
-
-IFRS Foundation. (2024). *Post-implementation review of IFRS 15 revenue from contracts with customers: Project summary and feedback statement*. https://www.ifrs.org/projects/completed-projects/2024/pir-ifrs-15/
-
-International Organization for Standardization. (2026). *ISO 20022-1:2026 financial services—Universal financial industry message scheme—Part 1: Metamodel* (3rd ed.). https://www.iso.org/standard/20022-1
-
-International Organization for Standardization. (2022). *ISO/IEC/IEEE 42010:2022 software, systems and enterprise—Architecture description*. https://www.iso.org/standard/74393.html
-
-Internet Engineering Task Force. (2024). *Universally unique IDentifiers (UUIDs)* (RFC 9562). https://www.rfc-editor.org/rfc/rfc9562
-
-PostgreSQL Global Development Group. (2026). *PostgreSQL 18.6 release notes*. https://www.postgresql.org/docs/release/18.6/
-
-World Wide Web Consortium. (2013). *PROV-O: The PROV ontology*. https://www.w3.org/TR/prov-o/
-
-XBRL International. (2003). *XBRL 2.1 specification*. https://specifications.xbrl.org/work-product-index-group-base-spec-base-spec.html
-
-How those authorities map to current product decisions is in
-[`docs/doctoring/STANDARD_TRACEABILITY.md`](docs/doctoring/STANDARD_TRACEABILITY.md).
-
-## Product documents
-
-- [Product requirements](docs/PRD.md)
-- [Technical requirements](docs/TRD.md)
-- [Accounting and billing boundary](docs/ACCOUNTING_BOUNDARY.md)
-- [Architecture](docs/ARCHITECTURE.md)
-- [Product and technical gap baseline](docs/product-technical-gap-baseline.md)
-- [Data model](docs/DATA_MODEL.md)
-- [Security](docs/SECURITY.md)
-- [Operability](docs/OPERABILITY.md)
-- [Test strategy](docs/TEST_STRATEGY.md)
-- [Architecture decisions](docs/adr/0001-accounting-authority.md)
-- [Contributor and agent operations](docs/CONTRIBUTING.md)
+Preserve the accounting authority boundary when changing contracts or behavior: source systems provide evidence, accounting determines book treatment, and persistence/API/docs/tests must agree on the same invariants. Do not convert a proposed business event, reconciliation suggestion, queued workflow, or synthetic fixture into authoritative accounting truth by documentation alone.
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE).
+Accounting Information Platform is licensed under the [Apache License 2.0](LICENSE). Third-party dependencies and imported standards/data retain their own commercially compatible terms and attribution requirements.
