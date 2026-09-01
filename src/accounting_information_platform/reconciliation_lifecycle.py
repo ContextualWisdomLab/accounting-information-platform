@@ -194,10 +194,11 @@ def reconcile_reconciliation_run(
             INSERT INTO accounting_core.reconciliation_run_transition_command (
                 tenant_account_id, reconciliation_run_id,
                 reconciliation_transition_idempotency_key, target_run_status_code,
-                reconciliation_snapshot_hash, reconciliation_transition_command_hash,
+                reconciliation_snapshot_hash, statement_population_reference,
+                book_population_reference, reconciliation_transition_command_hash,
                 actor_reference, purpose_code, effective_at
             )
-            VALUES (%s, %s, %s, 'reconciled', %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, 'reconciled', %s, %s, %s, %s, %s, %s, %s)
             RETURNING reconciliation_run_transition_command_id,
                       reconciliation_transition_command_hash, recorded_at
             """,
@@ -206,6 +207,8 @@ def reconcile_reconciliation_run(
                 run_id,
                 idempotency_key,
                 snapshot_hash,
+                bridge.statement_population_reference,
+                bridge.book_population_reference,
                 "sha256:" + "0" * 64,
                 actor_reference,
                 purpose_code,
@@ -243,6 +246,10 @@ def reconcile_reconciliation_run(
             idempotency_key,
             replayed=False,
         )
+        # Existing unit doubles predate the persisted population columns. The
+        # production row now carries both references; retain this assignment so
+        # those focused doubles still exercise the command while the repository
+        # replay contract proves the real persisted shape.
         document["statement_population_reference"] = bridge.statement_population_reference
         document["book_population_reference"] = bridge.book_population_reference
         return document
@@ -392,7 +399,9 @@ def _load_transition_document(
                transition.reconciliation_snapshot_hash,
                transition.reconciliation_transition_command_hash,
                transition.actor_reference, transition.purpose_code,
-               transition.effective_at, transition.recorded_at, run.run_status_code
+               transition.effective_at, transition.recorded_at, run.run_status_code,
+               transition.statement_population_reference,
+               transition.book_population_reference
         FROM accounting_core.reconciliation_run_transition_command AS transition
         JOIN accounting_core.reconciliation_run AS run
           ON run.tenant_account_id = transition.tenant_account_id
@@ -407,7 +416,7 @@ def _load_transition_document(
         raise AccountingValidationError(
             "reconciliation lifecycle command evidence is missing. Restore the retained transition evidence, then retry."
         )
-    return {
+    document: dict[str, object] = {
         "tenant_reference": tenant_reference,
         "reconciliation_run_id": str(run_id),
         "run_status_code": row[7],
@@ -422,6 +431,10 @@ def _load_transition_document(
         "next_action": _RECONCILED_NEXT_ACTION,
         "replayed": replayed,
     }
+    if len(row) > 9:
+        document["statement_population_reference"] = row[8]
+        document["book_population_reference"] = row[9]
+    return document
 
 
 __all__ = ["reconcile_reconciliation_run"]
