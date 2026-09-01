@@ -4,6 +4,25 @@ BEGIN;
 -- status shortcut. It shares the tenant-wide reconciliation idempotency
 -- namespace so a key cannot identify both an opening, run-finalization, and
 -- exception-resolution command.
+--
+-- Migration 0019 permitted direct terminal exception status updates. Do not
+-- silently reinterpret those legacy rows as if they had maker-checker command
+-- evidence. Operators must audit/remediate them before this authority boundary
+-- is installed; the transaction abort leaves the previous schema unchanged.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM accounting_core.reconciliation_exception
+        WHERE resolution_status_code <> 'open'
+    ) THEN
+        RAISE EXCEPTION
+            'legacy terminal reconciliation exceptions require audited remediation before migration 0020 (reconciliation_exception_resolution_legacy_terminal_preflight)'
+            USING ERRCODE = '23514';
+    END IF;
+END;
+$$;
+
 ALTER TABLE accounting_core.reconciliation_command_identity
     DROP CONSTRAINT reconciliation_command_identity_command_family_code_check;
 ALTER TABLE accounting_core.reconciliation_command_identity
@@ -29,6 +48,8 @@ CREATE TABLE accounting_core.reconciliation_exception_resolution_command (
         CHECK (btrim(resolution_evidence_reference) <> ''),
     resolution_evidence_hash text NOT NULL
         CHECK (resolution_evidence_hash ~ '^sha256:[0-9a-f]{64}$'),
+    source_payload_hash text NOT NULL
+        CHECK (source_payload_hash ~ '^sha256:[0-9a-f]{64}$'),
     reconciliation_exception_resolution_command_hash text NOT NULL
         CHECK (
             reconciliation_exception_resolution_command_hash
@@ -160,7 +181,7 @@ BEGIN
 
     IF NEW.effective_at < exception_effective_at THEN
         RAISE EXCEPTION
-            'exception resolution effective time cannot precede the exception (reconciliation_exception_resolution_time)'
+            'reconciliation exception resolution effective time cannot precede the exception (reconciliation_exception_resolution_time)'
             USING ERRCODE = '23514';
     END IF;
 
@@ -175,6 +196,7 @@ BEGIN
         'reconciliation_run_id', NEW.reconciliation_run_id::text,
         'resolution_evidence_hash', NEW.resolution_evidence_hash,
         'resolution_evidence_reference', NEW.resolution_evidence_reference,
+        'source_payload_hash', NEW.source_payload_hash,
         'target_resolution_status_code', NEW.target_resolution_status_code,
         'tenant_reference', tenant_reference,
         'effective_at', to_char(
@@ -219,48 +241,33 @@ CREATE TRIGGER reconciliation_exception_resolution_immutable_guard
     FOR EACH ROW
     EXECUTE FUNCTION accounting_core.reject_reconciliation_exception_resolution_mutation();
 
--- A terminal exception status has authority only when its immutable command is
--- already present in the same transaction. The command's deferred pair guard
--- prevents parking the command for a later raw status update.
+-- Exception control evidence is immutable from creation. A maker/checker command
+-- may change only resolution_status_code, and only when the matching immutable
+-- command is already present in the same transaction. Reassignment or other
+-- operational changes require a future named command rather than raw DML.
 CREATE OR REPLACE FUNCTION accounting_core.enforce_reconciliation_exception_resolution_authority()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 DECLARE
     matching_command_count integer;
-    command_exists boolean;
 BEGIN
-    SELECT EXISTS (
-        SELECT 1
-        FROM accounting_core.reconciliation_exception_resolution_command AS command
-        WHERE command.tenant_account_id = OLD.tenant_account_id
-          AND command.reconciliation_run_id = OLD.reconciliation_run_id
-          AND command.reconciliation_exception_id = OLD.reconciliation_exception_id
-    )
-    INTO command_exists;
-
     IF TG_OP = 'DELETE' THEN
-        IF command_exists THEN
-            RAISE EXCEPTION
-                'resolved reconciliation exception evidence is immutable (reconciliation_exception_resolution_immutable)'
-                USING ERRCODE = '23514';
-        END IF;
-        RETURN OLD;
+        RAISE EXCEPTION
+            'reconciliation exception evidence is immutable from creation (reconciliation_exception_evidence_immutable)'
+            USING ERRCODE = '23514';
     END IF;
 
-    IF command_exists
-       AND (
-           NEW.tenant_account_id IS DISTINCT FROM OLD.tenant_account_id
-           OR NEW.reconciliation_run_id IS DISTINCT FROM OLD.reconciliation_run_id
-           OR NEW.reconciliation_exception_id IS DISTINCT FROM OLD.reconciliation_exception_id
-           OR NEW.exception_code IS DISTINCT FROM OLD.exception_code
-           OR NEW.owner_reference IS DISTINCT FROM OLD.owner_reference
-           OR NEW.next_action IS DISTINCT FROM OLD.next_action
-           OR NEW.effective_at IS DISTINCT FROM OLD.effective_at
-           OR NEW.recorded_at IS DISTINCT FROM OLD.recorded_at
-       ) THEN
+    IF NEW.tenant_account_id IS DISTINCT FROM OLD.tenant_account_id
+       OR NEW.reconciliation_run_id IS DISTINCT FROM OLD.reconciliation_run_id
+       OR NEW.reconciliation_exception_id IS DISTINCT FROM OLD.reconciliation_exception_id
+       OR NEW.exception_code IS DISTINCT FROM OLD.exception_code
+       OR NEW.owner_reference IS DISTINCT FROM OLD.owner_reference
+       OR NEW.next_action IS DISTINCT FROM OLD.next_action
+       OR NEW.effective_at IS DISTINCT FROM OLD.effective_at
+       OR NEW.recorded_at IS DISTINCT FROM OLD.recorded_at THEN
         RAISE EXCEPTION
-            'resolved reconciliation exception evidence is immutable (reconciliation_exception_resolution_immutable)'
+            'reconciliation exception evidence is immutable from creation (reconciliation_exception_evidence_immutable)'
             USING ERRCODE = '23514';
     END IF;
 
