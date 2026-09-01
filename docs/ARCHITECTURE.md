@@ -35,7 +35,7 @@ Metering and billing remain authoritative for usage, pricing, invoice intent, pa
 | `integration_outbox` | Transactional publication evidence and append-only audit history |
 | `tax_interface` | VAT register and fail-closed HomeTax submission evidence; no NTS transport in this foundation |
 | `bank_statement_registry` | Immutable camt.053.001.14 statement/entry evidence, bank-account-to-book mapping, and host artifact locators |
-| `reconciliation_run_control` | Idempotent evaluating-run command identity over immutable statement evidence and active bank-account assignment; no matching, approval, close, or posting authority |
+| `reconciliation_run_control` | Idempotent evaluating-run command identity over immutable statement evidence and active bank-account assignment; reviewed run finalization and maker-checker exception-resolution commands; no journal posting, period close, or accounting-policy authority |
 
 ## Persistence and migration order
 
@@ -59,11 +59,14 @@ The PostgreSQL 18 foundation is installed in order:
 16. `database/migrations/0016_reconciliation_approval_evidence.sql` — records immutable human reconciliation decisions and object-storage source-payload provenance, binds them to a database-computed candidate/allocation snapshot before a match can become terminal, and refuses unbound legacy terminal rows during upgrade.
 17. `database/migrations/0017_reconciliation_approval_lock_order.sql` — repairs the approval-evidence trigger to acquire the parent match row before its snapshot advisory lock, closing the approval/allocation row-advisory deadlock cycle.
 18. `database/migrations/0018_bank_statement_balance_evidence.sql` — preserves exact numeric camt.053 balance facts, including typed effective date/time distinct from statement period and system recording time, as immutable, tenant-scoped evidence for reconciliation bridge reads.
-19. `database/migrations/0019_reconciliation_run_command_evidence.sql` — records immutable tenant-scoped run-command idempotency, source hash/reference, and the statement bound to an evaluating reconciliation scope.
+19. `database/migrations/0019_reconciliation_run_command_evidence.sql` — records immutable tenant-scoped run-command idempotency, source hash/reference, and the statement bound to an evaluating reconciliation scope; adds evidence-derived run-finalization command authority and the shared reconciliation command-identity registry.
+20. `database/migrations/0020_reconciliation_exception_resolution_command.sql` — replaces mutable terminal exception status as authority with one immutable tenant/run/exception maker-checker command, shared idempotency identity, retained evidence digest, database-owned command hash, atomic terminal-state pairing, forced RLS, and lifecycle-finalization verification.
 
 `0005_closed_period_guard.sql` makes `accounting_closing_writer` a `NOLOGIN` capability role. A soft-closed insert is admitted only when the session login is a member of that role **and** the transaction-local journal classification is `period_closing`, `adjusting`, or `reversal`. The GUC alone is not authority. Hard-closed periods reject every later journal insert.
 
 Deferred constraint triggers recompute persisted journal lines at commit. A durable journal must have at least one line and exact debit and credit totals must match. Application validation is defense in depth, not the only balance control.
+
+`0020_reconciliation_exception_resolution_command.sql` keeps exception review inside the reconciliation aggregate. A direct `open -> resolved/superseded` row update is rejected unless a matching immutable command exists in the same transaction; the command and terminal status must commit as a pair, and terminal exception evidence freezes afterward. Final reconciliation accepts a terminal exception only when its target status agrees with the retained command. Exception resolution does not post a journal: any correcting journal remains a separate General Ledger command.
 
 ## Runtime identity boundary
 
@@ -114,8 +117,9 @@ The current HTTP / library surface includes:
 - receivable aging, payable aging and unapplied-cash rollforward;
 - income statement, balance sheet, changes in equity, cash-flow and statement packages;
 - period-close package and VAT period register;
-- fail-closed HomeTax submission evidence and receipt history.
-- reconciliation-run command/read APIs (`accept_reconciliation_run`, `lookup_reconciliation_run`) over immutable statement and assignment evidence; these surfaces evaluate/run reconciliation only and never post journals or close periods.
+- fail-closed HomeTax submission evidence and receipt history;
+- reconciliation-run command/read APIs (`accept_reconciliation_run`, `lookup_reconciliation_run`) over immutable statement and assignment evidence;
+- reviewed reconciliation finalization (`reconcile_reconciliation_run`) and maker-checker exception resolution (`resolve_reconciliation_exception`) as library command boundaries. Neither posts journals nor closes periods.
 
 The reconciliation close-package projection is a read-only evidence manifest. Its
 schema-versioned payload carries the complete approved match-evidence population,
