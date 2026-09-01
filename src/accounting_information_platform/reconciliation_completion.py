@@ -41,17 +41,20 @@ def _canonical_sha256(payload: object) -> str:
 
 
 def _parse_uuid(value: object, field_name: str) -> UUID:
-    """Return one UUID command identity or fail before database access."""
+    """Return one lowercase hyphenated UUID identity or fail before database access."""
+    message = (
+        f"{field_name} must be a canonical UUID string. "
+        "Supply the recorded run identity, then retry."
+    )
     if not isinstance(value, str) or not value or value.strip() != value:
-        raise AccountingValidationError(
-            f"{field_name} must be a canonical UUID string. Supply the recorded run identity, then retry."
-        )
+        raise AccountingValidationError(message)
     try:
-        return UUID(value)
+        parsed = UUID(value)
     except ValueError as exc:
-        raise AccountingValidationError(
-            f"{field_name} must be a canonical UUID string. Supply the recorded run identity, then retry."
-        ) from exc
+        raise AccountingValidationError(message) from exc
+    if str(parsed) != value:
+        raise AccountingValidationError(message)
+    return parsed
 
 
 def _require_completion_command(
