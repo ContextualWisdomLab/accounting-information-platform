@@ -26,6 +26,7 @@ _RECONCILED_NEXT_ACTION = (
     "Use this reconciled run as review evidence; period close still requires its "
     "separately authorized close command."
 )
+_TRANSITION_HASH_SENTINEL = "sha256:" + "0" * 64
 
 
 def reconcile_reconciliation_run(
@@ -158,11 +159,7 @@ def reconcile_reconciliation_run(
                 "reconciliation run cannot be finalized because its database-owned book-to-bank "
                 "bridge does not tie exactly. Resolve the source difference or exception, then retry."
             ) from error
-        authoritative_currency_code = (
-            str(run_row[1])
-            if len(run_row) > 1
-            else str(getattr(bridge, "currency_code", ""))
-        )
+        authoritative_currency_code = str(run_row[1] or "")
         if not authoritative_currency_code:
             raise AccountingValidationError(
                 "reconciliation run currency evidence is missing. Restore the immutable run scope, then retry."
@@ -209,12 +206,17 @@ def reconcile_reconciliation_run(
                 snapshot_hash,
                 bridge.statement_population_reference,
                 bridge.book_population_reference,
-                "sha256:" + "0" * 64,
+                _TRANSITION_HASH_SENTINEL,
                 actor_reference,
                 purpose_code,
                 effective_at,
             ),
         ).fetchone()
+        if transition_hash == _TRANSITION_HASH_SENTINEL:
+            raise AccountingValidationError(
+                "reconciliation transition command hash was not assigned by the database. "
+                "Restore the reconciliation lifecycle trigger, verify the migration, then retry."
+            )
         connection.execute(
             """
             UPDATE accounting_core.reconciliation_run
@@ -238,7 +240,7 @@ def reconcile_reconciliation_run(
                 transition_hash,
             ),
         )
-        document = _load_transition_document(
+        return _load_transition_document(
             connection,
             tenant_id,
             tenant_reference,
@@ -246,13 +248,6 @@ def reconcile_reconciliation_run(
             idempotency_key,
             replayed=False,
         )
-        # Existing unit doubles predate the persisted population columns. The
-        # production row now carries both references; retain this assignment so
-        # those focused doubles still exercise the command while the repository
-        # replay contract proves the real persisted shape.
-        document["statement_population_reference"] = bridge.statement_population_reference
-        document["book_population_reference"] = bridge.book_population_reference
-        return document
 
 
 def _require_transition_command(payload: object, tenant_reference: str) -> Mapping[str, object]:
@@ -416,7 +411,7 @@ def _load_transition_document(
         raise AccountingValidationError(
             "reconciliation lifecycle command evidence is missing. Restore the retained transition evidence, then retry."
         )
-    document: dict[str, object] = {
+    return {
         "tenant_reference": tenant_reference,
         "reconciliation_run_id": str(run_id),
         "run_status_code": row[7],
@@ -428,13 +423,11 @@ def _load_transition_document(
         "purpose_code": row[4],
         "effective_at": _format_timestamp(row[5]),
         "recorded_at": _format_timestamp(row[6]),
+        "statement_population_reference": row[8],
+        "book_population_reference": row[9],
         "next_action": _RECONCILED_NEXT_ACTION,
         "replayed": replayed,
     }
-    if len(row) > 9:
-        document["statement_population_reference"] = row[8]
-        document["book_population_reference"] = row[9]
-    return document
 
 
 __all__ = ["reconcile_reconciliation_run"]
