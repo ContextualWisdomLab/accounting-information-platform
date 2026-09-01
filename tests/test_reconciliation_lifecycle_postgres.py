@@ -72,6 +72,46 @@ class ReconciliationLifecyclePostgresTests(unittest.TestCase):
             "effective_at": "2026-09-01T12:00:00Z",
         }
 
+    def _tenant_id(self, connection: psycopg.Connection) -> object:
+        """Resolve the internal tenant identity for the opened run."""
+        return connection.execute(
+            """
+            SELECT tenant_account_id
+            FROM accounting_core.reconciliation_run
+            WHERE reconciliation_run_id = %s
+            """,
+            (self.opened["reconciliation_run_id"],),
+        ).fetchone()[0]
+
+    def _insert_transition_only(self, connection: psycopg.Connection) -> None:
+        """Insert a syntactically valid command without its required paired status update."""
+        connection.execute(
+            """
+            INSERT INTO accounting_core.reconciliation_run_transition_command (
+                tenant_account_id,
+                reconciliation_run_id,
+                reconciliation_transition_idempotency_key,
+                target_run_status_code,
+                reconciliation_snapshot_hash,
+                reconciliation_transition_command_hash,
+                actor_reference,
+                purpose_code,
+                effective_at
+            )
+            VALUES (%s, %s, %s, 'reconciled', %s, %s,
+                    'urn:cwl:principal:test_controller',
+                    'month_end_reconciliation', %s)
+            """,
+            (
+                self._tenant_id(connection),
+                self.opened["reconciliation_run_id"],
+                f"direct-transition-{uuid.uuid4().hex}",
+                "sha256:" + "d" * 64,
+                "sha256:" + "0" * 64,
+                datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc),
+            ),
+        )
+
     def test_direct_status_update_without_transition_command_fails(self) -> None:
         """Raw status SQL is not an owner-control path for reconciled authority."""
         with psycopg.connect(posting.DATABASE_URL) as connection:
@@ -85,6 +125,42 @@ class ReconciliationLifecyclePostgresTests(unittest.TestCase):
                     (self.opened["reconciliation_run_id"],),
                 )
                 connection.commit()
+
+    def test_transition_command_cannot_commit_without_reconciled_status(self) -> None:
+        """A lifecycle command cannot be parked for a later raw status rewrite."""
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            self._insert_transition_only(connection)
+            with self.assertRaisesRegex(psycopg.Error, "commit atomically"):
+                connection.commit()
+            connection.rollback()
+
+    def test_pending_transition_command_freezes_review_evidence(self) -> None:
+        """Evidence cannot change after a transition command snapshots the run."""
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            self._insert_transition_only(connection)
+            with self.assertRaisesRegex(psycopg.Error, "evidence is frozen"):
+                connection.execute(
+                    """
+                    INSERT INTO accounting_core.reconciliation_exception (
+                        tenant_account_id,
+                        reconciliation_run_id,
+                        exception_code,
+                        owner_reference,
+                        next_action,
+                        effective_at,
+                        resolution_status_code
+                    )
+                    VALUES (%s, %s, 'late_exception',
+                            'urn:cwl:principal:test_controller',
+                            'Create a new reconciliation run.', %s, 'open')
+                    """,
+                    (
+                        self._tenant_id(connection),
+                        self.opened["reconciliation_run_id"],
+                        datetime(2026, 9, 1, 12, 1, tzinfo=timezone.utc),
+                    ),
+                )
+            connection.rollback()
 
     def test_supported_command_persists_transition_outbox_and_freezes_review_state(self) -> None:
         """One exact command transitions atomically, replays, and freezes reviewed evidence."""
@@ -143,14 +219,6 @@ class ReconciliationLifecyclePostgresTests(unittest.TestCase):
             ).fetchone()
             self.assertEqual(outbox[0], "reconciliation_run_reconciled")
             self.assertEqual(outbox[1], first["reconciliation_transition_command_hash"])
-            tenant_id = connection.execute(
-                """
-                SELECT tenant_account_id
-                FROM accounting_core.reconciliation_run
-                WHERE reconciliation_run_id = %s
-                """,
-                (self.opened["reconciliation_run_id"],),
-            ).fetchone()[0]
             with self.assertRaisesRegex(psycopg.Error, "evidence is frozen"):
                 connection.execute(
                     """
@@ -167,7 +235,7 @@ class ReconciliationLifecyclePostgresTests(unittest.TestCase):
                             'Create a new reconciliation run.', %s, 'open')
                     """,
                     (
-                        tenant_id,
+                        self._tenant_id(connection),
                         self.opened["reconciliation_run_id"],
                         datetime(2026, 9, 1, 12, 2, tzinfo=timezone.utc),
                     ),
