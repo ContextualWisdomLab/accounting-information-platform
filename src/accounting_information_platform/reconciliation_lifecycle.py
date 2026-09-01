@@ -104,7 +104,7 @@ def reconcile_reconciliation_run(
 
         run_row = connection.execute(
             """
-            SELECT run_status_code
+            SELECT run_status_code, currency_code
             FROM accounting_core.reconciliation_run
             WHERE tenant_account_id = %s AND reconciliation_run_id = %s
             FOR UPDATE
@@ -117,6 +117,7 @@ def reconcile_reconciliation_run(
                 "reconciliation_run_id, then retry the lifecycle transition."
             )
         current_status = str(run_row[0])
+        currency_code = str(run_row[1])
         if current_status == "reconciled":
             existing = connection.execute(
                 """
@@ -175,6 +176,7 @@ def reconcile_reconciliation_run(
         snapshot_hash = _transition_snapshot_hash(
             run_id,
             str(opening_command[0]),
+            currency_code,
             bridge,
             match_state,
             exception_state,
@@ -331,16 +333,17 @@ def _validate_review_control_state(
 def _transition_snapshot_hash(
     run_id: UUID,
     run_command_hash: str,
+    currency_code: str,
     bridge: object,
     match_state: tuple[tuple[str, str, str, str], ...],
     exception_state: tuple[tuple[str, str, str], ...],
 ) -> str:
-    """Bind exact populations, bridge arithmetic, and review state to one digest."""
+    """Bind run scope, exact populations, bridge arithmetic, and review state to one digest."""
     payload = {
         "book_closing_balance": str(bridge.book_closing_balance),
         "book_opening_balance": str(bridge.book_opening_balance),
         "book_population_reference": bridge.book_population_reference,
-        "currency_code": bridge.currency_code,
+        "currency_code": currency_code,
         "exception_state": exception_state,
         "match_state": match_state,
         "outstanding_bank_items": str(bridge.outstanding_bank_items),
