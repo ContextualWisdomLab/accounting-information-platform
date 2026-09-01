@@ -504,31 +504,42 @@ AS $$
 DECLARE
     transition_count integer;
 BEGIN
-    IF NEW.run_status_code = 'reconciled'
-       AND OLD.run_status_code IS DISTINCT FROM 'reconciled' THEN
-        PERFORM accounting_core.acquire_reconciliation_run_lifecycle_lock(
-            NEW.tenant_account_id,
-            NEW.reconciliation_run_id
-        );
+    IF NEW.run_status_code IS NOT DISTINCT FROM OLD.run_status_code THEN
+        RETURN NEW;
+    END IF;
 
-        IF OLD.run_status_code NOT IN ('evaluating', 'review_required') THEN
-            RAISE EXCEPTION
-                'unsupported reconciliation status transition to reconciled (reconciliation_lifecycle_state)'
-                USING ERRCODE = '23514';
-        END IF;
+    -- This migration introduces exactly one named status command: reconciliation.
+    -- Other lifecycle targets must arrive with their own command evidence and a
+    -- deliberate evolution of this state-machine guard; raw SQL is never that
+    -- authority, including attempts to move a reconciled run away from evidence.
+    IF NEW.run_status_code <> 'reconciled' THEN
+        RAISE EXCEPTION
+            'reconciliation run status changes require a named lifecycle command (reconciliation_lifecycle_target_forbidden)'
+            USING ERRCODE = '42501';
+    END IF;
 
-        SELECT count(*)
-        INTO transition_count
-        FROM accounting_core.reconciliation_run_transition_command AS transition
-        WHERE transition.tenant_account_id = NEW.tenant_account_id
-          AND transition.reconciliation_run_id = NEW.reconciliation_run_id
-          AND transition.target_run_status_code = 'reconciled';
+    PERFORM accounting_core.acquire_reconciliation_run_lifecycle_lock(
+        NEW.tenant_account_id,
+        NEW.reconciliation_run_id
+    );
 
-        IF transition_count <> 1 THEN
-            RAISE EXCEPTION
-                'reconciled status requires exactly one immutable lifecycle command (reconciliation_lifecycle_command_required)'
-                USING ERRCODE = '23514';
-        END IF;
+    IF OLD.run_status_code NOT IN ('evaluating', 'review_required') THEN
+        RAISE EXCEPTION
+            'unsupported reconciliation status transition to reconciled (reconciliation_lifecycle_state)'
+            USING ERRCODE = '23514';
+    END IF;
+
+    SELECT count(*)
+    INTO transition_count
+    FROM accounting_core.reconciliation_run_transition_command AS transition
+    WHERE transition.tenant_account_id = NEW.tenant_account_id
+      AND transition.reconciliation_run_id = NEW.reconciliation_run_id
+      AND transition.target_run_status_code = 'reconciled';
+
+    IF transition_count <> 1 THEN
+        RAISE EXCEPTION
+            'reconciled status requires exactly one immutable lifecycle command (reconciliation_lifecycle_command_required)'
+            USING ERRCODE = '23514';
     END IF;
     RETURN NEW;
 END;
