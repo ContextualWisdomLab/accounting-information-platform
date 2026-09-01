@@ -7,10 +7,10 @@ Accepted
 ## Context
 
 Tenant authentication identifies the accounting scope but does not establish that a caller may
-read a report, post a proposal, reverse a journal, complete reconciliation review, close a period,
-publish an outbox event, or submit tax evidence. PostgreSQL role and forced-RLS controls remain
-necessary database defenses, but they do not replace an application decision made before a route
-invokes domain work.
+read a report, post a proposal, reverse a journal, resolve a reviewed reconciliation exception,
+complete reconciliation review, close a period, publish an outbox event, or submit tax evidence.
+PostgreSQL role and forced-RLS controls remain necessary database defenses, but they do not replace
+an application decision made before a route invokes domain work.
 
 The authorization contract must also evolve as a versioned policy. Adding a new high-impact
 operation while continuing to emit the predecessor policy identifier would make immutable audit
@@ -38,20 +38,21 @@ holds hard-close authority receives the caller-useful 400 validation response on
 authorization-decision evidence has been written. Invalid structure never bypasses authorization
 or writes journal/close/outbox facts.
 
-Authorization policy `accounting-authorization-v2` adds the high-impact operation
-`complete_reconciliation` with the distinct permission `accounting.complete_reconciliation`.
-Posting, read, soft/hard-close, bank-ingest, outbox and tax permissions do not imply this permission.
-An `agent` principal is denied this operation by the same default high-impact restriction even if
-its untrusted context contains a copied permission string. This policy entry is deliberately
-reserved before a buyer-facing reconciliation-completion transport is introduced; registering the
-operation grants no route and no database capability by itself.
+Authorization policy `accounting-authorization-v3` retains the high-impact operation
+`complete_reconciliation` with permission `accounting.complete_reconciliation` and adds the
+separate high-impact operation `resolve_reconciliation_exception` with permission
+`accounting.resolve_reconciliation_exception`. Posting, read, soft/hard-close, bank-ingest,
+outbox, tax, reconciliation-completion, and exception-resolution permissions are non-equivalent;
+none implies another. An `agent` principal is denied both reconciliation operations by the same
+default high-impact restriction even if its untrusted context contains a copied permission string.
+These policy entries are deliberately reserved before their buyer-facing transports are exposed;
+registering an operation grants no route and no database capability by itself.
 
-The reconciliation-completion application permission remains separate from the database
-`accounting_reconciliation_completer` capability that is owned by the later reconciliation
-completion migration. A trusted application allow decision and a tenant-bound runtime connection
-with the purpose-limited database capability are both required once the route exists. Neither
-control substitutes for the other, and reconciliation completion remains separate from fiscal-
-period close authority.
+Reconciliation-completion and exception-resolution application permissions remain separate from
+the database capabilities owned by their respective reconciliation migrations. A trusted
+application allow decision and a tenant-bound runtime connection with the matching purpose-limited
+database capability are both required once a route exists. Neither control substitutes for the
+other, and neither reconciliation operation grants fiscal-period close or journal-posting authority.
 
 Every routed decision is appended to the tenant-scoped, forced-RLS
 `accounting_integration.authorization_decision_record` table. The record keeps the policy version,
@@ -67,31 +68,21 @@ The standalone runner has no request-principal resolver by default and therefore
 
 ## Consequences
 
-- Catalog readers do not implicitly receive posting, reconciliation-completion, or close authority.
-- Reconciliation completion has its own permission and remains a high-impact operation denied to
-  model/agent principals by default.
-- Extending the operation/permission registry changes the durable policy version, so audit rows can
-  identify which exact authorization vocabulary was evaluated.
+- Catalog readers do not implicitly receive posting, reconciliation-completion, exception-resolution, or close authority.
+- Reconciliation completion and exception resolution each have distinct permissions and remain high-impact operations denied to model/agent principals by default.
+- Extending the operation/permission registry changes the durable policy version, so audit rows can identify which exact authorization vocabulary was evaluated.
 - A service or human principal can receive explicit permissions through the same host-neutral port.
 - Agent/model contexts are denied high-impact operations by default.
-- Authorization evidence is durable and tenant isolated, while journal and command evidence keeps
-  its existing transaction boundaries.
-- Deployment must grant the runtime login INSERT access to the authorization evidence table and
-  provision the host adapter before enabling accounting routes.
-- The future reconciliation-completion transport must require both
-  `accounting.complete_reconciliation` and the separately provisioned database completion
-  capability; neither tenant authentication nor one of the other accounting permissions is enough.
+- Authorization evidence is durable and tenant isolated, while journal and command evidence keeps its existing transaction boundaries.
+- Deployment must grant the runtime login INSERT access to the authorization evidence table and provision the host adapter before enabling accounting routes.
+- Future reconciliation transports must require both their exact application permission and the separately provisioned matching database capability; tenant authentication or another accounting permission is insufficient.
 
 ## Alternatives rejected
 
-- Treating `X-CWL-Tenant-Reference` as a bearer credential would make tenant identity equal to
-  authority.
-- Reading permission claims from request JSON or model text would let an untrusted caller promote
-  itself.
-- Reusing `accounting.hard_close_period`, `accounting.post_proposal`, or a generic writer grant for
-  reconciliation completion would collapse distinct business authorities and weaken audit meaning.
-- Adding the reconciliation operation without bumping `AUTHORIZATION_POLICY_VERSION` would make
-  immutable decision evidence unable to distinguish the predecessor and expanded policy sets.
+- Treating `X-CWL-Tenant-Reference` as a bearer credential would make tenant identity equal to authority.
+- Reading permission claims from request JSON or model text would let an untrusted caller promote itself.
+- Reusing `accounting.hard_close_period`, `accounting.post_proposal`, `accounting.complete_reconciliation`, or a generic writer grant for exception resolution would collapse distinct business authorities and weaken audit meaning.
+- Adding either reconciliation operation without bumping `AUTHORIZATION_POLICY_VERSION` would make immutable decision evidence unable to distinguish the predecessor and expanded policy sets.
 - Storing raw JWTs or full policy documents would add unnecessary secret and PII exposure.
 
 ## Evidence
@@ -102,6 +93,9 @@ The standalone runner has no request-principal resolver by default and therefore
 `tests/test_reconciliation_completion_authorization_contract.py` proves that reconciliation
 completion has one explicit versioned permission, does not inherit posting/close/read authority,
 and remains denied to agent principals by default.
+`tests/test_reconciliation_exception_resolution_authorization_contract.py` proves the same
+independent boundary for reviewed exception resolution, including denial of completion, posting,
+close, and read grants and default denial of agent principals.
 
 ## Research and standards traceability
 
