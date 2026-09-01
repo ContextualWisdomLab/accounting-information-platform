@@ -2,13 +2,15 @@
 
 - Status: Accepted
 - Date: 2026-09-01
-- Scope: accounting-information-platform modular monolith
+- Scope: accounting-information-platform modular monolith and Context Fabric contract boundary
 
 ## Context
 
 The repository grew from a compact accounting foundation into posting, reversal, period control, reporting, tax evidence and bank reconciliation. Its physical Python package remains deliberately flat in several places (`accept.py`, `core.py`, `persistence.py`, `http_api.py`) while accounting responsibilities have become materially different. Folder names alone therefore no longer communicate data authority or dependency direction.
 
 That ambiguity is risky for an accounting system of record. In particular, a commercial source proposal must not become an authoritative journal by crossing an application-layer shortcut; reconciliation approval must not become posting authority; provider DTOs must not become accounting domain entities; persistence/HTTP adapters must not own accounting invariants; and a generic `core` or `shared` bucket must not silently become a Shared Kernel.
+
+The Context Fabric introduces one deliberately small cross-repository contract boundary. `ContextualWisdomLab/context-graph-contracts` owns the provider-neutral canonical object/authority references, truth status/origin, valid/system time, provenance, Context Assertion, CloudEvents/schema/conformance/admission grammar. `ContextualWisdomLab/enterprise-architecture-core` is the authoritative EA Decision Plane. Accounting remains authoritative for journal, ledger, period, reconciliation and financial-control facts and must not copy that authority into either Context Fabric repository.
 
 The repository also has to evolve without a cosmetic bulk reorganization that breaks current migrations, API/event contracts, package imports, exact-head tests or active dependency-root work.
 
@@ -49,9 +51,17 @@ Bank/provider models terminate at `bank_statement_registry` ACLs. `reconciliatio
 
 `tax_interface` consumes authoritative accounting evidence through implemented contracts without claiming external tax-system authority or statutory certification.
 
-### Shared Kernel
+### Context Fabric Shared Kernel and EA Decision Plane
 
-No Shared Kernel is declared between ContextualWisdomLab repositories. The Python package root is a deployment container, not a Shared Kernel. Cross-repository reuse requires a separately owned, versioned published package/schema/API/event contract. A future Shared Kernel requires an ADR naming joint owners, compatibility rules, release policy and an exit strategy.
+`ContextualWisdomLab/context-graph-contracts` is the **minimal cross-repository Shared Kernel** for Context Fabric interoperability. Accounting may consume only a released `cwl-context-contracts` distribution and its versioned Context Assertion, CloudEvents, schema/profile, conformance and admission contracts. An open PR head, mutable branch, copied schema, generated model-only result or predecessor conformance artifact is not a dependency release.
+
+The Shared Kernel carries canonical reference grammar, authority/truth status and origin, valid/system time, provenance and event/schema evidence. It never owns or contains accounting journal/ledger balances, posting authority, reconciliation approval authority, accounting policy or close authority. Accounting domain facts remain in accounting-information-platform and are projected outward only as the minimum architecture/change evidence required by a released contract.
+
+`ContextualWisdomLab/enterprise-architecture-core` consumes those released contract assertions/events as the authoritative EA Decision Plane. Accounting sends architecture/change evidence only: application/service/runtime/database/integration ownership and lifecycle changes, contract/profile versions, technology/provider versions where operationally material, risk/remediation references and source provenance. EA Core must not become a replica of accounting journal/ledger balances or other financial facts.
+
+There is no direct source dependency on either foreign application repository. The only permitted cross-repository Python dependency is the released contract-only `cwl-context-contracts` package when integration code is added. Direct `context_graph_contracts`, `enterprise_architecture_core` or other product implementation imports and cross-service SQL remain forbidden. Contract version drift or missing conformance/admission evidence fails closed at the integration boundary rather than being silently coerced.
+
+The accounting Python package root remains a deployment container, not a DDD Shared Kernel. Existing `core.py` likewise remains transitional debt and does not acquire Shared Kernel status merely because Context Fabric has a separately owned contract-only Shared Kernel.
 
 ### Physical-path migration rule
 
@@ -65,8 +75,11 @@ New unrelated domain behavior must not be added to generic buckets named `utils`
 
 - Domain rules do not depend on HTTP/framework/provider/ORM DTO implementations.
 - Persistence and transport adapters may depend on domain/application contracts; domain code does not depend on persistence/transport implementations.
-- Direct SQL against another service's application tables is forbidden.
+- Direct SQL against another service's application tables is forbidden; all cross-service SQL is forbidden.
 - Foreign service/provider models remain behind ACLs and published contracts.
+- Released `cwl-context-contracts` types may be used only at the Context Fabric interoperability boundary and may not become accounting aggregate/entity implementations.
+- Context Assertion/CloudEvents publication must preserve accounting authority, truth status, valid/system time and provenance and must not promote proposal/inferred evidence to authoritative accounting truth.
+- EA projection carries architecture/change evidence only and excludes journal/ledger balances and other financial facts.
 - New production modules must have one explicit primary bounded-context owner.
 - Cross-context orchestration must be explicit and must not create a second source of accounting truth.
 
@@ -76,9 +89,11 @@ These rules are ratcheted where currently machine-checkable by `tests/test_ddd_a
 
 The immediate benefit is an explicit authority model without destabilizing current accounting/reconciliation work. Reviewers can now distinguish architectural debt from intentional boundaries, and new modules cannot silently add generic ownership or direct foreign-application coupling.
 
-The cost is that the repository temporarily has an intentional mismatch between logical bounded contexts and several flat physical files. This is accepted only as migration debt. The Context Map must stay current, and touched coherent slices should reduce rather than increase that debt.
+The Context Fabric boundary also becomes explicit before code consumes it. Accounting can later emit provider-neutral architecture/change assertions without inventing a second schema or coupling directly to EA Core, while Context Graph Contracts remains contract-only and EA Core remains authoritative only for architecture decisions.
 
-The fitness test is a ratchet, not proof that DDD separation is complete. It deliberately records existing exceptions instead of declaring false conformance.
+The cost is that the repository temporarily has an intentional mismatch between logical bounded contexts and several flat physical files, and no immutable `cwl-context-contracts` release is yet assumed by this ADR. Until an exact released contract with conformance/admission evidence exists, the runtime integration remains fail-closed/not implemented rather than pinning an open PR or copying provisional schemas.
+
+The fitness test is a ratchet, not proof that DDD separation or Context Fabric integration is complete. It deliberately records existing exceptions and required future contract evidence instead of declaring false conformance.
 
 ## Rejected alternatives
 
@@ -88,11 +103,17 @@ The fitness test is a ratchet, not proof that DDD separation is complete. It del
 
 **Split into services immediately.** Rejected because current transaction/deployment cohesion and unresolved foundation work do not justify distributed transaction and operational complexity. Service extraction requires stable responsibility and reuse boundaries proven by a later ADR.
 
-**Create a cross-repository shared domain package now.** Rejected because it would couple independent owners and blur accounting authority. Published contracts are the integration boundary.
+**Create an accounting-owned cross-repository domain package.** Rejected because it would couple independent product authorities and blur accounting ownership. The Context Fabric Shared Kernel is deliberately restricted to the separately owned provider-neutral `context-graph-contracts` contract grammar; accounting domain objects remain local.
+
+**Pin Context Fabric to an open PR/branch or copy provisional schemas.** Rejected because mutable predecessor evidence cannot support an authoritative integration boundary. Accounting waits for a released `cwl-context-contracts` package with applicable conformance/admission evidence.
+
+**Write financial facts directly into EA Core.** Rejected because EA Core is the architecture Decision Plane, not a financial ledger or reconciliation store. Architecture/change assertions reference the accounting system and its contracts without duplicating journal/ledger balances.
 
 ## Verification
 
 Before this decision can reach a protected branch, the exact unchanged head must pass the repository's applicable unit/integration, PostgreSQL, exact 100% owned production statement/branch coverage, documentation/repository contract, SAST/security, package/SBOM/provenance and review gates. `tests/test_ddd_architecture_fitness.py` must pass on the same exact head.
+
+When Context Fabric runtime integration is implemented, acceptance must additionally pin an immutable released `cwl-context-contracts` version, execute the released conformance/admission boundary, reject schema/profile/version drift, preserve authority/truth/time/provenance fields, prove no cross-service SQL or foreign implementation import, and verify that emitted EA evidence excludes journal/ledger balances and other financial facts.
 
 No passing predecessor result, queued/skipped workflow or model-only review is evidence for this ADR.
 
