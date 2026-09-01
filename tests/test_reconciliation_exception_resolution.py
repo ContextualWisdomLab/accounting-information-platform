@@ -21,6 +21,7 @@ _EFFECTIVE_AT = datetime(2026, 9, 2, 0, 20, tzinfo=timezone.utc)
 _RECORDED_AT = datetime(2026, 9, 2, 0, 21, tzinfo=timezone.utc)
 _EVIDENCE_REFERENCE = f"urn:cwl:evidence:reconciliation_exception:{_EXCEPTION_ID}:review"
 _EVIDENCE_HASH = "sha256:" + "a" * 64
+_SOURCE_PAYLOAD_HASH = "sha256:" + "c" * 64
 _COMMAND_HASH = "sha256:" + "b" * 64
 
 
@@ -53,6 +54,7 @@ class _Connection:
             "resolved",
             _EVIDENCE_REFERENCE,
             _EVIDENCE_HASH,
+            _SOURCE_PAYLOAD_HASH,
             _COMMAND_HASH,
             "urn:cwl:principal:independent_reviewer",
             "bank_reconciliation_exception_review",
@@ -149,6 +151,11 @@ def _command(**overrides: object) -> dict[str, object]:
     return command
 
 
+def _source_hash(command: dict[str, object] | None = None) -> str:
+    """Return the production canonical payload identity for a test command."""
+    return resolution._source_payload_hash(_command() if command is None else command)
+
+
 class ReconciliationExceptionResolutionTests(unittest.TestCase):
     """Exercise validation, maker-checker authority, replay, and atomic write intent."""
 
@@ -205,21 +212,25 @@ class ReconciliationExceptionResolutionTests(unittest.TestCase):
         self.assertLess(status_index, outbox_index)
         outbox_parameters = _Ledger.connection.executed[outbox_index][1]
         self.assertEqual(outbox_parameters[1], "reconciliation_exception_resolved")
+        insert_parameters = _Ledger.connection.executed[command_index][1]
+        self.assertEqual(insert_parameters[7], _source_hash())
 
     def test_superseded_command_uses_supersession_event(self) -> None:
         """Supersession is a distinct terminal decision and event, not a resolution alias."""
+        command = _command(resolution_status_code="superseded")
         _Ledger.connection.resolution_document = (
             _RESOLUTION_ID,
             "superseded",
             _EVIDENCE_REFERENCE,
             _EVIDENCE_HASH,
+            _source_hash(command),
             _COMMAND_HASH,
             "urn:cwl:principal:independent_reviewer",
             "bank_reconciliation_exception_review",
             _EFFECTIVE_AT,
             _RECORDED_AT,
         )
-        result = self._resolve(_command(resolution_status_code="superseded"))
+        result = self._resolve(command)
         self.assertEqual(result["resolution_status_code"], "superseded")
         outbox_parameters = next(
             parameters
@@ -236,12 +247,26 @@ class ReconciliationExceptionResolutionTests(unittest.TestCase):
             "resolved",
             _EVIDENCE_REFERENCE,
             _EVIDENCE_HASH,
+            _source_hash(),
             "urn:cwl:principal:independent_reviewer",
             "bank_reconciliation_exception_review",
             _EFFECTIVE_AT,
         )
+        _Ledger.connection.resolution_document = (
+            _RESOLUTION_ID,
+            "resolved",
+            _EVIDENCE_REFERENCE,
+            _EVIDENCE_HASH,
+            _source_hash(),
+            _COMMAND_HASH,
+            "urn:cwl:principal:independent_reviewer",
+            "bank_reconciliation_exception_review",
+            _EFFECTIVE_AT,
+            _RECORDED_AT,
+        )
         result = self._resolve()
         self.assertTrue(result["replayed"])
+        self.assertEqual(result["source_payload_hash"], _source_hash())
         sql = "\n".join(query for query, _parameters in _Ledger.connection.executed)
         self.assertNotIn("UPDATE accounting_core.reconciliation_exception", sql)
         self.assertNotIn("INSERT INTO accounting_integration.outbox_event", sql)
@@ -253,7 +278,8 @@ class ReconciliationExceptionResolutionTests(unittest.TestCase):
             _EXCEPTION_ID,
             "resolved",
             _EVIDENCE_REFERENCE,
-            "sha256:" + "c" * 64,
+            "sha256:" + "d" * 64,
+            _source_hash(),
             "urn:cwl:principal:independent_reviewer",
             "bank_reconciliation_exception_review",
             _EFFECTIVE_AT,
@@ -273,7 +299,6 @@ class ReconciliationExceptionResolutionTests(unittest.TestCase):
         for run_row, message in cases:
             with self.subTest(message=message):
                 _Ledger.connection = _Connection()
-                _Ledger.connection.run_row = run_row
                 with self.assertRaisesRegex(AccountingValidationError, message):
                     self._resolve()
 
@@ -340,6 +365,7 @@ class ReconciliationExceptionResolutionTests(unittest.TestCase):
             (_command(resolution_evidence_reference="evidence"), "CWL URN"),
             (_command(resolution_evidence_hash="sha256:short"), "canonical sha256"),
             (_command(effective_at="2026-09-02 00:20:00"), "canonical UTC"),
+            (_command(request_context={"bad": {1, 2}}), "JSON-compatible"),
         )
         for payload, message in cases:
             with self.subTest(message=message):
