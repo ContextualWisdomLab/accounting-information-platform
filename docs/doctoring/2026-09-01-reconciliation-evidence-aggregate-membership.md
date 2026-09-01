@@ -15,13 +15,16 @@ PostgreSQL 18 documents that a row-level `BEFORE UPDATE` trigger runs for every 
 
 This is preferable to locking both the source and destination runs. Re-parenting is not a legitimate Reconciliation Review operation, so dual-run locking would add a lock-order contract for an operation the domain must reject anyway.
 
+Because migration `0019_reconciliation_run_command_evidence.sql` is still unreleased on the stacked dependency path, the source repair is folded into that migration's existing lifecycle guard definition. This avoids retaining a redundant temporary `0020` successor while preserving the rule that an applied migration is never rewritten: if `0019` reaches protected integration before this child, the change must be carried forward in a new migration instead.
+
 ## RED → GREEN traceability
 
 | Requirement | Evidence |
 | --- | --- |
 | Reconciled evidence cannot escape its source aggregate | `tests/test_reconciliation_lifecycle_aggregate_membership_postgres.py` opens a run, records a resolved exception, reconciles the run, creates a second evaluating run, and attempts raw SQL reassignment |
-| Aggregate identity is database-owned | `0020_reconciliation_evidence_aggregate_membership.sql` compares `OLD` and `NEW` tenant/run keys in the existing lifecycle trigger function and raises `reconciliation_lifecycle_scope_immutable` |
-| Same-run lifecycle concurrency remains unchanged | The replacement function retains `acquire_reconciliation_run_lifecycle_lock()` and the existing reconciled/transition checks |
+| Aggregate identity is database-owned | `database/migrations/0019_reconciliation_run_command_evidence.sql` compares `OLD` and `NEW` tenant/run keys and raises `reconciliation_lifecycle_scope_immutable` |
+| Guard ordering is a repository contract | `tests/test_reconciliation_evidence_aggregate_membership_contract.py` requires the membership comparison to occur before lifecycle-lock selection |
+| Same-run lifecycle concurrency remains unchanged | The lifecycle guard retains `acquire_reconciliation_run_lifecycle_lock()` and the existing reconciled/transition checks |
 | No cross-run lock-order heuristic is introduced | Illegal re-parenting fails before any destination lifecycle lock is acquired |
 | DDD semantics remain explicit | ADR 0061 defines immutable evidence-to-`reconciliation_run` membership and append/supersede correction semantics |
 
