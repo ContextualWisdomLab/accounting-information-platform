@@ -36,7 +36,7 @@ class ReconciliationCompletionAuthorizationContractTests(unittest.TestCase):
 
     def test_completion_operation_has_one_explicit_versioned_permission(self) -> None:
         """The completion command must not inherit posting, close, or tenant authority."""
-        self.assertEqual(AUTHORIZATION_POLICY_VERSION, "accounting-authorization-v2")
+        self.assertEqual(AUTHORIZATION_POLICY_VERSION, "accounting-authorization-v3")
         self.assertEqual(permission_for_operation(_OPERATION), _PERMISSION)
         decision = require_authorization(
             _principal(_PERMISSION),
