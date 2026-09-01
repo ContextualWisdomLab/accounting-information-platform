@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 import psycopg
 
-from accounting_information_platform import accept_reconciliation_run
+from accounting_information_platform import IdempotencyConflictError, accept_reconciliation_run
 from tests import test_postgres_posting as posting
 from tests.test_reconciliation_run_api import ReconciliationRunApiTests
 
@@ -86,6 +86,33 @@ class ReconciliationCrossCommandIdentityPostgresTests(unittest.TestCase):
                     ),
                 )
             connection.rollback()
+
+    def test_opening_api_reports_lifecycle_owned_key_as_domain_conflict(self) -> None:
+        """A durable lifecycle key never leaks a provider-specific unique violation."""
+        key = f"lifecycle-owned-{uuid.uuid4().hex}"
+        _statement, command = self.fixture._statement_and_command()
+        command["reconciliation_idempotency_key"] = key
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            tenant_id = self._tenant_id(connection)
+            connection.execute(
+                """
+                INSERT INTO accounting_core.reconciliation_command_identity (
+                    tenant_account_id,
+                    reconciliation_command_identity_key,
+                    command_family_code
+                )
+                VALUES (%s, %s, 'run_reconciliation')
+                """,
+                (tenant_id, key),
+            )
+            connection.commit()
+
+        with self.assertRaisesRegex(IdempotencyConflictError, "lifecycle"):
+            accept_reconciliation_run(
+                command,
+                posting.DATABASE_URL,
+                self.fixture.case.policy.tenant_reference,
+            )
 
     def test_shared_identity_serializes_concurrent_claims(self) -> None:
         """Concurrent transactions leave exactly one durable tenant/key identity."""
