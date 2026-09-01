@@ -9,7 +9,7 @@
 
 A reconciliation run is created as `evaluating`, while authority-bearing close-package construction correctly requires the locked run to be `reconciled`. Direct SQL status mutation is not a commercial owner-control path: it does not bind who completed the review, why they were authorized to do so, which immutable statement/book populations were evaluated, which approved match population was current, whether exceptions were resolved, or which exact book-to-bank bridge was accepted.
 
-A generic `PATCH run_status_code` endpoint would also make an internal state representation part of the buyer contract and create an unsafe promotion primitive. The domain needs one named business command whose only authority is to complete reconciliation review from database-owned evidence.
+A generic `PATCH run_status_code` endpoint would also make an internal state representation part of the buyer contract and create an unsafe promotion primitive. The domain needs one named business command whose only authority is to complete reconciliation review from database-owned evidence. Application validation alone is insufficient for that authority boundary: the ordinary runtime must not gain reconciliation-completion power merely because it can reach the database.
 
 ## Decision
 
@@ -28,6 +28,12 @@ The command accepts only:
 The caller does **not** supply population identities, approval digests, bridge values, or a target status. In one PostgreSQL `REPEATABLE READ` transaction the owner implementation locks the run, verifies that it is `evaluating` or `review_required`, rejects open reconciliation exceptions and unreviewed `proposed` matches, reconstructs the database-owned statement/book populations and exact bridge through the same domain service used by authority-bearing close packages, reads the current approved match/approval snapshot population, and derives deterministic SHA-256 identities for that evidence.
 
 The immutable command stores `statement_population_hash`, `book_population_hash`, `approval_population_hash`, and `bridge_evidence_hash` together with the purpose, actor, idempotency key, and complete command hash. The command is inserted before the run status changes. A database trigger rejects the first transition to `reconciled` unless the old state is `evaluating` or `review_required` and matching completion-command evidence exists in the same tenant/run transaction. The trigger independently rejects open exceptions and pending proposed matches. The completion command itself is guarded by the same state/exception/pending-match preconditions, forced RLS, uniqueness, and an immutability trigger.
+
+### Purpose-limited database authority
+
+Migration `0020_reconciliation_completion_command.sql` creates `accounting_reconciliation_completer` as a `NOLOGIN` capability role and reasserts `NOLOGIN` on every migration. The role receives only the mutation privileges needed by this bounded command: insert/read completion-command evidence, update `reconciliation_run.run_status_code`, and append the transactional outbox event. Deployment must grant membership to a separately authenticated, tenant-bound runtime identity used for reconciliation completion; ordinary posting/read runtimes do not inherit it automatically.
+
+Both command insertion and a first transition to `reconciled` evaluate `pg_has_role(session_user, 'accounting_reconciliation_completer', 'MEMBER')`. A caller-controlled GUC or application `SET ROLE` is not authority, and the migration never performs `SET ROLE accounting_reconciliation_completer`. This follows the existing soft-close capability pattern while keeping reconciliation completion distinct from `accounting_closing_writer`: reconciliation completion does not grant journal or fiscal-period close powers.
 
 The same transaction appends an `accounting_integration.outbox_event` with event type `reconciliation_run.reconciled`. An exact retry of the same idempotency key replays the immutable command without reinterpreting later mutable state; a changed command under the same key fails with `IdempotencyConflictError`, and the unique tenant/run command prevents a second key from replacing the completion that already reconciled the run.
 
@@ -55,16 +61,20 @@ This ADR governs only the two arrows into `reconciled`. It does not invent polic
 5. The book-to-bank bridge must have zero unexplained difference under exact Decimal arithmetic before the completion command can be recorded.
 6. Exact idempotent retry replays immutable evidence. Changed command identity under the same key fails closed.
 7. Completion, status transition, and transactional-outbox evidence commit atomically.
-8. Reconciliation completion does not grant journal posting, reversal, fiscal-period close, tax filing, or accounting-policy authority.
-9. `actor_reference` and `completion_purpose_code` are retained as audit facts. A later purpose-bound Keyverse/PDP integration may strengthen admission, but must not reinterpret or overwrite this evidence.
+8. The authenticated PostgreSQL `session_user` must be a member of `accounting_reconciliation_completer` for command insertion and transition; ordinary runtime or caller-controlled session state is insufficient.
+9. `accounting_reconciliation_completer` is `NOLOGIN` and is separate from `accounting_closing_writer`; neither capability implies the other.
+10. Reconciliation completion does not grant journal posting, reversal, fiscal-period close, tax filing, or accounting-policy authority.
+11. `actor_reference` and `completion_purpose_code` are retained as audit facts. A later purpose-bound Keyverse/PDP integration may strengthen admission, but must not reinterpret or overwrite this evidence.
 
 ## API layering
 
 The Python domain API is `accept_reconciliation_completion`. The buyer-facing stdlib HTTP transport is deliberately implemented as a stacked successor so the database/domain authority change and transport routing have independently reviewable diffs. The HTTP contract will expose `POST /reconciliation-completions`; it must not expose a generic run-status mutation endpoint.
 
+The production connection used by that route must be both tenant-bound through `runtime_tenant_binding` and explicitly granted `accounting_reconciliation_completer`. Deployment grant/revoke is an owner-control operation and must be retained as operational evidence. The application does not grant itself this role.
+
 ## Consequences
 
-The product gains a lawful path from normal API-created runs to the state required by close-package construction. Controllers can distinguish 'review completed from authoritative evidence' from an internal status write, and downstream audit/event consumers receive an atomic transition event. The cost is an additional durable command table and one evidence-hashing read path, accepted because correctness and auditability dominate latency for this control action.
+The product gains a lawful path from normal API-created runs to the state required by close-package construction. Controllers can distinguish “review completed from authoritative evidence” from an internal status write, and downstream audit/event consumers receive an atomic transition event. The cost is an additional durable command table, a purpose-specific database capability, and one evidence-hashing read path, accepted because correctness, least privilege, and auditability dominate latency for this control action.
 
 ## Research and standards traceability
 
