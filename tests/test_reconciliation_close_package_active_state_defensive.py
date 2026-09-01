@@ -14,6 +14,9 @@ from accounting_information_platform.reconciliation_close_package import (
     ReconciliationEvidenceReference,
     _database_owned_match_state_evidence,
 )
+from accounting_information_platform.reconciliation_read_model import (
+    ReconciliationCloseReviewScope,
+)
 
 
 class _Rows:
@@ -182,7 +185,12 @@ class ReconciliationClosePackageActiveStateDefensiveTests(unittest.TestCase):
     def _package_input() -> ReconciliationClosePackageInput:
         projection = SimpleNamespace(
             tenant_account_reference="tenant-1",
+            legal_entity_reference="entity-1",
+            accounting_book_reference="book-1",
+            bank_account_assignment_reference="bank-assignment-1",
             reconciliation_run_reference="run-1",
+            currency_code="KRW",
+            exception_count=0,
         )
         return ReconciliationClosePackageInput(
             projection=projection,
@@ -233,6 +241,13 @@ class ReconciliationClosePackageActiveStateDefensiveTests(unittest.TestCase):
             for evidence in package_input.evidence_references
             if evidence.evidence_kind_code == "statement_artifact"
         )
+        authoritative_scope = ReconciliationCloseReviewScope(
+            tenant_account_reference="tenant-1",
+            legal_entity_reference="entity-1",
+            accounting_book_reference="book-1",
+            bank_account_assignment_reference="bank-assignment-1",
+            currency_code="KRW",
+        )
         authoritative_state = ReconciliationEvidenceReference(
             evidence_kind_code="reconciliation_match_state",
             evidence_reference="database-owned:approved",
@@ -249,7 +264,11 @@ class ReconciliationClosePackageActiveStateDefensiveTests(unittest.TestCase):
             mock.patch.object(
                 close_package,
                 "_database_owned_run_source_evidence",
-                return_value=(authoritative_run, authoritative_artifact),
+                return_value=(
+                    authoritative_run,
+                    authoritative_artifact,
+                    authoritative_scope,
+                ),
             ) as run_loader,
             mock.patch.object(
                 close_package,
@@ -276,6 +295,14 @@ class ReconciliationClosePackageActiveStateDefensiveTests(unittest.TestCase):
             "tenant-id",
             tenant_reference="tenant-1",
             reconciliation_run_reference="run-1",
+        )
+        self.assertEqual(
+            _Ledger.connection.parameters,
+            ("tenant-id", "run-1"),
+        )
+        self.assertIn(
+            "accounting_core.reconciliation_exception",
+            _Ledger.connection.query or "",
         )
         verified_input = verified_builder.call_args.args[0]
         self.assertEqual(
