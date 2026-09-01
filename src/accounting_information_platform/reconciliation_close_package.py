@@ -971,7 +971,8 @@ def _database_owned_run_source_evidence(
          AND accounting_book.accounting_book_id = run_record.accounting_book_id
         WHERE run_record.tenant_account_id = %s
           AND run_record.reconciliation_run_id::text = %s
-        FOR SHARE OF run_record, run_command, statement_record, statement_artifact,
+        FOR UPDATE OF run_record
+        FOR SHARE OF run_command, statement_record, statement_artifact,
                      legal_entity, accounting_book
         """,
         (tenant_account_id, reconciliation_run_reference),
@@ -1081,13 +1082,6 @@ def build_reconciliation_close_package(
             tenant_reference=tenant_reference,
             tenant_account_id=tenant_account_id,
         )
-        authoritative_state = _database_owned_match_state_evidence(
-            connection,
-            tenant_account_id,
-            tenant_reference=tenant_reference,
-            reconciliation_run_reference=package_input.projection.reconciliation_run_reference,
-            approval_evidence=package_input.approval_evidence,
-        )
         (
             authoritative_run,
             authoritative_artifact,
@@ -1097,6 +1091,13 @@ def build_reconciliation_close_package(
             tenant_account_id,
             tenant_reference=tenant_reference,
             reconciliation_run_reference=package_input.projection.reconciliation_run_reference,
+        )
+        authoritative_state = _database_owned_match_state_evidence(
+            connection,
+            tenant_account_id,
+            tenant_reference=tenant_reference,
+            reconciliation_run_reference=package_input.projection.reconciliation_run_reference,
+            approval_evidence=package_input.approval_evidence,
         )
         projection_scope = ReconciliationCloseReviewScope(
             tenant_account_reference=package_input.projection.tenant_account_reference,
