@@ -57,13 +57,14 @@ class ProductGapBaselineContractTests(unittest.TestCase):
             "Neither branch policy nor a passing predecessor head authorizes a protection bypass",
             text,
         )
-        self.assertNotIn("`main` is protected by an AIP repository-scoped active gate", text)
-        self.assertNotRegex(
-            text,
-            re.compile(
-                r"central\s+required\s+workflows\s+and\s+AIP\s+Accounting\s+Foundation\s+CI\s+are\s+now\s+applied\s+to\s+`main`"
-            ),
+        volatile_claim_patterns = (
+            r"`main`\s+(?:is|has)\s+[^\n]{0,120}\b(?:active|applied|protected)\b",
+            r"\bcentral\s+required\s+workflows?\b[^\n]{0,120}\b(?:is|are|remain)\b[^\n]{0,80}\b(?:active|applied)\b",
+            r"\bactive\s+(?:repository|organization)?-?scoped\s+(?:gate|ruleset)\b",
         )
+        for pattern in volatile_claim_patterns:
+            with self.subTest(pattern=pattern):
+                self.assertNotRegex(text, re.compile(pattern, re.IGNORECASE))
 
     def test_database_isolation_reference_names_one_exact_publication(self) -> None:
         """The PVLDB citation must not be mixed with the separate extended-version title."""
@@ -74,6 +75,19 @@ class ProductGapBaselineContractTests(unittest.TestCase):
         )
         self.assertIn("https://doi.org/10.14778/3785297.3785300", text)
         self.assertNotIn("Fast verification of strong database isolation (Extended Version)", text)
+
+    def test_baseline_requires_reconciliation_completion_permission_before_route(self) -> None:
+        """The durable gap must require the completion permission instead of implying it already exists."""
+        text = BASELINE.read_text(encoding="utf-8")
+        required = (
+            "add an explicit `complete_reconciliation` → "
+            "`accounting.complete_reconciliation` permission before exposing the buyer-facing lifecycle route"
+        )
+        self.assertIn(required, text)
+        self.assertNotIn(
+            "preserve the explicit `complete_reconciliation` → `accounting.complete_reconciliation` permission",
+            text,
+        )
 
     def test_changelog_does_not_claim_an_unpublished_tagged_release(self) -> None:
         """Changelog history must not claim a tag or release absent from GitHub."""
