@@ -12,6 +12,9 @@ from accounting_information_platform.reconciliation_close_package import (
     ReconciliationClosePackageInput,
     ReconciliationEvidenceReference,
 )
+from accounting_information_platform.reconciliation_read_model import (
+    ReconciliationCloseReviewScope,
+)
 from tests.test_reconciliation_close_package_cutoff_binding_red import (
     ReconciliationClosePackageCutoffBindingTests,
 )
@@ -37,7 +40,7 @@ class _Ledger:
 
 
 class ReconciliationClosePackageAuthoritativeRunTests(unittest.TestCase):
-    """Reject caller-shaped run cutoffs, run digests, and statement artifacts."""
+    """Reject caller-shaped run cutoffs, scope, run digests, and statement artifacts."""
 
     def setUp(self) -> None:
         fixture = ReconciliationClosePackageCutoffBindingTests(
@@ -61,6 +64,13 @@ class ReconciliationClosePackageAuthoritativeRunTests(unittest.TestCase):
             evidence_reference="artifact-store:bank-statement-1",
             sha256_digest="sha256:" + "a" * 64,
         )
+        self.authoritative_scope = ReconciliationCloseReviewScope(
+            tenant_account_reference=self.projection.tenant_account_reference,
+            legal_entity_reference=self.projection.legal_entity_reference,
+            accounting_book_reference=self.projection.accounting_book_reference,
+            bank_account_assignment_reference=self.projection.bank_account_assignment_reference,
+            currency_code=self.projection.currency_code,
+        )
         retained = tuple(
             evidence
             for evidence in fixture._evidence()
@@ -78,7 +88,11 @@ class ReconciliationClosePackageAuthoritativeRunTests(unittest.TestCase):
     def _build(self, package_input: ReconciliationClosePackageInput) -> object:
         sentinel = object()
         run_loader = mock.Mock(
-            return_value=(self.authoritative_run, self.authoritative_artifact)
+            return_value=(
+                self.authoritative_run,
+                self.authoritative_artifact,
+                self.authoritative_scope,
+            )
         )
         with (
             mock.patch.object(close_package, "PostgresPostingLedger", _Ledger),
@@ -91,6 +105,11 @@ class ReconciliationClosePackageAuthoritativeRunTests(unittest.TestCase):
                 close_package,
                 "_database_owned_run_source_evidence",
                 run_loader,
+            ),
+            mock.patch.object(
+                close_package,
+                "_validate_database_owned_exception_state",
+                create=True,
             ),
             mock.patch.object(
                 close_package,
@@ -129,6 +148,28 @@ class ReconciliationClosePackageAuthoritativeRunTests(unittest.TestCase):
                     knowledge_cutoff="2026-08-28T08:41:55Z",
                 )
             )
+
+    def test_public_builder_rejects_projection_scope_not_owned_by_run(self) -> None:
+        for field_name, value in (
+            ("legal_entity_reference", "entity-substituted"),
+            ("accounting_book_reference", "book-substituted"),
+            ("bank_account_assignment_reference", "bank-assignment-substituted"),
+            ("currency_code", "USD"),
+        ):
+            with self.subTest(field_name=field_name):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "database-owned reconciliation run scope",
+                ):
+                    self._build(
+                        replace(
+                            self.package_input,
+                            projection=replace(
+                                self.projection,
+                                **{field_name: value},
+                            ),
+                        )
+                    )
 
     def test_public_builder_rejects_unrelated_run_digest(self) -> None:
         substituted_run = replace(
