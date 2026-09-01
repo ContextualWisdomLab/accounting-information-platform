@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "src" / "accounting_information_platform"
 CONTEXT_MAP = ROOT / "docs" / "CONTEXT_MAP.md"
 UBIQUITOUS_LANGUAGE = ROOT / "docs" / "UBIQUITOUS_LANGUAGE.md"
+CONTEXT_MAP_ADR = ROOT / "docs" / "adr" / "0059-accounting-bounded-context-map.md"
 
 BOUND_CONTEXTS = {
     "proposal_intake",
@@ -90,6 +91,17 @@ class DddArchitectureFitnessTests(unittest.TestCase):
         self.assertIn("Published Language", text)
         self.assertIn("transitional-debt", text)
         self.assertIn("does not authorize another service to write accounting tables", text)
+        self.assertIn("0059-accounting-bounded-context-map.md", text)
+
+    def test_accepted_adr_owns_the_context_map_decision(self) -> None:
+        """Keep the Context Map tied to a reviewable accepted architecture decision."""
+        text = CONTEXT_MAP_ADR.read_text(encoding="utf-8")
+        self.assertIn("Status: Accepted", text)
+        self.assertIn("No Shared Kernel is declared", text)
+        self.assertIn("Anti-Corruption Layer", text)
+        self.assertIn("published proposal/API/event contracts", text)
+        for context in BOUND_CONTEXTS:
+            self.assertIn(f"`{context}`", text)
 
     def test_every_top_level_production_module_has_explicit_physical_owner(self) -> None:
         """Require new modules to be assigned to a context in the code-current map."""
