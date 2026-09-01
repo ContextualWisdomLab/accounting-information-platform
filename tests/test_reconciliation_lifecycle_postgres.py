@@ -5,6 +5,7 @@ from __future__ import annotations
 import unittest
 import unittest.mock as mock
 from datetime import datetime, timezone
+from decimal import Decimal
 from types import SimpleNamespace
 import uuid
 
@@ -26,16 +27,16 @@ def _bridge(run_id: str) -> SimpleNamespace:
         statement_population_reference="sha256:" + "1" * 64,
         book_population_reference="sha256:" + "2" * 64,
         currency_code="KRW",
-        statement_opening_balance=100000,
-        statement_period_movements=15000,
-        statement_closing_balance=115000,
-        book_opening_balance=100000,
-        posted_cash_book_movements=0,
-        book_closing_balance=100000,
-        reconciled_book_balance=100000,
-        outstanding_bank_items=0,
-        outstanding_book_items=15000,
-        unexplained_difference=0,
+        statement_opening_balance=Decimal("100000.00"),
+        statement_period_movements=Decimal("15000.00"),
+        statement_closing_balance=Decimal("115000.00"),
+        book_opening_balance=Decimal("100000.00"),
+        posted_cash_book_movements=Decimal("0.00"),
+        book_closing_balance=Decimal("100000.00"),
+        reconciled_book_balance=Decimal("100000.00"),
+        outstanding_bank_items=Decimal("0.00"),
+        outstanding_book_items=Decimal("15000.00"),
+        unexplained_difference=Decimal("0.00"),
         status_code="reconciled",
     )
 
