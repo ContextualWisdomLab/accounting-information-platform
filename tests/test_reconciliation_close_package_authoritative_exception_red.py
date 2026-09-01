@@ -10,9 +10,6 @@ import psycopg
 
 from accounting_information_platform import reconciliation_close_package as close_package
 from accounting_information_platform.persistence import PostgresPostingLedger
-from accounting_information_platform.reconciliation_read_model import (
-    ReconciliationCloseReviewScope,
-)
 from tests import test_postgres_posting as posting
 from tests import test_reconciliation_candidate_allocation_persistence_red as allocation
 from tests.test_reconciliation_close_package_red import ReconciliationClosePackageTests
@@ -106,7 +103,7 @@ class ReconciliationClosePackageAuthoritativeExceptionTests(unittest.TestCase):
 
 
 class PostgresReconciliationClosePackageAuthoritativeStateTests(unittest.TestCase):
-    """Exercise run scope and unresolved-exception eligibility in real PostgreSQL."""
+    """Exercise run status and unresolved-exception eligibility in real PostgreSQL."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -150,38 +147,18 @@ class PostgresReconciliationClosePackageAuthoritativeStateTests(unittest.TestCas
                 projection=self.projection,
             )
 
-    def test_run_scope_loader_returns_persisted_accounting_scope(self) -> None:
+    def test_run_scope_loader_rejects_non_reconciled_run(self) -> None:
+        """Close-package source authority must reject an evaluating run."""
         ledger = self._ledger()
         with ledger._session() as connection:
             tenant_account_id = ledger._require_tenant(connection)
-            run_evidence, artifact_evidence, run_scope = (
+            with self.assertRaisesRegex(ValueError, "must be reconciled"):
                 close_package._database_owned_run_source_evidence(
                     connection,
                     tenant_account_id,
                     tenant_reference=self.fixture.case.policy.tenant_reference,
                     reconciliation_run_reference=str(self.fixture.run_reference),
                 )
-            )
-        self.assertEqual(
-            run_evidence.evidence_reference,
-            str(self.fixture.run_reference),
-        )
-        self.assertEqual(
-            artifact_evidence.sha256_digest,
-            self.fixture.statement_record["source_artifact_hash"],
-        )
-        self.assertEqual(
-            run_scope,
-            ReconciliationCloseReviewScope(
-                tenant_account_reference=self.fixture.case.policy.tenant_reference,
-                legal_entity_reference=self.fixture.case.policy.legal_entity_reference,
-                accounting_book_reference=self.fixture.case.policy.accounting_book_reference,
-                bank_account_assignment_reference=str(
-                    self.fixture.scope["bank_account_assignment_id"]
-                ),
-                currency_code="KRW",
-            ),
-        )
 
     def test_open_database_exception_blocks_clean_close_projection(self) -> None:
         self._validate()
