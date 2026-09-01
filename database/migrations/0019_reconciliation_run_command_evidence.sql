@@ -258,4 +258,333 @@ CREATE POLICY reconciliation_run_command_isolation
 
 REVOKE ALL ON accounting_core.reconciliation_run_command FROM PUBLIC;
 
+-- A reconciled status is authority-bearing close evidence. Persist a separate
+-- immutable lifecycle command rather than treating a direct status UPDATE as a
+-- supported owner-control path. The transition binds the exact source/review
+-- snapshot digest calculated by the application from database-owned facts plus
+-- actor, purpose, effective time, and idempotency evidence.
+CREATE TABLE accounting_core.reconciliation_run_transition_command (
+    reconciliation_run_transition_command_id uuid PRIMARY KEY DEFAULT uuidv7(),
+    tenant_account_id uuid NOT NULL,
+    reconciliation_run_id uuid NOT NULL,
+    reconciliation_transition_idempotency_key text NOT NULL
+        CHECK (btrim(reconciliation_transition_idempotency_key) <> ''),
+    target_run_status_code text NOT NULL
+        CHECK (target_run_status_code = 'reconciled'),
+    reconciliation_snapshot_hash text NOT NULL
+        CHECK (reconciliation_snapshot_hash ~ '^sha256:[0-9a-f]{64}$'),
+    reconciliation_transition_command_hash text NOT NULL
+        CHECK (reconciliation_transition_command_hash ~ '^sha256:[0-9a-f]{64}$'),
+    actor_reference text NOT NULL CHECK (btrim(actor_reference) <> ''),
+    purpose_code text NOT NULL CHECK (btrim(purpose_code) <> ''),
+    effective_at timestamptz NOT NULL,
+    recorded_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    FOREIGN KEY (tenant_account_id, reconciliation_run_id)
+        REFERENCES accounting_core.reconciliation_run (
+            tenant_account_id, reconciliation_run_id
+        ),
+    UNIQUE (tenant_account_id, reconciliation_run_transition_command_id),
+    UNIQUE (tenant_account_id, reconciliation_transition_idempotency_key),
+    UNIQUE (tenant_account_id, reconciliation_run_id, target_run_status_code)
+);
+
+CREATE INDEX reconciliation_run_transition_recorded_index
+    ON accounting_core.reconciliation_run_transition_command (
+        tenant_account_id,
+        reconciliation_run_id,
+        recorded_at,
+        reconciliation_run_transition_command_id
+    );
+
+CREATE OR REPLACE FUNCTION accounting_core.acquire_reconciliation_run_lifecycle_lock(
+    lifecycle_tenant_account_id uuid,
+    lifecycle_reconciliation_run_id uuid
+)
+RETURNS void
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    tenant_reference text;
+BEGIN
+    SELECT tenant_account_code
+    INTO tenant_reference
+    FROM accounting_core.tenant_account
+    WHERE tenant_account_id = lifecycle_tenant_account_id;
+
+    IF tenant_reference IS NULL THEN
+        RAISE EXCEPTION
+            'reconciliation lifecycle tenant is not recorded (reconciliation_lifecycle_scope)'
+            USING ERRCODE = '23514';
+    END IF;
+
+    PERFORM pg_advisory_xact_lock(
+        hashtext(tenant_reference),
+        hashtext('reconciliation_run_lifecycle:' || lifecycle_reconciliation_run_id::text)
+    );
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION accounting_core.assign_reconciliation_run_transition_hash()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    current_status text;
+    canonical_command jsonb;
+BEGIN
+    PERFORM accounting_core.acquire_reconciliation_run_lifecycle_lock(
+        NEW.tenant_account_id,
+        NEW.reconciliation_run_id
+    );
+
+    SELECT run.run_status_code
+    INTO current_status
+    FROM accounting_core.reconciliation_run AS run
+    WHERE run.tenant_account_id = NEW.tenant_account_id
+      AND run.reconciliation_run_id = NEW.reconciliation_run_id
+    FOR UPDATE;
+
+    IF current_status IS NULL THEN
+        RAISE EXCEPTION
+            'reconciliation lifecycle run is not recorded (reconciliation_lifecycle_scope)'
+            USING ERRCODE = '23514';
+    END IF;
+
+    IF current_status NOT IN ('evaluating', 'review_required') THEN
+        RAISE EXCEPTION
+            'only evaluating or review_required reconciliation runs may transition to reconciled (reconciliation_lifecycle_state)'
+            USING ERRCODE = '23514';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM accounting_core.reconciliation_exception AS exception
+        WHERE exception.tenant_account_id = NEW.tenant_account_id
+          AND exception.reconciliation_run_id = NEW.reconciliation_run_id
+          AND exception.resolution_status_code = 'open'
+    ) THEN
+        RAISE EXCEPTION
+            'reconciliation run has an open exception and cannot be finalized (reconciliation_lifecycle_exception)'
+            USING ERRCODE = '23514';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM accounting_core.reconciliation_match AS reviewed_match
+        WHERE reviewed_match.tenant_account_id = NEW.tenant_account_id
+          AND reviewed_match.reconciliation_run_id = NEW.reconciliation_run_id
+          AND reviewed_match.match_status_code = 'proposed'
+    ) THEN
+        RAISE EXCEPTION
+            'reconciliation run has an unreviewed proposed match and cannot be finalized (reconciliation_lifecycle_review)'
+            USING ERRCODE = '23514';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM accounting_core.reconciliation_match AS reviewed_match
+        LEFT JOIN accounting_core.reconciliation_approval AS approval
+          ON approval.tenant_account_id = reviewed_match.tenant_account_id
+         AND approval.reconciliation_run_id = reviewed_match.reconciliation_run_id
+         AND approval.reconciliation_match_id = reviewed_match.reconciliation_match_id
+        WHERE reviewed_match.tenant_account_id = NEW.tenant_account_id
+          AND reviewed_match.reconciliation_run_id = NEW.reconciliation_run_id
+          AND reviewed_match.match_status_code IN ('approved', 'rejected')
+          AND (
+              approval.reconciliation_approval_id IS NULL
+              OR approval.approval_decision_code IS DISTINCT FROM reviewed_match.match_status_code
+              OR approval.reconciliation_snapshot_hash IS DISTINCT FROM
+                 accounting_core.reconciliation_match_snapshot_hash(
+                     reviewed_match.tenant_account_id,
+                     reviewed_match.reconciliation_run_id,
+                     reviewed_match.reconciliation_match_id
+                 )
+          )
+    ) THEN
+        RAISE EXCEPTION
+            'reconciliation reviewed match lacks current decision-consistent approval evidence (reconciliation_lifecycle_review)'
+            USING ERRCODE = '23514';
+    END IF;
+
+    SELECT jsonb_build_object(
+        'actor_reference', NEW.actor_reference,
+        'effective_at', to_char(
+            NEW.effective_at AT TIME ZONE 'UTC',
+            'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+        ),
+        'opening_command_hash', opening_command.reconciliation_command_hash,
+        'purpose_code', NEW.purpose_code,
+        'reconciliation_idempotency_key', NEW.reconciliation_transition_idempotency_key,
+        'reconciliation_run_id', NEW.reconciliation_run_id::text,
+        'reconciliation_snapshot_hash', NEW.reconciliation_snapshot_hash,
+        'target_run_status_code', NEW.target_run_status_code,
+        'tenant_reference', tenant.tenant_account_code
+    )
+    INTO canonical_command
+    FROM accounting_core.reconciliation_run_command AS opening_command
+    JOIN accounting_core.tenant_account AS tenant
+      ON tenant.tenant_account_id = opening_command.tenant_account_id
+    WHERE opening_command.tenant_account_id = NEW.tenant_account_id
+      AND opening_command.reconciliation_run_id = NEW.reconciliation_run_id;
+
+    IF canonical_command IS NULL THEN
+        RAISE EXCEPTION
+            'reconciliation lifecycle opening command evidence is missing (reconciliation_lifecycle_provenance)'
+            USING ERRCODE = '23514';
+    END IF;
+
+    NEW.reconciliation_transition_command_hash := 'sha256:' || encode(
+        sha256(
+            convert_to(
+                'reconciliation_run_transition_command:v1|' || canonical_command::text,
+                'UTF8'
+            )
+        ),
+        'hex'
+    );
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER accounting_reconciliation_transition_hash_guard
+    BEFORE INSERT ON accounting_core.reconciliation_run_transition_command
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.assign_reconciliation_run_transition_hash();
+
+CREATE OR REPLACE FUNCTION accounting_core.reject_reconciliation_run_transition_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    RAISE EXCEPTION 'reconciliation lifecycle command evidence is immutable once recorded'
+        USING ERRCODE = 'check_violation';
+END;
+$$;
+
+CREATE TRIGGER reconciliation_run_transition_immutable_guard
+    BEFORE UPDATE OR DELETE ON accounting_core.reconciliation_run_transition_command
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.reject_reconciliation_run_transition_mutation();
+
+CREATE OR REPLACE FUNCTION accounting_core.enforce_reconciliation_run_reconciled_transition()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    transition_count integer;
+BEGIN
+    IF NEW.run_status_code = 'reconciled'
+       AND OLD.run_status_code IS DISTINCT FROM 'reconciled' THEN
+        PERFORM accounting_core.acquire_reconciliation_run_lifecycle_lock(
+            NEW.tenant_account_id,
+            NEW.reconciliation_run_id
+        );
+
+        IF OLD.run_status_code NOT IN ('evaluating', 'review_required') THEN
+            RAISE EXCEPTION
+                'unsupported reconciliation status transition to reconciled (reconciliation_lifecycle_state)'
+                USING ERRCODE = '23514';
+        END IF;
+
+        SELECT count(*)
+        INTO transition_count
+        FROM accounting_core.reconciliation_run_transition_command AS transition
+        WHERE transition.tenant_account_id = NEW.tenant_account_id
+          AND transition.reconciliation_run_id = NEW.reconciliation_run_id
+          AND transition.target_run_status_code = 'reconciled';
+
+        IF transition_count <> 1 THEN
+            RAISE EXCEPTION
+                'reconciled status requires exactly one immutable lifecycle command (reconciliation_lifecycle_command_required)'
+                USING ERRCODE = '23514';
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER accounting_reconciliation_run_transition_guard
+    BEFORE UPDATE OF run_status_code ON accounting_core.reconciliation_run
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.enforce_reconciliation_run_reconciled_transition();
+
+-- Serialize all evidence that can change reconciliation eligibility on the same
+-- run lifecycle lock. Once a run is reconciled its reviewed population is
+-- frozen; corrections require a new/superseding run rather than rewriting the
+-- source population behind close evidence.
+CREATE OR REPLACE FUNCTION accounting_core.guard_reconciled_run_evidence_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    lifecycle_tenant_account_id uuid;
+    lifecycle_reconciliation_run_id uuid;
+    current_status text;
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        lifecycle_tenant_account_id := OLD.tenant_account_id;
+        lifecycle_reconciliation_run_id := OLD.reconciliation_run_id;
+    ELSE
+        lifecycle_tenant_account_id := NEW.tenant_account_id;
+        lifecycle_reconciliation_run_id := NEW.reconciliation_run_id;
+    END IF;
+
+    PERFORM accounting_core.acquire_reconciliation_run_lifecycle_lock(
+        lifecycle_tenant_account_id,
+        lifecycle_reconciliation_run_id
+    );
+
+    SELECT run_status_code
+    INTO current_status
+    FROM accounting_core.reconciliation_run
+    WHERE tenant_account_id = lifecycle_tenant_account_id
+      AND reconciliation_run_id = lifecycle_reconciliation_run_id;
+
+    IF current_status = 'reconciled' THEN
+        RAISE EXCEPTION
+            'reconciled run evidence is frozen; create a new reconciliation run instead (reconciliation_lifecycle_frozen)'
+            USING ERRCODE = '23514';
+    END IF;
+
+    IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER accounting_reconciliation_lifecycle_candidate_guard
+    BEFORE INSERT OR UPDATE OR DELETE ON accounting_core.reconciliation_candidate
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.guard_reconciled_run_evidence_mutation();
+CREATE TRIGGER accounting_reconciliation_lifecycle_match_guard
+    BEFORE INSERT OR UPDATE OR DELETE ON accounting_core.reconciliation_match
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.guard_reconciled_run_evidence_mutation();
+CREATE TRIGGER accounting_reconciliation_lifecycle_statement_allocation_guard
+    BEFORE INSERT OR UPDATE OR DELETE ON accounting_core.statement_match_allocation
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.guard_reconciled_run_evidence_mutation();
+CREATE TRIGGER accounting_reconciliation_lifecycle_journal_allocation_guard
+    BEFORE INSERT OR UPDATE OR DELETE ON accounting_core.journal_match_allocation
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.guard_reconciled_run_evidence_mutation();
+CREATE TRIGGER accounting_reconciliation_lifecycle_approval_guard
+    BEFORE INSERT OR UPDATE OR DELETE ON accounting_core.reconciliation_approval
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.guard_reconciled_run_evidence_mutation();
+CREATE TRIGGER accounting_reconciliation_lifecycle_exception_guard
+    BEFORE INSERT OR UPDATE OR DELETE ON accounting_core.reconciliation_exception
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.guard_reconciled_run_evidence_mutation();
+
+ALTER TABLE accounting_core.reconciliation_run_transition_command ENABLE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.reconciliation_run_transition_command FORCE ROW LEVEL SECURITY;
+CREATE POLICY reconciliation_run_transition_command_isolation
+    ON accounting_core.reconciliation_run_transition_command
+    USING (tenant_account_id = accounting_core.current_tenant_account_id())
+    WITH CHECK (tenant_account_id = accounting_core.current_tenant_account_id());
+
+REVOKE ALL ON accounting_core.reconciliation_run_transition_command FROM PUBLIC;
+
 COMMIT;
