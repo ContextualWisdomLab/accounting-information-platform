@@ -5,7 +5,8 @@ BEGIN;
 -- Identity references are normalized CWL URNs and use the 255-octet authorization profile ceiling;
 -- raw external claims remain at the trusted identity-provider boundary. Operation/purpose limits
 -- mirror the executable code contract, permission is two bounded code components, and the existing
--- correlation evidence ceiling is enforced again at PostgreSQL so direct SQL cannot inflate storage.
+-- 512-character correlation evidence ceiling is enforced again at PostgreSQL so direct SQL cannot
+-- inflate storage while multibyte command identities retain the same contract as the HTTP boundary.
 CREATE TABLE accounting_integration.authorization_decision_record (
     authorization_decision_record_id uuid PRIMARY KEY DEFAULT uuidv7(),
     tenant_account_id uuid NOT NULL,
@@ -61,7 +62,7 @@ CREATE TABLE accounting_integration.authorization_decision_record (
         CHECK (btrim(policy_version) <> '' AND octet_length(policy_version) <= 64),
     decision_code text NOT NULL CHECK (decision_code IN ('allowed', 'denied')),
     correlation_reference text NOT NULL
-        CHECK (btrim(correlation_reference) <> '' AND octet_length(correlation_reference) <= 512),
+        CHECK (btrim(correlation_reference) <> '' AND char_length(correlation_reference) <= 512),
     recorded_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     FOREIGN KEY (tenant_account_id)
         REFERENCES accounting_core.tenant_account (tenant_account_id),
