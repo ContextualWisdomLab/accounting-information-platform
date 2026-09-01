@@ -5,7 +5,7 @@
 
 ## Research question
 
-What concurrency and transaction contract is required so a reconciliation run can move from `evaluating`/`review_required` to `reconciled` without blessing stale, partially reviewed, or caller-shaped accounting evidence?
+What concurrency and transaction contract is required so a reconciliation run can move from `evaluating`/`review_required` to `reconciled` without blessing stale, partially reviewed, caller-shaped, or pre-terminal accounting evidence?
 
 ## Authoritative findings
 
@@ -26,6 +26,7 @@ PostgreSQL Global Development Group. (2026). *PostgreSQL 18 documentation: Syste
 | Requirement | Implementation boundary | Falsifiable evidence |
 | --- | --- | --- |
 | One coherent authority snapshot | `reconcile_reconciliation_run()` sets `REPEATABLE READ`, acquires `reconciliation_run_lifecycle:<run_id>` before the first data query, then reads run/review/source state | Unit SQL-order assertion plus exact PostgreSQL lifecycle test and existing database-owned close-projection tests |
+| Aggregate initial state | Migration lifecycle trigger rejects every new `reconciliation_run` whose initial `run_status_code` is not `evaluating` | Real PostgreSQL raw `INSERT ... run_status_code='reconciled'` must fail with `reconciliation_lifecycle_initial_state` before deferred provenance could make a forged terminal run durable |
 | Legal state edge | `reconciliation_run` row lock + migration status guard permits only `evaluating`/`review_required` → `reconciled`; every other changed target is rejected until a separate named command evolves the state machine | Raw SQL into `reconciled` without transition evidence and raw SQL into `not_reconciled` without a named command must both fail |
 | Durable command identity | `reconciliation_run_transition_command` stores tenant/run/idempotency/snapshot/actor/purpose/effective time and database-owned command hash | Exact replay returns same receipt; changed key evidence conflicts |
 | Review completeness | Service and database transition trigger reject proposed matches and approved/rejected matches without decision-consistent approval snapshot | Unit cases and migration trigger contract |
@@ -47,11 +48,17 @@ The repair follows the existing authority model instead of widening the bridge h
 
 Review of the sibling completion implementation exposed a second source-real authority gap in this branch: the database trigger originally guarded only transitions whose *new* value was `reconciled`. Migration `0013` intentionally freezes reconciliation scope but does not make `run_status_code` immutable, so a sufficiently privileged SQL session could otherwise move an `evaluating` run directly to `review_required`, `not_reconciled`, or `superseded`, or move a reconciled run away from its evidence-bearing state, without any named lifecycle command or immutable command evidence.
 
-The repair was carried over rather than treating the concurrent branch as a conflict. `enforce_reconciliation_run_reconciled_transition()` now first permits only a no-op status assignment; every changed target other than `reconciled` raises `reconciliation_lifecycle_target_forbidden`. The existing evidence-derived `reconciled` edge retains its advisory lock, legal predecessor-state check, and exactly-one transition-command requirement. Future `review_required`, `not_reconciled`, or `superseded` behavior must arrive as deliberate named commands with their own evidence and permissions and then explicitly evolve this database state machine. A real PostgreSQL regression attempts raw `evaluating` → `not_reconciled` and requires a database rejection containing `named lifecycle command`.
+The repair was carried over rather than treating the concurrent branch as a conflict. `enforce_reconciliation_run_reconciled_transition()` permits only a no-op update without a command; every changed target other than `reconciled` raises `reconciliation_lifecycle_target_forbidden`. The existing evidence-derived `reconciled` edge retains its advisory lock, legal predecessor-state check, and exactly-one transition-command requirement. Future `review_required`, `not_reconciled`, or `superseded` behavior must arrive as deliberate named commands with their own evidence and permissions and then explicitly evolve this database state machine. A real PostgreSQL regression attempts raw `evaluating` → `not_reconciled` and requires a database rejection containing `named lifecycle command`.
+
+### Initial-state authority
+
+A further attack path remained after update hardening: because migration `0013` allows the complete status enum on the column and the lifecycle trigger originally fired only on `UPDATE`, a privileged SQL session could attempt to insert a brand-new run already marked `reconciled` (or another non-initial state). The deferred opening-command provenance guard is necessary but is not a substitute for lifecycle state provenance; a forged run plus plausible source-command evidence must never materialize terminal state without traversing the named transition.
+
+The same database state-machine function now handles `INSERT` as well as `UPDATE OF run_status_code`. Every new aggregate must begin as `evaluating`; any other initial status raises `reconciliation_lifecycle_initial_state`. Existing historical rows are not rewritten when migration `0019` installs because the trigger applies only to future row operations. The supported `accept_reconciliation_run()` path already creates `evaluating`, so product behavior is narrowed only for bypass attempts. A real PostgreSQL regression clones valid immutable run scope into a fresh UUID while forcing initial `reconciled` and requires the insert to fail immediately with the initial-state guard.
 
 ## Deliberate limitation
 
-The database independently enforces legal status edges, review/exception eligibility, command immutability, and serialization. The complete `reconciliation_snapshot_hash` is currently computed by the service from database-owned facts read under the protected snapshot; PostgreSQL binds the digest into its own command hash but does not independently rederive every statement/book population identity and monetary bridge component in SQL. Documentation and PR language must preserve this distinction. A later SQL-native derivation would require exact parity/property tests before replacing this boundary.
+The database independently enforces aggregate initial state, legal status edges, review/exception eligibility, command immutability, and serialization. The complete `reconciliation_snapshot_hash` is currently computed by the service from database-owned facts read under the protected snapshot; PostgreSQL binds the digest into its own command hash but does not independently rederive every statement/book population identity and monetary bridge component in SQL. Documentation and PR language must preserve this distinction. A later SQL-native derivation would require exact parity/property tests before replacing this boundary.
 
 ## Migration sequencing
 
