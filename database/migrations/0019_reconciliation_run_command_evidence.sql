@@ -570,9 +570,10 @@ CREATE TRIGGER accounting_reconciliation_run_transition_guard
     EXECUTE FUNCTION accounting_core.enforce_reconciliation_run_reconciled_transition();
 
 -- Serialize all evidence that can change reconciliation eligibility on the same
--- run lifecycle lock. Once a transition command exists, that command's snapshot
--- is frozen even before the paired status UPDATE executes later in the same
--- transaction. Once reconciled, corrections require a new/superseding run.
+-- run lifecycle lock. Aggregate membership itself is immutable: a privileged
+-- caller may not evade a finalized run's freeze by moving an existing evidence
+-- row to another tenant/run. Once a transition command exists, its snapshot is
+-- frozen even before the paired status UPDATE executes later in the transaction.
 CREATE OR REPLACE FUNCTION accounting_core.guard_reconciled_run_evidence_mutation()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -583,6 +584,16 @@ DECLARE
     current_status text;
     transition_exists boolean;
 BEGIN
+    IF TG_OP = 'UPDATE'
+       AND (
+           NEW.tenant_account_id IS DISTINCT FROM OLD.tenant_account_id
+           OR NEW.reconciliation_run_id IS DISTINCT FROM OLD.reconciliation_run_id
+       ) THEN
+        RAISE EXCEPTION
+            'reconciliation evidence aggregate membership is immutable; create evidence in the destination run instead (reconciliation_lifecycle_scope_immutable)'
+            USING ERRCODE = '23514';
+    END IF;
+
     IF TG_OP = 'DELETE' THEN
         lifecycle_tenant_account_id := OLD.tenant_account_id;
         lifecycle_reconciliation_run_id := OLD.reconciliation_run_id;
