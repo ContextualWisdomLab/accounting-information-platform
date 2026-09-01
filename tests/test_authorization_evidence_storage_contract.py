@@ -53,7 +53,7 @@ class AuthorizationEvidenceStorageContractTests(unittest.TestCase):
 
     def test_multibyte_command_identity_uses_the_same_character_budget(self) -> None:
         """UTF-8 command identities cannot fail storage merely because bytes exceed characters."""
-        key = "한" * 160
+        key = "한" * 166
         raw_body = json.dumps(
             {"idempotency_key": key}, ensure_ascii=False
         ).encode("utf-8")
