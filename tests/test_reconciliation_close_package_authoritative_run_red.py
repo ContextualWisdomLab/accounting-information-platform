@@ -6,6 +6,7 @@ import unittest
 import unittest.mock as mock
 from contextlib import contextmanager
 from dataclasses import replace
+from decimal import Decimal
 
 from accounting_information_platform import reconciliation_close_package as close_package
 from accounting_information_platform.reconciliation_close_package import (
@@ -105,6 +106,22 @@ class ReconciliationClosePackageAuthoritativeRunTests(unittest.TestCase):
             call_order.append("exception")
 
         run_loader = mock.Mock(side_effect=load_run)
+        projection_loader = mock.Mock(
+            return_value=close_package._DatabaseOwnedCloseProjectionEvidence(
+                statement_population_reference=self.projection.statement_population_reference,
+                book_population_reference=self.projection.book_population_reference,
+                statement_opening_balance=self.projection.bank_closing_balance,
+                statement_period_movements=Decimal("0"),
+                statement_closing_balance=self.projection.bank_closing_balance,
+                book_opening_balance=self.projection.posted_book_cash_balance,
+                posted_cash_book_movements=Decimal("0"),
+                book_closing_balance=self.projection.posted_book_cash_balance,
+                reconciled_book_balance=self.projection.reconciled_balance,
+                outstanding_bank_items=self.projection.outstanding_bank_items,
+                outstanding_book_items=self.projection.outstanding_book_items,
+                unexplained_difference=self.projection.unexplained_difference,
+            )
+        )
         state_loader = mock.Mock(side_effect=load_state)
         exception_validator = mock.Mock(side_effect=validate_exceptions)
         with (
@@ -118,6 +135,11 @@ class ReconciliationClosePackageAuthoritativeRunTests(unittest.TestCase):
                 close_package,
                 "_database_owned_run_source_evidence",
                 run_loader,
+            ),
+            mock.patch.object(
+                close_package,
+                "_database_owned_close_projection_evidence",
+                projection_loader,
             ),
             mock.patch.object(
                 close_package,
@@ -141,6 +163,11 @@ class ReconciliationClosePackageAuthoritativeRunTests(unittest.TestCase):
             _Ledger.connection,
             "tenant-id",
             tenant_reference=self.projection.tenant_account_reference,
+            reconciliation_run_reference=self.projection.reconciliation_run_reference,
+        )
+        projection_loader.assert_called_once_with(
+            _Ledger.connection,
+            "tenant-id",
             reconciliation_run_reference=self.projection.reconciliation_run_reference,
         )
         exception_validator.assert_called_once_with(
