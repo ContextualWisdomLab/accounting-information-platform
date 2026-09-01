@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from uuid import UUID
 
 import psycopg
 
@@ -12,7 +13,7 @@ from tests.test_reconciliation_run_api import ReconciliationRunApiTests
 
 
 class ReconciliationLifecycleStatusAuthorityPostgresTests(unittest.TestCase):
-    """Reject raw status edits that lack a named lifecycle command and evidence."""
+    """Reject raw status writes that lack a named lifecycle command and evidence."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -45,6 +46,45 @@ class ReconciliationLifecycleStatusAuthorityPostgresTests(unittest.TestCase):
                     WHERE reconciliation_run_id = %s
                     """,
                     (self.opened["reconciliation_run_id"],),
+                )
+            connection.rollback()
+
+    def test_raw_terminal_run_insert_must_start_in_evaluating(self) -> None:
+        """A privileged SQL session cannot create a pre-reconciled aggregate directly."""
+        forged_run_id = UUID("44444444-4444-4444-8444-444444444444")
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            with self.assertRaisesRegex(psycopg.Error, "must begin in evaluating"):
+                connection.execute(
+                    """
+                    INSERT INTO accounting_core.reconciliation_run (
+                        reconciliation_run_id,
+                        tenant_account_id,
+                        legal_entity_id,
+                        accounting_book_id,
+                        bank_account_assignment_id,
+                        currency_code,
+                        bank_cutoff_at,
+                        book_cutoff_at,
+                        matching_policy_version,
+                        knowledge_cutoff_at,
+                        run_status_code
+                    )
+                    SELECT
+                        %s,
+                        tenant_account_id,
+                        legal_entity_id,
+                        accounting_book_id,
+                        bank_account_assignment_id,
+                        currency_code,
+                        bank_cutoff_at,
+                        book_cutoff_at,
+                        matching_policy_version,
+                        knowledge_cutoff_at,
+                        'reconciled'
+                    FROM accounting_core.reconciliation_run
+                    WHERE reconciliation_run_id = %s
+                    """,
+                    (forged_run_id, self.opened["reconciliation_run_id"]),
                 )
             connection.rollback()
 
