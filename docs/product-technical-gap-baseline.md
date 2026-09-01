@@ -1,6 +1,6 @@
 # Product and technical gap baseline
 
-**Evidence refresh:** 2026-09-01 (Asia/Seoul)
+**Evidence refresh:** 2026-09-02 (Asia/Seoul)
 
 This is the durable commercialization baseline for `ContextualWisdomLab/accounting-information-platform`. It records product responsibility, DDD boundaries, buyer outcomes, technical contracts, architecture/data/test/security/operability evidence, and the remaining gaps that survive individual branch or workflow changes. **Live PR/check evidence is intentionally not duplicated here**: live PR numbers, exact heads, check conclusions, rulesets, reviews, and release state must be refetched before every integration, release, or readiness decision.
 
@@ -24,6 +24,7 @@ The repository is backend-first. No controller frontend is currently a release c
 | Deterministic bank reconciliation | Integrated foundation plus current hardening stack | Stable-reference precedence, exact amount/currency/direction, explicit abstention, split/aggregate conservation, immutable review evidence, exact book-to-bank bridge |
 | Database-owned close projection | Current dependency-root integration candidate | Run/approval/exception/statement/book/allocation populations loaded from one `REPEATABLE READ` snapshot; caller population or money substitution rejected; assigned cash journals proven book-scoped |
 | Evidence-backed reconciliation completion | Current stacked candidate, not protected-branch authority | Named idempotent command; database-derived populations/bridge/approvals; immutable transition command and outbox evidence; only `evaluating`/`review_required` → `reconciled`; deployment capability-role hardening remains open |
+| Immutable reconciliation exception resolution | Current stacked candidate, not protected-branch authority | Named maker-checker command; complete incoming-command payload identity kept separately from reviewed evidence; exception maker evidence frozen; terminal status and outbox atomic; exact replay/conflict semantics; legacy terminal history fails migration closed even for a non-`BYPASSRLS` migration owner |
 | Purpose-bound application authorization | Open | Versioned operation→permission contract, trusted identity adapter, durable allow/deny evidence, no tenant-auth-only high-impact authority |
 | Production controller reconciliation/close UX | Open | Figma source of truth, design tokens, Storybook scene/edge inventory, accessibility/i18n, exact-value tables/exports, screenshot verification, API actions bound to authorization |
 | Release/operations diligence | Open | Protected integration/release branches, exact-head checks/reviews, migration rehearsal, rollback/recovery evidence, observability, reproducible package/SBOM/provenance, immutable release evidence |
@@ -50,7 +51,9 @@ The product remains a contract-first modular monolith until measured responsibil
 New technical requirements added by the reconciliation/close vertical:
 
 - authority-bearing reads use one explicit `REPEATABLE READ` transaction when multiple rows/populations must describe one historical accounting fact;
-- `reconciliation_run` lifecycle changes are named commands, not generic status mutation;
+- `reconciliation_run` lifecycle changes and `reconciliation_exception` terminal decisions are named commands, not generic status mutation;
+- exception-resolution idempotency binds the complete incoming JSON command separately from the reviewed-evidence digest, and maker evidence is immutable before checker review;
+- all-tenant migration preflights over FORCE-RLS accounting history must have explicit transaction-scoped migration-only visibility and remove it before durable authority changes; a tenant-filtered empty result is not upgrade evidence;
 - database capability roles are NOLOGIN and narrower than business authority; trigger invariants constrain the effective operation set even when a column privilege is required;
 - database-owned tenant binding and forced RLS remain stronger than caller headers/GUCs;
 - no open-PR bytes from another repository become a production runtime dependency; only immutable released/versioned contracts cross repositories;
@@ -65,7 +68,7 @@ New technical requirements added by the reconciliation/close vertical:
 | --- | --- | --- |
 | Authoritative Accounting Record & Close | Core | policy resolution, journal posting/reversal, fiscal-period state, trial balance, close authority and accounting receipts |
 | Bank Statement Evidence | Supporting | provider/ISO 20022 ACL, immutable statement/entry/balance evidence and bank-account assignment |
-| Reconciliation Review | Supporting | run scope, deterministic candidates, allocations, approvals/exceptions, exact bridge, completion evidence, close-review package |
+| Reconciliation Review | Supporting | run scope, deterministic candidates, allocations, approvals/exceptions, exception-resolution authority, exact bridge, completion evidence, close-review package |
 | Reporting Projection | Supporting | ledgers, balances, statements, packages and exact read models |
 | Tax Evidence Interface | Supporting | VAT/HomeTax evidence/receipts only within implemented scope |
 | Integration/Transport | Generic | HTTP/serialization/persistence mechanics and transactional outbox delivery evidence |
@@ -96,6 +99,7 @@ flowchart LR
 
 - **proposal ≠ journal**: a source event proposes accounting treatment; only AIS produces authoritative posted journal facts.
 - **statement entry ≠ journal line**: bank evidence is independent observed evidence and never posts automatically.
+- **exception terminal status ≠ reviewed resolution authority**: `resolved`/`superseded` is authoritative only when paired atomically with the immutable maker-checker resolution command and retained evidence.
 - **reconciliation approval ≠ period-close authority**: reconciliation completion proves reviewed evidence; close remains a separate command/authority boundary.
 - **tenant identity ≠ operation authority**: correct tenant binding does not imply permission to post, reverse, approve, close, publish, or submit tax evidence.
 - **capability role ≠ generic lifecycle editor**: a database role exists to implement a named command and may be further constrained by triggers/invariants.
@@ -111,6 +115,7 @@ flowchart LR
 | Bank statement acceptance | one statement ingestion command | duplicate delivery replays exact evidence; revision/scope/hash conflicts fail closed |
 | Reconciliation run | one run/lifecycle command | scope/cutoffs immutable after evaluation; transitions require owner evidence |
 | Reconciliation review | one match/approval decision | allocations conserve source capacity; terminal decisions bind immutable snapshots |
+| Reconciliation exception resolution | one maker-checker resolution command | owner/maker evidence is immutable; reviewer differs from owner; one command binds complete source payload + reviewed evidence; terminal status/outbox commit atomically |
 | Reconciliation completion | one completion command | exact database-derived populations/bridge + current approval/exception state; only lawful transition to `reconciled` |
 | Outbox record | one originating domain transaction | event evidence cannot exist without committed owning fact |
 
@@ -140,6 +145,7 @@ erDiagram
   reconciliation_match ||--o{ journal_match_allocation : consumes
   reconciliation_match ||--o{ reconciliation_approval : evidences
   reconciliation_run ||--o{ reconciliation_exception : explains
+  reconciliation_exception ||--o| reconciliation_exception_resolution_command : resolves
   reconciliation_run ||--o| reconciliation_run_transition_command : completes
 
   tenant_account ||--o{ outbox_event : publishes
@@ -153,22 +159,22 @@ Database object rules remain mandatory: descriptive two-or-more-word names, `sna
 stateDiagram-v2
   [*] --> evaluating: create reconciliation run
   evaluating --> review_required: separately governed review decision (not yet public command)
-  evaluating --> reconciled: evidence-backed completion
-  review_required --> reconciled: evidence-backed completion
+  evaluating --> reconciled: evidence-backed completion after reviewed exception commands
+  review_required --> reconciled: evidence-backed completion after reviewed exception commands
   evaluating --> not_reconciled: separately governed negative decision (open)
   review_required --> not_reconciled: separately governed negative decision (open)
   reconciled --> superseded: separately governed successor evidence (open)
 ```
 
-The completion candidate deliberately guards only the two arrows into `reconciled` and rejects all other changed targets until their own evidence/authority commands exist. This prevents any future lifecycle capability from becoming a generic direct-SQL state editor.
+The completion candidate deliberately guards only the two arrows into `reconciled` and rejects all other changed targets until their own evidence/authority commands exist. Every exception must already be terminal under its immutable resolution command before either completion arrow is lawful. This prevents any future lifecycle capability from becoming a generic direct-SQL state editor.
 
 ## Buyer user stories and workflow
 
 ### Controller
 
-**Story:** As a controller, I can review a reconciliation run, see exact bank/book balances and every explaining item, resolve exceptions, complete reconciliation from authoritative evidence, and then request a separately authorized period close.
+**Story:** As a controller, I can review a reconciliation run, see exact bank/book balances and every explaining item, resolve exceptions through a distinct reviewer decision, complete reconciliation from authoritative evidence, and then request a separately authorized period close.
 
-Acceptance: no spreadsheet-calculated population hash or caller-supplied bridge money can become authoritative; each rejection states the next action.
+Acceptance: no spreadsheet-calculated population hash, caller-supplied bridge money, or raw exception-status update can become authoritative; each rejection states the next action.
 
 ### Accounting operations
 
@@ -178,7 +184,7 @@ Acceptance: reconciliation itself cannot post an adjustment journal.
 
 ### Auditor
 
-**Story:** As an auditor, I can trace close evidence to immutable statement artifacts, normalized entries/balances, posted journals, allocations, approvals/exceptions, lifecycle transition command, actor/purpose, source hashes, system/effective times, and outbox evidence.
+**Story:** As an auditor, I can trace close evidence to immutable statement artifacts, normalized entries/balances, posted journals, allocations, approvals/exceptions, exception-resolution commands, lifecycle transition command, actor/purpose, source hashes, system/effective times, and outbox evidence.
 
 Acceptance: replay at a historical knowledge cutoff excludes later evidence.
 
@@ -186,7 +192,7 @@ Acceptance: replay at a historical knowledge cutoff excludes later evidence.
 
 **Story:** As an operator, I can tell whether the service is alive and database-ready, migrate/rollback/recover safely, see failed control-plane evidence, and deploy without hidden manual role grants or cross-service SQL.
 
-Acceptance: operational procedures are codified and tested; temporary repair workflows/containers do not remain after use.
+Acceptance: operational procedures are codified and tested; temporary repair workflows/containers do not remain after use; migration preflights cannot silently miss FORCE-RLS history.
 
 ## Storyboard and initial controller wireframe contract
 
@@ -224,7 +230,7 @@ No monetary evidence may exist only in hover/animation. Charts require exact-val
 - reconciliation run list: loading, empty, normal, stale evidence, failure;
 - exact bridge card/table: tied, one-minor-unit difference, historical outstanding item, unavailable population;
 - deterministic match row: safe candidate, ambiguous, amount/currency/direction/date conflict;
-- exception panel: unassigned, assigned, resolved, superseded;
+- exception panel: unassigned, assigned, maker-review pending, resolved, superseded, changed-command conflict;
 - completion action: unauthorized, pending review, open exception, exact replay, idempotency conflict, success;
 - close handoff: eligible, not eligible, hard-closed, stale completion evidence;
 - accessibility/i18n scenes: long Korean/English labels, keyboard-only, reduced motion, 200% zoom, narrow touch viewport;
@@ -238,6 +244,7 @@ Required controls:
 
 - forced tenant RLS backed by database-owned runtime tenant binding;
 - distinct migration/admin/break-glass/runtime/capability identities;
+- migration-wide historical preflights over FORCE-RLS tables use temporary transaction-scoped migration-owner visibility that is removed before durable authority changes; non-`BYPASSRLS` behavior is tested;
 - NOLOGIN capability roles for purpose-limited DB authority and no caller-controlled `SET ROLE` shortcut;
 - application authorization separate from database credentials and tenant authentication;
 - immutable source/audit evidence without bearer tokens, passwords, signing keys, unnecessary PII, or raw policy documents;
@@ -257,6 +264,7 @@ Public docstring coverage, production statement coverage, production branch cove
 Mandatory realistic acceptance includes:
 
 - real PostgreSQL migration/install/runtime behavior with non-super/non-`BYPASSRLS` identities;
+- legacy terminal reconciliation history must make the exception-resolution migration fail closed even when FORCE RLS would otherwise hide rows from the migration owner;
 - duplicate/replay/idempotency conflict and concurrent writer cases;
 - exact monetary conservation and one-minor-unit failure;
 - cross-tenant/book/account/currency reference rejection;
@@ -311,11 +319,19 @@ Both integration and release branches require ordinary branch/ruleset protection
 
 **Action:** keep stacked until the dependency root integrates; then reacquire exact PostgreSQL/coverage/security/review evidence on the integrated parent head. Do not expose a generic status endpoint.
 
+### P0 — integrate immutable maker-checker exception resolution
+
+**Gap:** evidence-backed completion cannot lawfully accept an exception merely because a mutable status says `resolved` or `superseded`; protected branch lacks the immutable reviewer command that proves terminal exception authority.
+
+**Current candidate:** one tenant/run/exception-scoped command binds the complete incoming JSON source payload separately from retained resolution evidence, freezes maker identity/action/times, requires a distinct reviewer and purpose, commits terminal status plus outbox atomically, replays only exact evidence, and rejects legacy terminal history during migration. Because the legacy exception table is FORCE-RLS, the migration preflight uses transaction-scoped migration-user SELECT visibility and removes it before installing durable authority so a non-`BYPASSRLS` owner cannot falsely pass on hidden history.
+
+**Action:** keep stacked on the lifecycle candidate and acquire real non-super/non-`BYPASSRLS` PostgreSQL upgrade evidence plus exact coverage/security/review gates. After integration, the completion command must require every terminal exception to have exactly one matching immutable resolution command.
+
 ### P0 — purpose-bound application authorization before high-impact buyer mutation surface
 
-**Gap:** tenant authentication alone is too coarse for posting, reversal, reconciliation completion, period close, tax, outbox publication and audit access.
+**Gap:** tenant authentication alone is too coarse for posting, reversal, reconciliation completion, exception resolution, period close, tax, outbox publication and audit access.
 
-**Action:** integrate the versioned operation→permission model and trusted principal adapter; add an explicit `complete_reconciliation` → `accounting.complete_reconciliation` permission before exposing the buyer-facing lifecycle route. Record durable allow/deny evidence and ensure malformed requests cannot bypass authorization.
+**Action:** integrate the versioned operation→permission model and trusted principal adapter; add explicit `complete_reconciliation` → `accounting.complete_reconciliation` and exception-resolution operation/permission mapping before exposing buyer-facing lifecycle routes. Record durable allow/deny evidence and ensure malformed requests cannot bypass authorization.
 
 ### P0 — governance and runner/reviewer reliability
 
@@ -333,7 +349,7 @@ Both integration and release branches require ordinary branch/ruleset protection
 
 **Gap:** domain capability exists only in stacked backend work; controller workflow is absent.
 
-**Action order:** purpose-bound authorization → `POST /reconciliation-completions` transport → exact read/action API contracts → Figma/Storybook/design tokens → accessibility/i18n/screenshot verification → realistic k6 load. Preserve exact-value table/export for every monetary visualization.
+**Action order:** purpose-bound authorization → exception-resolution and reconciliation-completion transport → exact read/action API contracts → Figma/Storybook/design tokens → accessibility/i18n/screenshot verification → realistic k6 load. Preserve exact-value table/export for every monetary visualization.
 
 ### P1 — release/operability diligence
 
