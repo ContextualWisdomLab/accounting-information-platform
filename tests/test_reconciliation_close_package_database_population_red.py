@@ -23,8 +23,18 @@ class _Rows:
 class _AuthorityConnection:
     """Expose immutable statement, ledger, and approved-allocation populations."""
 
-    def __init__(self, *, book_closing_delta: Decimal = Decimal("0")) -> None:
-        self.book_closing_delta = book_closing_delta
+    def __init__(
+        self,
+        *,
+        statement_period_amount: Decimal = Decimal("100.000000"),
+        book_period_amount: Decimal = Decimal("100.000000"),
+        approved_amount: Decimal = Decimal("100.000000"),
+        book_opening_delta: Decimal = Decimal("0"),
+    ) -> None:
+        self.statement_period_amount = statement_period_amount
+        self.book_period_amount = book_period_amount
+        self.approved_amount = approved_amount
+        self.book_opening_delta = book_opening_delta
         self.queries: list[str] = []
 
     def execute(self, query: str, parameters: tuple[object, ...]) -> _Rows:
@@ -50,7 +60,12 @@ class _AuthorityConnection:
             return _Rows(
                 [
                     ("balance-opening-hash", Decimal("1000.000000"), "KRW", "CRDT"),
-                    ("balance-closing-hash", Decimal("1100.000000"), "KRW", "CRDT"),
+                    (
+                        "balance-closing-hash",
+                        Decimal("1000.000000") + self.statement_period_amount,
+                        "KRW",
+                        "CRDT",
+                    ),
                 ]
             )
         if "bank_statement_entry AS entry" in query:
@@ -59,7 +74,7 @@ class _AuthorityConnection:
                     (
                         "stmt-001",
                         1,
-                        Decimal("100.000000"),
+                        self.statement_period_amount,
                         "KRW",
                         "CRDT",
                         False,
@@ -75,7 +90,7 @@ class _AuthorityConnection:
                         date(2026, 7, 31),
                         datetime(2026, 7, 31, 12, tzinfo=timezone.utc),
                         1,
-                        Decimal("1000.000000"),
+                        Decimal("1000.000000") + self.book_opening_delta,
                         Decimal("0"),
                         "KRW",
                     ),
@@ -84,16 +99,16 @@ class _AuthorityConnection:
                         date(2026, 8, 15),
                         datetime(2026, 8, 15, 12, tzinfo=timezone.utc),
                         1,
-                        Decimal("100.000000") + self.book_closing_delta,
+                        self.book_period_amount,
                         Decimal("0"),
                         "KRW",
                     ),
                 ]
             )
         if "statement_match_allocation AS allocation" in query:
-            return _Rows([("stmt-001", Decimal("100.000000"))])
+            return _Rows([("stmt-001", self.approved_amount)])
         if "journal_match_allocation AS allocation" in query:
-            return _Rows([("journal-001", Decimal("100.000000"))])
+            return _Rows([("journal-001", self.approved_amount)])
         raise AssertionError(f"unexpected authority query: {query}")
 
 
@@ -128,10 +143,36 @@ class ReconciliationClosePackageDatabasePopulationTests(unittest.TestCase):
         self.assertIn("statement_match_allocation AS allocation", sql)
         self.assertIn("journal_match_allocation AS allocation", sql)
 
-    def test_loader_fails_when_database_book_and_bank_closing_balances_differ(self) -> None:
+    def test_loader_preserves_bank_side_item_not_yet_posted_to_book(self) -> None:
+        result = close_package._database_owned_close_projection_evidence(
+            _AuthorityConnection(statement_period_amount=Decimal("150.000000")),
+            "tenant-id",
+            reconciliation_run_reference="run-001",
+        )
+
+        self.assertEqual(result.statement_closing_balance, Decimal("1150.000000"))
+        self.assertEqual(result.book_closing_balance, Decimal("1100.000000"))
+        self.assertEqual(result.outstanding_book_items, Decimal("50.000000"))
+        self.assertEqual(result.outstanding_bank_items, Decimal("0"))
+        self.assertEqual(result.unexplained_difference, Decimal("0"))
+
+    def test_loader_preserves_book_side_item_not_yet_seen_by_bank(self) -> None:
+        result = close_package._database_owned_close_projection_evidence(
+            _AuthorityConnection(book_period_amount=Decimal("150.000000")),
+            "tenant-id",
+            reconciliation_run_reference="run-001",
+        )
+
+        self.assertEqual(result.statement_closing_balance, Decimal("1100.000000"))
+        self.assertEqual(result.book_closing_balance, Decimal("1150.000000"))
+        self.assertEqual(result.outstanding_book_items, Decimal("0"))
+        self.assertEqual(result.outstanding_bank_items, Decimal("50.000000"))
+        self.assertEqual(result.unexplained_difference, Decimal("0"))
+
+    def test_loader_rejects_unexplained_opening_difference(self) -> None:
         with self.assertRaisesRegex(ValueError, "database-owned book-to-bank bridge"):
             close_package._database_owned_close_projection_evidence(
-                _AuthorityConnection(book_closing_delta=Decimal("1.000000")),
+                _AuthorityConnection(book_opening_delta=Decimal("1.000000")),
                 "tenant-id",
                 reconciliation_run_reference="run-001",
             )
