@@ -110,6 +110,28 @@ class RequestScopedAuthorizationContextTests(unittest.TestCase):
             handler._write_error.call_args.args[1],
         )
 
+    def test_malformed_identity_adapter_output_is_fail_closed_before_audit_allow(self) -> None:
+        """Malformed trusted-adapter output must return 503 instead of dropping the request."""
+        resolver = mock.Mock(return_value=object())
+        handler = self._handler(resolver, "reader")
+
+        with mock.patch(
+            "accounting_information_platform.http_api.record_authorization_decision"
+        ) as record:
+            self.assertFalse(
+                JournalProposalHandler._authorize_request(
+                    handler, "read_catalog", "/legal-entities"
+                )
+            )
+
+        record.assert_not_called()
+        handler._write_error.assert_called_once()
+        self.assertEqual(handler._write_error.call_args.args[0], 503)
+        self.assertIn(
+            "trusted identity adapter",
+            handler._write_error.call_args.args[1],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
