@@ -42,17 +42,38 @@ class ProductGapBaselineContractTests(unittest.TestCase):
         self.assertIn(expected, references)
         self.assertIn(expected_url, references)
 
-    def test_baseline_distinguishes_main_branch_protection_from_release_gates(self) -> None:
-        """The governance gap must reflect the live main release workflow gate."""
+    def test_baseline_keeps_branch_governance_as_durable_policy(self) -> None:
+        """Mutable ruleset/workflow state must be queried live, not fossilized in the baseline."""
         text = BASELINE.read_text(encoding="utf-8")
-        self.assertIn("`main` is protected by an AIP repository-scoped active gate", text)
-        self.assertRegex(
+        self.assertIn(
+            "Both integration and release branches require ordinary branch/ruleset protection",
+            text,
+        )
+        self.assertIn(
+            "must be queried rather than copied into this durable baseline",
+            text,
+        )
+        self.assertIn(
+            "Neither branch policy nor a passing predecessor head authorizes a protection bypass",
+            text,
+        )
+        self.assertNotIn("`main` is protected by an AIP repository-scoped active gate", text)
+        self.assertNotRegex(
             text,
             re.compile(
                 r"central\s+required\s+workflows\s+and\s+AIP\s+Accounting\s+Foundation\s+CI\s+are\s+now\s+applied\s+to\s+`main`"
             ),
         )
-        self.assertNotIn("`main` remains outside release-grade protection", text)
+
+    def test_database_isolation_reference_names_one_exact_publication(self) -> None:
+        """The PVLDB citation must not be mixed with the separate extended-version title."""
+        text = BASELINE.read_text(encoding="utf-8")
+        self.assertIn(
+            "Fast verification of strong database isolation. *Proceedings of the VLDB Endowment, 19*(4), 563–575.",
+            text,
+        )
+        self.assertIn("https://doi.org/10.14778/3785297.3785300", text)
+        self.assertNotIn("Fast verification of strong database isolation (Extended Version)", text)
 
     def test_changelog_does_not_claim_an_unpublished_tagged_release(self) -> None:
         """Changelog history must not claim a tag or release absent from GitHub."""
