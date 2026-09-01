@@ -91,10 +91,16 @@ class ReconciliationClosePackageAuthoritativeRunLoaderTests(unittest.TestCase):
             connection.parameters,
             (self.tenant_id, self.run_reference),
         )
-        self.assertIn("reconciliation_run_command", connection.query or "")
-        self.assertIn("bank_statement_artifact", connection.query or "")
-        self.assertIn("legal_entity_record", connection.query or "")
-        self.assertIn("accounting_book", connection.query or "")
+        query = connection.query or ""
+        self.assertIn("reconciliation_run_command", query)
+        self.assertIn("bank_statement_artifact", query)
+        self.assertIn("legal_entity_record", query)
+        self.assertIn("accounting_book", query)
+        self.assertIn("FOR UPDATE OF run_record", query)
+        self.assertIn(
+            "FOR SHARE OF run_command, statement_record, statement_artifact",
+            query,
+        )
         run_evidence, artifact_evidence, run_scope = evidence
         self.assertEqual(run_evidence.evidence_kind_code, "reconciliation_run")
         self.assertEqual(run_evidence.evidence_reference, self.run_reference)
