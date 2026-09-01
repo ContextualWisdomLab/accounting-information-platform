@@ -472,15 +472,17 @@ BEGIN
             USING ERRCODE = '23514';
     END IF;
 
+    -- Until the named maker-checker exception-resolution command exists, any
+    -- exception row is non-terminal for authority purposes. A privileged raw
+    -- status rewrite must not make the run eligible for reconciled close evidence.
     IF EXISTS (
         SELECT 1
         FROM accounting_core.reconciliation_exception AS exception
         WHERE exception.tenant_account_id = NEW.tenant_account_id
           AND exception.reconciliation_run_id = NEW.reconciliation_run_id
-          AND exception.resolution_status_code = 'open'
     ) THEN
         RAISE EXCEPTION
-            'reconciliation run has an open exception and cannot be finalized (reconciliation_lifecycle_exception)'
+            'reconciliation run has exception evidence without durable resolution-command authority (reconciliation_exception_resolution_command_required)'
             USING ERRCODE = '23514';
     END IF;
 
