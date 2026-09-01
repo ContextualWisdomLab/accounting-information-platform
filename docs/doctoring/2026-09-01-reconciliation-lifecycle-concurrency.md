@@ -26,7 +26,7 @@ PostgreSQL Global Development Group. (2026). *PostgreSQL 18 documentation: Syste
 | Requirement | Implementation boundary | Falsifiable evidence |
 | --- | --- | --- |
 | One coherent authority snapshot | `reconcile_reconciliation_run()` sets `REPEATABLE READ`, acquires `reconciliation_run_lifecycle:<run_id>` before the first data query, then reads run/review/source state | Unit SQL-order assertion plus exact PostgreSQL lifecycle test and existing database-owned close-projection tests |
-| Legal state edge | `reconciliation_run` row lock + migration status guard permits only `evaluating`/`review_required` → `reconciled` | Raw SQL update without transition command must fail |
+| Legal state edge | `reconciliation_run` row lock + migration status guard permits only `evaluating`/`review_required` → `reconciled`; every other changed target is rejected until a separate named command evolves the state machine | Raw SQL into `reconciled` without transition evidence and raw SQL into `not_reconciled` without a named command must both fail |
 | Durable command identity | `reconciliation_run_transition_command` stores tenant/run/idempotency/snapshot/actor/purpose/effective time and database-owned command hash | Exact replay returns same receipt; changed key evidence conflicts |
 | Review completeness | Service and database transition trigger reject proposed matches and approved/rejected matches without decision-consistent approval snapshot | Unit cases and migration trigger contract |
 | Exception completeness | Service and DB trigger reject `resolution_status_code='open'` | Unit + PostgreSQL evidence-freeze path |
@@ -35,11 +35,19 @@ PostgreSQL Global Development Group. (2026). *PostgreSQL 18 documentation: Syste
 | Post-transition immutability | Candidate/match/allocation/approval/exception trigger paths acquire the same run lock and reject writes when run is reconciled | PostgreSQL late-exception insert must fail after supported transition |
 | Atomic publication evidence | Transition command, status update, and `reconciliation_run_reconciled` outbox row share one transaction | PostgreSQL test reads all three after command completion |
 
-## Current-head causal repair
+## Current-head causal repairs
+
+### Run-scope currency ownership
 
 The initial lifecycle implementation computed `reconciliation_snapshot_hash` with `bridge.currency_code`. The dependency-root `_DatabaseOwnedCloseProjectionEvidence` deliberately owns statement/book populations and exact bridge arithmetic but does not expose `currency_code`; currency is already immutable reconciliation-run scope. A real lifecycle execution could therefore reach a fully tied bridge and then fail with an `AttributeError` while building the transition digest, even though unit doubles happened to carry an extra `currency_code` attribute.
 
 The repair follows the existing authority model instead of widening the bridge helper: the already locked `reconciliation_run` query now returns `currency_code`, and the transition digest receives that database-owned run-scope value explicitly. A focused regression intentionally omits currency from the bridge object so future refactors cannot silently reintroduce the projection-shape dependency. The compatibility fallback inside the private digest helper exists only for existing direct unit callers; the production lifecycle path passes the locked run currency explicitly.
+
+### Named status-command authority
+
+Review of the sibling completion implementation exposed a second source-real authority gap in this branch: the database trigger originally guarded only transitions whose *new* value was `reconciled`. Migration `0013` intentionally freezes reconciliation scope but does not make `run_status_code` immutable, so a sufficiently privileged SQL session could otherwise move an `evaluating` run directly to `review_required`, `not_reconciled`, or `superseded`, or move a reconciled run away from its evidence-bearing state, without any named lifecycle command or immutable command evidence.
+
+The repair was carried over rather than treating the concurrent branch as a conflict. `enforce_reconciliation_run_reconciled_transition()` now first permits only a no-op status assignment; every changed target other than `reconciled` raises `reconciliation_lifecycle_target_forbidden`. The existing evidence-derived `reconciled` edge retains its advisory lock, legal predecessor-state check, and exactly-one transition-command requirement. Future `review_required`, `not_reconciled`, or `superseded` behavior must arrive as deliberate named commands with their own evidence and permissions and then explicitly evolve this database state machine. A real PostgreSQL regression attempts raw `evaluating` → `not_reconciled` and requires a database rejection containing `named lifecycle command`.
 
 ## Deliberate limitation
 
