@@ -942,6 +942,7 @@ def _database_owned_run_source_evidence(
     rows = connection.execute(
         """
         SELECT run_record.knowledge_cutoff_at,
+               run_record.run_status_code,
                run_command.reconciliation_command_hash,
                run_command.source_payload_hash,
                run_command.source_payload_reference,
@@ -984,6 +985,7 @@ def _database_owned_run_source_evidence(
         )
     (
         knowledge_cutoff_at,
+        run_status_code,
         reconciliation_command_hash,
         command_source_hash,
         command_source_reference,
@@ -995,6 +997,10 @@ def _database_owned_run_source_evidence(
         bank_account_assignment_reference,
         currency_code,
     ) = rows[0]
+    if str(run_status_code) != "reconciled":
+        raise ValueError(
+            "database-owned reconciliation run must be reconciled before close-package construction"
+        )
     if not hmac.compare_digest(str(command_source_hash), str(statement_source_hash)):
         raise ValueError(
             "database-owned reconciliation run command source hash must match "

@@ -16,6 +16,8 @@ class ReconciliationClosePackageAuthoritativeDocumentationTests(unittest.TestCas
         self.assertIn("whole-second or six-digit microsecond precision", adr)
         self.assertIn("exactly one `statement_artifact`", adr)
         self.assertIn("database-owned `reconciliation_run`", adr)
+        self.assertIn("run_status_code", adr)
+        self.assertIn("exactly `reconciled`", adr)
         self.assertIn("`reconciliation_run_command`", adr)
         self.assertIn("retained bank-statement artifact", adr)
         self.assertIn("Caller-provided `knowledge_cutoff`", adr)

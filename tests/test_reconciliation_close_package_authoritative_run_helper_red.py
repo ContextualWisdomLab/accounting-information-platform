@@ -31,9 +31,13 @@ class _RowsConnection:
         self.parameters: tuple[object, ...] | None = None
 
     def execute(self, query: str, parameters: tuple[object, ...]) -> _RowsResult:
-        """Capture one query invocation and return configured rows."""
+        """Capture one query invocation and model a reconciled database run by default."""
         self.query = query
         self.parameters = parameters
+        if "run_record.run_status_code" in query:
+            return _RowsResult(
+                [(row[0], "reconciled", *row[1:]) for row in self.rows]
+            )
         return _RowsResult(self.rows)
 
 
