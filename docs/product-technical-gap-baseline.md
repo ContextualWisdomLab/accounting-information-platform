@@ -23,7 +23,7 @@ The repository is backend-first. No controller frontend is currently a release c
 | Immutable ISO 20022 bank evidence | Integrated foundation | `camt.053.001.14` revision pin, parser fail-closed behavior, immutable artifact/source hash, normalized entries/balances, bank-account assignment scope |
 | Deterministic bank reconciliation | Integrated foundation plus current hardening stack | Stable-reference precedence, exact amount/currency/direction, explicit abstention, split/aggregate conservation, immutable review evidence, exact book-to-bank bridge |
 | Database-owned close projection | Current dependency-root integration candidate | Run/approval/exception/statement/book/allocation populations loaded from one `REPEATABLE READ` snapshot; caller population or money substitution rejected; assigned cash journals proven book-scoped |
-| Evidence-backed reconciliation completion | Current stacked candidate, not protected-branch authority | Named idempotent command; database-derived populations/bridge/approvals; purpose-limited NOLOGIN capability; only `evaluating`/`review_required` → `reconciled`; other status targets fail closed |
+| Evidence-backed reconciliation completion | Current stacked candidate, not protected-branch authority | Named idempotent command; database-derived populations/bridge/approvals; immutable transition command and outbox evidence; only `evaluating`/`review_required` → `reconciled`; deployment capability-role hardening remains open |
 | Purpose-bound application authorization | Open | Versioned operation→permission contract, trusted identity adapter, durable allow/deny evidence, no tenant-auth-only high-impact authority |
 | Production controller reconciliation/close UX | Open | Figma source of truth, design tokens, Storybook scene/edge inventory, accessibility/i18n, exact-value tables/exports, screenshot verification, API actions bound to authorization |
 | Release/operations diligence | Open | Protected integration/release branches, exact-head checks/reviews, migration rehearsal, rollback/recovery evidence, observability, reproducible package/SBOM/provenance, immutable release evidence |
@@ -140,7 +140,7 @@ erDiagram
   reconciliation_match ||--o{ journal_match_allocation : consumes
   reconciliation_match ||--o{ reconciliation_approval : evidences
   reconciliation_run ||--o{ reconciliation_exception : explains
-  reconciliation_run ||--o| reconciliation_completion_command : completes
+  reconciliation_run ||--o| reconciliation_run_transition_command : completes
 
   tenant_account ||--o{ outbox_event : publishes
 ```
@@ -160,7 +160,7 @@ stateDiagram-v2
   reconciled --> superseded: separately governed successor evidence (open)
 ```
 
-The completion candidate deliberately guards only the two arrows into `reconciled` and rejects all other changed targets until their own evidence/authority commands exist. This prevents the required column privilege from becoming a generic direct-SQL state editor.
+The completion candidate deliberately guards only the two arrows into `reconciled` and rejects all other changed targets until their own evidence/authority commands exist. This prevents any future lifecycle capability from becoming a generic direct-SQL state editor.
 
 ## Buyer user stories and workflow
 
@@ -178,7 +178,7 @@ Acceptance: reconciliation itself cannot post an adjustment journal.
 
 ### Auditor
 
-**Story:** As an auditor, I can trace close evidence to immutable statement artifacts, normalized entries/balances, posted journals, allocations, approvals/exceptions, completion command, actor/purpose, source hashes, system/effective times, and outbox evidence.
+**Story:** As an auditor, I can trace close evidence to immutable statement artifacts, normalized entries/balances, posted journals, allocations, approvals/exceptions, lifecycle transition command, actor/purpose, source hashes, system/effective times, and outbox evidence.
 
 Acceptance: replay at a historical knowledge cutoff excludes later evidence.
 
@@ -293,7 +293,7 @@ Queued, skipped, stale, predecessor, synthetic merge-ref, status-only, or model-
 
 ## Branch/release governance baseline
 
-`main` is protected by an AIP repository-scoped active gate. The central required workflows and AIP Accounting Foundation CI are now applied to `main`; release readiness still requires fresh exact-head evidence, current review, and integrated release attestations rather than inference from branch protection alone. `develop` remains the protected integration authority for the current product sequence. Neither branch policy nor a passing predecessor head authorizes a protection bypass, force push, destructive branch rewrite, tag, version, or release.
+Both integration and release branches require ordinary branch/ruleset protection plus fresh exact-head checks, current review, and integrated release attestations at the decision point. Ruleset membership, required-workflow application, check conclusions, review state, and release state are mutable live evidence and must be queried rather than copied into this durable baseline. Neither branch policy nor a passing predecessor head authorizes a protection bypass, force push, destructive branch rewrite, tag, version, or release.
 
 ## Ranked gap queue and action state
 
@@ -307,15 +307,15 @@ Queued, skipped, stale, predecessor, synthetic merge-ref, status-only, or model-
 
 **Gap:** normal run creation opens `evaluating`; protected branch lacks the supported owner-control path to `reconciled`.
 
-**Current candidate:** named Python/domain command plus migration-owned immutable completion evidence, database-derived bridge/population hashes, atomic outbox, purpose-limited completion capability and installed target-state guard. The completion role may transition only to `reconciled`; other lifecycle targets fail closed.
+**Current candidate:** named idempotent Python/domain command plus migration-owned immutable transition evidence, database-derived bridge/population identities, current approval/exception state, exact replay provenance and atomic outbox. The lifecycle command may transition only `evaluating`/`review_required` to `reconciled`; other lifecycle targets fail closed. A purpose-limited database capability role remains a separate deployment hardening gap rather than a property already supplied by the lifecycle candidate.
 
-**Action:** keep stacked until the dependency root integrates; then restack and reacquire exact PostgreSQL/coverage/security/review evidence. Do not expose a generic status endpoint.
+**Action:** keep stacked until the dependency root integrates; then reacquire exact PostgreSQL/coverage/security/review evidence on the integrated parent head. Do not expose a generic status endpoint.
 
 ### P0 — purpose-bound application authorization before high-impact buyer mutation surface
 
 **Gap:** tenant authentication alone is too coarse for posting, reversal, reconciliation completion, period close, tax, outbox publication and audit access.
 
-**Action:** integrate the versioned operation→permission model and trusted principal adapter; add/extend an explicit `accounting.reconcile_complete` operation before exposing the buyer-facing completion route. Record durable allow/deny evidence and ensure malformed requests cannot bypass authorization.
+**Action:** integrate the versioned operation→permission model and trusted principal adapter; preserve the explicit `complete_reconciliation` → `accounting.complete_reconciliation` permission before exposing the buyer-facing lifecycle route. Record durable allow/deny evidence and ensure malformed requests cannot bypass authorization.
 
 ### P0 — governance and runner/reviewer reliability
 
@@ -346,7 +346,7 @@ Queued, skipped, stale, predecessor, synthetic merge-ref, status-only, or model-
 The implementation/ADR/doctoring chain should cite the exact source used by each decision. Current durable foundations include:
 
 - American Educational Research Association, American Psychological Association, & National Council on Measurement in Education. (2014). *Standards for educational and psychological testing*. (Applicable only where measurement/psychometric interpretation is actually used; not a security control.)
-- Cai, Z., Liu, S., Wei, H., Chen, Y., & Pan, A. (2025). Fast verification of strong database isolation (Extended Version). *Proceedings of the VLDB Endowment, 19*, 563–575.
+- Cai, Z., Liu, S., Wei, H., Chen, Y., & Pan, A. (2025). Fast verification of strong database isolation. *Proceedings of the VLDB Endowment, 19*(4), 563–575. https://doi.org/10.14778/3785297.3785300
 - International Organization for Standardization. (2026). *ISO 20022-1:2026 Financial services—Universal financial industry message scheme—Part 1: Metamodel*.
 - International Organization for Standardization. (2026). *ISO 20022-4:2026 Financial services—Universal financial industry message scheme—Part 4: XML Schema generation*.
 - International Organization for Standardization. (2026). *ISO 20022-9:2026 Financial services—Universal financial industry message scheme—Part 9: Syntax generation requirements and rules*.
