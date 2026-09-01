@@ -46,6 +46,7 @@ FORBIDDEN_APPLICATION_IMPORT_ROOTS = {
     "naruon",
     "keyverse",
     "context_graph_contracts",
+    "enterprise_architecture_core",
 }
 REQUIRED_UBIQUITOUS_TERMS = {
     "Journal proposal",
@@ -86,7 +87,9 @@ class DddArchitectureFitnessTests(unittest.TestCase):
         text = CONTEXT_MAP.read_text(encoding="utf-8")
         for context in BOUND_CONTEXTS:
             self.assertIn(f"`{context}`", text)
-        self.assertIn("No Shared Kernel is declared", text)
+        self.assertIn("ContextualWisdomLab/context-graph-contracts", text)
+        self.assertIn("minimal cross-repository Shared Kernel", text)
+        self.assertIn("enterprise-architecture-core", text)
         self.assertIn("Anti-Corruption Layer", text)
         self.assertIn("Published Language", text)
         self.assertIn("transitional-debt", text)
@@ -97,11 +100,29 @@ class DddArchitectureFitnessTests(unittest.TestCase):
         """Keep the Context Map tied to a reviewable accepted architecture decision."""
         text = CONTEXT_MAP_ADR.read_text(encoding="utf-8")
         self.assertIn("Status: Accepted", text)
-        self.assertIn("No Shared Kernel is declared", text)
+        self.assertIn("ContextualWisdomLab/context-graph-contracts", text)
+        self.assertIn("minimal cross-repository Shared Kernel", text)
+        self.assertIn("enterprise-architecture-core", text)
         self.assertIn("Anti-Corruption Layer", text)
         self.assertIn("published proposal/API/event contracts", text)
         for context in BOUND_CONTEXTS:
             self.assertIn(f"`{context}`", text)
+
+    def test_context_fabric_shared_kernel_preserves_accounting_authority(self) -> None:
+        """Allow only released contract grammar to cross the Context Fabric boundary."""
+        context_map = CONTEXT_MAP.read_text(encoding="utf-8")
+        adr = CONTEXT_MAP_ADR.read_text(encoding="utf-8")
+        for text in (context_map, adr):
+            self.assertIn("released `cwl-context-contracts`", text)
+            self.assertIn("Context Assertion", text)
+            self.assertIn("CloudEvents", text)
+            self.assertIn("truth status", text)
+            self.assertIn("valid/system time", text)
+            self.assertIn("provenance", text)
+            self.assertIn("journal/ledger balances", text)
+            self.assertIn("cross-service SQL", text)
+        self.assertIn("EA Decision Plane", context_map)
+        self.assertIn("architecture/change evidence only", context_map)
 
     def test_every_top_level_production_module_has_explicit_physical_owner(self) -> None:
         """Require new modules to be assigned to a context in the code-current map."""
