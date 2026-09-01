@@ -9,6 +9,16 @@ BEGIN;
 -- silently reinterpret those legacy rows as if they had maker-checker command
 -- evidence. Operators must audit/remediate them before this authority boundary
 -- is installed; the transaction abort leaves the previous schema unchanged.
+-- Migration 0013 forces RLS on reconciliation_exception. Give only the current
+-- migration user transaction-scoped SELECT visibility for this all-tenant
+-- upgrade preflight, mirroring migration 0016's reviewed-match upgrade guard;
+-- remove the policy before any durable authority change is installed.
+CREATE POLICY reconciliation_exception_resolution_upgrade_visibility
+    ON accounting_core.reconciliation_exception
+    FOR SELECT
+    TO current_user
+    USING (true);
+
 DO $$
 BEGIN
     IF EXISTS (
@@ -22,6 +32,9 @@ BEGIN
     END IF;
 END;
 $$;
+
+DROP POLICY reconciliation_exception_resolution_upgrade_visibility
+    ON accounting_core.reconciliation_exception;
 
 ALTER TABLE accounting_core.reconciliation_command_identity
     DROP CONSTRAINT reconciliation_command_identity_command_family_code_check;
