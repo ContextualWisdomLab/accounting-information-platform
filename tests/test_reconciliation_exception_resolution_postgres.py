@@ -4,12 +4,24 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 
 import psycopg
 
-from accounting_information_platform import accept_reconciliation_run
+from accounting_information_platform import (
+    AccountingValidationError,
+    IdempotencyConflictError,
+    accept_reconciliation_run,
+    resolve_reconciliation_exception,
+)
 from tests import test_postgres_posting as posting
 from tests.test_reconciliation_run_api import ReconciliationRunApiTests
+
+_ROOT = Path(__file__).resolve().parents[1]
+_RESOLUTION_MIGRATION = (
+    _ROOT / "database/migrations/0020_reconciliation_exception_resolution_command.sql"
+)
+_EVIDENCE_HASH = "sha256:" + "a" * 64
 
 
 class ReconciliationExceptionResolutionPostgresTests(unittest.TestCase):
@@ -17,8 +29,14 @@ class ReconciliationExceptionResolutionPostgresTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        """Install the complete accounting foundation in real PostgreSQL."""
+        """Install migrations 0001 through 0020 in real PostgreSQL."""
         posting.PostgresPostingTests.setUpClass()
+        with psycopg.connect(
+            posting.DATABASE_URL,
+            autocommit=True,
+            cursor_factory=psycopg.ClientCursor,
+        ) as connection:
+            connection.execute(_RESOLUTION_MIGRATION.read_text(encoding="utf-8"))
 
     def setUp(self) -> None:
         """Open one evaluating run and persist one review exception."""
@@ -74,6 +92,26 @@ class ReconciliationExceptionResolutionPostgresTests(unittest.TestCase):
             (self.opened["reconciliation_run_id"],),
         ).fetchone()[0]
 
+    def _command(self, **overrides: object) -> dict[str, object]:
+        """Return one reviewed exception-resolution command."""
+        command: dict[str, object] = {
+            "tenant_reference": self.fixture.case.policy.tenant_reference,
+            "reconciliation_action_code": "resolve_exception",
+            "reconciliation_run_id": self.opened["reconciliation_run_id"],
+            "reconciliation_exception_id": str(self.exception_id),
+            "reconciliation_idempotency_key": f"resolve-{self.exception_id}",
+            "resolution_status_code": "resolved",
+            "actor_reference": "urn:cwl:principal:independent_reviewer",
+            "purpose_code": "bank_reconciliation_exception_review",
+            "resolution_evidence_reference": (
+                f"urn:cwl:evidence:reconciliation_exception:{self.exception_id}:review"
+            ),
+            "resolution_evidence_hash": _EVIDENCE_HASH,
+            "effective_at": "2026-09-02T00:20:00Z",
+        }
+        command.update(overrides)
+        return command
+
     def test_raw_terminal_status_without_resolution_command_fails(self) -> None:
         """Privileged SQL cannot manufacture maker-checker resolution authority."""
         with psycopg.connect(posting.DATABASE_URL) as connection:
@@ -85,6 +123,108 @@ class ReconciliationExceptionResolutionPostgresTests(unittest.TestCase):
                     """
                     UPDATE accounting_core.reconciliation_exception
                     SET resolution_status_code = 'resolved'
+                    WHERE tenant_account_id = %s
+                      AND reconciliation_exception_id = %s
+                    """,
+                    (self._tenant_id(connection), self.exception_id),
+                )
+            connection.rollback()
+
+    def test_named_command_resolves_exception_and_emits_atomic_outbox(self) -> None:
+        """One reviewed command persists terminal status, immutable evidence, and outbox."""
+        result = resolve_reconciliation_exception(
+            self._command(),
+            posting.DATABASE_URL,
+            self.fixture.case.policy.tenant_reference,
+        )
+
+        self.assertEqual(result["resolution_status_code"], "resolved")
+        self.assertFalse(result["replayed"])
+        self.assertRegex(
+            str(result["reconciliation_exception_resolution_command_hash"]),
+            r"^sha256:[0-9a-f]{64}$",
+        )
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            status = connection.execute(
+                """
+                SELECT resolution_status_code
+                FROM accounting_core.reconciliation_exception
+                WHERE tenant_account_id = %s
+                  AND reconciliation_exception_id = %s
+                """,
+                (self._tenant_id(connection), self.exception_id),
+            ).fetchone()[0]
+            outbox = connection.execute(
+                """
+                SELECT event_type_code, payload_hash
+                FROM accounting_integration.outbox_event
+                WHERE tenant_account_id = %s
+                  AND aggregate_reference = %s
+                ORDER BY created_at DESC, outbox_event_id DESC
+                LIMIT 1
+                """,
+                (
+                    self._tenant_id(connection),
+                    f"urn:cwl:accounting:reconciliation_exception:{self.exception_id}",
+                ),
+            ).fetchone()
+        self.assertEqual(status, "resolved")
+        self.assertEqual(outbox[0], "reconciliation_exception_resolved")
+        self.assertEqual(
+            outbox[1], result["reconciliation_exception_resolution_command_hash"]
+        )
+
+    def test_exact_replay_reuses_immutable_resolution_receipt(self) -> None:
+        """Exact retries replay while changed evidence under one key conflicts."""
+        command = self._command()
+        first = resolve_reconciliation_exception(
+            command,
+            posting.DATABASE_URL,
+            self.fixture.case.policy.tenant_reference,
+        )
+        replay = resolve_reconciliation_exception(
+            command,
+            posting.DATABASE_URL,
+            self.fixture.case.policy.tenant_reference,
+        )
+        self.assertFalse(first["replayed"])
+        self.assertTrue(replay["replayed"])
+        self.assertEqual(
+            replay["reconciliation_exception_resolution_command_hash"],
+            first["reconciliation_exception_resolution_command_hash"],
+        )
+        with self.assertRaises(IdempotencyConflictError):
+            resolve_reconciliation_exception(
+                self._command(resolution_evidence_hash="sha256:" + "b" * 64),
+                posting.DATABASE_URL,
+                self.fixture.case.policy.tenant_reference,
+            )
+
+    def test_exception_owner_cannot_resolve_own_exception(self) -> None:
+        """Maker-checker separation rejects the exception owner as resolution actor."""
+        with self.assertRaisesRegex(AccountingValidationError, "cannot approve"):
+            resolve_reconciliation_exception(
+                self._command(actor_reference="urn:cwl:principal:controller_owner"),
+                posting.DATABASE_URL,
+                self.fixture.case.policy.tenant_reference,
+            )
+
+    def test_resolved_exception_evidence_is_immutable(self) -> None:
+        """The terminal exception fact cannot be rewritten after its command commits."""
+        resolve_reconciliation_exception(
+            self._command(),
+            posting.DATABASE_URL,
+            self.fixture.case.policy.tenant_reference,
+        )
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            with self.assertRaisesRegex(
+                psycopg.Error,
+                "reconciliation_exception_resolution_immutable",
+            ):
+                connection.execute(
+                    """
+                    UPDATE accounting_core.reconciliation_exception
+                    SET next_action = 'rewrite forbidden'
                     WHERE tenant_account_id = %s
                       AND reconciliation_exception_id = %s
                     """,
