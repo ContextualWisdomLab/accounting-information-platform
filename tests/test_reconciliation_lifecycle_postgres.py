@@ -124,7 +124,7 @@ class ReconciliationLifecyclePostgresTests(unittest.TestCase):
                     """,
                     (self.opened["reconciliation_run_id"],),
                 )
-                connection.commit()
+            connection.rollback()
 
     def test_transition_command_cannot_commit_without_reconciled_status(self) -> None:
         """A lifecycle command cannot be parked for a later raw status rewrite."""
@@ -240,6 +240,7 @@ class ReconciliationLifecyclePostgresTests(unittest.TestCase):
                         datetime(2026, 9, 1, 12, 2, tzinfo=timezone.utc),
                     ),
                 )
+            connection.rollback()
 
 
 if __name__ == "__main__":
