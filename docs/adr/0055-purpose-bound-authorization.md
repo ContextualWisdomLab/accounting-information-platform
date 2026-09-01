@@ -63,9 +63,7 @@ accepts only unchanged decisions issued by the `authorize` evaluator, so a calle
 construct or mutate an `allowed` decision and promote it into durable evidence; copying an
 evaluator decision retains its provenance.
 
-The standalone runner has no authenticated principal by default and therefore exposes only health
-status until a trusted host adapter supplies a validated context to
-`create_journal_proposal_server` or `run_journal_proposal_server`.
+The standalone runner has no request-principal resolver by default and therefore exposes only health status. A trusted host adapter integrates through `request_principal_resolver`; the resolver is invoked for each request and must return only that request's validated `AuthenticatedPrincipal`. The server never accepts one reusable authenticated principal as authority for every connected client.
 
 ## Consequences
 
@@ -118,7 +116,7 @@ National Institute of Standards and Technology. https://doi.org/10.6028/NIST.SP.
 
 Logrippo, L. (2025). Data flow security in role-based access control. *Journal of Information
 Security and Applications*.
-https://consensus.app/papers/data-flow-security-in-rolebased-access-control-logrippo/95874bd5d780530a8e80eece583cda0e/?utm_source=chatgpt
+https://doi.org/10.1016/j.jisa.2025.103997
 
 NIST SP 800-162 defines authorization in terms of subject/object/operation/environment attributes,
 which supports keeping tenant identity, requested operation, purpose and principal kind as distinct

@@ -32,7 +32,7 @@ Hu, V. C., Ferraiolo, D., Kuhn, D. R., Schnitzer, A., Sandlin, K., Miller, R., &
 
 Joint Task Force. (2020). *Security and privacy controls for information systems and organizations* (NIST Special Publication 800-53 Revision 5; Release 5.2.0 current August 27, 2025). National Institute of Standards and Technology. https://doi.org/10.6028/NIST.SP.800-53r5
 
-Logrippo, L. (2025). Data flow security in role-based access control. *Journal of Information Security and Applications*. https://consensus.app/papers/data-flow-security-in-rolebased-access-control-logrippo/95874bd5d780530a8e80eece583cda0e/?utm_source=chatgpt
+Logrippo, L. (2025). Data flow security in role-based access control. *Journal of Information Security and Applications*. https://doi.org/10.1016/j.jisa.2025.103997
 
 ## Integration boundary
 

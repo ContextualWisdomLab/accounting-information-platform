@@ -11,8 +11,7 @@ Required environment values are deployment-specific. At minimum, configure the a
 The trusted host identity adapter must validate issuer, audience, expiry, signature, and token
 binding before constructing `AuthenticatedPrincipal`, and must pass an explicit `principal_kind` of
 `human`, `service`, or `agent`. AIS rejects an omitted kind rather than classifying it as a human.
-Pass that context explicitly to the server; the standalone runner supplies no principal and therefore
-denies every accounting route except `/healthz`. Grant the runtime login INSERT access to
+Provide `request_principal_resolver` as the trusted host adapter: it validates each incoming request and returns that request's `AuthenticatedPrincipal`. A static server-wide principal is not supported. The standalone runner supplies no resolver and therefore denies every accounting route except `/healthz`. Grant the runtime login INSERT access to
 `accounting_integration.authorization_decision_record` and retain its append-only authorization
 decision evidence. Never forward bearer tokens, request-body permission claims, or model output.
 

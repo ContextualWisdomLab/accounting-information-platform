@@ -13443,7 +13443,7 @@ class PostgresPostingTests(unittest.TestCase):
             bound_tenant,
             "127.0.0.1",
             0,
-            authorization_context,
+            request_principal_resolver=lambda _request: authorization_context,
         )
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()

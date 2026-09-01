@@ -189,12 +189,12 @@ class JournalProposalServer(ThreadingHTTPServer):
         server_address: tuple[str, int],
         database_url: str,
         tenant_reference: str,
-        authorization_context: AuthenticatedPrincipal | None = None,
+        request_principal_resolver: Callable[[object], AuthenticatedPrincipal | None] | None = None,
     ) -> None:
         """Bind *server_address* to one tenant's posting endpoint."""
         self.database_url = database_url
         self.tenant_reference = tenant_reference
-        self.authorization_context = authorization_context
+        self.request_principal_resolver = request_principal_resolver
         self.artifact_store = MemoryArtifactStore()
         super().__init__(server_address, JournalProposalHandler)
 
@@ -1777,8 +1777,17 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         tenant_header = self._bound_tenant_header(mismatch_action)
         if tenant_header is None:
             return False
+        resolver = self.server.request_principal_resolver
+        try:
+            principal = None if resolver is None else resolver(self)
+        except Exception:
+            self._write_error(
+                503,
+                'caller identity validation is unavailable. Ask the platform operator to restore the trusted identity adapter, then retry.',
+            )
+            return False
         decision = authorize(
-            self.server.authorization_context,
+            principal,
             tenant_header,
             operation_code,
         )
@@ -1962,16 +1971,16 @@ def create_journal_proposal_server(
     tenant_reference: str,
     host: str = "127.0.0.1",
     port: int = 0,
-    authorization_context: AuthenticatedPrincipal | None = None,
+    request_principal_resolver: Callable[[JournalProposalHandler], AuthenticatedPrincipal | None] | None = None,
 ) -> JournalProposalServer:
-    """Create a stdlib HTTP server that posts Billing proposals, AIS adjusting journals, pulls, closes, opens periods, accepts bank-statement evidence, and reads TB, statements, journals, reversals, receivable aging, payable aging, outbox, and audit history."""
+    """Create an HTTP server whose trusted adapter resolves one principal per request."""
     if not database_url:
         raise AccountingValidationError(
             "ACCOUNTING_DATABASE_URL is empty. Set a PostgreSQL 18 URL and retry posting."
         )
     _require_reference(tenant_reference, "tenant reference")
     return JournalProposalServer(
-        (host, port), database_url, tenant_reference, authorization_context
+        (host, port), database_url, tenant_reference, request_principal_resolver
     )
 
 
@@ -1981,9 +1990,9 @@ def run_journal_proposal_server(
     host: str | None = None,
     port: int | None = None,
     serve: Callable[[], None] | None = None,
-    authorization_context: AuthenticatedPrincipal | None = None,
+    request_principal_resolver: Callable[[JournalProposalHandler], AuthenticatedPrincipal | None] | None = None,
 ) -> JournalProposalServer:
-    """Bind 127.0.0.1:$PORT by default and serve AIS HTTP commands."""
+    """Bind 127.0.0.1:$PORT and resolve caller identity independently per request."""
     resolved_url = (
         database_url
         if database_url is not None
@@ -2010,7 +2019,7 @@ def run_journal_proposal_server(
         resolved_tenant,
         resolved_host,
         resolved_port,
-        authorization_context,
+        request_principal_resolver,
     )
     runner = server.serve_forever if serve is None else serve
     runner()

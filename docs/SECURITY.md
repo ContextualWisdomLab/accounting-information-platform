@@ -25,8 +25,7 @@ Database administration is not business posting authority. Migration owners and 
 
 Purpose-bound application authorization is a separate control from PostgreSQL privileges. Request-body fields, model text, headers supplied by an untrusted client and database GUC values cannot grant posting, reversal, close or tax authority.
 
-The trusted host identity adapter must validate issuer, audience, expiry, signature, and token binding
-before passing an `AuthenticatedPrincipal` to AIS. It must pass the explicit `principal_kind` value
+The trusted host identity adapter must validate issuer, audience, expiry, signature, and token binding for every request before returning that request's `AuthenticatedPrincipal` to AIS. The production HTTP factory accepts a request-scoped resolver rather than a reusable server-wide principal. It must pass the explicit `principal_kind` value
 `human`, `service`, or `agent`; AIS has no implicit kind default, so omission is rejected before
 authorization. The HTTP boundary maps each route to a stable operation and requires the corresponding
 versioned permission; soft-close and hard-close are independent permissions. Missing, unknown,

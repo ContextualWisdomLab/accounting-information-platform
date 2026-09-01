@@ -150,7 +150,7 @@ class AuthorizationContractTests(unittest.TestCase):
         handler.server = SimpleNamespace(
             database_url="postgresql://unused",
             tenant_reference=TENANT,
-            authorization_context=principal("accounting.read_catalog"),
+            request_principal_resolver=lambda _request: principal("accounting.read_catalog"),
         )
         handler._write_error = mock.Mock()  # type: ignore[method-assign]
         with mock.patch(

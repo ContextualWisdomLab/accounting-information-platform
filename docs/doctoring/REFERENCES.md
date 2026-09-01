@@ -56,7 +56,7 @@ Korea Legislation Research Institute. (2024b). *Income Tax Act* [Unofficial tran
 
 Korea Legislation Research Institute. (2024a). *Value-Added Tax Act* [Unofficial translation]. https://elaw.klri.re.kr/eng_service/lawView.do?hseq=53110&lang=ENG
 
-Logrippo, L. (2025). Data flow security in role-based access control. *Journal of Information Security and Applications*. https://consensus.app/papers/data-flow-security-in-rolebased-access-control-logrippo/95874bd5d780530a8e80eece583cda0e/
+Logrippo, L. (2025). Data flow security in role-based access control. *Journal of Information Security and Applications*. https://doi.org/10.1016/j.jisa.2025.103997
 
 PostgreSQL Global Development Group. (2026). *PostgreSQL 18.4 release notes*. https://www.postgresql.org/docs/release/18.4/
 

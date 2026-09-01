@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- The accounting HTTP boundary now resolves a validated principal independently for every request through a trusted `request_principal_resolver`; the public server factory no longer accepts one reusable principal whose permissions every reachable client could inherit. Identity-adapter failures fail closed before an allowed audit decision is written.
 - Authorization evidence persistence now accepts only unchanged decisions issued by the
   authorization evaluator; caller-constructed or post-issuance-mutated `allowed` decisions
   cannot be promoted into durable audit evidence, while copied evaluator decisions retain
