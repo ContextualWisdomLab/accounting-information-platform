@@ -24,7 +24,10 @@ class ReconciliationSupersedeContractTests(unittest.TestCase):
         """The database trigger must reject direct or unreviewed supersession."""
         sql = APPROVAL_MIGRATION.read_text(encoding="utf-8")
         self.assertIn("IF NEW.match_status_code = 'superseded' THEN", sql)
-        self.assertIn("OLD.match_status_code NOT IN ('approved', 'rejected')", sql)
+        self.assertIn(
+            "OLD.match_status_code NOT IN ('approved', 'rejected', 'superseded')",
+            sql,
+        )
         self.assertIn("reconciliation_supersede_requires_reviewed_decision", sql)
 
 
