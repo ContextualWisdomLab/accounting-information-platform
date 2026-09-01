@@ -2,8 +2,9 @@
 
 A lifecycle command can mark one reviewed run ``reconciled`` only after the
 PostgreSQL-owned statement/book populations form an exact bridge, every terminal
-match has durable decision evidence, and no open exception remains. This module
-cannot post or reverse journals, close periods, or change accounting policy.
+match has durable decision evidence, and no exception lacks durable maker-checker
+resolution-command evidence. This module cannot post or reverse journals, close
+periods, or change accounting policy.
 """
 
 from __future__ import annotations
@@ -323,7 +324,7 @@ def _validate_review_control_state(
     match_state: tuple[tuple[str, str, str, str], ...],
     exception_state: tuple[tuple[str, str, str], ...],
 ) -> None:
-    """Reject incomplete reviews, mismatched approvals, and unresolved exceptions."""
+    """Reject incomplete reviews and exception states without command authority."""
     for match_reference, status_code, decision_code, snapshot_hash in match_state:
         if status_code == "proposed":
             raise AccountingValidationError(
@@ -341,8 +342,13 @@ def _validate_review_control_state(
         if resolution_status == "open":
             raise AccountingValidationError(
                 f"reconciliation exception {exception_reference} ({exception_code}) is still open. "
-                "Resolve or supersede it with retained evidence, then retry reconciliation."
+                "Keep the run in review until a named maker-checker resolution command is available."
             )
+        raise AccountingValidationError(
+            f"reconciliation exception {exception_reference} ({exception_code}) is marked "
+            f"{resolution_status} without durable resolution-command evidence. Keep the run in "
+            "review; do not treat a mutable exception status as reconciliation authority."
+        )
 
 
 def _transition_snapshot_hash(
