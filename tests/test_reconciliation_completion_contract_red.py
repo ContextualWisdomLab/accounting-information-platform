@@ -37,6 +37,29 @@ class ReconciliationCompletionContractTests(unittest.TestCase):
         self.assertIn("match_status_code = 'proposed'", migration)
         self.assertIn("reconciliation_completion_command", migration)
 
+    def test_database_completion_requires_purpose_limited_capability_role(self) -> None:
+        """A generic runtime or caller-controlled GUC must not authorize reconciliation completion."""
+        migration = MIGRATION.read_text(encoding="utf-8")
+        self.assertIn("CREATE ROLE accounting_reconciliation_completer NOLOGIN", migration)
+        self.assertIn("ALTER ROLE accounting_reconciliation_completer NOLOGIN", migration)
+        self.assertIn(
+            "pg_has_role(session_user, 'accounting_reconciliation_completer', 'MEMBER')",
+            migration,
+        )
+        self.assertIn(
+            "GRANT INSERT, SELECT ON accounting_core.reconciliation_completion_command",
+            migration,
+        )
+        self.assertIn(
+            "GRANT UPDATE (run_status_code) ON accounting_core.reconciliation_run",
+            migration,
+        )
+        self.assertIn(
+            "GRANT INSERT ON accounting_integration.outbox_event",
+            migration,
+        )
+        self.assertNotIn("SET ROLE accounting_reconciliation_completer", migration)
+
     def test_application_command_uses_one_consistent_snapshot_and_database_owned_bridge(self) -> None:
         """Completion must bind exact populations and bridge facts from one DB snapshot."""
         self.assertTrue(SOURCE.exists(), "reconciliation completion source must exist")
