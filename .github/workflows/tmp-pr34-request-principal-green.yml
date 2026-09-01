@@ -41,7 +41,7 @@ jobs:
           replace_exact(
               http,
               "        authorization_context: AuthenticatedPrincipal | None = None,\n",
-              "        request_principal_resolver: Callable[[\\\"JournalProposalHandler\\\"], AuthenticatedPrincipal | None] | None = None,\n",
+              "        request_principal_resolver: Callable[[object], AuthenticatedPrincipal | None] | None = None,\n",
           )
           replace_exact(
               http,
@@ -51,7 +51,7 @@ jobs:
           replace_exact(
               http,
               "        decision = authorize(\n            self.server.authorization_context,\n            tenant_header,\n            operation_code,\n        )\n",
-              "        resolver = self.server.request_principal_resolver\n        try:\n            principal = None if resolver is None else resolver(self)\n        except Exception:\n            self._write_error(\n                503,\n                \\\"caller identity validation is unavailable. Ask the platform operator to restore the trusted identity adapter, then retry.\\\",\n            )\n            return False\n        decision = authorize(\n            principal,\n            tenant_header,\n            operation_code,\n        )\n",
+              "        resolver = self.server.request_principal_resolver\n        try:\n            principal = None if resolver is None else resolver(self)\n        except Exception:\n            self._write_error(\n                503,\n                'caller identity validation is unavailable. Ask the platform operator to restore the trusted identity adapter, then retry.',\n            )\n            return False\n        decision = authorize(\n            principal,\n            tenant_header,\n            operation_code,\n        )\n",
           )
           replace_exact(
               http,
