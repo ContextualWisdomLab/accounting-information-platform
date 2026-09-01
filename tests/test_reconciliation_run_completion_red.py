@@ -8,7 +8,10 @@ updates are not an accounting owner-control path.
 from __future__ import annotations
 
 import unittest
+import uuid
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import psycopg
 
@@ -28,6 +31,125 @@ class ReconciliationRunCompletionContractTests(unittest.TestCase):
         """The lifecycle repair must be explicit in schema and application code."""
         self.assertTrue(MIGRATION.exists())
         self.assertTrue(callable(accept_reconciliation_run_completion))
+
+    def test_completion_accepts_exact_bridge_with_timing_differences(self) -> None:
+        """Known outstanding items may remain when the database-owned bridge ties exactly."""
+        tenant_id = uuid.uuid4()
+        run_id = uuid.uuid4()
+        completion_id = uuid.uuid4()
+        approved_match_id = uuid.uuid4()
+
+        class _Result:
+            def __init__(self, *, one: tuple[object, ...] | None = None, many: list[tuple[object, ...]] | None = None) -> None:
+                self._one = one
+                self._many = many or []
+
+            def fetchone(self) -> tuple[object, ...] | None:
+                return self._one
+
+            def fetchall(self) -> list[tuple[object, ...]]:
+                return self._many
+
+        class _Connection:
+            def execute(self, statement: str, parameters: object = None) -> _Result:
+                normalized = " ".join(statement.split())
+                if normalized.startswith(
+                    "SELECT accounting_core.lock_reconciliation_run_lifecycle"
+                ):
+                    return _Result()
+                if "FROM accounting_core.reconciliation_run_completion_command" in normalized:
+                    return _Result()
+                if normalized.startswith("SELECT run_status_code"):
+                    return _Result(one=("evaluating",))
+                if "FROM accounting_core.reconciliation_match AS match" in normalized:
+                    return _Result(
+                        many=[
+                            (
+                                str(approved_match_id),
+                                "approved",
+                                "approved",
+                                "sha256:" + "1" * 64,
+                            )
+                        ]
+                    )
+                if "FROM accounting_core.reconciliation_exception" in normalized:
+                    return _Result(many=[])
+                if normalized.startswith(
+                    "INSERT INTO accounting_core.reconciliation_run_completion_command"
+                ):
+                    return _Result(
+                        one=(
+                            completion_id,
+                            run_id,
+                            "completion-known-timing",
+                            "evaluating",
+                            "sha256:" + "2" * 64,
+                            "sha256:" + "3" * 64,
+                            "sha256:" + "4" * 64,
+                            posting.datetime(2026, 1, 1, tzinfo=posting.timezone.utc),
+                        )
+                    )
+                if normalized.startswith("UPDATE accounting_core.reconciliation_run"):
+                    return _Result()
+                raise AssertionError(f"unexpected SQL in completion contract: {normalized}")
+
+        class _Session:
+            def __init__(self, connection: _Connection) -> None:
+                self.connection = connection
+
+            def __enter__(self) -> _Connection:
+                return self.connection
+
+            def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
+                return None
+
+        class _Ledger:
+            def __init__(self, database_url: str, tenant_reference: str) -> None:
+                self.connection = _Connection()
+
+            def _session(self) -> _Session:
+                return _Session(self.connection)
+
+            def _require_tenant(self, connection: _Connection) -> uuid.UUID:
+                return tenant_id
+
+            def _acquire_command_lock(self, connection: _Connection, lock_key: str) -> None:
+                return None
+
+        bridge = SimpleNamespace(
+            statement_population_reference="sha256:" + "3" * 64,
+            book_population_reference="sha256:" + "4" * 64,
+            statement_closing_balance=posting.Decimal("100.00"),
+            book_closing_balance=posting.Decimal("90.00"),
+            outstanding_book_items=posting.Decimal("15.00"),
+            outstanding_bank_items=posting.Decimal("5.00"),
+            unexplained_difference=posting.Decimal("0"),
+        )
+        with (
+            patch(
+                "accounting_information_platform.reconciliation_completion.PostgresPostingLedger",
+                _Ledger,
+            ),
+            patch(
+                "accounting_information_platform.reconciliation_completion._database_owned_close_projection_evidence",
+                return_value=bridge,
+            ),
+            patch(
+                "accounting_information_platform.reconciliation_completion._completion_document",
+                return_value={"run_status_code": "reconciled"},
+            ),
+        ):
+            result = accept_reconciliation_run_completion(
+                {
+                    "tenant_reference": "tenant-fixture",
+                    "reconciliation_run_id": str(run_id),
+                    "completion_idempotency_key": "completion-known-timing",
+                },
+                "postgresql://example.invalid/accounting",
+                "tenant-fixture",
+            )
+
+        self.assertEqual(result["run_status_code"], "reconciled")
 
 
 @unittest.skipUnless(
