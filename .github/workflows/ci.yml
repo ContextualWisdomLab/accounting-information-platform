@@ -17,7 +17,7 @@ concurrency:
 jobs:
   exact-head-sast:
     name: Exact-head SAST
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -54,7 +54,7 @@ jobs:
 
   exact-head-security:
     name: Exact-head security
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read
@@ -97,7 +97,7 @@ jobs:
   exact-head-dependency-diff:
     name: Exact-head dependency diff
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -168,7 +168,7 @@ jobs:
 
   accounting-foundation:
     name: Accounting foundation
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read
@@ -317,7 +317,7 @@ jobs:
     name: Integrated-head attestations
     if: github.event_name == 'push'
     needs: accounting-foundation
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
