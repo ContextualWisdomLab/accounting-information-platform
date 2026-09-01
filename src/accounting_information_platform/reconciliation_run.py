@@ -87,6 +87,20 @@ def accept_reconciliation_run(
         ledger._acquire_command_lock(
             connection, f"reconciliation_run_key:{idempotency_key}"
         )
+        prior_identity = connection.execute(
+            """
+            SELECT command_family_code
+            FROM accounting_core.reconciliation_command_identity
+            WHERE tenant_account_id = %s
+              AND reconciliation_command_identity_key = %s
+            """,
+            (tenant_id, idempotency_key),
+        ).fetchone()
+        if prior_identity is not None and prior_identity[0] != "run_opening":
+            raise IdempotencyConflictError(
+                "reconciliation idempotency key is already owned by a lifecycle command. "
+                "Supply a new reconciliation_idempotency_key, then retry the run."
+            )
         prior_command = connection.execute(
             """
             SELECT reconciliation_run_id, source_payload_hash,
