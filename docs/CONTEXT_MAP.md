@@ -4,7 +4,7 @@ Status: accepted architecture; physical package migration is in progress and mus
 
 Decision record: [ADR 0059 — Accounting bounded-context map and architectural fitness](adr/0059-accounting-bounded-context-map.md).
 
-This document makes accounting responsibility, context relationships, and current physical ownership explicit. It is an architecture description for the modular monolith; it does not authorize another service to write accounting tables or make a statutory accounting decision.
+This document makes accounting responsibility, context relationships, Context Fabric integration and current physical ownership explicit. It is an architecture description for the modular monolith; it does not authorize another service to write accounting tables or make a statutory accounting decision.
 
 ## Subdomains
 
@@ -64,6 +64,17 @@ bank_statement_registry --> reconciliation_run_control --> reconciliation_review
                                                              +--> close-review evidence only
 
 tax_interface <--- authoritative journal/reporting evidence
+
+accounting architecture/change evidence
+        | released cwl-context-contracts
+        | Context Assertion + CloudEvents + schema/conformance/admission
+        v
+ContextualWisdomLab/context-graph-contracts
+        | provider-neutral minimal cross-repository Shared Kernel
+        v
+ContextualWisdomLab/enterprise-architecture-core
+        | authoritative EA Decision Plane
+        +--> architecture/change evidence only; never journal/ledger balances
 ```
 
 Relationship rules:
@@ -76,7 +87,26 @@ Relationship rules:
 - `reconciliation_review` consumes immutable statement and posted-book evidence. An approved reconciliation is evidence, not an accounting journal. Any adjustment returns through a separately authorized proposal/posting command.
 - `integration_outbox` publishes facts produced atomically with their owning accounting transaction. It cannot manufacture a domain event after a failed accounting commit.
 - `tax_interface` consumes authoritative accounting evidence but does not weaken journal, period, maker-checker or provenance controls.
-- No Shared Kernel is declared between repositories. This Python package root is a deployment container, not a DDD Shared Kernel. Reuse across repositories must occur through a published package/schema/API/event contract with its own versioning and ownership.
+- `ContextualWisdomLab/context-graph-contracts` is the minimal cross-repository Shared Kernel for provider-neutral Context Fabric grammar only. Accounting may consume only a released `cwl-context-contracts` package and its versioned Context Assertion, CloudEvents, schema/profile, conformance and admission contracts.
+- Shared Kernel records may carry canonical object/authority references, truth status/origin, valid/system time and provenance. They do not own or replicate accounting journal/ledger balances, posting/reconciliation approval, close authority or accounting policy.
+- `ContextualWisdomLab/enterprise-architecture-core` is the authoritative EA Decision Plane. Accounting publishes architecture/change evidence only: application/runtime/database/integration identity and lifecycle, released contract/profile/version, material technology/provider version, risk/remediation references and provenance. Financial facts stay in accounting-information-platform.
+- An open Context Graph PR head, copied provisional schema or predecessor conformance artifact is not a runtime dependency. Until an immutable released `cwl-context-contracts` distribution exists with applicable conformance/admission evidence, the accounting integration is fail-closed/not implemented.
+- Direct foreign application imports and all cross-service SQL are forbidden. A future adapter may import the released contract-only `cwl_context_contracts` package at the interoperability boundary; it may not import Context Graph or EA Core product implementations.
+- The accounting Python package root is a deployment container, not a DDD Shared Kernel. Existing `core.py` is local transitional debt, not the Context Fabric Shared Kernel.
+
+## Context Fabric authority projection
+
+The Context Fabric projection exists to make enterprise architecture changes observable without creating a second accounting source of truth.
+
+| Accounting change | Contract assertion/event may carry | Must remain local to accounting-information-platform |
+|---|---|---|
+| application/API/worker/database topology or owner change | canonical component/authority reference, change kind, valid/system time, provenance, released contract/profile version | accounting rows and credentials |
+| billing/ERP/bank integration change | endpoint/contract identity, source authority, lifecycle state, risk/remediation reference | invoice/payment commercial facts and bank statement financial contents |
+| PostgreSQL/object-storage/queue/runtime provider or version change | technology/provider/version reference, effective interval, operational provenance | journal/ledger balances and reconciliation monetary populations |
+| reconciliation/accounting contract release | schema/profile/admission version and source artifact provenance | approval decisions, journal facts, financial balances |
+| security/ownership remediation | risk/control/remediation references and accountable authority | secrets, raw PII, financial transaction contents |
+
+Every published assertion/event preserves the accounting source authority and truth status instead of promoting proposed/inferred context. Valid/system time and provenance are mandatory where the released Context Fabric profile requires them. No LLM interpretation, EA projection or Context Graph admission result can post a journal, approve reconciliation, change accounting policy or close a period.
 
 ## Aggregate and invariant ownership
 
@@ -122,15 +152,16 @@ Physical moves are made only with a bounded behavior slice: map all imports/cons
 New work must satisfy all of the following:
 
 1. Do not create new generic domain buckets named `utils`, `helpers`, `common`, `services`, `lib`, `shared`, `core`, `models`, `misc` or `legacy`. Existing `core.py` is explicit debt, not precedent.
-2. Do not import another ContextualWisdomLab application repository as a domain implementation dependency. Use a published contract/adapter boundary instead.
-3. Do not query another service's application tables. Database SQL in this repository targets owned accounting schemas and PostgreSQL infrastructure only.
+2. Do not import another ContextualWisdomLab application repository as a domain implementation dependency. The released contract-only `cwl_context_contracts` package is the sole Context Fabric Shared Kernel exception and remains an interoperability grammar, not a product implementation.
+3. Do not query another service's application tables; all cross-service SQL is forbidden. Database SQL in this repository targets owned accounting schemas and PostgreSQL infrastructure only.
 4. Domain calculations must remain executable without HTTP/framework/provider DTOs.
 5. Persistence and transport code may depend on domain/application contracts; domain code must not depend on persistence/transport implementations.
 6. A context may read a downstream projection only when the dependency is explicitly documented and cannot create a circular source of accounting truth.
-7. Shared Kernel creation requires an ADR naming owners, compatibility rules and exit strategy. None exists today.
-8. Every newly created production module must be assignable to exactly one primary bounded context in this map. Cross-context application orchestration must be explicit rather than hidden in a generic module.
+7. Context Fabric contract consumption requires a released `cwl-context-contracts` version plus applicable conformance/admission evidence. Schema/profile/version drift fails closed; open-PR or branch bytes are not pinned as production dependencies.
+8. Context Assertion/CloudEvents publication must preserve canonical authority references, truth status, valid/system time and provenance and must exclude journal/ledger balances and other financial facts from EA architecture projections.
+9. Every newly created production module must be assignable to exactly one primary bounded context in this map. Cross-context application orchestration must be explicit rather than hidden in a generic module.
 
-`tests/test_ddd_architecture_fitness.py` ratchets these rules that are mechanically checkable today. The test intentionally does not pretend that the transitional files above are already separated.
+`tests/test_ddd_architecture_fitness.py` ratchets these rules that are mechanically checkable today. The test intentionally does not pretend that the transitional files above are already separated or that unreleased Context Fabric runtime integration has shipped.
 
 ## Architecture evidence
 
