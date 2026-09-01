@@ -152,10 +152,7 @@ class ReconciliationClosePackageActiveStateDefensiveTests(unittest.TestCase):
     def test_database_snapshot_must_match_packaged_approval(self) -> None:
         approval = self._approval()
         with self.assertRaisesRegex(ValueError, "approval snapshot"):
-            self._load(
-                [self._row(approval, snapshot_hash="sha256:" + "d" * 64)],
-                (approval,),
-            )
+            self._load([self._row(approval, snapshot_hash="sha256:" + "d" * 64)], (approval,))
 
     def test_database_state_evidence_is_deterministic_and_query_is_run_scoped(self) -> None:
         second = self._approval("match-2")
@@ -190,6 +187,14 @@ class ReconciliationClosePackageActiveStateDefensiveTests(unittest.TestCase):
             bank_account_assignment_reference="bank-assignment-1",
             reconciliation_run_reference="run-1",
             currency_code="KRW",
+            statement_population_reference="caller-statement-population",
+            book_population_reference="caller-book-population",
+            bank_closing_balance=0,
+            posted_book_cash_balance=0,
+            reconciled_balance=0,
+            outstanding_bank_items=0,
+            outstanding_book_items=0,
+            unexplained_difference=0,
             exception_count=0,
         )
         return ReconciliationClosePackageInput(
@@ -253,6 +258,26 @@ class ReconciliationClosePackageActiveStateDefensiveTests(unittest.TestCase):
             evidence_reference="database-owned:approved",
             sha256_digest="sha256:" + "1" * 64,
         )
+        authoritative_projection_evidence = (
+            close_package._DatabaseOwnedCloseProjectionEvidence(
+                statement_population_reference="sha256:" + "3" * 64,
+                book_population_reference="sha256:" + "4" * 64,
+                statement_opening_balance=0,
+                statement_period_movements=0,
+                statement_closing_balance=0,
+                book_opening_balance=0,
+                posted_cash_book_movements=0,
+                book_closing_balance=0,
+                reconciled_book_balance=0,
+                outstanding_bank_items=0,
+                outstanding_book_items=0,
+                unexplained_difference=0,
+            )
+        )
+
+        def replace_projection(projection, **changes):
+            return SimpleNamespace(**({**vars(projection), **changes}))
+
         sentinel = object()
         with (
             mock.patch.object(close_package, "PostgresPostingLedger", _Ledger),
@@ -270,6 +295,16 @@ class ReconciliationClosePackageActiveStateDefensiveTests(unittest.TestCase):
                     authoritative_scope,
                 ),
             ) as run_loader,
+            mock.patch.object(
+                close_package,
+                "_database_owned_close_projection_evidence",
+                return_value=authoritative_projection_evidence,
+            ) as projection_loader,
+            mock.patch.object(
+                close_package,
+                "replace",
+                side_effect=replace_projection,
+            ),
             mock.patch.object(
                 close_package,
                 "_build_reconciliation_close_package_from_verified_state",
@@ -296,6 +331,11 @@ class ReconciliationClosePackageActiveStateDefensiveTests(unittest.TestCase):
             tenant_reference="tenant-1",
             reconciliation_run_reference="run-1",
         )
+        projection_loader.assert_called_once_with(
+            _Ledger.connection,
+            "tenant-id",
+            reconciliation_run_reference="run-1",
+        )
         self.assertEqual(
             _Ledger.connection.parameters,
             ("tenant-id", "run-1"),
@@ -314,6 +354,8 @@ class ReconciliationClosePackageActiveStateDefensiveTests(unittest.TestCase):
                 ("reconciliation_run", "run-1"),
                 ("statement_artifact", "artifact-1"),
                 ("reconciliation_snapshot_tenant", "tenant-id"),
+                ("statement_population", "sha256:" + "3" * 64),
+                ("book_population", "sha256:" + "4" * 64),
                 ("reconciliation_match_state", "database-owned:approved"),
             ),
         )
