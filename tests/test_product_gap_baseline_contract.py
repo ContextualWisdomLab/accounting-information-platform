@@ -96,14 +96,14 @@ class ProductGapBaselineContractTests(unittest.TestCase):
         self.assertIn("not a published release or tag", changelog)
 
     def test_readme_describes_the_integrated_reconciliation_foundation(self) -> None:
-        """The buyer-facing README must not call integrated reconciliation evidence absent."""
+        """The buyer-facing README must describe integrated reconciliation without leaking migration internals."""
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn("immutable camt.053.001.14 bank-statement evidence registry", readme)
         self.assertIn("deterministic reconciliation proposal engine", readme)
         self.assertIn("exact book-to-bank bridge", readme)
         self.assertIn("durable reconciliation runs, exceptions, and evidence", readme)
-        self.assertIn("0014_reconciliation_candidate_allocation.sql", readme)
         self.assertRegex(readme, re.compile(r"full\s+cross-run\s+many-to-many\s+allocation"))
+        self.assertNotIn("0014_reconciliation_candidate_allocation.sql", readme)
         self.assertNotIn("bank-statement ingestion and reconciliation", readme)
 
 
