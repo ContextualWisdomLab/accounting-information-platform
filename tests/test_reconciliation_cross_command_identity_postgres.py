@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import threading
-import time
 import unittest
 import uuid
 from datetime import datetime, timezone
@@ -89,95 +88,70 @@ class ReconciliationCrossCommandIdentityPostgresTests(unittest.TestCase):
             connection.rollback()
 
     def test_shared_identity_serializes_concurrent_claims(self) -> None:
-        """Concurrent transactions cannot materialize two identities for one tenant/key."""
+        """Concurrent transactions leave exactly one durable tenant/key identity."""
         key = f"concurrent-shared-{uuid.uuid4().hex}"
-        first_inserted = threading.Event()
-        second_started = threading.Event()
-        release_first = threading.Event()
+        start = threading.Barrier(2)
         failures: list[BaseException] = []
-        second_sqlstate: list[str | None] = []
+        successes: list[str] = []
+        sqlstates: list[str | None] = []
 
         with psycopg.connect(posting.DATABASE_URL) as lookup:
             tenant_id = self._tenant_id(lookup)
 
-        def first_claim() -> None:
+        def claim(command_family_code: str) -> None:
             try:
                 with psycopg.connect(posting.DATABASE_URL) as connection:
+                    start.wait(timeout=5)
                     connection.execute(
                         """
                         INSERT INTO accounting_core.reconciliation_command_identity (
                             tenant_account_id,
-                            reconciliation_idempotency_key,
-                            reconciliation_command_kind_code,
-                            reconciliation_run_id
+                            reconciliation_command_identity_key,
+                            command_family_code
                         )
-                        VALUES (%s, %s, 'run_open', %s)
+                        VALUES (%s, %s, %s)
                         """,
-                        (tenant_id, key, self.opened["reconciliation_run_id"]),
-                    )
-                    first_inserted.set()
-                    if not release_first.wait(timeout=5):
-                        raise AssertionError("concurrent identity test did not release first writer")
-                    connection.commit()
-            except BaseException as error:  # captured for the main test thread
-                failures.append(error)
-                first_inserted.set()
-
-        def second_claim() -> None:
-            if not first_inserted.wait(timeout=5):
-                failures.append(AssertionError("first identity writer did not reach PostgreSQL"))
-                return
-            try:
-                with psycopg.connect(posting.DATABASE_URL) as connection:
-                    second_started.set()
-                    connection.execute(
-                        """
-                        INSERT INTO accounting_core.reconciliation_command_identity (
-                            tenant_account_id,
-                            reconciliation_idempotency_key,
-                            reconciliation_command_kind_code,
-                            reconciliation_run_id
-                        )
-                        VALUES (%s, %s, 'run_reconcile', %s)
-                        """,
-                        (tenant_id, key, self.opened["reconciliation_run_id"]),
+                        (tenant_id, key, command_family_code),
                     )
                     connection.commit()
+                    successes.append(command_family_code)
             except psycopg.Error as error:
-                second_sqlstate.append(error.sqlstate)
+                sqlstates.append(error.sqlstate)
             except BaseException as error:  # captured for the main test thread
                 failures.append(error)
 
-        first = threading.Thread(target=first_claim, name="reconciliation-key-first")
-        second = threading.Thread(target=second_claim, name="reconciliation-key-second")
-        first.start()
-        second.start()
-        self.assertTrue(first_inserted.wait(timeout=5))
-        self.assertTrue(second_started.wait(timeout=5))
-        time.sleep(0.1)
-        self.assertTrue(
-            second.is_alive(),
-            "second identity claim must wait on the first uncommitted unique key",
+        opening = threading.Thread(
+            target=claim,
+            args=("run_opening",),
+            name="reconciliation-key-opening",
         )
-        release_first.set()
-        first.join(timeout=5)
-        second.join(timeout=5)
-        self.assertFalse(first.is_alive())
-        self.assertFalse(second.is_alive())
+        reconciliation = threading.Thread(
+            target=claim,
+            args=("run_reconciliation",),
+            name="reconciliation-key-reconciliation",
+        )
+        opening.start()
+        reconciliation.start()
+        opening.join(timeout=10)
+        reconciliation.join(timeout=10)
+        self.assertFalse(opening.is_alive())
+        self.assertFalse(reconciliation.is_alive())
         self.assertEqual(failures, [])
-        self.assertEqual(second_sqlstate, ["23505"])
+        self.assertEqual(len(successes), 1)
+        self.assertEqual(sqlstates, ["23505"])
 
         with psycopg.connect(posting.DATABASE_URL) as connection:
-            count = connection.execute(
+            rows = connection.execute(
                 """
-                SELECT count(*)
+                SELECT command_family_code
                 FROM accounting_core.reconciliation_command_identity
                 WHERE tenant_account_id = %s
-                  AND reconciliation_idempotency_key = %s
+                  AND reconciliation_command_identity_key = %s
                 """,
                 (tenant_id, key),
-            ).fetchone()[0]
-            self.assertEqual(count, 1)
+            ).fetchall()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0][0], successes[0])
 
 
 if __name__ == "__main__":
