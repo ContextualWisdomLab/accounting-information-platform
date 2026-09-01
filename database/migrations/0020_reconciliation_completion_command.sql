@@ -16,6 +16,8 @@ CREATE TABLE accounting_core.reconciliation_completion_command (
         CHECK (statement_population_hash ~ '^sha256:[0-9a-f]{64}$'),
     book_population_hash text NOT NULL
         CHECK (book_population_hash ~ '^sha256:[0-9a-f]{64}$'),
+    approval_population_hash text NOT NULL
+        CHECK (approval_population_hash ~ '^sha256:[0-9a-f]{64}$'),
     bridge_evidence_hash text NOT NULL
         CHECK (bridge_evidence_hash ~ '^sha256:[0-9a-f]{64}$'),
     actor_reference text NOT NULL
