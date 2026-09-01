@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from pathlib import Path
+from threading import Barrier, Lock
+from unittest import mock
 
 import psycopg
 
@@ -14,13 +16,10 @@ from accounting_information_platform import (
     accept_reconciliation_run,
     resolve_reconciliation_exception,
 )
+from accounting_information_platform.persistence import PostgresPostingLedger
 from tests import test_postgres_posting as posting
 from tests.test_reconciliation_run_api import ReconciliationRunApiTests
 
-_ROOT = Path(__file__).resolve().parents[1]
-_RESOLUTION_MIGRATION = (
-    _ROOT / "database/migrations/0020_reconciliation_exception_resolution_command.sql"
-)
 _EVIDENCE_HASH = "sha256:" + "a" * 64
 
 
@@ -29,14 +28,8 @@ class ReconciliationExceptionResolutionPostgresTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        """Install migrations 0001 through 0020 in real PostgreSQL."""
+        """Install the complete shared migration chain through migration 0020."""
         posting.PostgresPostingTests.setUpClass()
-        with psycopg.connect(
-            posting.DATABASE_URL,
-            autocommit=True,
-            cursor_factory=psycopg.ClientCursor,
-        ) as connection:
-            connection.execute(_RESOLUTION_MIGRATION.read_text(encoding="utf-8"))
 
     def setUp(self) -> None:
         """Open one evaluating run and persist one review exception."""
@@ -130,6 +123,24 @@ class ReconciliationExceptionResolutionPostgresTests(unittest.TestCase):
                 )
             connection.rollback()
 
+    def test_open_exception_maker_evidence_is_immutable_before_review(self) -> None:
+        """Raw SQL cannot swap the maker identity before a checker command is submitted."""
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            with self.assertRaisesRegex(
+                psycopg.Error,
+                "reconciliation_exception_evidence_immutable",
+            ):
+                connection.execute(
+                    """
+                    UPDATE accounting_core.reconciliation_exception
+                    SET owner_reference = 'urn:cwl:principal:substituted_owner'
+                    WHERE tenant_account_id = %s
+                      AND reconciliation_exception_id = %s
+                    """,
+                    (self._tenant_id(connection), self.exception_id),
+                )
+            connection.rollback()
+
     def test_named_command_resolves_exception_and_emits_atomic_outbox(self) -> None:
         """One reviewed command persists terminal status, immutable evidence, and outbox."""
         result = resolve_reconciliation_exception(
@@ -140,6 +151,7 @@ class ReconciliationExceptionResolutionPostgresTests(unittest.TestCase):
 
         self.assertEqual(result["resolution_status_code"], "resolved")
         self.assertFalse(result["replayed"])
+        self.assertRegex(str(result["source_payload_hash"]), r"^sha256:[0-9a-f]{64}$")
         self.assertRegex(
             str(result["reconciliation_exception_resolution_command_hash"]),
             r"^sha256:[0-9a-f]{64}$",
@@ -149,6 +161,15 @@ class ReconciliationExceptionResolutionPostgresTests(unittest.TestCase):
                 """
                 SELECT resolution_status_code
                 FROM accounting_core.reconciliation_exception
+                WHERE tenant_account_id = %s
+                  AND reconciliation_exception_id = %s
+                """,
+                (self._tenant_id(connection), self.exception_id),
+            ).fetchone()[0]
+            source_payload_hash = connection.execute(
+                """
+                SELECT source_payload_hash
+                FROM accounting_core.reconciliation_exception_resolution_command
                 WHERE tenant_account_id = %s
                   AND reconciliation_exception_id = %s
                 """,
@@ -169,6 +190,7 @@ class ReconciliationExceptionResolutionPostgresTests(unittest.TestCase):
                 ),
             ).fetchone()
         self.assertEqual(status, "resolved")
+        self.assertEqual(source_payload_hash, result["source_payload_hash"])
         self.assertEqual(outbox[0], "reconciliation_exception_resolved")
         self.assertEqual(
             outbox[1], result["reconciliation_exception_resolution_command_hash"]
@@ -189,6 +211,7 @@ class ReconciliationExceptionResolutionPostgresTests(unittest.TestCase):
         )
         self.assertFalse(first["replayed"])
         self.assertTrue(replay["replayed"])
+        self.assertEqual(replay["source_payload_hash"], first["source_payload_hash"])
         self.assertEqual(
             replay["reconciliation_exception_resolution_command_hash"],
             first["reconciliation_exception_resolution_command_hash"],
@@ -199,6 +222,82 @@ class ReconciliationExceptionResolutionPostgresTests(unittest.TestCase):
                 posting.DATABASE_URL,
                 self.fixture.case.policy.tenant_reference,
             )
+        with self.assertRaises(IdempotencyConflictError):
+            resolve_reconciliation_exception(
+                self._command(request_context={"review_batch": "changed"}),
+                posting.DATABASE_URL,
+                self.fixture.case.policy.tenant_reference,
+            )
+
+    def test_overlapping_exact_retries_replay_after_repeatable_read_serialization(self) -> None:
+        """A waiter whose first snapshot predates the winner retries and replays exactly once."""
+        command = self._command()
+        lifecycle_scope = (
+            "reconciliation_run_lifecycle:" + self.opened["reconciliation_run_id"]
+        )
+        original_lock = PostgresPostingLedger._acquire_command_lock
+        first_lock_barrier = Barrier(2)
+        counter_guard = Lock()
+        synchronized_arrivals = 0
+
+        def synchronized_lock(
+            ledger: PostgresPostingLedger, connection: object, scope: str
+        ) -> None:
+            nonlocal synchronized_arrivals
+            synchronize = False
+            if scope == lifecycle_scope:
+                with counter_guard:
+                    if synchronized_arrivals < 2:
+                        synchronized_arrivals += 1
+                        synchronize = True
+            if synchronize:
+                first_lock_barrier.wait(timeout=10)
+            original_lock(ledger, connection, scope)
+
+        def resolve_once(_index: int) -> dict[str, object]:
+            return resolve_reconciliation_exception(
+                command,
+                posting.DATABASE_URL,
+                self.fixture.case.policy.tenant_reference,
+            )
+
+        with mock.patch.object(
+            PostgresPostingLedger,
+            "_acquire_command_lock",
+            synchronized_lock,
+        ):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                results = list(executor.map(resolve_once, range(2)))
+
+        self.assertEqual(sorted(bool(result["replayed"]) for result in results), [False, True])
+        self.assertEqual(
+            results[0]["reconciliation_exception_resolution_command_hash"],
+            results[1]["reconciliation_exception_resolution_command_hash"],
+        )
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            command_count = connection.execute(
+                """
+                SELECT count(*)
+                FROM accounting_core.reconciliation_exception_resolution_command
+                WHERE tenant_account_id = %s
+                  AND reconciliation_exception_id = %s
+                """,
+                (self._tenant_id(connection), self.exception_id),
+            ).fetchone()[0]
+            outbox_count = connection.execute(
+                """
+                SELECT count(*)
+                FROM accounting_integration.outbox_event
+                WHERE tenant_account_id = %s
+                  AND aggregate_reference = %s
+                """,
+                (
+                    self._tenant_id(connection),
+                    f"urn:cwl:accounting:reconciliation_exception:{self.exception_id}",
+                ),
+            ).fetchone()[0]
+        self.assertEqual(command_count, 1)
+        self.assertEqual(outbox_count, 1)
 
     def test_exception_owner_cannot_resolve_own_exception(self) -> None:
         """Maker-checker separation rejects the exception owner as resolution actor."""
@@ -219,7 +318,7 @@ class ReconciliationExceptionResolutionPostgresTests(unittest.TestCase):
         with psycopg.connect(posting.DATABASE_URL) as connection:
             with self.assertRaisesRegex(
                 psycopg.Error,
-                "reconciliation_exception_resolution_immutable",
+                "reconciliation_exception_evidence_immutable",
             ):
                 connection.execute(
                     """
