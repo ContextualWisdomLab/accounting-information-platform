@@ -87,19 +87,32 @@ class ReconciliationClosePackageAuthoritativeRunTests(unittest.TestCase):
 
     def _build(self, package_input: ReconciliationClosePackageInput) -> object:
         sentinel = object()
-        run_loader = mock.Mock(
-            return_value=(
+        call_order: list[str] = []
+
+        def load_run(*_args: object, **_kwargs: object):
+            call_order.append("run")
+            return (
                 self.authoritative_run,
                 self.authoritative_artifact,
                 self.authoritative_scope,
             )
-        )
+
+        def load_state(*_args: object, **_kwargs: object):
+            call_order.append("match")
+            return self.state_evidence
+
+        def validate_exceptions(*_args: object, **_kwargs: object) -> None:
+            call_order.append("exception")
+
+        run_loader = mock.Mock(side_effect=load_run)
+        state_loader = mock.Mock(side_effect=load_state)
+        exception_validator = mock.Mock(side_effect=validate_exceptions)
         with (
             mock.patch.object(close_package, "PostgresPostingLedger", _Ledger),
             mock.patch.object(
                 close_package,
                 "_database_owned_match_state_evidence",
-                return_value=self.state_evidence,
+                state_loader,
             ),
             mock.patch.object(
                 close_package,
@@ -109,7 +122,8 @@ class ReconciliationClosePackageAuthoritativeRunTests(unittest.TestCase):
             mock.patch.object(
                 close_package,
                 "_validate_database_owned_exception_state",
-            ) as exception_validator,
+                exception_validator,
+            ),
             mock.patch.object(
                 close_package,
                 "_build_reconciliation_close_package_from_verified_state",
@@ -122,6 +136,7 @@ class ReconciliationClosePackageAuthoritativeRunTests(unittest.TestCase):
                 tenant_reference=self.projection.tenant_account_reference,
             )
         self.assertIs(result, sentinel)
+        self.assertEqual(call_order, ["run", "match", "exception"])
         run_loader.assert_called_once_with(
             _Ledger.connection,
             "tenant-id",
