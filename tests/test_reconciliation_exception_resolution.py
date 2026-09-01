@@ -203,7 +203,8 @@ class ReconciliationExceptionResolutionTests(unittest.TestCase):
         )
         self.assertLess(command_index, status_index)
         self.assertLess(status_index, outbox_index)
-        self.assertIn("reconciliation_exception_resolved", sql[outbox_index])
+        outbox_parameters = _Ledger.connection.executed[outbox_index][1]
+        self.assertEqual(outbox_parameters[1], "reconciliation_exception_resolved")
 
     def test_superseded_command_uses_supersession_event(self) -> None:
         """Supersession is a distinct terminal decision and event, not a resolution alias."""
@@ -220,8 +221,12 @@ class ReconciliationExceptionResolutionTests(unittest.TestCase):
         )
         result = self._resolve(_command(resolution_status_code="superseded"))
         self.assertEqual(result["resolution_status_code"], "superseded")
-        sql = "\n".join(query for query, _parameters in _Ledger.connection.executed)
-        self.assertIn("reconciliation_exception_superseded", sql)
+        outbox_parameters = next(
+            parameters
+            for query, parameters in _Ledger.connection.executed
+            if query.startswith("INSERT INTO accounting_integration.outbox_event")
+        )
+        self.assertEqual(outbox_parameters[1], "reconciliation_exception_superseded")
 
     def test_exact_replay_returns_immutable_receipt_without_rewriting(self) -> None:
         """An exact idempotency replay returns retained evidence before run-state reads."""
