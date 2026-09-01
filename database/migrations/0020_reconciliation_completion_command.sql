@@ -166,57 +166,65 @@ BEGIN
         RETURN NEW;
     END IF;
 
-    IF NEW.run_status_code = 'reconciled' THEN
-        IF NOT pg_has_role(
-            session_user,
-            'accounting_reconciliation_completer',
-            'MEMBER'
-        ) THEN
-            RAISE EXCEPTION
-                'reconciliation transition requires purpose-limited database role membership (reconciliation_completion_role_required)'
-                USING ERRCODE = '42501';
-        END IF;
+    -- The only status authority granted by this migration is the evidence-backed
+    -- completion edge into `reconciled`. Other lifecycle edges require their own
+    -- named commands and evidence; the completion capability must not become a
+    -- generic direct-SQL status editor merely because it owns this column grant.
+    IF NEW.run_status_code <> 'reconciled' THEN
+        RAISE EXCEPTION
+            'reconciliation completion authority may change run status only to reconciled (reconciliation_completion_target_forbidden)'
+            USING ERRCODE = '42501';
+    END IF;
 
-        IF OLD.run_status_code NOT IN ('evaluating', 'review_required') THEN
-            RAISE EXCEPTION
-                'reconciliation run may enter reconciled only from evaluating or review_required (reconciliation_run_invalid_transition)'
-                USING ERRCODE = '23514';
-        END IF;
+    IF NOT pg_has_role(
+        session_user,
+        'accounting_reconciliation_completer',
+        'MEMBER'
+    ) THEN
+        RAISE EXCEPTION
+            'reconciliation transition requires purpose-limited database role membership (reconciliation_completion_role_required)'
+            USING ERRCODE = '42501';
+    END IF;
 
-        IF NOT EXISTS (
-            SELECT 1
-            FROM accounting_core.reconciliation_completion_command AS completion_command
-            WHERE completion_command.tenant_account_id = NEW.tenant_account_id
-              AND completion_command.reconciliation_run_id = NEW.reconciliation_run_id
-        ) THEN
-            RAISE EXCEPTION
-                'reconciliation run requires immutable completion command evidence before reconciled (reconciliation_completion_required)'
-                USING ERRCODE = '23514';
-        END IF;
+    IF OLD.run_status_code NOT IN ('evaluating', 'review_required') THEN
+        RAISE EXCEPTION
+            'reconciliation run may enter reconciled only from evaluating or review_required (reconciliation_run_invalid_transition)'
+            USING ERRCODE = '23514';
+    END IF;
 
-        IF EXISTS (
-            SELECT 1
-            FROM accounting_core.reconciliation_exception AS exception_record
-            WHERE exception_record.tenant_account_id = NEW.tenant_account_id
-              AND exception_record.reconciliation_run_id = NEW.reconciliation_run_id
-              AND exception_record.resolution_status_code = 'open'
-        ) THEN
-            RAISE EXCEPTION
-                'reconciliation run cannot enter reconciled with an open exception (reconciliation_completion_open_exception)'
-                USING ERRCODE = '23514';
-        END IF;
+    IF NOT EXISTS (
+        SELECT 1
+        FROM accounting_core.reconciliation_completion_command AS completion_command
+        WHERE completion_command.tenant_account_id = NEW.tenant_account_id
+          AND completion_command.reconciliation_run_id = NEW.reconciliation_run_id
+    ) THEN
+        RAISE EXCEPTION
+            'reconciliation run requires immutable completion command evidence before reconciled (reconciliation_completion_required)'
+            USING ERRCODE = '23514';
+    END IF;
 
-        IF EXISTS (
-            SELECT 1
-            FROM accounting_core.reconciliation_match AS match_record
-            WHERE match_record.tenant_account_id = NEW.tenant_account_id
-              AND match_record.reconciliation_run_id = NEW.reconciliation_run_id
-              AND match_record.match_status_code = 'proposed'
-        ) THEN
-            RAISE EXCEPTION
-                'reconciliation run cannot enter reconciled with a proposed match awaiting review (reconciliation_completion_pending_match)'
-                USING ERRCODE = '23514';
-        END IF;
+    IF EXISTS (
+        SELECT 1
+        FROM accounting_core.reconciliation_exception AS exception_record
+        WHERE exception_record.tenant_account_id = NEW.tenant_account_id
+          AND exception_record.reconciliation_run_id = NEW.reconciliation_run_id
+          AND exception_record.resolution_status_code = 'open'
+    ) THEN
+        RAISE EXCEPTION
+            'reconciliation run cannot enter reconciled with an open exception (reconciliation_completion_open_exception)'
+            USING ERRCODE = '23514';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM accounting_core.reconciliation_match AS match_record
+        WHERE match_record.tenant_account_id = NEW.tenant_account_id
+          AND match_record.reconciliation_run_id = NEW.reconciliation_run_id
+          AND match_record.match_status_code = 'proposed'
+    ) THEN
+        RAISE EXCEPTION
+            'reconciliation run cannot enter reconciled with a proposed match awaiting review (reconciliation_completion_pending_match)'
+            USING ERRCODE = '23514';
     END IF;
 
     RETURN NEW;
