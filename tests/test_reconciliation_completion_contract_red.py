@@ -60,6 +60,12 @@ class ReconciliationCompletionContractTests(unittest.TestCase):
         )
         self.assertNotIn("SET ROLE accounting_reconciliation_completer", migration)
 
+    def test_completion_capability_cannot_mutate_other_run_states(self) -> None:
+        """The completion role must not become a generic reconciliation-status writer."""
+        migration = MIGRATION.read_text(encoding="utf-8")
+        self.assertIn("IF NEW.run_status_code <> 'reconciled' THEN", migration)
+        self.assertIn("reconciliation_completion_target_forbidden", migration)
+
     def test_application_command_uses_one_consistent_snapshot_and_database_owned_bridge(self) -> None:
         """Completion must bind exact populations and bridge facts from one DB snapshot."""
         self.assertTrue(SOURCE.exists(), "reconciliation completion source must exist")
