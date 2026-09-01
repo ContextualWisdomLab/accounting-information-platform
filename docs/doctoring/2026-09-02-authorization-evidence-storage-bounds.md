@@ -16,7 +16,7 @@ Each normalized identity reference persisted by `authorization_decision_record` 
 
 RFC 8141 permits a URN namespace definition to specify its own syntax and interoperability constraints. AIS therefore constrains its internal `urn:cwl:` authorization references at the anti-corruption boundary while leaving provider-native claim representation in the identity system that owns it.
 
-The remaining text budgets are derived from executable contracts rather than free-form estimates: operation and purpose codes follow the existing 64-octet code grammar; a permission is two such code components plus the separator (129 octets); `policy_version` is a bounded release identifier (64 octets); and `correlation_reference` mirrors the existing 512-octet HTTP evidence contract. PostgreSQL repeats these bounds so a privileged/direct SQL path cannot bypass the application checks and inflate append-only evidence.
+The remaining text budgets are derived from executable contracts rather than free-form estimates: operation and purpose codes follow the existing 64-octet code grammar; a permission is two such code components plus the separator (129 octets); `policy_version` is a bounded release identifier (64 octets); and `correlation_reference` mirrors the existing 512-character HTTP evidence contract. PostgreSQL uses `char_length` for that correlation field so a multibyte command identity accepted by the HTTP contract cannot be rejected only because its UTF-8 representation uses more octets. The field remains bounded, while the ASCII-only normalized identity/vocabulary fields retain octet ceilings. PostgreSQL repeats all of these budgets so a privileged/direct SQL path cannot bypass the application contract and inflate append-only evidence.
 
 ## DDD and security boundary
 
@@ -28,8 +28,10 @@ The database constraints are fail-closed. Oversized or malformed normalized refe
 
 - Review finding: caller-derived identity references were unbounded PostgreSQL `text` columns.
 - GREEN schema: all five persisted identity references require bounded CWL URN syntax; operation, permission, purpose, policy-version, and correlation evidence have explicit database ceilings.
-- Regression: `tests/test_authorization_evidence_storage_contract.py` ratchets every durable text budget and the normalized reference grammar.
-- Existing PostgreSQL/HTTP authorization suites continue to prove tenant isolation, append-only evidence, malformed-close authorization, and the 512-octet correlation edge.
+- Follow-up review finding: the first database repair used an octet ceiling for `correlation_reference` while `_authorization_correlation()` enforced the pre-existing limit in Python characters, so a multibyte command key could be accepted by the application and then fail evidence persistence with HTTP 503.
+- Follow-up GREEN: `correlation_reference` now uses the same 512-character unit at PostgreSQL; the normalized identity and vocabulary fields remain ASCII/octet-bounded.
+- Regression: `tests/test_authorization_evidence_storage_contract.py` ratchets every durable text budget, the normalized reference grammar, and a multibyte idempotency key whose UTF-8 byte size exceeds 512 while its complete correlation remains within 512 characters.
+- Existing PostgreSQL/HTTP authorization suites continue to prove tenant isolation, append-only evidence, malformed-close authorization, and the 512-character correlation edge.
 
 ## Research basis
 
