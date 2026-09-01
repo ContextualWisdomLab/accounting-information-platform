@@ -108,8 +108,8 @@ class ReconciliationClosePackageAuthoritativeRunTests(unittest.TestCase):
         run_loader = mock.Mock(side_effect=load_run)
         projection_loader = mock.Mock(
             return_value=close_package._DatabaseOwnedCloseProjectionEvidence(
-                statement_population_reference=self.projection.statement_population_reference,
-                book_population_reference=self.projection.book_population_reference,
+                statement_population_reference="sha256:" + "d" * 64,
+                book_population_reference="sha256:" + "b" * 64,
                 statement_opening_balance=self.projection.bank_closing_balance,
                 statement_period_movements=Decimal("0"),
                 statement_closing_balance=self.projection.bank_closing_balance,
