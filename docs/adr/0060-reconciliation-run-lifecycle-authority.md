@@ -11,7 +11,7 @@ The lifecycle transition is part of the **Reconciliation Review** supporting sub
 
 ## Decision
 
-The `reconciliation_run` aggregate is created only in `evaluating` state and owns the legal transition from `evaluating` or `review_required` to `reconciled`. The transition is accepted only through a tenant-scoped, idempotent lifecycle command whose immutable evidence includes the run identity, target status, exact reconciliation snapshot hash, actor reference, purpose code, effective time, and database-owned command hash.
+The `reconciliation_run` aggregate is created only in `evaluating` state and owns the legal transition from `evaluating` or `review_required` to `reconciled`. The transition is accepted only through a tenant-scoped, idempotent lifecycle command whose immutable evidence includes the run identity, target status, exact reconciliation snapshot hash, exact statement-population identity, exact book-population identity, actor reference, purpose code, effective time, and database-owned command hash.
 
 No initial or changed `run_status_code` is a generic database field edit. On aggregate insertion the database rejects every initial value other than `evaluating`; this prevents a privileged SQL caller from creating a pre-reconciled or otherwise terminal run that never traversed the lifecycle command boundary. After creation, this migration introduces exactly one named status-changing command, the evidence-derived transition to `reconciled`; every other changed target is rejected by the database until a future named command defines its own legal predecessor states, evidence, authorization, idempotency, and audit/outbox contract and deliberately evolves the state-machine guard. A no-op assignment of the current status remains harmless. Together these rules prevent raw SQL from manufacturing `review_required`, `not_reconciled`, `superseded`, `reconciled`, or a post-reconciliation downgrade without the corresponding command authority.
 
@@ -25,7 +25,7 @@ The application performs the authority-bearing read under one PostgreSQL `REPEAT
 - immutable opening-command provenance is missing; or
 - the database-owned exact bridge cannot tie without an unexplained difference.
 
-A successful transaction writes `reconciliation_run_transition_command`, updates the run status to `reconciled`, and appends the `reconciliation_run_reconciled` transactional-outbox event atomically. Exact retries replay the immutable transition command instead of creating another transition.
+A successful transaction writes `reconciliation_run_transition_command`, including the exact statement/book population references used by the bridge, updates the run status to `reconciled`, and appends the `reconciliation_run_reconciled` transactional-outbox event atomically. The database-computed transition-command hash also binds both population references. Exact retries replay the immutable transition command and therefore return the same source-population provenance without re-reading or reconstructing a newer bridge. The externally visible success/replay receipt shape is thus stable under an unchanged idempotency key rather than returning population provenance only on first execution.
 
 Migration `0019_reconciliation_run_command_evidence.sql` is still unreleased on the dependency-root branch, so this stacked slice extends that migration rather than creating a later migration. The child branch **must integrate into the dependency-root branch before that migration reaches protected `develop`**. If the parent reaches protected `develop` first, this design must be rewritten as a forward `0020` migration; an applied migration must never be edited in place.
 
@@ -34,11 +34,12 @@ Migration `0019_reconciliation_run_command_evidence.sql` is still unreleased on 
 PostgreSQL independently enforces the initial state, legal transition edge, and evidence serialization:
 
 1. A new `reconciliation_run` must begin in `evaluating`; direct insertion of `review_required`, `reconciled`, `not_reconciled`, or `superseded` is rejected before deferred provenance can make the row durable.
-2. `reconciliation_run_transition_command` is tenant-scoped, forced-RLS, immutable command evidence with at most one `reconciled` transition per run.
-3. A database trigger recomputes the transition-command hash from the opening command, run/tenant identity, target status, snapshot hash, actor, purpose, effective time, and idempotency identity.
+2. `reconciliation_run_transition_command` is tenant-scoped, forced-RLS, immutable command evidence with at most one `reconciled` transition per run and durable statement/book population identities.
+3. A database trigger recomputes the transition-command hash from the opening command, run/tenant identity, target status, snapshot hash, statement population, book population, actor, purpose, effective time, and idempotency identity.
 4. A changed `run_status_code` is rejected unless it is the supported `reconciled` target backed by exactly one transition command in the same transaction. All other changed targets require a future named lifecycle command and are fail-closed today.
 5. Candidate, match, allocation, approval, and exception writes acquire the same run lifecycle transaction advisory lock. Once the run is `reconciled`, reviewed evidence is frozen and corrections require a new/superseding run rather than mutation behind existing close evidence.
 6. The transition insertion independently checks for proposed matches, open exceptions, and terminal approval/snapshot consistency before it can authorize the status update.
+7. Exact replay reads the persisted transition evidence, including source-population identities; it does not recalculate those identities against a later database state.
 
 The service computes `reconciliation_snapshot_hash` from database-owned source facts and exact Decimal bridge values observed in the protected snapshot. The database stores and binds that digest but does **not** independently rederive every bridge component inside SQL in this slice. This limitation is deliberate and must not be represented as database-side recomputation of the complete monetary bridge. Moving snapshot derivation fully into PostgreSQL is a future option only if parity/property tests prove exact equivalence with the domain representation.
 
@@ -47,17 +48,17 @@ The service computes `reconciliation_snapshot_hash` from database-owned source f
 - **Subdomain:** Reconciliation Review (supporting).
 - **Aggregate root:** `reconciliation_run`.
 - **Command evidence entity:** `reconciliation_run_transition_command`.
-- **Value evidence:** lifecycle idempotency key, target status, exact reconciliation snapshot hash, actor reference, purpose code, effective time, command hash.
+- **Value evidence:** lifecycle idempotency key, target status, exact reconciliation snapshot hash, statement population reference, book population reference, actor reference, purpose code, effective time, command hash.
 - **Domain event:** `reconciliation_run_reconciled` through the accounting transactional outbox.
 - **Domain service:** `reconcile_reconciliation_run()` reconstructs eligibility from repositories/database-owned facts and performs the transition transaction.
-- **Invariant:** a run is born in `evaluating`, every later changed run status requires a named command, and `reconciled` specifically means one reviewed run whose exact source bridge ties, whose terminal matches carry current immutable decisions, whose exceptions are not open, and whose transition is backed by one immutable command.
+- **Invariant:** a run is born in `evaluating`, every later changed run status requires a named command, and `reconciled` specifically means one reviewed run whose exact source bridge ties, whose source population identities are durably retained for replay, whose terminal matches carry current immutable decisions, whose exceptions are not open, and whose transition is backed by one immutable command.
 - **Anti-corruption boundary:** bank evidence remains non-posting input; external billing, identity, architecture, and orchestration contexts cannot write reconciliation or accounting tables directly.
 
 The lifecycle aggregate remains separate from the period-close aggregate. This avoids making statement ingestion, matching, reconciliation review, journal posting, and period close one oversized transaction boundary.
 
 ## Consequences
 
-Controllers gain a supported repository-owned path from run evaluation to review-complete reconciliation. Direct terminal insertion and direct status SQL no longer constitute valid product operations. A reconciled run is stable enough to become close-package evidence because later review-population mutation is rejected.
+Controllers gain a supported repository-owned path from run evaluation to review-complete reconciliation. Direct terminal insertion and direct status SQL no longer constitute valid product operations. A reconciled run is stable enough to become close-package evidence because later review-population mutation is rejected, and an exact replay can reproduce the same source-population references without observing later statement/journal data.
 
 The public surface introduced here is the package API. A buyer-facing HTTP lifecycle route should be added only with the purpose-bound authorization integration so the route cannot create an unauthenticated high-impact control path. Until that integration lands, this ADR does not claim that a controller HTTP endpoint exists.
 
@@ -67,8 +68,9 @@ This slice does not yet introduce a dedicated PostgreSQL login/capability role s
 
 Acceptance evidence must bind to one unchanged exact head and include:
 
-- unit tests for input validation, exact replay/conflict, legal states, match/approval completeness, open exceptions, bridge failure, missing provenance, deterministic snapshot binding, and lock ordering;
-- real PostgreSQL tests proving a raw terminal-state run `INSERT` fails, raw `UPDATE ... SET run_status_code='reconciled'` fails without lifecycle command evidence, raw SQL cannot manufacture another changed lifecycle target without its own named command, the supported command writes transition + status + outbox atomically, exact replay is idempotent, and reviewed evidence freezes after reconciliation;
+- unit tests for input validation, exact replay/conflict, replayed source-population provenance, legal states, match/approval completeness, open exceptions, bridge failure, missing provenance, deterministic snapshot binding, and lock ordering;
+- migration/repository contracts proving statement and book population references are required immutable transition evidence and are included in the database-owned transition-command digest;
+- real PostgreSQL tests proving a raw terminal-state run `INSERT` fails, raw `UPDATE ... SET run_status_code='reconciled'` fails without lifecycle command evidence, raw SQL cannot manufacture another changed lifecycle target without its own named command, the supported command writes transition + status + outbox atomically, exact replay is idempotent and returns the same source-population provenance, and reviewed evidence freezes after reconciliation;
 - existing real PostgreSQL close-projection tests proving statement/book populations and exact bridge values are database-derived under the correct accounting-book scope;
 - exact 100% owned production statement/branch coverage and public-docstring/repository contracts; and
 - current-head CI, SAST, security/dependency, reproducibility/SBOM/provenance, and required review evidence.
