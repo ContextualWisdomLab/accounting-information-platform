@@ -33,10 +33,10 @@ class ReconciliationLifecycleCurrencyScopeTests(unittest.TestCase):
         digest = _transition_snapshot_hash(
             UUID("00000000-0000-0000-0000-000000000043"),
             "sha256:" + "3" * 64,
-            "KRW",
             bridge,
             (),
             (),
+            currency_code="KRW",
         )
 
         self.assertRegex(digest, r"^sha256:[0-9a-f]{64}$")
