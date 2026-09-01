@@ -82,6 +82,7 @@ from .reconciliation_close_package import (
     render_reconciliation_close_package_json,
     verify_reconciliation_close_package,
 )
+from .reconciliation_lifecycle import reconcile_reconciliation_run
 from .reconciliation_run import accept_reconciliation_run, lookup_reconciliation_run
 from .reconciliation_read_model import (
     ReconciliationAllocationEvidence,
@@ -173,6 +174,7 @@ __all__ = [
     "publish_outbox_event",
     "pull_journal_proposal",
     "pull_validated_journal_proposals",
+    "reconcile_reconciliation_run",
     "render_reconciliation_close_package_json",
     "render_reconciliation_close_review_csv",
     "render_reconciliation_close_review_json",
