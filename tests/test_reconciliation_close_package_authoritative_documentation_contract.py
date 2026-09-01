@@ -30,6 +30,13 @@ class ReconciliationClosePackageAuthoritativeDocumentationTests(unittest.TestCas
         self.assertIn("not accepted as a bearer secret", adr)
         self.assertIn("posting authority", adr)
 
+    def test_adr_binds_run_accounting_scope_and_open_exceptions_to_postgresql(self) -> None:
+        adr = _ADR_PATH.read_text(encoding="utf-8")
+        self.assertIn("tenant/entity/book/bank-assignment/currency scope", adr)
+        self.assertIn("`accounting_core.reconciliation_exception`", adr)
+        self.assertIn("database-owned open-exception count", adr)
+        self.assertIn("any open database exception blocks package creation", adr)
+
 
 if __name__ == "__main__":
     unittest.main()
