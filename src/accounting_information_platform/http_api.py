@@ -1780,17 +1780,17 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         resolver = self.server.request_principal_resolver
         try:
             principal = None if resolver is None else resolver(self)
+            decision = authorize(
+                principal,
+                tenant_header,
+                operation_code,
+            )
         except Exception:
             self._write_error(
                 503,
                 'caller identity validation is unavailable. Ask the platform operator to restore the trusted identity adapter, then retry.',
             )
             return False
-        decision = authorize(
-            principal,
-            tenant_header,
-            operation_code,
-        )
         try:
             record_authorization_decision(
                 self.server.database_url,
