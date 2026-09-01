@@ -12,7 +12,7 @@ import hashlib
 import hmac
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
 
@@ -264,6 +264,395 @@ class ReconciliationClosePackage:
     evidence_references: tuple[ReconciliationEvidenceReference, ...]
     package_sha256: str
     next_action: str
+
+
+@dataclass(frozen=True, slots=True)
+class _DatabaseOwnedCloseProjectionEvidence:
+    """Exact source-population and bridge facts reconstructed from PostgreSQL."""
+
+    statement_population_reference: str
+    book_population_reference: str
+    statement_opening_balance: Decimal
+    statement_period_movements: Decimal
+    statement_closing_balance: Decimal
+    book_opening_balance: Decimal
+    posted_cash_book_movements: Decimal
+    book_closing_balance: Decimal
+    reconciled_book_balance: Decimal
+    outstanding_bank_items: Decimal
+    outstanding_book_items: Decimal
+    unexplained_difference: Decimal
+
+
+def _signed_bank_amount(
+    amount: object,
+    credit_debit_code: object,
+    *,
+    reversed_entry: bool = False,
+) -> Decimal:
+    """Return one bank movement using account-owner debit/credit sign semantics."""
+    exact = Decimal(str(amount))
+    if str(credit_debit_code) == "CRDT":
+        signed = exact
+    elif str(credit_debit_code) == "DBIT":
+        signed = exact.copy_negate()
+    else:
+        raise ValueError("database-owned bank evidence must use CRDT or DBIT direction")
+    return signed.copy_negate() if reversed_entry else signed
+
+
+def _population_sha256(kind: str, rows: tuple[tuple[str, ...], ...]) -> str:
+    """Return a deterministic content identity for one immutable source population."""
+    payload = json.dumps(
+        {"population_kind": kind, "rows": rows},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def _allocated_by_source(
+    rows: list[tuple[object, ...]],
+    *,
+    capacities: dict[str, Decimal],
+    label: str,
+) -> dict[str, Decimal]:
+    """Aggregate approved allocations while enforcing their database source capacity."""
+    allocated: dict[str, Decimal] = {}
+    for reference_value, amount_value in rows:
+        reference = str(reference_value)
+        amount = Decimal(str(amount_value))
+        if reference not in capacities:
+            raise ValueError(f"database-owned {label} allocation references an unknown source")
+        if not amount.is_finite() or amount <= 0:
+            raise ValueError(f"database-owned {label} allocation must be a positive exact amount")
+        allocated[reference] = _exact_decimal_sum(
+            allocated.get(reference, Decimal("0")),
+            amount,
+        )
+    for reference, amount in allocated.items():
+        if amount > abs(capacities[reference]):
+            raise ValueError(f"database-owned {label} allocation exceeds source capacity")
+    return allocated
+
+
+def _signed_unallocated(signed_amount: Decimal, allocated_amount: Decimal) -> Decimal:
+    """Return the signed remainder after a positive approved allocation."""
+    remainder = _exact_decimal_sum(abs(signed_amount), allocated_amount.copy_negate())
+    return remainder.copy_negate() if signed_amount < 0 else remainder
+
+
+def _database_owned_close_projection_evidence(
+    connection: object,
+    tenant_account_id: object,
+    *,
+    reconciliation_run_reference: str,
+) -> _DatabaseOwnedCloseProjectionEvidence:
+    """Reconstruct close populations and known timing differences from source rows."""
+    scope_rows = connection.execute(
+        """
+        SELECT statement.bank_statement_record_id::text,
+               statement.opening_balance_hash,
+               statement.closing_balance_hash,
+               statement.period_start_at,
+               statement.period_end_at,
+               run_record.book_cutoff_at::date,
+               run_record.knowledge_cutoff_at,
+               assignment.chart_account_id::text,
+               run_record.currency_code
+        FROM accounting_core.reconciliation_run AS run_record
+        JOIN accounting_core.reconciliation_run_command AS run_command
+          ON run_command.tenant_account_id = run_record.tenant_account_id
+         AND run_command.reconciliation_run_id = run_record.reconciliation_run_id
+        JOIN accounting_integration.bank_statement_record AS statement
+          ON statement.tenant_account_id = run_command.tenant_account_id
+         AND statement.bank_statement_record_id = run_command.bank_statement_record_id
+        JOIN accounting_core.bank_account_assignment AS assignment
+          ON assignment.tenant_account_id = run_record.tenant_account_id
+         AND assignment.bank_account_assignment_id = run_record.bank_account_assignment_id
+        WHERE run_record.tenant_account_id = %s
+          AND run_record.reconciliation_run_id::text = %s
+        FOR SHARE OF statement, assignment
+        """,
+        (tenant_account_id, reconciliation_run_reference),
+    ).fetchall()
+    if len(scope_rows) != 1:
+        raise ValueError(
+            "database-owned close source scope must resolve exactly one statement and cash account"
+        )
+    (
+        statement_record_id,
+        opening_balance_hash,
+        closing_balance_hash,
+        statement_period_start_at,
+        _statement_period_end_at,
+        book_cutoff_date,
+        knowledge_cutoff_at,
+        chart_account_id,
+        currency_code,
+    ) = scope_rows[0]
+    if (
+        opening_balance_hash is None
+        or closing_balance_hash is None
+        or statement_period_start_at is None
+    ):
+        raise ValueError(
+            "database-owned close source requires exact statement opening/closing balances and period start"
+        )
+
+    balance_rows = connection.execute(
+        """
+        SELECT balance.source_balance_hash,
+               balance.balance_amount,
+               balance.balance_currency_code,
+               balance.credit_debit_code
+        FROM accounting_integration.bank_statement_balance AS balance
+        WHERE balance.tenant_account_id = %s
+          AND balance.bank_statement_record_id::text = %s
+          AND balance.source_balance_hash IN (%s, %s)
+          AND balance.recorded_at <= %s
+        ORDER BY balance.balance_sequence_number, balance.bank_statement_balance_id
+        FOR SHARE OF balance
+        """,
+        (
+            tenant_account_id,
+            str(statement_record_id),
+            str(opening_balance_hash),
+            str(closing_balance_hash),
+            knowledge_cutoff_at,
+        ),
+    ).fetchall()
+    balances = {str(row[0]): row for row in balance_rows}
+    if set(balances) != {str(opening_balance_hash), str(closing_balance_hash)}:
+        raise ValueError(
+            "database-owned statement opening and closing balance evidence must both be present"
+        )
+    if any(str(row[2]) != str(currency_code) for row in balance_rows):
+        raise ValueError(
+            "database-owned statement balances must use the reconciliation currency"
+        )
+    statement_opening = _signed_bank_amount(
+        balances[str(opening_balance_hash)][1],
+        balances[str(opening_balance_hash)][3],
+    )
+    statement_closing = _signed_bank_amount(
+        balances[str(closing_balance_hash)][1],
+        balances[str(closing_balance_hash)][3],
+    )
+
+    entry_rows = connection.execute(
+        """
+        SELECT COALESCE(NULLIF(entry.source_entry_identity, ''), entry.bank_statement_entry_id::text),
+               entry.entry_sequence_number,
+               entry.entry_amount,
+               entry.entry_currency_code,
+               entry.credit_debit_code,
+               entry.reversal_indicator,
+               entry.source_entry_hash
+        FROM accounting_integration.bank_statement_entry AS entry
+        WHERE entry.tenant_account_id = %s
+          AND entry.bank_statement_record_id::text = %s
+          AND entry.recorded_at <= %s
+        ORDER BY entry.entry_sequence_number, entry.bank_statement_entry_id
+        FOR SHARE OF entry
+        """,
+        (tenant_account_id, str(statement_record_id), knowledge_cutoff_at),
+    ).fetchall()
+    if not entry_rows:
+        raise ValueError(
+            "database-owned statement population must contain at least one immutable entry"
+        )
+    if any(str(row[3]) != str(currency_code) for row in entry_rows):
+        raise ValueError(
+            "database-owned statement entries must use the reconciliation currency"
+        )
+    statement_amounts = {
+        str(row[0]): _signed_bank_amount(
+            row[2], row[4], reversed_entry=bool(row[5])
+        )
+        for row in entry_rows
+    }
+    if len(statement_amounts) != len(entry_rows):
+        raise ValueError("database-owned statement population identities must be unique")
+    statement_movements = _exact_decimal_sum(*statement_amounts.values())
+    if _exact_decimal_sum(statement_opening, statement_movements) != statement_closing:
+        raise ValueError(
+            "database-owned statement opening plus movements must equal closing balance"
+        )
+
+    journal_rows = connection.execute(
+        """
+        SELECT journal.journal_reference,
+               journal.accounting_date,
+               journal.posted_at,
+               line.line_number,
+               line.debit_amount,
+               line.credit_amount,
+               journal.transaction_currency_code
+        FROM accounting_core.journal_entry_line AS line
+        JOIN accounting_core.general_journal AS journal
+          ON journal.tenant_account_id = line.tenant_account_id
+         AND journal.general_journal_id = line.general_journal_id
+        JOIN accounting_core.chart_account AS cash_account
+          ON cash_account.tenant_account_id = line.tenant_account_id
+         AND cash_account.chart_account_id = line.chart_account_id
+        WHERE line.tenant_account_id = %s
+          AND line.chart_account_id::text = %s
+          AND journal.accounting_book_id = cash_account.accounting_book_id
+          AND journal.accounting_date <= %s
+          AND journal.posted_at <= %s
+        ORDER BY journal.accounting_date, journal.posted_at,
+                 journal.journal_reference, line.line_number
+        FOR SHARE OF journal, line, cash_account
+        """,
+        (tenant_account_id, str(chart_account_id), book_cutoff_date, knowledge_cutoff_at),
+    ).fetchall()
+    if any(str(row[6]) != str(currency_code) for row in journal_rows):
+        raise ValueError(
+            "database-owned cash journal population must use the reconciliation currency"
+        )
+    period_start_date = statement_period_start_at.date()
+    journal_amounts: dict[str, Decimal] = {}
+    period_journal_references: set[str] = set()
+    book_opening_parts: list[Decimal] = []
+    book_period_parts: list[Decimal] = []
+    for row in journal_rows:
+        reference = str(row[0])
+        amount = _exact_decimal_sum(
+            Decimal(str(row[4])), Decimal(str(row[5])).copy_negate()
+        )
+        journal_amounts[reference] = _exact_decimal_sum(
+            journal_amounts.get(reference, Decimal("0")), amount
+        )
+        if row[1] < period_start_date:
+            book_opening_parts.append(amount)
+        else:
+            period_journal_references.add(reference)
+            book_period_parts.append(amount)
+    book_opening = _exact_decimal_sum(*(book_opening_parts or [Decimal("0")]))
+    book_movements = _exact_decimal_sum(*(book_period_parts or [Decimal("0")]))
+    book_closing = _exact_decimal_sum(book_opening, book_movements)
+
+    statement_allocation_rows = connection.execute(
+        """
+        SELECT allocation.statement_entry_reference, allocation.allocated_amount
+        FROM accounting_core.statement_match_allocation AS allocation
+        JOIN accounting_core.reconciliation_match AS match
+          ON match.tenant_account_id = allocation.tenant_account_id
+         AND match.reconciliation_run_id = allocation.reconciliation_run_id
+         AND match.reconciliation_match_id = allocation.reconciliation_match_id
+        WHERE allocation.tenant_account_id = %s
+          AND allocation.reconciliation_run_id::text = %s
+          AND match.match_status_code = 'approved'
+        ORDER BY allocation.statement_entry_reference, allocation.reconciliation_allocation_id
+        FOR SHARE OF match, allocation
+        """,
+        (tenant_account_id, reconciliation_run_reference),
+    ).fetchall()
+    journal_allocation_rows = connection.execute(
+        """
+        SELECT allocation.journal_reference, allocation.allocated_amount
+        FROM accounting_core.journal_match_allocation AS allocation
+        JOIN accounting_core.reconciliation_match AS match
+          ON match.tenant_account_id = allocation.tenant_account_id
+         AND match.reconciliation_run_id = allocation.reconciliation_run_id
+         AND match.reconciliation_match_id = allocation.reconciliation_match_id
+        WHERE allocation.tenant_account_id = %s
+          AND allocation.reconciliation_run_id::text = %s
+          AND match.match_status_code = 'approved'
+        ORDER BY allocation.journal_reference, allocation.reconciliation_allocation_id
+        FOR SHARE OF match, allocation
+        """,
+        (tenant_account_id, reconciliation_run_reference),
+    ).fetchall()
+    statement_allocated = _allocated_by_source(
+        statement_allocation_rows,
+        capacities=statement_amounts,
+        label="statement",
+    )
+    journal_allocated = _allocated_by_source(
+        journal_allocation_rows,
+        capacities=journal_amounts,
+        label="journal",
+    )
+    outstanding_book_items = _exact_decimal_sum(
+        *(
+            _signed_unallocated(
+                amount, statement_allocated.get(reference, Decimal("0"))
+            )
+            for reference, amount in statement_amounts.items()
+        )
+    )
+    outstanding_bank_items = (
+        _exact_decimal_sum(
+            *(
+                _signed_unallocated(
+                    journal_amounts[reference],
+                    journal_allocated.get(reference, Decimal("0")),
+                )
+                for reference in sorted(period_journal_references)
+                if journal_amounts[reference] != 0
+            )
+        )
+        if period_journal_references
+        else Decimal("0")
+    )
+    bridge_balance = _exact_decimal_sum(
+        book_closing,
+        outstanding_book_items,
+        outstanding_bank_items.copy_negate(),
+    )
+    unexplained_difference = _exact_decimal_sum(
+        bridge_balance, statement_closing.copy_negate()
+    )
+    if unexplained_difference != Decimal("0"):
+        raise ValueError(
+            "database-owned book-to-bank bridge contains an unexplained difference"
+        )
+
+    statement_population_rows = tuple(
+        (
+            str(row[0]),
+            str(row[1]),
+            str(row[2]),
+            str(row[3]),
+            str(row[4]),
+            str(bool(row[5])).lower(),
+            str(row[6]),
+        )
+        for row in entry_rows
+    )
+    book_population_rows = tuple(
+        (
+            str(row[0]),
+            str(row[1]),
+            str(row[2]),
+            str(row[3]),
+            str(row[4]),
+            str(row[5]),
+            str(row[6]),
+        )
+        for row in journal_rows
+    )
+    return _DatabaseOwnedCloseProjectionEvidence(
+        statement_population_reference=_population_sha256(
+            "bank_statement_entries:v1", statement_population_rows
+        ),
+        book_population_reference=_population_sha256(
+            "cash_journal_lines:v1", book_population_rows
+        ),
+        statement_opening_balance=statement_opening,
+        statement_period_movements=statement_movements,
+        statement_closing_balance=statement_closing,
+        book_opening_balance=book_opening,
+        posted_cash_book_movements=book_movements,
+        book_closing_balance=book_closing,
+        reconciled_book_balance=book_closing,
+        outstanding_bank_items=outstanding_bank_items,
+        outstanding_book_items=outstanding_book_items,
+        unexplained_difference=Decimal("0"),
+    )
 
 
 def _snapshot_tenant_identity_evidence(
@@ -915,9 +1304,7 @@ def _database_owned_match_state_evidence(
         state_evidence.append(
             ReconciliationEvidenceReference(
                 evidence_kind_code="reconciliation_match_state",
-                evidence_reference=(
-                    f"{approval.reconciliation_match_reference}:approved"
-                ),
+                evidence_reference=f"{approval.reconciliation_match_reference}:approved",
                 sha256_digest="sha256:"
                 + hashlib.sha256(state_payload.encode("utf-8")).hexdigest(),
             )
@@ -1082,7 +1469,7 @@ def build_reconciliation_close_package(
             "database-owned match state tenant must match the close-package projection"
         )
     ledger = PostgresPostingLedger(database_url, tenant_reference)
-    with ledger._session() as connection:
+    with ledger._consistent_read_session() as connection:
         tenant_account_id = ledger._require_tenant(connection)
         authoritative_snapshot_tenant = _snapshot_tenant_identity_evidence(
             tenant_reference=tenant_reference,
@@ -1096,6 +1483,11 @@ def build_reconciliation_close_package(
             connection,
             tenant_account_id,
             tenant_reference=tenant_reference,
+            reconciliation_run_reference=package_input.projection.reconciliation_run_reference,
+        )
+        authoritative_projection_evidence = _database_owned_close_projection_evidence(
+            connection,
+            tenant_account_id,
             reconciliation_run_reference=package_input.projection.reconciliation_run_reference,
         )
         authoritative_state = _database_owned_match_state_evidence(
@@ -1123,6 +1515,21 @@ def build_reconciliation_close_package(
             tenant_account_id,
             reconciliation_run_reference=package_input.projection.reconciliation_run_reference,
             projection=package_input.projection,
+        )
+        authoritative_projection = replace(
+            package_input.projection,
+            statement_population_reference=(
+                authoritative_projection_evidence.statement_population_reference
+            ),
+            book_population_reference=(
+                authoritative_projection_evidence.book_population_reference
+            ),
+            bank_closing_balance=authoritative_projection_evidence.statement_closing_balance,
+            posted_book_cash_balance=authoritative_projection_evidence.book_closing_balance,
+            reconciled_balance=authoritative_projection_evidence.reconciled_book_balance,
+            outstanding_bank_items=authoritative_projection_evidence.outstanding_bank_items,
+            outstanding_book_items=authoritative_projection_evidence.outstanding_book_items,
+            unexplained_difference=authoritative_projection_evidence.unexplained_difference,
         )
         packaged_runs = tuple(
             evidence
@@ -1154,11 +1561,29 @@ def build_reconciliation_close_package(
                 "reconciliation_run",
                 "statement_artifact",
                 "reconciliation_match_state",
+                "statement_population",
+                "book_population",
                 _SNAPSHOT_TENANT_EVIDENCE_KIND,
             }
         )
+        authoritative_population_evidence = (
+            ReconciliationEvidenceReference(
+                evidence_kind_code="statement_population",
+                evidence_reference=(
+                    authoritative_projection_evidence.statement_population_reference
+                ),
+                sha256_digest=(
+                    authoritative_projection_evidence.statement_population_reference
+                ),
+            ),
+            ReconciliationEvidenceReference(
+                evidence_kind_code="book_population",
+                evidence_reference=authoritative_projection_evidence.book_population_reference,
+                sha256_digest=authoritative_projection_evidence.book_population_reference,
+            ),
+        )
         verified_input = ReconciliationClosePackageInput(
-            projection=package_input.projection,
+            projection=authoritative_projection,
             approval_evidence=package_input.approval_evidence,
             knowledge_cutoff=authoritative_run.knowledge_cutoff,
             evidence_references=(
@@ -1168,6 +1593,7 @@ def build_reconciliation_close_package(
                     authoritative_artifact,
                     authoritative_snapshot_tenant,
                 )
+                + authoritative_population_evidence
                 + authoritative_state
             ),
         )
