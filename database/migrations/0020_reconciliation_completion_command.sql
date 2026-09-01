@@ -4,6 +4,19 @@ BEGIN;
 -- run to `reconciled`. The command is immutable and tenant scoped. It does not
 -- post, reverse, close a period, or alter accounting policy.
 
+DO $role_setup$
+BEGIN
+    IF to_regrole('accounting_reconciliation_completer') IS NULL THEN
+        CREATE ROLE accounting_reconciliation_completer NOLOGIN;
+    END IF;
+END
+$role_setup$;
+
+-- Reassert NOLOGIN on every migration run so an accidentally pre-created login
+-- cannot become a database authority shortcut. Deployment grants membership to
+-- a purpose-limited application identity; the application cannot SET ROLE itself.
+ALTER ROLE accounting_reconciliation_completer NOLOGIN;
+
 CREATE TABLE accounting_core.reconciliation_completion_command (
     reconciliation_completion_command_id uuid PRIMARY KEY DEFAULT uuidv7(),
     tenant_account_id uuid NOT NULL,
@@ -52,6 +65,14 @@ CREATE POLICY reconciliation_completion_command_isolation
     WITH CHECK (tenant_account_id = accounting_core.current_tenant_account_id());
 
 REVOKE ALL ON accounting_core.reconciliation_completion_command FROM PUBLIC;
+GRANT USAGE ON SCHEMA accounting_core, accounting_integration
+    TO accounting_reconciliation_completer;
+GRANT INSERT, SELECT ON accounting_core.reconciliation_completion_command
+    TO accounting_reconciliation_completer;
+GRANT UPDATE (run_status_code) ON accounting_core.reconciliation_run
+    TO accounting_reconciliation_completer;
+GRANT INSERT ON accounting_integration.outbox_event
+    TO accounting_reconciliation_completer;
 
 CREATE OR REPLACE FUNCTION accounting_core.reconciliation_completion_scope_guard()
 RETURNS trigger
@@ -60,6 +81,16 @@ AS $$
 DECLARE
     current_run_status_code text;
 BEGIN
+    IF NOT pg_has_role(
+        session_user,
+        'accounting_reconciliation_completer',
+        'MEMBER'
+    ) THEN
+        RAISE EXCEPTION
+            'reconciliation completion requires purpose-limited database role membership (reconciliation_completion_role_required)'
+            USING ERRCODE = '42501';
+    END IF;
+
     SELECT run_record.run_status_code
     INTO current_run_status_code
     FROM accounting_core.reconciliation_run AS run_record
@@ -136,6 +167,16 @@ BEGIN
     END IF;
 
     IF NEW.run_status_code = 'reconciled' THEN
+        IF NOT pg_has_role(
+            session_user,
+            'accounting_reconciliation_completer',
+            'MEMBER'
+        ) THEN
+            RAISE EXCEPTION
+                'reconciliation transition requires purpose-limited database role membership (reconciliation_completion_role_required)'
+                USING ERRCODE = '42501';
+        END IF;
+
         IF OLD.run_status_code NOT IN ('evaluating', 'review_required') THEN
             RAISE EXCEPTION
                 'reconciliation run may enter reconciled only from evaluating or review_required (reconciliation_run_invalid_transition)'
