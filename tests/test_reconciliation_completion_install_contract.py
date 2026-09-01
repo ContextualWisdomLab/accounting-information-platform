@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from accounting_information_platform import AccountingValidationError, apply_foundation_migration
@@ -13,6 +14,28 @@ ROOT = Path(__file__).resolve().parents[1]
 MIGRATION_ROOT = ROOT / "database/migrations/0001_accounting_foundation.sql"
 COMPLETION_MIGRATION = ROOT / "database/migrations/0020_reconciliation_completion_command.sql"
 INSTALL_SOURCE = ROOT / "src/accounting_information_platform/migration_install.py"
+
+
+class _FakeConnection:
+    """Capture SQL executed by the public forward-migration phase."""
+
+    def __init__(self, *, failure: Exception | None = None) -> None:
+        self.failure = failure
+        self.executed: list[str] = []
+
+    def __enter__(self) -> "_FakeConnection":
+        """Return the connection as its context-manager value."""
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        """Leave the fake connection without suppressing failures."""
+        return None
+
+    def execute(self, sql: str) -> None:
+        """Capture SQL or raise the configured PostgreSQL stand-in failure."""
+        self.executed.append(sql)
+        if self.failure is not None:
+            raise self.failure
 
 
 class ReconciliationCompletionInstallContractTests(unittest.TestCase):
@@ -44,6 +67,44 @@ class ReconciliationCompletionInstallContractTests(unittest.TestCase):
             ):
                 apply_foundation_migration("postgresql://unused", MIGRATION_ROOT)
         legacy_install.assert_not_called()
+
+    def test_public_installer_executes_0020_after_the_existing_chain(self) -> None:
+        """A successful legacy chain is followed by the exact checked-in 0020 SQL."""
+        connection = _FakeConnection()
+        fake_psycopg = SimpleNamespace(
+            ClientCursor=object,
+            connect=lambda *_args, **_kwargs: connection,
+        )
+        with patch(
+            "accounting_information_platform.migration_install._apply_foundation_migration"
+        ) as legacy_install, patch(
+            "accounting_information_platform.migration_install._import_psycopg",
+            return_value=fake_psycopg,
+        ):
+            apply_foundation_migration("postgresql://unused", MIGRATION_ROOT)
+        legacy_install.assert_called_once_with("postgresql://unused", MIGRATION_ROOT)
+        self.assertEqual(connection.executed, [COMPLETION_MIGRATION.read_text(encoding="utf-8")])
+
+    def test_public_installer_preserves_the_0020_database_failure_cause(self) -> None:
+        """Operators receive the causal PostgreSQL failure rather than a false success."""
+        causal_error = RuntimeError("role grant rejected")
+        connection = _FakeConnection(failure=causal_error)
+        fake_psycopg = SimpleNamespace(
+            ClientCursor=object,
+            connect=lambda *_args, **_kwargs: connection,
+        )
+        with patch(
+            "accounting_information_platform.migration_install._apply_foundation_migration"
+        ), patch(
+            "accounting_information_platform.migration_install._import_psycopg",
+            return_value=fake_psycopg,
+        ):
+            with self.assertRaisesRegex(
+                AccountingValidationError,
+                "reconciliation completion authority",
+            ) as raised:
+                apply_foundation_migration("postgresql://unused", MIGRATION_ROOT)
+        self.assertIs(raised.exception.__cause__, causal_error)
 
     def test_operator_docs_list_0020_after_run_command_evidence(self) -> None:
         """Deployment documentation must not stop the accounting schema at 0019."""
