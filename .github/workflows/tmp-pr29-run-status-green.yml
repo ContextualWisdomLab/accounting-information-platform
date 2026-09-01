@@ -15,14 +15,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out exact helper head
+        uses: actions/checkout@631c942040754b6e095e929c1677c07e10ed4f87
         with:
           fetch-depth: 2
       - name: Verify single-writer parent
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^)" = "0c12c9c0b0172fbfb0fbe9e738546e992df46ec7"
+          test "$(git rev-parse HEAD^)" = "c28d29b271525d968e4b587200e279482e4f8150"
           git fetch origin fix/reconciliation-multi-match-conservation
           test "$(git rev-parse origin/fix/reconciliation-multi-match-conservation)" = "$GITHUB_SHA"
       - name: Install focused test dependencies
@@ -64,6 +65,14 @@ jobs:
               raise SystemExit("run-status validation anchor changed")
           source.write_text(text.replace(old, new, 1), encoding="utf-8")
 
+          test_path = Path("tests/test_reconciliation_close_package_authoritative_run_helper_red.py")
+          text = test_path.read_text(encoding="utf-8")
+          old = '''    def execute(self, query: str, parameters: tuple[object, ...]) -> _RowsResult:\n        """Capture one query invocation and return configured rows."""\n        self.query = query\n        self.parameters = parameters\n        return _RowsResult(self.rows)\n'''
+          new = '''    def execute(self, query: str, parameters: tuple[object, ...]) -> _RowsResult:\n        """Capture one query invocation and model a reconciled database run by default."""\n        self.query = query\n        self.parameters = parameters\n        if "run_record.run_status_code" in query:\n            return _RowsResult(\n                [(row[0], "reconciled", *row[1:]) for row in self.rows]\n            )\n        return _RowsResult(self.rows)\n'''
+          if old not in text:
+              raise SystemExit("run helper test-double anchor changed")
+          test_path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
           adr = Path("docs/adr/0056-reconciliation-close-package-provenance.md")
           text = adr.read_text(encoding="utf-8")
           old = '''For the reconciliation run, the builder reads `accounting_core.reconciliation_run` joined to `accounting_core.reconciliation_run_command`, `accounting_integration.bank_statement_record`, `accounting_integration.bank_statement_artifact`, `accounting_core.legal_entity_record`, and `accounting_core.accounting_book` under shared locks. It requires exactly one run command and one retained bank-statement artifact, requires the command source hash to match the statement record and artifact hash, and requires the command source reference to match the retained artifact-store reference. It derives the package's run digest, cutoff, statement-artifact digest/reference, legal-entity code, accounting-book name, bank-account-assignment identity, and currency from those database-owned rows. The reconstructed tenant/entity/book/bank-assignment/currency scope must exactly equal the close-review projection scope. Caller-provided `knowledge_cutoff`, reconciliation scope, `reconciliation_run` evidence, or `statement_artifact` evidence that differs from PostgreSQL therefore fails closed.\n'''
@@ -71,22 +80,37 @@ jobs:
           if old not in text:
               raise SystemExit("ADR run-authority paragraph anchor changed")
           adr.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          contract = Path("tests/test_reconciliation_close_package_authoritative_documentation_contract.py")
+          text = contract.read_text(encoding="utf-8")
+          old = '''        self.assertIn("database-owned `reconciliation_run`", adr)\n        self.assertIn("`reconciliation_run_command`", adr)\n'''
+          new = '''        self.assertIn("database-owned `reconciliation_run`", adr)\n        self.assertIn("run_status_code", adr)\n        self.assertIn("exactly `reconciled`", adr)\n        self.assertIn("`reconciliation_run_command`", adr)\n'''
+          if old not in text:
+              raise SystemExit("documentation contract anchor changed")
+          contract.write_text(text.replace(old, new, 1), encoding="utf-8")
           PY
       - name: Run focused GREEN validation
         shell: bash
         run: |
           set -euo pipefail
+          python -m py_compile \
+            src/accounting_information_platform/reconciliation_close_package.py \
+            tests/test_reconciliation_close_package_authoritative_run_helper_red.py \
+            tests/test_reconciliation_close_package_authoritative_documentation_contract.py
           PYTHONPATH=src:. python -m unittest -v \
             tests.test_reconciliation_close_package_authoritative_run_helper_red \
             tests.test_reconciliation_close_package_authoritative_run_red \
-            tests.test_reconciliation_close_package_authoritative_exception_red
+            tests.test_reconciliation_close_package_authoritative_exception_red \
+            tests.test_reconciliation_close_package_authoritative_documentation_contract
       - name: Normalize canonical branch and remove helper
         shell: bash
         run: |
           set -euo pipefail
           git rm .github/workflows/tmp-pr29-run-status-green.yml
           git add src/accounting_information_platform/reconciliation_close_package.py \
-                  docs/adr/0056-reconciliation-close-package-provenance.md
+                  tests/test_reconciliation_close_package_authoritative_run_helper_red.py \
+                  docs/adr/0056-reconciliation-close-package-provenance.md \
+                  tests/test_reconciliation_close_package_authoritative_documentation_contract.py
           git diff --cached --check
           git config user.name "accounting-platform-writer"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
