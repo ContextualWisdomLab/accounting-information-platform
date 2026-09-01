@@ -20,7 +20,11 @@ from .core import (
     _require_reference,
 )
 from .persistence import PostgresPostingLedger, _format_timestamp
-from .reconciliation_run import _parse_timestamp, _parse_uuid
+from .reconciliation_run import (
+    _normalize_reconciliation_command_identity_conflicts,
+    _parse_timestamp,
+    _parse_uuid,
+)
 
 _RECONCILED_NEXT_ACTION = (
     "Use this reconciled run as review evidence; period close still requires its "
@@ -29,6 +33,7 @@ _RECONCILED_NEXT_ACTION = (
 _TRANSITION_HASH_SENTINEL = "sha256:" + "0" * 64
 
 
+@_normalize_reconciliation_command_identity_conflicts
 def reconcile_reconciliation_run(
     payload: object, database_url: str, tenant_reference: str
 ) -> dict[str, object]:
