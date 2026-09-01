@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import unittest
+
+from accounting_information_platform.http_api import _authorization_correlation
 
 
 MIGRATION = Path("database/migrations/0015_authorization_decision_evidence.sql")
@@ -40,13 +43,26 @@ class AuthorizationEvidenceStorageContractTests(unittest.TestCase):
         self.assertIn("octet_length(permission_code) <= 129", text)
         self.assertIn("octet_length(purpose_code) <= 64", text)
         self.assertIn("octet_length(policy_version) <= 64", text)
-        self.assertIn("octet_length(correlation_reference) <= 512", text)
+        self.assertIn("char_length(correlation_reference) <= 512", text)
         self.assertIn("operation_code ~ '^[a-z][a-z0-9_]{1,63}$'", text)
         self.assertIn(
             "permission_code ~ '^[a-z][a-z0-9_]{1,63}\\.[a-z][a-z0-9_]{1,63}$'",
             text,
         )
         self.assertIn("purpose_code ~ '^[a-z][a-z0-9_]{1,63}$'", text)
+
+    def test_multibyte_command_identity_uses_the_same_character_budget(self) -> None:
+        """UTF-8 command identities cannot fail storage merely because bytes exceed characters."""
+        key = "한" * 160
+        raw_body = json.dumps(
+            {"idempotency_key": key}, ensure_ascii=False
+        ).encode("utf-8")
+
+        correlation = _authorization_correlation("/journal-proposals", raw_body)
+
+        self.assertEqual(correlation, f"idempotency_key:{key}")
+        self.assertLessEqual(len(correlation), 512)
+        self.assertGreater(len(correlation.encode("utf-8")), 512)
 
 
 if __name__ == "__main__":  # pragma: no cover - direct local invocation only
