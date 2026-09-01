@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from decimal import Decimal
 from typing import Mapping
 from uuid import UUID
 
@@ -168,14 +167,6 @@ def accept_reconciliation_run_completion(
                 f"reconciliation bridge evidence is incomplete: {error}. "
                 "Repair the immutable statement/book evidence, then retry completion."
             ) from error
-        if (
-            bridge.outstanding_bank_items != Decimal("0")
-            or bridge.outstanding_book_items != Decimal("0")
-        ):
-            raise AccountingValidationError(
-                "unresolved timing differences remain in the database-owned book-to-bank bridge. "
-                "Resolve them through explicit reviewed evidence before retrying completion."
-            )
 
         completion_snapshot_hash = _completion_snapshot_hash(
             tenant_reference=tenant_reference,
