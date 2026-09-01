@@ -56,7 +56,7 @@ jobs:
           --disable-pip-version-check
           --only-binary=:all:
           -r requirements-quality.txt
-      - name: Repair default run knowledge cutoff from database time
+      - name: Repair run knowledge cutoffs from database time
         shell: bash
         run: |
           set -euo pipefail
@@ -74,7 +74,12 @@ jobs:
           new_cutoff = '            "knowledge_cutoff_at": knowledge_cutoff_at.isoformat().replace("+00:00", "Z"),\n'
           if old_cutoff not in text:
               raise SystemExit("run fixture cutoff anchor changed")
-          path.write_text(text.replace(old_cutoff, new_cutoff, 1), encoding="utf-8")
+          text = text.replace(old_cutoff, new_cutoff, 1)
+          explicit_override = '            knowledge_cutoff_at="2026-09-01T00:00:00Z",\n'
+          if text.count(explicit_override) != 2:
+              raise SystemExit("expected exactly two stale period-test cutoff overrides")
+          text = text.replace(explicit_override, "")
+          path.write_text(text, encoding="utf-8")
           PY
       - name: Run focused PostgreSQL reconciliation tests
         env:
