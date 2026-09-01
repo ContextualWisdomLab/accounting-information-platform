@@ -66,7 +66,7 @@ class CurrentHeadReviewRegressionTests(unittest.TestCase):
                     allocation_reference="statement-allocation-001",
                     source_reference="stmt-001",
                     allocated_amount=Decimal("100.00"),
-                    source_capacity=Decimal("100.00"),
+                    source_capacity=Decimal("150.00"),
                 ),
                 ReconciliationAllocationEvidence(
                     allocation_reference="statement-allocation-phantom",
