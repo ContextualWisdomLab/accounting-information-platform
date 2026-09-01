@@ -36,6 +36,7 @@ Metering and billing remain authoritative for usage, pricing, invoice intent, pa
 | `tax_interface` | VAT register and fail-closed HomeTax submission evidence; no NTS transport in this foundation |
 | `bank_statement_registry` | Immutable camt.053.001.14 statement/entry evidence, bank-account-to-book mapping, and host artifact locators |
 | `reconciliation_run_control` | Idempotent evaluating-run command identity over immutable statement evidence and active bank-account assignment; no matching, approval, close, or posting authority |
+| `reconciliation_completion_control` | Purpose-limited, evidence-backed transition from evaluating/review-required to reconciled; binds database-owned populations, approvals and exact bridge evidence without gaining journal or fiscal-close authority |
 
 ## Persistence and migration order
 
@@ -60,14 +61,17 @@ The PostgreSQL 18 foundation is installed in order:
 17. `database/migrations/0017_reconciliation_approval_lock_order.sql` — repairs the approval-evidence trigger to acquire the parent match row before its snapshot advisory lock, closing the approval/allocation row-advisory deadlock cycle.
 18. `database/migrations/0018_bank_statement_balance_evidence.sql` — preserves exact numeric camt.053 balance facts, including typed effective date/time distinct from statement period and system recording time, as immutable, tenant-scoped evidence for reconciliation bridge reads.
 19. `database/migrations/0019_reconciliation_run_command_evidence.sql` — records immutable tenant-scoped run-command idempotency, source hash/reference, and the statement bound to an evaluating reconciliation scope.
+20. `database/migrations/0020_reconciliation_completion_command.sql` — records immutable reconciliation-completion command/population/bridge evidence, creates the `accounting_reconciliation_completer` `NOLOGIN` capability, and database-enforces lawful transitions into `reconciled`.
 
 `0005_closed_period_guard.sql` makes `accounting_closing_writer` a `NOLOGIN` capability role. A soft-closed insert is admitted only when the session login is a member of that role **and** the transaction-local journal classification is `period_closing`, `adjusting`, or `reversal`. The GUC alone is not authority. Hard-closed periods reject every later journal insert.
+
+`0020_reconciliation_completion_command.sql` separately makes `accounting_reconciliation_completer` a `NOLOGIN` capability role. A first transition into `reconciled` requires the authenticated PostgreSQL `session_user` to be a member of that role, immutable completion evidence in the same tenant/run transaction, no open reconciliation exception, and no unreviewed proposed match. This capability does not imply `accounting_closing_writer` and grants no journal-posting, reversal, or fiscal-period-close authority.
 
 Deferred constraint triggers recompute persisted journal lines at commit. A durable journal must have at least one line and exact debit and credit totals must match. Application validation is defense in depth, not the only balance control.
 
 ## Runtime identity boundary
 
-The application runtime database login is separate from the migration owner and from administrative / break-glass identities. Tenant-scoped tables use RLS and the runtime path is tested with a non-owner, non-superuser, non-`BYPASSRLS` login. Purpose-limited soft-close exceptions use explicit role membership; ordinary runtime identities do not inherit `accounting_closing_writer`.
+The application runtime database login is separate from the migration owner and from administrative / break-glass identities. Tenant-scoped tables use RLS and the runtime path is tested with a non-owner, non-superuser, non-`BYPASSRLS` login. Purpose-limited soft-close exceptions use explicit `accounting_closing_writer` membership; ordinary runtime identities do not inherit it. Reconciliation completion uses a separate tenant-bound login (or explicitly provisioned tenant-bound service identity) with `accounting_reconciliation_completer` membership. Neither capability may be manufactured by a caller-controlled GUC or application `SET ROLE`.
 
 The HTTP surface currently binds tenant identity through the configured AIS tenant plus `X-CWL-Tenant-Reference`. That header is not a general credential. Production exposure therefore requires a trusted host or gateway that authenticates the caller before traffic reaches this process. Purpose-bound application authorization is tracked separately from the database-credential boundary and must not be inferred from request-body fields, model output, or database GUCs.
 
@@ -88,6 +92,26 @@ validate published proposal
 ```
 
 Exact replay returns the original receipt. Reuse of an idempotency key with changed immutable evidence fails closed. Posted journal facts are append-only; corrections use reversal and, when required, a separately posted replacement.
+
+## Reconciliation completion transaction
+
+The reconciliation completion command is a separate aggregate transition and never joins the journal-posting transaction boundary:
+
+```text
+validate tenant / run / idempotency / actor / purpose
+ -> enter one REPEATABLE READ transaction
+ -> bind database tenant and command lock
+ -> lock evaluating or review_required reconciliation run
+ -> reject open exceptions and unreviewed proposed matches
+ -> derive statement + assigned-book cash populations from PostgreSQL
+ -> derive exact Decimal book-to-bank bridge and approved population hash
+ -> persist immutable reconciliation_completion_command
+ -> database trigger authorizes run_status_code = reconciled
+ -> append reconciliation_run.reconciled outbox evidence
+ -> COMMIT
+```
+
+The caller cannot supply the target status, population hashes, approved-population hash, or bridge values. They are database-derived evidence. An exact retry replays the immutable completion command; a changed command under the same tenant-scoped key fails closed.
 
 ## Reversal boundary
 
@@ -114,8 +138,9 @@ The current HTTP / library surface includes:
 - receivable aging, payable aging and unapplied-cash rollforward;
 - income statement, balance sheet, changes in equity, cash-flow and statement packages;
 - period-close package and VAT period register;
-- fail-closed HomeTax submission evidence and receipt history.
-- reconciliation-run command/read APIs (`accept_reconciliation_run`, `lookup_reconciliation_run`) over immutable statement and assignment evidence; these surfaces evaluate/run reconciliation only and never post journals or close periods.
+- fail-closed HomeTax submission evidence and receipt history;
+- reconciliation-run command/read APIs (`accept_reconciliation_run`, `lookup_reconciliation_run`) over immutable statement and assignment evidence; these surfaces evaluate/run reconciliation only and never post journals or close periods; and
+- the public Python `accept_reconciliation_completion` domain command in the stacked completion slice. Its buyer-facing HTTP route is deliberately a successor stack and is not yet an integrated transport claim.
 
 The reconciliation close-package projection is a read-only evidence manifest. Its
 schema-versioned payload carries the complete approved match-evidence population,
