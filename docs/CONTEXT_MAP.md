@@ -138,6 +138,7 @@ The current package predates the explicit context map. The table below is theref
 | `src/accounting_information_platform/bank_statement.py` | `bank_statement_registry` | transitional | Preserve provider/camt parsing as an ACL; move only as a coherent adapter/evidence slice |
 | `src/accounting_information_platform/iso20022/` | `bank_statement_registry` ACL | aligned | Version provider-format adapters independently from accounting domain types |
 | `src/accounting_information_platform/reconciliation_run.py` | `reconciliation_run_control` | aligned | Keep lifecycle scope/evidence distinct from matching decisions |
+| `src/accounting_information_platform/reconciliation_completion.py` | `reconciliation_run_control` | transitional | Preserve the evidence-derived completion command as run lifecycle authority; do not let it acquire posting or period-close authority |
 | `src/accounting_information_platform/reconciliation.py` | `reconciliation_review` | transitional | Retain deterministic policy/domain behavior; no provider DTO dependency |
 | `src/accounting_information_platform/allocation.py` | `reconciliation_review` | transitional | Keep exact allocation conservation in the domain boundary |
 | `src/accounting_information_platform/reconciliation_bridge.py` | `reconciliation_review` | transitional | Keep exact book-to-bank arithmetic independent of HTTP/provider DTOs |
