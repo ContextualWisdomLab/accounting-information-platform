@@ -1,4 +1,4 @@
-"""RED contracts binding close-package eligibility to authoritative exception state."""
+"""RED contracts binding close-package eligibility to authoritative database state."""
 
 from __future__ import annotations
 
@@ -10,6 +10,9 @@ import psycopg
 
 from accounting_information_platform import reconciliation_close_package as close_package
 from accounting_information_platform.persistence import PostgresPostingLedger
+from accounting_information_platform.reconciliation_read_model import (
+    ReconciliationCloseReviewScope,
+)
 from tests import test_postgres_posting as posting
 from tests import test_reconciliation_candidate_allocation_persistence_red as allocation
 from tests.test_reconciliation_close_package_red import ReconciliationClosePackageTests
@@ -102,8 +105,8 @@ class ReconciliationClosePackageAuthoritativeExceptionTests(unittest.TestCase):
         )
 
 
-class PostgresReconciliationClosePackageAuthoritativeExceptionTests(unittest.TestCase):
-    """Exercise unresolved-exception eligibility against real PostgreSQL state."""
+class PostgresReconciliationClosePackageAuthoritativeStateTests(unittest.TestCase):
+    """Exercise run scope and unresolved-exception eligibility in real PostgreSQL."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -131,19 +134,54 @@ class PostgresReconciliationClosePackageAuthoritativeExceptionTests(unittest.Tes
             exception_statement_entry_references=(),
         )
 
-    def _validate(self) -> None:
-        ledger = PostgresPostingLedger(
+    def _ledger(self) -> PostgresPostingLedger:
+        return PostgresPostingLedger(
             posting.DATABASE_URL,
             self.fixture.case.policy.tenant_reference,
         )
-        with ledger._session() as connection:
-            tenant_account_id = ledger._require_tenant(connection)
+
+    def _validate(self) -> None:
+        with self._ledger()._session() as connection:
+            tenant_account_id = self._ledger()._require_tenant(connection)
             close_package._validate_database_owned_exception_state(
                 connection,
                 tenant_account_id,
                 reconciliation_run_reference=str(self.fixture.run_reference),
                 projection=self.projection,
             )
+
+    def test_run_scope_loader_returns_persisted_accounting_scope(self) -> None:
+        ledger = self._ledger()
+        with ledger._session() as connection:
+            tenant_account_id = ledger._require_tenant(connection)
+            run_evidence, artifact_evidence, run_scope = (
+                close_package._database_owned_run_source_evidence(
+                    connection,
+                    tenant_account_id,
+                    tenant_reference=self.fixture.case.policy.tenant_reference,
+                    reconciliation_run_reference=str(self.fixture.run_reference),
+                )
+            )
+        self.assertEqual(
+            run_evidence.evidence_reference,
+            str(self.fixture.run_reference),
+        )
+        self.assertEqual(
+            artifact_evidence.sha256_digest,
+            self.fixture.statement_record["source_artifact_hash"],
+        )
+        self.assertEqual(
+            run_scope,
+            ReconciliationCloseReviewScope(
+                tenant_account_reference=self.fixture.case.policy.tenant_reference,
+                legal_entity_reference=self.fixture.case.policy.legal_entity_reference,
+                accounting_book_reference=self.fixture.case.policy.accounting_book_reference,
+                bank_account_assignment_reference=str(
+                    self.fixture.scope["bank_account_assignment_id"]
+                ),
+                currency_code="KRW",
+            ),
+        )
 
     def test_open_database_exception_blocks_clean_close_projection(self) -> None:
         self._validate()
