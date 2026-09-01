@@ -2,7 +2,7 @@
 
 ## Deployment preconditions
 
-Use PostgreSQL 18 and keep the migration owner, application runtime login and administrative / break-glass identities separate. Apply migrations in numeric order through `0019_reconciliation_run_command_evidence.sql` before starting the service. Do not run the application with a table-owner, superuser or `BYPASSRLS` login.
+Use PostgreSQL 18 and keep the migration owner, application runtime login and administrative / break-glass identities separate. Apply migrations in numeric order through `0020_reconciliation_completion_command.sql` before starting a deployment that exposes reconciliation completion. Do not run the application with a table-owner, superuser or `BYPASSRLS` login.
 
 Required environment values are deployment-specific. At minimum, configure the accounting database URL and bind this AIS process to exactly one tenant reference. Secrets belong in an approved secret store; do not place database passwords, NTS credentials, bearer tokens or provider secrets in journal payloads, logs or outbox events.
 
@@ -32,7 +32,10 @@ database/migrations/0016_reconciliation_approval_evidence.sql
 database/migrations/0017_reconciliation_approval_lock_order.sql
 database/migrations/0018_bank_statement_balance_evidence.sql
 database/migrations/0019_reconciliation_run_command_evidence.sql
+database/migrations/0020_reconciliation_completion_command.sql
 ```
+
+The exported `accounting_information_platform.apply_foundation_migration` boundary fail-closes before database work when `0020_reconciliation_completion_command.sql` is missing, applies the established 0001–0019 chain, then applies 0020. Treat that public installer as the production installation boundary while the historical persistence loader remains the reviewed owner of 0001–0019. A 0020 PostgreSQL failure is surfaced as a failed foundation migration with the causal database exception retained; never report an installation as complete after only 0019.
 
 Migration `0015_reconciliation_multi_match_conservation.sql` replaces the run-wide single-approved-match shortcut from `0014` with tenant/run-scoped match identity plus exact statement/journal allocation conservation. It permits multiple independently approved matches, including split and aggregate allocation populations, only when no authoritative source amount is over-consumed and grants no journal-posting authority.
 
@@ -44,6 +47,8 @@ Migration `0018_bank_statement_balance_evidence.sql` preserves the exact numeric
 
 Migration `0019_reconciliation_run_command_evidence.sql` records the immutable command identity that opens a reconciliation run from one persisted bank statement and active bank-account assignment. The tenant-scoped idempotency key, command hash, source hash, and object-store reference are forced-RLS evidence; new runs exclude source facts recorded after `knowledge_cutoff_at`, and a deferred database guard requires one command per run with statement-to-assignment bank-account provenance. The public run API opens only `evaluating` scope and does not match, approve, close, or post journals.
 
+Migration `0020_reconciliation_completion_command.sql` adds the immutable evidence and database guard for the first lawful transition into `reconciled`. The completion command stores exact statement/book population hashes, approved-population hash, exact bridge evidence hash, actor, purpose, tenant/run idempotency identity, and the complete command hash. PostgreSQL independently requires an `evaluating` or `review_required` source state, no open reconciliation exception, no unreviewed `proposed` match, matching immutable command evidence, forced tenant RLS, and purpose-limited database role membership. It grants no journal-posting, reversal, fiscal-period-close, tax, or policy authority.
+
 Migration `0007_runtime_tenant_binding.sql` replaces caller-selected tenant authority with owner-controlled runtime-login binding. Migration `0008_fiscal_period_open_command.sql` adds forced-RLS, append-only command evidence so fiscal-period-open retries are bound to the original tenant key and source hash. Both must be installed before runtime database privileges are treated as production-ready.
 
 After installation, prove with the actual runtime login that supported reads and writes work for its tenant, another tenant is inaccessible, the login is not a migration owner / superuser / `BYPASSRLS`, and direct SQL cannot bypass journal immutability or period controls.
@@ -54,11 +59,13 @@ The multithreaded HTTP server gives each request an independent PostgreSQL
 transaction. Each new session bounds lock waits to five seconds and idle
 transactions to sixty seconds. State-changing proposal, adjusting, reversal,
 HomeTax, period-open, period-close, and reconciliation-run commands acquire tenant-scoped
-transaction advisory locks. Posting/reversal re-read their selected period
-after acquiring the shared period lock; close selects the period row with
-`FOR UPDATE` before evaluating its package. A lock timeout rolls back the
-transaction and must be retried after the operator resolves the competing
-command.
+transaction advisory locks. Reconciliation completion additionally uses the same
+consistent-read transaction for the run lock, database-owned populations, approved
+allocation/approval population, exception state, exact bridge, immutable completion
+command, status transition, and outbox event. Posting/reversal re-read their selected
+period after acquiring the shared period lock; close selects the period row with
+`FOR UPDATE` before evaluating its package. A lock timeout rolls back the transaction
+and must be retried after the operator resolves the competing command.
 
 Migration `0006_concurrency_hot_partition.sql` adds tenant-leading indexes to
 the high-write proposal, journal, line, reversal, receipt, HomeTax, and outbox
@@ -87,6 +94,26 @@ REVOKE accounting_closing_writer FROM <purpose_limited_closing_login>;
 
 Record the grant / revoke as operational evidence. Do not grant `accounting_closing_writer` to the generic proposal-ingest runtime role.
 
+## Purpose-limited reconciliation completion authorization
+
+`accounting_reconciliation_completer` is a separate `NOLOGIN` capability role created and reasserted by migration `0020`. Do not use `accounting_closing_writer` as a substitute and do not grant both merely for convenience.
+
+The login serving reconciliation completion must first be an ordinary tenant-bound, non-owner, non-superuser, non-`BYPASSRLS` runtime identity. Grant the additional completion capability only through the deployment owner-control path:
+
+```sql
+GRANT accounting_reconciliation_completer TO <purpose_limited_reconciliation_login>;
+```
+
+Both completion-command insertion and the first transition to `reconciled` evaluate `pg_has_role(session_user, 'accounting_reconciliation_completer', 'MEMBER')`. A request field, model output, custom GUC, or application `SET ROLE` cannot manufacture this authority. The login still needs its owner-controlled `runtime_tenant_binding`; role membership never selects a tenant.
+
+When the operational authorization ends, revoke it and retain grant/revoke evidence:
+
+```sql
+REVOKE accounting_reconciliation_completer FROM <purpose_limited_reconciliation_login>;
+```
+
+Real PostgreSQL acceptance must prove the same tenant-bound login can execute the supported completion command when granted, a generic tenant runtime is rejected, cross-tenant rows remain invisible, command evidence is immutable, an exact retry replays, changed evidence conflicts, and open exceptions/pending proposed matches prevent reconciliation.
+
 ## Posting and replay
 
 Every monetary command uses exact decimal strings. Do not send JSON floating-point numbers for journal amounts. A successful proposal posts proposal evidence, journal header / lines, posting receipt and transactional outbox evidence atomically.
@@ -94,6 +121,8 @@ Every monetary command uses exact decimal strings. Do not send JSON floating-poi
 For a normal proposal retry, reuse the original tenant-scoped idempotency key only when the immutable payload evidence is identical. Changed evidence under the same key is a conflict and requires correction at the source, not a new journal under the old key.
 
 For a fiscal-period-open retry, reuse the original `idempotency_key` and `source_payload_hash`. Exact replay returns the recorded open result even if that period has subsequently closed; changed scope, dates, or source hash under the same key is an idempotency conflict. A different command key may acknowledge an already-open matching period, but it cannot reopen a soft- or hard-closed period.
+
+For reconciliation completion, reuse the original `reconciliation_completion_key` only for the exact same tenant, run, actor, and purpose. Exact replay returns the immutable completion evidence even after the run is already `reconciled`. Changed command evidence under the same key is an idempotency conflict. A new key is not a status-edit escape hatch: the database permits only one completion command for the tenant/run.
 
 Posted journal facts are append-only. Never repair a posted journal with SQL `UPDATE`, `DELETE`, `TRUNCATE` or destructive migration logic. Use explicit reversal and, when appropriate, a separately posted replacement.
 
@@ -146,9 +175,11 @@ Request bodies are bounded. Oversized JSON commands are rejected before domain w
 
 Health checks do not prove accounting readiness. A process can be healthy while exact-head CI, PostgreSQL integration, security or independent review is still missing.
 
+The reconciliation-completion domain command is currently a stacked Python API capability. Do not expose or document `POST /reconciliation-completions` as an integrated buyer route until the successor transport stack lands with caller authentication/authorization admission, bounded request handling, exact error mapping, and its own exact-head load/security/review evidence. Never expose a generic run-status mutation endpoint.
+
 ## Outbox and audit
 
-Posting, reversal and close commands commit their outbox evidence in the same accounting transaction. Publishing an outbox row records publication state; it does not rewrite the accounting fact. Audit reads include published and unpublished evidence but do not publish rows themselves.
+Posting, reversal, close, and reconciliation completion commands commit their outbox evidence in the same accounting transaction as the authority-bearing state/evidence change. Publishing an outbox row records publication state; it does not rewrite the accounting fact. Audit reads include published and unpublished evidence but do not publish rows themselves.
 
 Do not place raw card data, passwords, tokens, model prompts or unnecessary PII in outbox / audit payloads. PII necessary for authorized accounting work remains purpose-bound and access-logged.
 
@@ -169,9 +200,9 @@ Do not transfer a success from a predecessor SHA or synthetic merge ref to the c
 
 ## Backup, restore and recovery
 
-Before release, rehearse clean install, forward migration, rollback strategy, backup restore and point-in-time recovery with production-like data volumes and the non-owner runtime identity. Restoration must preserve immutable journal / receipt / outbox lineage and tenant isolation.
+Before release, rehearse clean install, forward migration, rollback strategy, backup restore and point-in-time recovery with production-like data volumes and the non-owner runtime identity. Restoration must preserve immutable journal / receipt / outbox / reconciliation-completion lineage and tenant isolation.
 
-Recovery from an accounting error is not database row editing. Restore infrastructure only for infrastructure loss; correct economic facts with reversal / reposting according to accounting policy.
+Recovery from an accounting error is not database row editing. Restore infrastructure only for infrastructure loss; correct economic facts with reversal / reposting according to accounting policy and correct reconciliation evidence through an explicitly governed successor command rather than editing immutable completion rows.
 
 ## Package provenance and attestations
 
@@ -179,7 +210,7 @@ Every pull-request package build first verifies the exact PR head checkout, deri
 
 The PR-capable `accounting-foundation` job has `contents: read` only. It does not receive OIDC, attestation, or artifact-metadata write authority while executing repository-controlled tests and build code. Do not move those permissions back into that job merely because individual attestation steps are conditional; GitHub permissions apply to the whole job.
 
-Do not accept a GitHub OIDC attestation created by a `pull_request` event as exact PR-head provenance merely because the build checked out the PR head. The attestation signing context can identify GitHub's synthetic pull-request merge ref and merge commit. Repository CI therefore reserves signed provenance and SBOM attestations for the separate `integrated-attestations` job. That job is job-level push-only for `develop` or `main`, depends on a successful `accounting-foundation` build, downloads the SHA-named evidence bundle, verifies `SHA256SUMS` and `source-provenance.json.source_sha == github.sha`, and only then receives `id-token: write`, `attestations: write`, and `artifact-metadata: write`. The protected-head push must reproduce the package and those signed attestations must succeed before release. This control is evidence readiness only; it does not claim a SLSA level or certification.
+Do not accept a GitHub OIDC attestation created by a `pull_request` event as exact PR-head provenance merely because the build checked out the PR head. The attestation signing context can identify GitHub's synthetic pull-request merge ref and merge commit. Repository CI therefore reserves signed provenance and SBOM attestations for the separate `integrated-attestations` job. That job is job-level push-only for `develop` or `main`, depends on a successful exact-head foundation build, downloads the SHA-named evidence bundle, verifies `SHA256SUMS` and `source-provenance.json.source_sha == github.sha`, and only then receives `id-token: write`, `attestations: write`, and `artifact-metadata: write`. The protected-head push must reproduce the package and those signed attestations must succeed before release. This control is evidence readiness only; it does not claim a SLSA level or certification.
 
 ## Release acceptance
 
@@ -188,6 +219,8 @@ Release only from one unchanged protected head after all applicable evidence pas
 ## Runtime database tenant provisioning
 
 Before routing accounting traffic to a new database login, an owner-controlled operator records that login's current PostgreSQL role OID, role name, and tenant in `accounting_core.runtime_tenant_binding`. The runtime login itself must have no direct privilege on the binding table. Recreating a role, restoring into a new cluster, or intentionally reassigning a tenant requires a fresh binding because the role OID is part of the identity. An unbound runtime or a requested tenant that disagrees with the binding fails closed; do not restore service by setting `app.tenant_account_id`.
+
+A purpose-limited reconciliation login is provisioned through this same tenant-binding path **before** it receives `accounting_reconciliation_completer`; capability membership never replaces tenant binding. Grant/revoke evidence for the capability belongs in the deployment control record.
 
 ## Accounting-book close isolation
 
