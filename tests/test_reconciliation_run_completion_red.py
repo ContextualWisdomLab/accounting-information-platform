@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import unittest
 import uuid
+from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -40,7 +42,12 @@ class ReconciliationRunCompletionContractTests(unittest.TestCase):
         approved_match_id = uuid.uuid4()
 
         class _Result:
-            def __init__(self, *, one: tuple[object, ...] | None = None, many: list[tuple[object, ...]] | None = None) -> None:
+            def __init__(
+                self,
+                *,
+                one: tuple[object, ...] | None = None,
+                many: list[tuple[object, ...]] | None = None,
+            ) -> None:
                 self._one = one
                 self._many = many or []
 
@@ -86,7 +93,7 @@ class ReconciliationRunCompletionContractTests(unittest.TestCase):
                             "sha256:" + "2" * 64,
                             "sha256:" + "3" * 64,
                             "sha256:" + "4" * 64,
-                            posting.datetime(2026, 1, 1, tzinfo=posting.timezone.utc),
+                            datetime(2026, 1, 1, tzinfo=timezone.utc),
                         )
                     )
                 if normalized.startswith("UPDATE accounting_core.reconciliation_run"):
@@ -100,7 +107,12 @@ class ReconciliationRunCompletionContractTests(unittest.TestCase):
             def __enter__(self) -> _Connection:
                 return self.connection
 
-            def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
+            def __exit__(
+                self,
+                exc_type: object,
+                exc_value: object,
+                traceback: object,
+            ) -> None:
                 return None
 
         class _Ledger:
@@ -108,6 +120,11 @@ class ReconciliationRunCompletionContractTests(unittest.TestCase):
                 self.connection = _Connection()
 
             def _session(self) -> _Session:
+                raise AssertionError(
+                    "completion authority must not use a READ COMMITTED session"
+                )
+
+            def _consistent_read_session(self) -> _Session:
                 return _Session(self.connection)
 
             def _require_tenant(self, connection: _Connection) -> uuid.UUID:
@@ -119,11 +136,11 @@ class ReconciliationRunCompletionContractTests(unittest.TestCase):
         bridge = SimpleNamespace(
             statement_population_reference="sha256:" + "3" * 64,
             book_population_reference="sha256:" + "4" * 64,
-            statement_closing_balance=posting.Decimal("100.00"),
-            book_closing_balance=posting.Decimal("90.00"),
-            outstanding_book_items=posting.Decimal("15.00"),
-            outstanding_bank_items=posting.Decimal("5.00"),
-            unexplained_difference=posting.Decimal("0"),
+            statement_closing_balance=Decimal("100.00"),
+            book_closing_balance=Decimal("90.00"),
+            outstanding_book_items=Decimal("15.00"),
+            outstanding_bank_items=Decimal("5.00"),
+            unexplained_difference=Decimal("0"),
         )
         with (
             patch(
