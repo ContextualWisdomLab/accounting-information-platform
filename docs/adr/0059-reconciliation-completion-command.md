@@ -83,6 +83,7 @@ The narrow column privilege is paired with a fail-closed trigger rather than tre
 
 - PostgreSQL Global Development Group. (2026). *PostgreSQL 18 documentation: Transaction isolation*. https://www.postgresql.org/docs/18/transaction-iso.html
 - Cai, Z., Liu, S., Wei, H., Chen, Y., & Pan, A. (2025). Fast verification of strong database isolation (Extended Version). *Proceedings of the VLDB Endowment, 19*, 563–575. https://consensus.app/papers/fast-verification-of-strong-database-isolation-extended-cai-liu/e7131ce449515d41ab6104cc32c3e2b7/
+- Logrippo, L. (2025). Data flow security in role-based access control. *Journal of Information Security and Applications*. https://consensus.app/papers/data-flow-security-in-rolebased-access-control-logrippo/95874bd5d780530a8e80eece583cda0e/?utm_source=chatgpt
 - World Wide Web Consortium. (2013). *PROV-O: The PROV ontology*. https://www.w3.org/TR/prov-o/
 
-The first two sources support making isolation semantics an explicit, verifiable integrity contract; PROV-O supports retaining provenance as separately identifiable evidence. None of these sources grants accounting authority or substitutes for the repository's exact PostgreSQL integration tests.
+The PostgreSQL and VLDB sources support making isolation semantics an explicit, verifiable integrity contract. Logrippo (2025) formalizes integrity reasoning over RBAC role/permission assignments and reconfiguration, supporting the decision not to treat a narrow status-column privilege as unconstrained lifecycle authority. PROV-O supports retaining provenance as separately identifiable evidence. None of these sources grants accounting authority or substitutes for the repository's exact PostgreSQL integration tests.
