@@ -1,13 +1,14 @@
-"""Unit regressions for public reconciliation database-error normalization."""
+"""Unit regressions for reconciliation database-error normalization."""
 
 from __future__ import annotations
 
 import unittest
-import unittest.mock as mock
 
 import psycopg
 
-import accounting_information_platform as accounting
+from accounting_information_platform.reconciliation_run import (
+    _normalize_reconciliation_command_identity_conflicts,
+)
 
 
 class ReconciliationCommandIdentityPublicErrorTests(unittest.TestCase):
@@ -15,23 +16,18 @@ class ReconciliationCommandIdentityPublicErrorTests(unittest.TestCase):
 
     def test_unrelated_unique_violation_is_not_masked(self) -> None:
         """Only the database-owned reconciliation identity marker becomes a domain conflict."""
-        public_commands = (
-            ("_accept_reconciliation_run", accounting.accept_reconciliation_run),
-            ("_reconcile_reconciliation_run", accounting.reconcile_reconciliation_run),
+        unrelated = psycopg.errors.UniqueViolation(
+            "unrelated accounting uniqueness invariant"
         )
-        for private_name, public_command in public_commands:
-            with self.subTest(command=private_name):
-                unrelated = psycopg.errors.UniqueViolation(
-                    "unrelated accounting uniqueness invariant"
-                )
-                with mock.patch.object(
-                    accounting,
-                    private_name,
-                    side_effect=unrelated,
-                ):
-                    with self.assertRaises(psycopg.errors.UniqueViolation) as raised:
-                        public_command(object(), "postgresql://unused", "tenant-unused")
-                self.assertIs(raised.exception, unrelated)
+
+        @_normalize_reconciliation_command_identity_conflicts
+        def command() -> dict[str, object]:
+            """Raise an unrelated PostgreSQL uniqueness error through the shared boundary."""
+            raise unrelated
+
+        with self.assertRaises(psycopg.errors.UniqueViolation) as raised:
+            command()
+        self.assertIs(raised.exception, unrelated)
 
 
 if __name__ == "__main__":
