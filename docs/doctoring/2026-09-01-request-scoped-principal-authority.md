@@ -1,6 +1,6 @@
 # Doctoring record: request-scoped principal authority
 
-**Date:** 2026-09-01  
+**Date:** 2026-09-01
 **Scope:** purpose-bound accounting HTTP authorization boundary
 
 ## Research question
