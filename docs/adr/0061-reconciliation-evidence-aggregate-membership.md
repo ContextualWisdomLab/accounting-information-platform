@@ -13,7 +13,7 @@ This is an aggregate-boundary defect, not merely a trigger implementation detail
 
 Tenant and reconciliation-run membership is immutable for every row protected by the reconciliation lifecycle evidence guard. On `UPDATE`, PostgreSQL rejects any change to `tenant_account_id` or `reconciliation_run_id` with `reconciliation_lifecycle_scope_immutable` before it evaluates the destination run state. Corrections or evidence needed by another run are recorded as new rows in that run, with supersession/lineage retained explicitly where the domain supports it.
 
-Migration `0020_reconciliation_evidence_aggregate_membership.sql` replaces the existing `accounting_core.guard_reconciled_run_evidence_mutation()` trigger function while retaining the trigger set, lifecycle advisory-lock key, reconciled/transition freeze checks, and insert/delete behavior established by migration `0019`. A separate migration is used so this causal repair remains append-only and does not collide with concurrent work on the lifecycle migration.
+The lifecycle schema in migration `0019_reconciliation_run_command_evidence.sql` is still unreleased on the stacked dependency path, so the causal repair is folded into the existing `accounting_core.guard_reconciled_run_evidence_mutation()` definition rather than shipping a redundant successor migration. The trigger set, lifecycle advisory-lock key, reconciled/transition freeze checks, and insert/delete behavior remain unchanged. If `0019` becomes an applied protected-branch migration before this child integrates, the repair must instead move to a new forward migration; an applied migration is never rewritten.
 
 The rule applies uniformly to the trigger-protected reconciliation evidence tables:
 
@@ -40,7 +40,7 @@ PostgreSQL row-level `BEFORE UPDATE` triggers execute once for each row affected
 
 ## Verification
 
-Real PostgreSQL acceptance must create a resolved exception on an ordinary run, finalize the run through the supported lifecycle command, create a separate evaluating destination run, and prove that a privileged raw SQL attempt to rewrite the exception's `reconciliation_run_id` fails with the aggregate-membership guard. Existing lifecycle tests continue to prove same-run insertion/update/delete freeze behavior, transition atomicity, idempotent replay, approval completeness, and exact database-owned bridge authority.
+Real PostgreSQL acceptance creates a resolved exception on an ordinary run, finalizes the run through the supported lifecycle command, creates a separate evaluating destination run, and proves that a privileged raw SQL attempt to rewrite the exception's `reconciliation_run_id` fails with the aggregate-membership guard. A repository contract also ratchets the `OLD`/`NEW` comparison ahead of lifecycle-lock selection. Existing lifecycle tests continue to prove same-run insertion/update/delete freeze behavior, transition atomicity, idempotent replay, approval completeness, and exact database-owned bridge authority.
 
 ## Consequences
 
