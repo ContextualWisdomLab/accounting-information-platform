@@ -2,7 +2,7 @@
 
 **Evidence refresh:** 2026-09-01 (Asia/Seoul)
 
-This is the durable commercialization baseline for `ContextualWisdomLab/accounting-information-platform`. It records product responsibility, DDD boundaries, buyer outcomes, technical contracts, architecture/data/test/security/operability evidence, and the remaining gaps that survive individual branch or workflow changes. Live PR numbers, exact heads, check conclusions, rulesets, reviews, and release state are intentionally not copied as durable facts: refetch them before every integration, release, or readiness decision.
+This is the durable commercialization baseline for `ContextualWisdomLab/accounting-information-platform`. It records product responsibility, DDD boundaries, buyer outcomes, technical contracts, architecture/data/test/security/operability evidence, and the remaining gaps that survive individual branch or workflow changes. **Live PR/check evidence is intentionally not duplicated here**: live PR numbers, exact heads, check conclusions, rulesets, reviews, and release state must be refetched before every integration, release, or readiness decision.
 
 ## Product responsibility and buyer outcome
 
@@ -290,6 +290,10 @@ Queued, skipped, stale, predecessor, synthetic merge-ref, status-only, or model-
 | `ContextualWisdomLab/context-graph-contracts` | possible minimal released Shared Kernel for provider-neutral context/provenance grammar; no open-PR bytes or financial-fact ownership |
 | `ContextualWisdomLab/enterprise-architecture-core` | EA Decision Plane; receives architecture/change evidence only, never authoritative journal/ledger/reconciliation monetary facts |
 | `TEPP`, `fast-mlsirm`, `RankWeave`, `ThreadWeave`, `LineageWeave`, `disksage`, `wardnet` | reused only when actual responsibility/contract boundaries justify it; no dependency by ecosystem membership alone |
+
+## Branch/release governance baseline
+
+`main` is protected by an AIP repository-scoped active gate. The central required workflows and AIP Accounting Foundation CI are now applied to `main`; release readiness still requires fresh exact-head evidence, current review, and integrated release attestations rather than inference from branch protection alone. `develop` remains the protected integration authority for the current product sequence. Neither branch policy nor a passing predecessor head authorizes a protection bypass, force push, destructive branch rewrite, tag, version, or release.
 
 ## Ranked gap queue and action state
 
