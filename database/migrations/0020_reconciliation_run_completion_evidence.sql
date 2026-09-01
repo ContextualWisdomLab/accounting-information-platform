@@ -126,7 +126,7 @@ END;
 $$;
 
 CREATE TRIGGER reconciliation_run_completion_command_guard
-    BEFORE INSERT OR UPDATE
+    BEFORE INSERT
     ON accounting_core.reconciliation_run_completion_command
     FOR EACH ROW
     EXECUTE FUNCTION accounting_core.guard_reconciliation_completion_command();
@@ -207,11 +207,14 @@ DECLARE
     guarded_reconciliation_run_id uuid;
     current_status text;
 BEGIN
-    guarded_tenant_account_id := COALESCE(NEW.tenant_account_id, OLD.tenant_account_id);
-    guarded_reconciliation_run_id := COALESCE(
-        NEW.reconciliation_run_id,
-        OLD.reconciliation_run_id
-    );
+    IF TG_OP = 'DELETE' THEN
+        guarded_tenant_account_id := OLD.tenant_account_id;
+        guarded_reconciliation_run_id := OLD.reconciliation_run_id;
+    ELSE
+        guarded_tenant_account_id := NEW.tenant_account_id;
+        guarded_reconciliation_run_id := NEW.reconciliation_run_id;
+    END IF;
+
     PERFORM accounting_core.lock_reconciliation_run_lifecycle(
         guarded_tenant_account_id,
         guarded_reconciliation_run_id
@@ -226,7 +229,10 @@ BEGIN
             'reconciled run decision evidence is immutable; create a new run instead (reconciliation_decision_evidence_immutable)'
             USING ERRCODE = '23514';
     END IF;
-    RETURN COALESCE(NEW, OLD);
+    IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+    END IF;
+    RETURN NEW;
 END;
 $$;
 
