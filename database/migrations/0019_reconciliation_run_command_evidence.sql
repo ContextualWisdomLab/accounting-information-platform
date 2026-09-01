@@ -504,6 +504,18 @@ AS $$
 DECLARE
     transition_count integer;
 BEGIN
+    -- A reconciliation aggregate is created only in its initial evaluating
+    -- state. Later status values are command outcomes, never INSERT defaults or
+    -- privileged-SQL shortcuts around the lifecycle state machine.
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.run_status_code <> 'evaluating' THEN
+            RAISE EXCEPTION
+                'reconciliation run must begin in evaluating state; later status changes require a named lifecycle command (reconciliation_lifecycle_initial_state)'
+                USING ERRCODE = '42501';
+        END IF;
+        RETURN NEW;
+    END IF;
+
     IF NEW.run_status_code IS NOT DISTINCT FROM OLD.run_status_code THEN
         RETURN NEW;
     END IF;
@@ -546,7 +558,7 @@ END;
 $$;
 
 CREATE TRIGGER accounting_reconciliation_run_transition_guard
-    BEFORE UPDATE OF run_status_code ON accounting_core.reconciliation_run
+    BEFORE INSERT OR UPDATE OF run_status_code ON accounting_core.reconciliation_run
     FOR EACH ROW
     EXECUTE FUNCTION accounting_core.enforce_reconciliation_run_reconciled_transition();
 
