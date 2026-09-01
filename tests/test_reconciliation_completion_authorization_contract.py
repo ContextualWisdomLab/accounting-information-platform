@@ -5,6 +5,7 @@ from __future__ import annotations
 import unittest
 
 from accounting_information_platform.authorization import (
+    AUTHORIZATION_POLICY_VERSION,
     AuthenticatedPrincipal,
     authorize,
     permission_for_operation,
@@ -33,8 +34,9 @@ def _principal(*permissions: str, principal_kind: str = "human") -> Authenticate
 class ReconciliationCompletionAuthorizationContractTests(unittest.TestCase):
     """Reserve a distinct high-impact permission before exposing completion transport."""
 
-    def test_completion_operation_has_one_explicit_permission(self) -> None:
+    def test_completion_operation_has_one_explicit_versioned_permission(self) -> None:
         """The completion command must not inherit posting, close, or tenant authority."""
+        self.assertEqual(AUTHORIZATION_POLICY_VERSION, "accounting-authorization-v2")
         self.assertEqual(permission_for_operation(_OPERATION), _PERMISSION)
         decision = require_authorization(
             _principal(_PERMISSION),
@@ -44,6 +46,7 @@ class ReconciliationCompletionAuthorizationContractTests(unittest.TestCase):
         self.assertTrue(decision.allowed)
         self.assertEqual(decision.permission_code, _PERMISSION)
         self.assertEqual(decision.purpose_code, "reconciliation_close_review")
+        self.assertEqual(decision.policy_version, AUTHORIZATION_POLICY_VERSION)
 
     def test_other_accounting_permissions_do_not_complete_reconciliation(self) -> None:
         """Posting, hard-close, and read grants remain non-equivalent authorities."""
