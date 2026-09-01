@@ -15,7 +15,7 @@ CHANGELOG = ROOT / "CHANGELOG.md"
 
 
 class ReconciliationMultiMatchDocumentationContractTests(unittest.TestCase):
-    """Keep public accounting-control docs aligned with migration 0015 invariants."""
+    """Keep public accounting-control docs aligned with current reconciliation invariants."""
 
     def test_adr_describes_current_multi_match_persistence_contract(self) -> None:
         """ADR 0054 must not describe removed single-approval or future-persistence limits."""
@@ -53,11 +53,11 @@ class ReconciliationMultiMatchDocumentationContractTests(unittest.TestCase):
             self.assertIn(phrase, text)
 
     def test_product_baseline_distinguishes_current_tree_from_remaining_close_package(self) -> None:
-        """The product gap queue must not call delivered 0015-0017 controls future work."""
+        """The gap queue must separate delivered conservation from pending authority proof."""
         text = BASELINE.read_text(encoding="utf-8")
-        self.assertIn("from migrations `0015` through `0017`", text)
-        self.assertIn("close-package provenance remains open", text)
-        self.assertIn("[delivered in current tree; migration 0015]", text)
+        self.assertIn("candidate/match/allocation conservation", text)
+        self.assertIn("Database-owned close projection", text)
+        self.assertIn("Source-addressed on dependency root; exact-head proof pending", text)
         self.assertNotRegex(
             text.lower(),
             r"candidate/match\s+allocation\s+conservation\s+\[open\s+m2\s+slice\]",
