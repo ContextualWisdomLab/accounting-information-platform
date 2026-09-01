@@ -84,6 +84,13 @@ class PostgresReconciliationCompletionMigrationTests(unittest.TestCase):
                         """
                     ).fetchall()
                 }
+                run_guard_definition = connection.execute(
+                    """
+                    SELECT pg_get_functiondef(
+                        'accounting_core.reconciliation_run_reconciled_guard()'::regprocedure
+                    )
+                    """
+                ).fetchone()[0]
                 completion_insert = connection.execute(
                     """
                     SELECT has_table_privilege(
@@ -123,6 +130,8 @@ class PostgresReconciliationCompletionMigrationTests(unittest.TestCase):
                 }
                 <= trigger_names
             )
+            self.assertIn("NEW.run_status_code <> 'reconciled'", run_guard_definition)
+            self.assertIn("reconciliation_completion_target_forbidden", run_guard_definition)
             self.assertTrue(completion_insert)
             self.assertTrue(run_update)
             self.assertTrue(outbox_insert)
