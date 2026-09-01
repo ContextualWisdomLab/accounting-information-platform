@@ -1,0 +1,99 @@
+name: Temporary PR43 reconciliation run fixture repair
+
+on:
+  push:
+    branches:
+      - feat/reconciliation-run-lifecycle-transition
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      ACCOUNTING_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/accounting_test
+      REPAIR_BRANCH: feat/reconciliation-run-lifecycle-transition
+      EXPECTED_START_SHA: ${{ github.sha }}
+    services:
+      postgres:
+        image: postgres:18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: accounting_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d accounting_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Check out exact repair head
+        uses: actions/checkout@631c942040754b6e095e929c1677c07e10ed4f87
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Verify writer lease
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_START_SHA"
+          remote_sha="$(git ls-remote origin "refs/heads/${REPAIR_BRANCH}" | awk '{print $1}')"
+          test "$remote_sha" = "$EXPECTED_START_SHA"
+      - name: Install pinned Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-quality.txt
+      - name: Install hash-locked dependencies
+        run: >-
+          python -m pip install --require-hashes
+          --disable-pip-version-check
+          --only-binary=:all:
+          -r requirements-quality.txt
+      - name: Repair default run knowledge cutoff from database time
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("tests/test_reconciliation_run_api.py")
+          text = path.read_text(encoding="utf-8")
+          old = '''        source_payload_hash = "sha256:" + hashlib.sha256(fixture).hexdigest()\n        return statement, {\n'''
+          new = '''        source_payload_hash = "sha256:" + hashlib.sha256(fixture).hexdigest()\n        with psycopg.connect(posting.DATABASE_URL) as connection:\n            knowledge_cutoff_at = connection.execute(\n                "SELECT clock_timestamp()"\n            ).fetchone()[0]\n        return statement, {\n'''
+          if old not in text:
+              raise SystemExit("run fixture source-hash anchor changed")
+          text = text.replace(old, new, 1)
+          old_cutoff = '            "knowledge_cutoff_at": "2026-09-01T00:00:00Z",\n'
+          new_cutoff = '            "knowledge_cutoff_at": knowledge_cutoff_at.isoformat().replace("+00:00", "Z"),\n'
+          if old_cutoff not in text:
+              raise SystemExit("run fixture cutoff anchor changed")
+          path.write_text(text.replace(old_cutoff, new_cutoff, 1), encoding="utf-8")
+          PY
+      - name: Run focused PostgreSQL reconciliation tests
+        env:
+          PYTHONPATH: src:.
+        run: >-
+          python -m unittest -v
+          tests.test_reconciliation_run_api
+          tests.test_reconciliation_close_package_authoritative_exception_red
+          tests.test_reconciliation_multi_match_documentation_contract
+      - name: Normalize source and remove temporary helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote_sha="$(git ls-remote origin "refs/heads/${REPAIR_BRANCH}" | awk '{print $1}')"
+          test "$remote_sha" = "$EXPECTED_START_SHA"
+          rm .github/workflows/tmp-pr43-run-api-cutoff-repair.yml
+          git add tests/test_reconciliation_run_api.py .github/workflows/tmp-pr43-run-api-cutoff-repair.yml
+          git diff --cached --check
+          git config user.name "accounting-information-platform repair"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "test: bind run fixture cutoff to database time"
+          git push origin "HEAD:${REPAIR_BRANCH}"
