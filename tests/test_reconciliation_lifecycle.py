@@ -21,6 +21,8 @@ _RECORDED_AT = datetime(2026, 9, 1, 12, 1, tzinfo=timezone.utc)
 _COMMAND_HASH = "sha256:" + "a" * 64
 _TRANSITION_HASH = "sha256:" + "b" * 64
 _SNAPSHOT_HASH = "sha256:" + "c" * 64
+_STATEMENT_POPULATION_HASH = "sha256:" + "1" * 64
+_BOOK_POPULATION_HASH = "sha256:" + "2" * 64
 
 
 class _Rows:
@@ -58,6 +60,8 @@ class _Connection:
             _EFFECTIVE_AT,
             _RECORDED_AT,
             "reconciled",
+            _STATEMENT_POPULATION_HASH,
+            _BOOK_POPULATION_HASH,
         )
         self.executed: list[tuple[str, tuple[object, ...]]] = []
 
@@ -84,7 +88,7 @@ class _Connection:
             and "FROM accounting_core.reconciliation_run" in normalized
             and "FOR UPDATE" in normalized
         ):
-            return _Rows([] if self.run_status is None else [(self.run_status,)])
+            return _Rows([] if self.run_status is None else [(self.run_status, "KRW")])
         if (
             "SELECT reconciliation_transition_idempotency_key" in normalized
             and "FROM accounting_core.reconciliation_run_transition_command" in normalized
@@ -150,8 +154,8 @@ def _bridge() -> SimpleNamespace:
     """Return one exact bridge that can support a reconciled lifecycle state."""
     return SimpleNamespace(
         reconciliation_run_reference=str(_RUN_ID),
-        statement_population_reference="sha256:" + "1" * 64,
-        book_population_reference="sha256:" + "2" * 64,
+        statement_population_reference=_STATEMENT_POPULATION_HASH,
+        book_population_reference=_BOOK_POPULATION_HASH,
         currency_code="KRW",
         statement_opening_balance=100000,
         statement_period_movements=15000,
@@ -222,6 +226,8 @@ class ReconciliationLifecycleTests(unittest.TestCase):
         self.assertEqual(result["run_status_code"], "reconciled")
         self.assertEqual(result["reconciliation_transition_id"], str(_TRANSITION_ID))
         self.assertRegex(str(result["reconciliation_snapshot_hash"]), r"^sha256:[0-9a-f]{64}$")
+        self.assertEqual(result["statement_population_reference"], _STATEMENT_POPULATION_HASH)
+        self.assertEqual(result["book_population_reference"], _BOOK_POPULATION_HASH)
         self.assertFalse(result["replayed"])
         self.assertEqual(
             _Ledger.locks,
@@ -305,9 +311,9 @@ class ReconciliationLifecycleTests(unittest.TestCase):
     def test_unreviewed_and_inconsistent_match_evidence_fails_closed(self) -> None:
         """Every active reviewed match must have a terminal decision-consistent snapshot."""
         cases = (
-            ([('match-a', 'proposed', '', '')], "still requires review"),
-            ([('match-a', 'approved', '', '')], "decision-consistent"),
-            ([('match-a', 'rejected', 'approved', 'sha256:' + '1' * 64)], "decision-consistent"),
+            ([("match-a", "proposed", "", "")], "still requires review"),
+            ([("match-a", "approved", "", "")], "decision-consistent"),
+            ([("match-a", "rejected", "approved", "sha256:" + "1" * 64)], "decision-consistent"),
         )
         for rows, message in cases:
             with self.subTest(message=message):
