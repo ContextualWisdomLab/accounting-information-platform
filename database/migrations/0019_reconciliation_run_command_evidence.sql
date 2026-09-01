@@ -1,5 +1,78 @@
 BEGIN;
 
+-- One tenant idempotency key identifies exactly one reconciliation command
+-- family. A database-owned registry prevents a run-opening command and a later
+-- lifecycle command from concurrently claiming the same key in separate tables.
+CREATE TABLE accounting_core.reconciliation_command_identity (
+    tenant_account_id uuid NOT NULL,
+    reconciliation_command_identity_key text NOT NULL
+        CHECK (btrim(reconciliation_command_identity_key) <> ''),
+    command_family_code text NOT NULL
+        CHECK (command_family_code IN ('run_opening', 'run_reconciliation')),
+    recorded_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (tenant_account_id, reconciliation_command_identity_key),
+    FOREIGN KEY (tenant_account_id)
+        REFERENCES accounting_core.tenant_account (tenant_account_id)
+);
+
+CREATE INDEX reconciliation_command_identity_recorded_index
+    ON accounting_core.reconciliation_command_identity (
+        tenant_account_id,
+        recorded_at,
+        reconciliation_command_identity_key
+    );
+
+CREATE OR REPLACE FUNCTION accounting_core.reserve_reconciliation_command_identity(
+    identity_tenant_account_id uuid,
+    identity_key text,
+    identity_family_code text
+)
+RETURNS void
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    INSERT INTO accounting_core.reconciliation_command_identity (
+        tenant_account_id,
+        reconciliation_command_identity_key,
+        command_family_code
+    )
+    VALUES (
+        identity_tenant_account_id,
+        identity_key,
+        identity_family_code
+    );
+EXCEPTION
+    WHEN unique_violation THEN
+        RAISE EXCEPTION
+            'reconciliation idempotency key is already owned by another command identity (reconciliation_command_identity_conflict)'
+            USING ERRCODE = '23505';
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION accounting_core.reject_reconciliation_command_identity_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    RAISE EXCEPTION 'reconciliation command identity is immutable once reserved'
+        USING ERRCODE = 'check_violation';
+END;
+$$;
+
+CREATE TRIGGER reconciliation_command_identity_immutable_guard
+    BEFORE UPDATE OR DELETE ON accounting_core.reconciliation_command_identity
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.reject_reconciliation_command_identity_mutation();
+
+ALTER TABLE accounting_core.reconciliation_command_identity ENABLE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.reconciliation_command_identity FORCE ROW LEVEL SECURITY;
+CREATE POLICY reconciliation_command_identity_isolation
+    ON accounting_core.reconciliation_command_identity
+    USING (tenant_account_id = accounting_core.current_tenant_account_id())
+    WITH CHECK (tenant_account_id = accounting_core.current_tenant_account_id());
+
+REVOKE ALL ON accounting_core.reconciliation_command_identity FROM PUBLIC;
+
 -- Bind the first run command to one immutable bank-statement source. The run
 -- scope remains owned by reconciliation_run; this command row supplies the
 -- idempotency and source-payload evidence required for opening that scope.
@@ -29,6 +102,25 @@ CREATE TABLE accounting_core.reconciliation_run_command (
     UNIQUE (tenant_account_id, reconciliation_idempotency_key),
     UNIQUE (tenant_account_id, reconciliation_run_id)
 );
+
+CREATE OR REPLACE FUNCTION accounting_core.reserve_reconciliation_run_command_identity()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    PERFORM accounting_core.reserve_reconciliation_command_identity(
+        NEW.tenant_account_id,
+        NEW.reconciliation_idempotency_key,
+        'run_opening'
+    );
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER accounting_reconciliation_run_command_identity_guard
+    BEFORE INSERT ON accounting_core.reconciliation_run_command
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.reserve_reconciliation_run_command_identity();
 
 -- The persisted command digest is database-owned. PostgreSQL 18 provides
 -- sha256(bytea) as a core binary-string function, so no extension or caller-
@@ -292,6 +384,25 @@ CREATE TABLE accounting_core.reconciliation_run_transition_command (
     UNIQUE (tenant_account_id, reconciliation_transition_idempotency_key),
     UNIQUE (tenant_account_id, reconciliation_run_id, target_run_status_code)
 );
+
+CREATE OR REPLACE FUNCTION accounting_core.reserve_reconciliation_run_transition_identity()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    PERFORM accounting_core.reserve_reconciliation_command_identity(
+        NEW.tenant_account_id,
+        NEW.reconciliation_transition_idempotency_key,
+        'run_reconciliation'
+    );
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER accounting_reconciliation_transition_command_identity_guard
+    BEFORE INSERT ON accounting_core.reconciliation_run_transition_command
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.reserve_reconciliation_run_transition_identity();
 
 CREATE INDEX reconciliation_run_transition_recorded_index
     ON accounting_core.reconciliation_run_transition_command (
