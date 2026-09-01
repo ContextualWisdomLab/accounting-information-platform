@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Mapping
 from uuid import UUID
 
@@ -24,6 +26,8 @@ _RESOLUTION_NEXT_ACTION = (
     "Review the remaining reconciliation exceptions and reviewed matches; when all "
     "controls and the exact book-to-bank bridge tie, execute the run reconciliation command."
 )
+_SERIALIZATION_FAILURE_SQLSTATE = "40001"
+_SERIALIZATION_ATTEMPTS = 3
 
 
 @_normalize_reconciliation_command_identity_conflicts
@@ -32,6 +36,7 @@ def resolve_reconciliation_exception(
 ) -> dict[str, object]:
     """Resolve or supersede one open exception with durable maker-checker evidence."""
     command = _require_resolution_command(payload, tenant_reference)
+    source_payload_hash = _source_payload_hash(command)
     run_id = _parse_uuid(
         str(command.get("reconciliation_run_id") or ""), "reconciliation_run_id"
     )
@@ -65,6 +70,47 @@ def resolve_reconciliation_exception(
     _require_code(purpose_code, "purpose code")
     effective_at = _parse_timestamp(str(command.get("effective_at") or ""), "effective_at")
 
+    for attempt in range(_SERIALIZATION_ATTEMPTS):
+        try:
+            return _resolve_reconciliation_exception_once(
+                database_url=database_url,
+                tenant_reference=tenant_reference,
+                run_id=run_id,
+                exception_id=exception_id,
+                idempotency_key=idempotency_key,
+                target_status=target_status,
+                evidence_reference=evidence_reference,
+                evidence_hash=evidence_hash,
+                source_payload_hash=source_payload_hash,
+                actor_reference=actor_reference,
+                purpose_code=purpose_code,
+                effective_at=effective_at,
+            )
+        except Exception as error:
+            if (
+                getattr(error, "sqlstate", None) != _SERIALIZATION_FAILURE_SQLSTATE
+                or attempt + 1 >= _SERIALIZATION_ATTEMPTS
+            ):
+                raise
+    raise AssertionError("serialization retry loop exhausted without returning or raising")
+
+
+def _resolve_reconciliation_exception_once(
+    *,
+    database_url: str,
+    tenant_reference: str,
+    run_id: UUID,
+    exception_id: UUID,
+    idempotency_key: str,
+    target_status: str,
+    evidence_reference: str,
+    evidence_hash: str,
+    source_payload_hash: str,
+    actor_reference: str,
+    purpose_code: str,
+    effective_at: object,
+) -> dict[str, object]:
+    """Execute one repeatable-read resolution attempt; 40001 retries start fresh."""
     ledger = PostgresPostingLedger(database_url, tenant_reference)
     with ledger._session() as connection:
         connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
@@ -81,6 +127,7 @@ def resolve_reconciliation_exception(
                    target_resolution_status_code,
                    resolution_evidence_reference,
                    resolution_evidence_hash,
+                   source_payload_hash,
                    actor_reference,
                    purpose_code,
                    effective_at
@@ -97,6 +144,7 @@ def resolve_reconciliation_exception(
                 target_status,
                 evidence_reference,
                 evidence_hash,
+                source_payload_hash,
                 actor_reference,
                 purpose_code,
                 effective_at,
@@ -104,7 +152,8 @@ def resolve_reconciliation_exception(
             if prior != expected:
                 raise IdempotencyConflictError(
                     "reconciliation exception resolution idempotency key was already used with "
-                    "different evidence. Supply a new reconciliation_idempotency_key, then retry."
+                    "different evidence or source payload. Supply a new "
+                    "reconciliation_idempotency_key, then retry."
                 )
             return _load_resolution_document(
                 connection,
@@ -193,12 +242,13 @@ def resolve_reconciliation_exception(
                 target_resolution_status_code,
                 resolution_evidence_reference,
                 resolution_evidence_hash,
+                source_payload_hash,
                 reconciliation_exception_resolution_command_hash,
                 actor_reference,
                 purpose_code,
                 effective_at
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING reconciliation_exception_resolution_command_id,
                       reconciliation_exception_resolution_command_hash,
                       recorded_at
@@ -211,6 +261,7 @@ def resolve_reconciliation_exception(
                 target_status,
                 evidence_reference,
                 evidence_hash,
+                source_payload_hash,
                 _RESOLUTION_HASH_SENTINEL,
                 actor_reference,
                 purpose_code,
@@ -291,6 +342,18 @@ def _require_resolution_command(
     return payload
 
 
+def _source_payload_hash(command: Mapping[str, object]) -> str:
+    """Hash the complete JSON command so idempotency binds every received member."""
+    try:
+        canonical = json.dumps(command, separators=(",", ":"), sort_keys=True)
+    except (TypeError, ValueError) as error:
+        raise AccountingValidationError(
+            "reconciliation exception resolution payload must contain JSON-compatible values. "
+            "Supply the exact JSON command, then retry."
+        ) from error
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def _canonical_text(value: object, field_name: str) -> str:
     """Require a non-empty canonical string without surrounding whitespace."""
     if not isinstance(value, str) or not value or value.strip() != value:
@@ -318,6 +381,7 @@ def _load_resolution_document(
                command.target_resolution_status_code,
                command.resolution_evidence_reference,
                command.resolution_evidence_hash,
+               command.source_payload_hash,
                command.reconciliation_exception_resolution_command_hash,
                command.actor_reference,
                command.purpose_code,
@@ -345,11 +409,12 @@ def _load_resolution_document(
         "reconciliation_idempotency_key": idempotency_key,
         "resolution_evidence_reference": row[2],
         "resolution_evidence_hash": row[3],
-        "reconciliation_exception_resolution_command_hash": row[4],
-        "actor_reference": row[5],
-        "purpose_code": row[6],
-        "effective_at": _format_timestamp(row[7]),
-        "recorded_at": _format_timestamp(row[8]),
+        "source_payload_hash": row[4],
+        "reconciliation_exception_resolution_command_hash": row[5],
+        "actor_reference": row[6],
+        "purpose_code": row[7],
+        "effective_at": _format_timestamp(row[8]),
+        "recorded_at": _format_timestamp(row[9]),
         "next_action": _RESOLUTION_NEXT_ACTION,
         "replayed": replayed,
     }
