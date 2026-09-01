@@ -93,12 +93,14 @@ class ReconciliationLifecyclePostgresTests(unittest.TestCase):
                 reconciliation_transition_idempotency_key,
                 target_run_status_code,
                 reconciliation_snapshot_hash,
+                statement_population_reference,
+                book_population_reference,
                 reconciliation_transition_command_hash,
                 actor_reference,
                 purpose_code,
                 effective_at
             )
-            VALUES (%s, %s, %s, 'reconciled', %s, %s,
+            VALUES (%s, %s, %s, 'reconciled', %s, %s, %s, %s,
                     'urn:cwl:principal:test_controller',
                     'month_end_reconciliation', %s)
             """,
@@ -107,6 +109,8 @@ class ReconciliationLifecyclePostgresTests(unittest.TestCase):
                 self.opened["reconciliation_run_id"],
                 f"direct-transition-{uuid.uuid4().hex}",
                 "sha256:" + "d" * 64,
+                "sha256:" + "1" * 64,
+                "sha256:" + "2" * 64,
                 "sha256:" + "0" * 64,
                 datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc),
             ),
@@ -162,8 +166,52 @@ class ReconciliationLifecyclePostgresTests(unittest.TestCase):
                 )
             connection.rollback()
 
+    def test_review_evidence_cannot_move_to_another_run(self) -> None:
+        """Existing evidence cannot escape its aggregate by rewriting run membership."""
+        _statement, second_command = self.fixture._statement_and_command()
+        second = accept_reconciliation_run(
+            second_command,
+            posting.DATABASE_URL,
+            self.fixture.case.policy.tenant_reference,
+        )
+        exception_id = uuid.uuid4()
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            connection.execute(
+                """
+                INSERT INTO accounting_core.reconciliation_exception (
+                    reconciliation_exception_id,
+                    tenant_account_id,
+                    reconciliation_run_id,
+                    exception_code,
+                    owner_reference,
+                    next_action,
+                    effective_at,
+                    resolution_status_code
+                )
+                VALUES (%s, %s, %s, 'scope_test',
+                        'urn:cwl:principal:test_controller',
+                        'Resolve this fixture exception.', %s, 'open')
+                """,
+                (
+                    exception_id,
+                    self._tenant_id(connection),
+                    self.opened["reconciliation_run_id"],
+                    datetime(2026, 9, 1, 12, 1, tzinfo=timezone.utc),
+                ),
+            )
+            with self.assertRaisesRegex(psycopg.Error, "aggregate membership is immutable"):
+                connection.execute(
+                    """
+                    UPDATE accounting_core.reconciliation_exception
+                    SET reconciliation_run_id = %s
+                    WHERE reconciliation_exception_id = %s
+                    """,
+                    (second["reconciliation_run_id"], exception_id),
+                )
+            connection.rollback()
+
     def test_supported_command_persists_transition_outbox_and_freezes_review_state(self) -> None:
-        """One exact command transitions atomically, replays, and freezes reviewed evidence."""
+        """One exact command transitions atomically, replays provenance, and freezes evidence."""
         command = self._command()
         bridge = _bridge(str(self.opened["reconciliation_run_id"]))
         with mock.patch.object(
@@ -189,12 +237,24 @@ class ReconciliationLifecyclePostgresTests(unittest.TestCase):
             first["reconciliation_transition_command_hash"],
             replay["reconciliation_transition_command_hash"],
         )
+        self.assertEqual(
+            first["statement_population_reference"],
+            replay["statement_population_reference"],
+        )
+        self.assertEqual(
+            first["book_population_reference"],
+            replay["book_population_reference"],
+        )
+        self.assertEqual(first["statement_population_reference"], bridge.statement_population_reference)
+        self.assertEqual(first["book_population_reference"], bridge.book_population_reference)
         with psycopg.connect(posting.DATABASE_URL) as connection:
             transition = connection.execute(
                 """
                 SELECT transition.reconciliation_transition_command_hash,
                        transition.reconciliation_snapshot_hash,
-                       run.run_status_code
+                       run.run_status_code,
+                       transition.statement_population_reference,
+                       transition.book_population_reference
                 FROM accounting_core.reconciliation_run_transition_command AS transition
                 JOIN accounting_core.reconciliation_run AS run
                   ON run.tenant_account_id = transition.tenant_account_id
@@ -206,6 +266,8 @@ class ReconciliationLifecyclePostgresTests(unittest.TestCase):
             self.assertEqual(transition[0], first["reconciliation_transition_command_hash"])
             self.assertEqual(transition[1], first["reconciliation_snapshot_hash"])
             self.assertEqual(transition[2], "reconciled")
+            self.assertEqual(transition[3], bridge.statement_population_reference)
+            self.assertEqual(transition[4], bridge.book_population_reference)
             outbox = connection.execute(
                 """
                 SELECT event_type_code, payload_hash
