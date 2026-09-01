@@ -217,10 +217,6 @@ class ReconciliationLifecycleTests(unittest.TestCase):
             ("match-b", "rejected", "rejected", "sha256:" + "4" * 64),
             ("match-c", "superseded", "approved", "sha256:" + "5" * 64),
         ]
-        _Ledger.connection.exception_rows = [
-            ("exception-a", "amount_mismatch", "resolved"),
-            ("exception-b", "ambiguous_reference", "superseded"),
-        ]
         result = self._reconcile()
 
         self.assertEqual(result["run_status_code"], "reconciled")
@@ -329,6 +325,20 @@ class ReconciliationLifecycleTests(unittest.TestCase):
         ]
         with self.assertRaisesRegex(AccountingValidationError, "still open"):
             self._reconcile()
+
+    def test_terminal_exception_without_resolution_command_blocks_reconciliation(self) -> None:
+        """Mutable terminal status is not sufficient maker-checker authority."""
+        for status in ("resolved", "superseded"):
+            with self.subTest(status=status):
+                _Ledger.connection = _Connection()
+                _Ledger.connection.exception_rows = [
+                    ("exception-a", "amount_mismatch", status)
+                ]
+                with self.assertRaisesRegex(
+                    AccountingValidationError,
+                    "resolution-command evidence",
+                ):
+                    self._reconcile()
 
     def test_non_tying_bridge_is_actionable_validation_failure(self) -> None:
         """The lifecycle API converts exact-bridge failures to buyer-actionable validation."""
