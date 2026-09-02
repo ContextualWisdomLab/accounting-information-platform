@@ -1,5 +1,6 @@
 name: Temporary PR47 review authority repair
 
+# Restaged after exact-head public-export ordering repair; this workflow remains bounded writer machinery.
 on:
   push:
     branches:
