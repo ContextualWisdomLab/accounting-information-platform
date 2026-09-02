@@ -18,7 +18,6 @@ The Accounting Information Platform is ContextualWisdomLab's statutory accountin
 - [Architecture decisions](adr/0001-accounting-authority.md)
 - [Product and technical gap baseline](product-technical-gap-baseline.md)
 - [Repository releases](https://github.com/ContextualWisdomLab/accounting-information-platform/releases)
-- [Ask DeepWiki](https://deepwiki.com/ContextualWisdomLab/accounting-information-platform)
 
 ## Product responsibility
 
