@@ -16,6 +16,7 @@ _TENANT_ID = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 _RUN_ID = UUID("11111111-1111-1111-1111-111111111111")
 _EXCEPTION_ID = UUID("22222222-2222-2222-2222-222222222222")
 _RESOLUTION_ID = UUID("33333333-3333-3333-3333-333333333333")
+_EVIDENCE_ID = UUID("44444444-4444-4444-4444-444444444444")
 _EXCEPTION_EFFECTIVE_AT = datetime(2026, 9, 2, 0, 10, tzinfo=timezone.utc)
 _EFFECTIVE_AT = datetime(2026, 9, 2, 0, 20, tzinfo=timezone.utc)
 _RECORDED_AT = datetime(2026, 9, 2, 0, 21, tzinfo=timezone.utc)
@@ -48,6 +49,7 @@ class _Connection:
             "urn:cwl:principal:exception_owner",
             _EXCEPTION_EFFECTIVE_AT,
         )
+        self.retained_evidence_row: tuple[object, ...] | None = (_EVIDENCE_ID,)
         self.inserted_hash = _COMMAND_HASH
         self.resolution_document: tuple[object, ...] | None = (
             _RESOLUTION_ID,
@@ -90,6 +92,15 @@ class _Connection:
             and "FROM accounting_core.reconciliation_exception" in normalized
         ):
             return _Rows([] if self.exception_row is None else [self.exception_row])
+        if (
+            "SELECT reconciliation_evidence_id" in normalized
+            and "FROM accounting_core.reconciliation_evidence" in normalized
+        ):
+            return _Rows(
+                []
+                if self.retained_evidence_row is None
+                else [self.retained_evidence_row]
+            )
         if normalized.startswith(
             "INSERT INTO accounting_core.reconciliation_exception_resolution_command"
         ):
@@ -191,6 +202,11 @@ class ReconciliationExceptionResolutionTests(unittest.TestCase):
             ],
         )
         sql = [query for query, _parameters in _Ledger.connection.executed]
+        evidence_index = next(
+            index
+            for index, query in enumerate(sql)
+            if "FROM accounting_core.reconciliation_evidence" in query
+        )
         command_index = next(
             index
             for index, query in enumerate(sql)
@@ -208,6 +224,7 @@ class ReconciliationExceptionResolutionTests(unittest.TestCase):
             for index, query in enumerate(sql)
             if query.startswith("INSERT INTO accounting_integration.outbox_event")
         )
+        self.assertLess(evidence_index, command_index)
         self.assertLess(command_index, status_index)
         self.assertLess(status_index, outbox_index)
         outbox_parameters = _Ledger.connection.executed[outbox_index][1]
@@ -299,6 +316,7 @@ class ReconciliationExceptionResolutionTests(unittest.TestCase):
         for run_row, message in cases:
             with self.subTest(message=message):
                 _Ledger.connection = _Connection()
+                _Ledger.connection.run_row = run_row
                 with self.assertRaisesRegex(AccountingValidationError, message):
                     self._resolve()
 
@@ -336,6 +354,18 @@ class ReconciliationExceptionResolutionTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(AccountingValidationError, "cannot precede"):
             self._resolve()
+
+    def test_missing_retained_resolution_registry_row_fails_before_write(self) -> None:
+        """Application defense in depth rejects a command without retained review evidence."""
+        _Ledger.connection.retained_evidence_row = None
+        with self.assertRaisesRegex(AccountingValidationError, "retained resolution evidence"):
+            self._resolve()
+        sql = "\n".join(query for query, _parameters in _Ledger.connection.executed)
+        self.assertNotIn(
+            "INSERT INTO accounting_core.reconciliation_exception_resolution_command", sql
+        )
+        self.assertNotIn("UPDATE accounting_core.reconciliation_exception", sql)
+        self.assertNotIn("INSERT INTO accounting_integration.outbox_event", sql)
 
     def test_database_must_replace_resolution_hash_sentinel(self) -> None:
         """A missing database hash trigger is never accepted as resolution evidence."""
