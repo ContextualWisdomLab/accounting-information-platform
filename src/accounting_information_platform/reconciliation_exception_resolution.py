@@ -343,9 +343,14 @@ def _require_resolution_command(
 
 
 def _source_payload_hash(command: Mapping[str, object]) -> str:
-    """Hash the complete JSON command so idempotency binds every received member."""
+    """Hash the complete strict-JSON command so idempotency binds every received member."""
     try:
-        canonical = json.dumps(command, separators=(",", ":"), sort_keys=True)
+        canonical = json.dumps(
+            command,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
     except (TypeError, ValueError) as error:
         raise AccountingValidationError(
             "reconciliation exception resolution payload must contain JSON-compatible values. "
