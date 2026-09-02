@@ -11,7 +11,7 @@ This note records the application-authorization vocabulary required before the r
 3. Registered `resolve_reconciliation_exception` in `_OPERATION_PERMISSIONS` and `_HIGH_IMPACT_OPERATIONS`.
 4. Bumped `AUTHORIZATION_POLICY_VERSION` from `accounting-authorization-v2` to `accounting-authorization-v3`; immutable authorization-decision evidence must not reuse a policy identifier after the operation/permission vocabulary changes.
 5. Advanced the existing reconciliation-completion contract to the same v3 vocabulary so both distinct operations are evaluated under one unambiguous policy version.
-6. Updated ADR 0055 to preserve the separation between application authorization, reconciliation command authority, database capability, journal posting, and fiscal-period close.
+6. Updated ADR 0064 to preserve the separation between application authorization, reconciliation command authority, database capability, journal posting, and fiscal-period close.
 
 The 2026-09-01 completion-policy note remains historical evidence for the v1 → v2 change. This note is its successor for the v2 → v3 policy expansion.
 
