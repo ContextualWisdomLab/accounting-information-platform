@@ -40,10 +40,11 @@ def reconcile_reconciliation_run(
 ) -> dict[str, object]:
     """Transition one run to ``reconciled`` from database-owned evidence.
 
-    The run lifecycle advisory lock is acquired before the first MVCC snapshot,
-    then source and review state are evaluated under PostgreSQL ``REPEATABLE
-    READ``. Exact retries replay immutable command evidence; changed retries fail
-    closed.
+    The transaction uses PostgreSQL ``READ COMMITTED`` and acquires the shared
+    run lifecycle advisory lock before authority reads. If acquiring that lock
+    waits for another guarded reconciliation writer, each later statement gets
+    a fresh snapshot that includes the writer's committed evidence. Exact
+    retries replay immutable command evidence; changed retries fail closed.
     """
     command = _require_transition_command(payload, tenant_reference)
     run_id = _parse_uuid(
@@ -61,9 +62,12 @@ def reconcile_reconciliation_run(
 
     ledger = PostgresPostingLedger(database_url, tenant_reference)
     with ledger._session() as connection:
-        # SET TRANSACTION itself does not establish the data snapshot. Acquire
-        # the lifecycle lock next, before tenant or reconciliation rows are read.
-        connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        # A transaction-level advisory-lock SELECT is itself a statement. Under
+        # REPEATABLE READ it can pin a pre-wait snapshot and hide evidence that
+        # the lock holder commits before releasing the run. READ COMMITTED keeps
+        # each subsequent authority read fresh while the shared run lock blocks
+        # later guarded aggregate mutations until this transaction completes.
+        connection.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
         ledger._acquire_command_lock(connection, f"reconciliation_run_lifecycle:{run_id}")
         tenant_id = ledger._require_tenant(connection)
         ledger._acquire_command_lock(
