@@ -7,11 +7,7 @@ from unittest import mock
 
 import psycopg
 
-from accounting_information_platform import (
-    AccountingValidationError,
-    accept_reconciliation_run,
-    resolve_reconciliation_exception,
-)
+from accounting_information_platform import accept_reconciliation_run, resolve_reconciliation_exception
 from tests import test_postgres_posting as posting
 from tests.test_reconciliation_recording_time_upgrade_postgres import (
     ReconciliationRecordingTimeUpgradePostgresTests,
@@ -28,7 +24,7 @@ class ReconciliationRecordingTimeLegacyCommandPostgresTests(unittest.TestCase):
         posting.PostgresPostingTests.setUpClass()
 
     def test_public_resolution_rejects_legacy_exception_and_review_time(self) -> None:
-        """The application must fail cleanly before legacy chronology reaches command insert."""
+        """The database must reject legacy chronology before any terminal side effect commits."""
         helper = ReconciliationRecordingTimeUpgradePostgresTests
         role_name, database_name, _password, migration_url, admin_url = (
             helper._create_isolated_database()
@@ -138,8 +134,8 @@ class ReconciliationRecordingTimeLegacyCommandPostgresTests(unittest.TestCase):
                 "effective_at": "2026-09-02T00:20:00Z",
             }
             with self.assertRaisesRegex(
-                AccountingValidationError,
-                "database-owned system-time",
+                psycopg.errors.CheckViolation,
+                "reconciliation_resolution_recording_time_authority_required",
             ):
                 resolve_reconciliation_exception(
                     resolution_command,
