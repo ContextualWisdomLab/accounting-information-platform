@@ -67,6 +67,8 @@ class _Connection:
             _BOOK_POPULATION_HASH,
         )
         self.executed: list[tuple[str, tuple[object, ...]]] = []
+        self.commit_count = 0
+        self.rollback_count = 0
 
     def execute(
         self, query: str, parameters: tuple[object, ...] = ()
@@ -74,6 +76,10 @@ class _Connection:
         """Return fixture rows by stable SQL landmarks."""
         normalized = " ".join(query.split())
         self.executed.append((normalized, parameters))
+        if normalized.startswith("SELECT pg_advisory_lock"):
+            return _Rows([(True,)])
+        if normalized.startswith("SELECT pg_advisory_unlock"):
+            return _Rows([(True,)])
         if normalized.startswith("SET TRANSACTION ISOLATION LEVEL"):
             return _Rows()
         if (
@@ -132,6 +138,14 @@ class _Connection:
                 [] if self.transition_document is None else [self.transition_document]
             )
         raise AssertionError(f"unexpected lifecycle query: {normalized}")
+
+    def commit(self) -> None:
+        """Record an explicit transaction boundary used by the session-lock protocol."""
+        self.commit_count += 1
+
+    def rollback(self) -> None:
+        """Record an explicit rollback used by the session-lock protocol."""
+        self.rollback_count += 1
 
 
 class _Ledger:
@@ -242,7 +256,12 @@ class ReconciliationLifecycleTests(unittest.TestCase):
         )
         self.bridge_mock.assert_called_once()
         sql = "\n".join(query for query, _parameters in _Ledger.connection.executed)
-        self.assertIn("SET TRANSACTION ISOLATION LEVEL READ COMMITTED", sql)
+        self.assertIn("SELECT pg_advisory_lock", sql)
+        self.assertIn("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ", sql)
+        self.assertIn("SELECT pg_advisory_unlock", sql)
+        self.assertNotIn("SET TRANSACTION ISOLATION LEVEL READ COMMITTED", sql)
+        self.assertEqual(_Ledger.connection.commit_count, 3)
+        self.assertEqual(_Ledger.connection.rollback_count, 0)
         self.assertIn("INSERT INTO accounting_integration.outbox_event", sql)
         self.assertIn("UPDATE accounting_core.reconciliation_run", sql)
 
@@ -353,6 +372,9 @@ class ReconciliationLifecycleTests(unittest.TestCase):
         ]
         with self.assertRaisesRegex(AccountingValidationError, "still open"):
             self._reconcile()
+        self.assertEqual(_Ledger.connection.rollback_count, 1)
+        sql = "\n".join(query for query, _parameters in _Ledger.connection.executed)
+        self.assertIn("SELECT pg_advisory_unlock", sql)
 
     def test_terminal_exception_without_resolution_command_blocks_reconciliation(self) -> None:
         """Mutable terminal status is not sufficient maker-checker authority."""
