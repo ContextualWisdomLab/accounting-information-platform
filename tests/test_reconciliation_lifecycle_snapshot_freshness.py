@@ -10,25 +10,35 @@ from accounting_information_platform import reconciliation_lifecycle as lifecycl
 
 
 class _StopAfterLifecycleLock(RuntimeError):
-    """Stop the focused test immediately after the run lifecycle lock is acquired."""
+    """Stop the focused test immediately before the first authority read."""
 
 
 class _RecordingConnection:
-    """Record transaction-control SQL without emulating later accounting queries."""
+    """Record transaction and session-lock SQL without emulating authority queries."""
 
     def __init__(self) -> None:
-        """Initialize an empty ordered SQL record."""
+        """Initialize ordered SQL and transaction-boundary records."""
         self.statements: list[str] = []
+        self.commit_count = 0
+        self.rollback_count = 0
 
     def execute(self, query: str, parameters: tuple[object, ...] = ()) -> object:
-        """Record one SQL statement; later query behavior is intentionally unreachable."""
+        """Record one SQL statement; later authority behavior is unreachable."""
         del parameters
         self.statements.append(" ".join(query.split()))
         return object()
 
+    def commit(self) -> None:
+        """Record an explicit commit while preserving the session advisory lock."""
+        self.commit_count += 1
+
+    def rollback(self) -> None:
+        """Record rollback of the authority transaction after the sentinel failure."""
+        self.rollback_count += 1
+
 
 class _FreshSnapshotLedger:
-    """Stop after the lifecycle lock so the isolation contract can be observed exactly."""
+    """Stop after the transaction lock so snapshot ordering can be observed exactly."""
 
     connection = _RecordingConnection()
     locks: list[str] = []
@@ -40,23 +50,23 @@ class _FreshSnapshotLedger:
 
     @contextlib.contextmanager
     def _session(self):
-        """Yield the recording connection as one transaction."""
+        """Yield the recording connection as one PostgreSQL session."""
         yield type(self).connection
 
     def _acquire_command_lock(self, _connection: object, scope: str) -> None:
-        """Record the advisory-lock scope selected by the lifecycle command."""
+        """Record the transaction advisory-lock scope selected after session lock."""
         type(self).locks.append(scope)
 
     def _require_tenant(self, _connection: object) -> object:
-        """Stop before any authority read after the lifecycle lock."""
+        """Stop before any authority read after both lifecycle locks are held."""
         raise _StopAfterLifecycleLock
 
 
 class ReconciliationLifecycleSnapshotFreshnessTests(unittest.TestCase):
-    """Keep a waiting finalizer from pinning a pre-wait repeatable-read snapshot."""
+    """Keep a waiting finalizer from pinning a pre-lock repeatable-read snapshot."""
 
-    def test_lifecycle_lock_uses_read_committed_before_authority_reads(self) -> None:
-        """Subsequent statements must see commits completed while the run lock was awaited."""
+    def test_session_lock_precedes_fresh_repeatable_read_authority_transaction(self) -> None:
+        """The coherent snapshot must begin only after the blocking session lock is granted."""
         _FreshSnapshotLedger.connection = _RecordingConnection()
         _FreshSnapshotLedger.locks = []
         command = {
@@ -81,8 +91,14 @@ class ReconciliationLifecycleSnapshotFreshnessTests(unittest.TestCase):
 
         self.assertEqual(
             _FreshSnapshotLedger.connection.statements,
-            ["SET TRANSACTION ISOLATION LEVEL READ COMMITTED"],
+            [
+                "SELECT pg_advisory_lock(hashtext(%s), hashtext(%s))",
+                "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ",
+                "SELECT pg_advisory_unlock(hashtext(%s), hashtext(%s))",
+            ],
         )
+        self.assertEqual(_FreshSnapshotLedger.connection.commit_count, 2)
+        self.assertEqual(_FreshSnapshotLedger.connection.rollback_count, 1)
         self.assertEqual(
             _FreshSnapshotLedger.locks,
             ["reconciliation_run_lifecycle:11111111-1111-1111-1111-111111111111"],
