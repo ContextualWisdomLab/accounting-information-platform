@@ -176,10 +176,10 @@ __all__ = [
     "pull_journal_proposal",
     "pull_validated_journal_proposals",
     "reconcile_reconciliation_run",
-    "resolve_reconciliation_exception",
     "render_reconciliation_close_package_json",
     "render_reconciliation_close_review_csv",
     "render_reconciliation_close_review_json",
+    "resolve_reconciliation_exception",
     "run_journal_proposal_server",
     "verify_reconciliation_close_package",
 ]
