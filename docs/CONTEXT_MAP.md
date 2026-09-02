@@ -1,6 +1,6 @@
 # Accounting Context Map
 
-Status: accepted architecture; physical package migration is in progress and must not be mistaken for shipped package separation.
+Status: proposed architecture; physical package migration is in progress and must not be mistaken for shipped package separation.
 
 Decision record: [ADR 0059 — Accounting bounded-context map and architectural fitness](adr/0059-accounting-bounded-context-map.md).
 
