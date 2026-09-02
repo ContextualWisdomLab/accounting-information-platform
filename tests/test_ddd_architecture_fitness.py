@@ -96,10 +96,11 @@ class DddArchitectureFitnessTests(unittest.TestCase):
         self.assertIn("does not authorize another service to write accounting tables", text)
         self.assertIn("0059-accounting-bounded-context-map.md", text)
 
-    def test_accepted_adr_owns_the_context_map_decision(self) -> None:
-        """Keep the Context Map tied to a reviewable accepted architecture decision."""
+    def test_proposed_adr_owns_the_context_map_decision_until_integration(self) -> None:
+        """Keep an unintegrated architecture decision Proposed until evidence is complete."""
         text = CONTEXT_MAP_ADR.read_text(encoding="utf-8")
-        self.assertIn("Status: Accepted", text)
+        self.assertIn("Status: Proposed", text)
+        self.assertNotIn("Status: Accepted", text)
         self.assertIn("ContextualWisdomLab/context-graph-contracts", text)
         self.assertIn("minimal cross-repository Shared Kernel", text)
         self.assertIn("enterprise-architecture-core", text)
