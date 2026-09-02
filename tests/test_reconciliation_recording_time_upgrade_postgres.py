@@ -16,7 +16,7 @@ from tests.test_reconciliation_run_api import ReconciliationRunApiTests
 
 
 class ReconciliationRecordingTimeUpgradePostgresTests(unittest.TestCase):
-    """Prove migration 0024 does not relabel unverifiable legacy system time."""
+    """Prove migration 0024 preserves legacy time without promoting its authority."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -107,8 +107,8 @@ class ReconciliationRecordingTimeUpgradePostgresTests(unittest.TestCase):
             )
             admin.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(role_name)))
 
-    def test_non_bypass_upgrade_rejects_preexisting_unverifiable_control_rows(self) -> None:
-        """Legacy exception/evidence rows remain untrusted instead of gaining new provenance."""
+    def test_non_bypass_upgrade_preserves_legacy_rows_without_promoting_time(self) -> None:
+        """Legacy rows survive upgrade as explicitly untrusted recording-time evidence."""
         role_name, database_name, _password, migration_url, admin_url = (
             self._create_isolated_database()
         )
@@ -197,38 +197,154 @@ class ReconciliationRecordingTimeUpgradePostgresTests(unittest.TestCase):
                 self.assertEqual(str(exception_recorded_at.year), "2100")
                 self.assertEqual(str(evidence_recorded_at.year), "1900")
 
-            with self.assertRaisesRegex(
-                psycopg.Error,
-                "reconciliation_recording_time_legacy_preflight",
-            ):
-                with psycopg.connect(
-                    migration_url,
-                    autocommit=True,
-                    cursor_factory=psycopg.ClientCursor,
-                ) as migration_connection:
-                    migration_connection.execute(migration_0024)
+            with psycopg.connect(
+                migration_url,
+                autocommit=True,
+                cursor_factory=psycopg.ClientCursor,
+            ) as migration_connection:
+                migration_connection.execute(migration_0024)
+                role_row = migration_connection.execute(
+                    "SELECT rolbypassrls FROM pg_catalog.pg_roles WHERE rolname = current_user"
+                ).fetchone()
 
             with psycopg.connect(admin_url, autocommit=True) as admin_database:
-                policies = admin_database.execute(
+                legacy_row = admin_database.execute(
                     """
-                    SELECT policyname
-                    FROM pg_catalog.pg_policies
-                    WHERE policyname IN (
-                        'reconciliation_exception_recording_time_upgrade_visibility',
-                        'reconciliation_evidence_recording_time_upgrade_visibility'
+                    SELECT exception.recorded_at,
+                           exception.recording_time_authority_code,
+                           evidence.recorded_at,
+                           evidence.recording_time_authority_code
+                    FROM accounting_core.reconciliation_exception AS exception
+                    JOIN accounting_core.reconciliation_evidence AS evidence
+                      ON evidence.tenant_account_id = exception.tenant_account_id
+                     AND evidence.reconciliation_run_id = exception.reconciliation_run_id
+                     AND evidence.reconciliation_exception_id = exception.reconciliation_exception_id
+                    WHERE exception.reconciliation_exception_id = %s
+                    """,
+                    (exception_id,),
+                ).fetchone()
+                self.assertEqual(legacy_row[0].year, 2100)
+                self.assertEqual(legacy_row[1], "legacy_unverified")
+                self.assertEqual(legacy_row[2].year, 1900)
+                self.assertEqual(legacy_row[3], "legacy_unverified")
+
+                new_exception_id, new_recorded_at, new_authority = admin_database.execute(
+                    """
+                    INSERT INTO accounting_core.reconciliation_exception (
+                        tenant_account_id,
+                        reconciliation_run_id,
+                        exception_code,
+                        owner_reference,
+                        next_action,
+                        effective_at,
+                        recorded_at,
+                        recording_time_authority_code,
+                        resolution_status_code
                     )
-                    ORDER BY policyname
+                    VALUES (
+                        %s, %s, 'database_recording_time_probe',
+                        'urn:cwl:principal:controller_owner_two',
+                        'Retain database recording-time evidence.',
+                        '2026-09-02T00:20:00Z',
+                        '2200-01-01T00:00:00Z',
+                        'legacy_unverified',
+                        'open'
+                    )
+                    RETURNING reconciliation_exception_id,
+                              recorded_at,
+                              recording_time_authority_code
+                    """,
+                    (tenant_id, opened["reconciliation_run_id"]),
+                ).fetchone()
+                new_evidence_recorded_at, new_evidence_authority = admin_database.execute(
+                    """
+                    INSERT INTO accounting_core.reconciliation_evidence (
+                        tenant_account_id,
+                        reconciliation_run_id,
+                        reconciliation_exception_id,
+                        evidence_type_code,
+                        evidence_reference,
+                        evidence_payload_hash,
+                        effective_at,
+                        recorded_at,
+                        recording_time_authority_code
+                    )
+                    VALUES (
+                        %s, %s, %s, 'exception_resolution_review',
+                        %s, %s, '2026-09-02T00:25:00Z',
+                        '1800-01-01T00:00:00Z',
+                        'legacy_unverified'
+                    )
+                    RETURNING recorded_at, recording_time_authority_code
+                    """,
+                    (
+                        tenant_id,
+                        opened["reconciliation_run_id"],
+                        new_exception_id,
+                        f"urn:cwl:evidence:reconciliation_exception:{new_exception_id}:database",
+                        "sha256:" + "8" * 64,
+                    ),
+                ).fetchone()
+
+                self.assertNotEqual(new_recorded_at.year, 2200)
+                self.assertEqual(new_authority, "database_clock")
+                self.assertNotEqual(new_evidence_recorded_at.year, 1800)
+                self.assertEqual(new_evidence_authority, "database_clock")
+
+                with self.assertRaisesRegex(
+                    psycopg.Error,
+                    "reconciliation_control_recording_time_immutable",
+                ):
+                    admin_database.execute(
+                        """
+                        UPDATE accounting_core.reconciliation_exception
+                        SET recording_time_authority_code = 'legacy_unverified'
+                        WHERE reconciliation_exception_id = %s
+                        """,
+                        (new_exception_id,),
+                    )
+
+                triggers = admin_database.execute(
+                    """
+                    SELECT tgname
+                    FROM pg_catalog.pg_trigger
+                    WHERE tgname IN (
+                        'reconciliation_exception_recording_time_guard',
+                        'reconciliation_evidence_recording_time_guard',
+                        'accounting_reconciliation_exception_recording_time_immutable_guard',
+                        'accounting_reconciliation_evidence_recording_time_immutable_guard',
+                        'accounting_reconciliation_exception_resolution_recording_time_authority_guard'
+                    )
+                      AND NOT tgisinternal
+                    ORDER BY tgname
                     """
                 ).fetchall()
-            self.assertEqual(policies, [])
+
+            self.assertEqual(role_row, (False,))
+            self.assertEqual(
+                triggers,
+                [
+                    (
+                        "accounting_reconciliation_evidence_recording_time_immutable_guard",
+                    ),
+                    (
+                        "accounting_reconciliation_exception_recording_time_immutable_guard",
+                    ),
+                    (
+                        "accounting_reconciliation_exception_resolution_recording_time_authority_guard",
+                    ),
+                    ("reconciliation_evidence_recording_time_guard",),
+                    ("reconciliation_exception_recording_time_guard",),
+                ],
+            )
         finally:
             if fixture is not None:
                 fixture.doCleanups()
                 fixture.tearDown()
             self._drop_isolated_database(database_name, role_name)
 
-    def test_empty_non_bypass_upgrade_installs_guards_and_removes_visibility(self) -> None:
-        """A clean pre-0024 database installs durable guards without retaining broad policies."""
+    def test_empty_non_bypass_upgrade_installs_database_owned_time_guards(self) -> None:
+        """A clean pre-0024 database installs the same durable authority boundary."""
         role_name, database_name, _password, migration_url, admin_url = (
             self._create_isolated_database()
         )
@@ -250,15 +366,14 @@ class ReconciliationRecordingTimeUpgradePostgresTests(unittest.TestCase):
                 ).fetchone()
 
             with psycopg.connect(admin_url, autocommit=True) as admin_database:
-                policies = admin_database.execute(
+                columns = admin_database.execute(
                     """
-                    SELECT policyname
-                    FROM pg_catalog.pg_policies
-                    WHERE policyname IN (
-                        'reconciliation_exception_recording_time_upgrade_visibility',
-                        'reconciliation_evidence_recording_time_upgrade_visibility'
-                    )
-                    ORDER BY policyname
+                    SELECT table_name, column_name, column_default
+                    FROM information_schema.columns
+                    WHERE table_schema = 'accounting_core'
+                      AND table_name IN ('reconciliation_exception', 'reconciliation_evidence')
+                      AND column_name = 'recording_time_authority_code'
+                    ORDER BY table_name
                     """
                 ).fetchall()
                 triggers = admin_database.execute(
@@ -267,7 +382,10 @@ class ReconciliationRecordingTimeUpgradePostgresTests(unittest.TestCase):
                     FROM pg_catalog.pg_trigger
                     WHERE tgname IN (
                         'reconciliation_exception_recording_time_guard',
-                        'reconciliation_evidence_recording_time_guard'
+                        'reconciliation_evidence_recording_time_guard',
+                        'accounting_reconciliation_exception_recording_time_immutable_guard',
+                        'accounting_reconciliation_evidence_recording_time_immutable_guard',
+                        'accounting_reconciliation_exception_resolution_recording_time_authority_guard'
                     )
                       AND NOT tgisinternal
                     ORDER BY tgname
@@ -275,10 +393,25 @@ class ReconciliationRecordingTimeUpgradePostgresTests(unittest.TestCase):
                 ).fetchall()
 
             self.assertEqual(role_row, (False,))
-            self.assertEqual(policies, [])
+            self.assertEqual(
+                columns,
+                [
+                    ("reconciliation_evidence", "recording_time_authority_code", None),
+                    ("reconciliation_exception", "recording_time_authority_code", None),
+                ],
+            )
             self.assertEqual(
                 triggers,
                 [
+                    (
+                        "accounting_reconciliation_evidence_recording_time_immutable_guard",
+                    ),
+                    (
+                        "accounting_reconciliation_exception_recording_time_immutable_guard",
+                    ),
+                    (
+                        "accounting_reconciliation_exception_resolution_recording_time_authority_guard",
+                    ),
                     ("reconciliation_evidence_recording_time_guard",),
                     ("reconciliation_exception_recording_time_guard",),
                 ],
