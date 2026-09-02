@@ -5,6 +5,64 @@ BEGIN;
 -- commit as well: publishing may update delivery metadata, but deleting or
 -- re-keying the tenant/type/reference/hash identity must not detach a committed
 -- reconciliation command from its durable evidence.
+--
+-- Fail the forward migration if a database was damaged after 0021 but before
+-- this retention guard was installed. A new trigger cannot repair an already
+-- missing/re-keyed event, so accepting that state would silently bless broken
+-- authority provenance.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM accounting_core.reconciliation_exception_resolution_command AS resolution
+        WHERE (
+            SELECT count(*)
+            FROM accounting_integration.outbox_event AS event
+            WHERE event.tenant_account_id = resolution.tenant_account_id
+              AND event.event_type_code = CASE resolution.target_resolution_status_code
+                  WHEN 'resolved' THEN 'reconciliation_exception_resolved'
+                  WHEN 'superseded' THEN 'reconciliation_exception_superseded'
+                  ELSE NULL
+              END
+              AND event.aggregate_reference =
+                  'urn:cwl:accounting:reconciliation_exception:'
+                  || resolution.reconciliation_exception_id::text
+              AND event.payload_reference =
+                  'urn:cwl:accounting:reconciliation_exception_resolution:'
+                  || resolution.reconciliation_exception_resolution_command_id::text
+              AND event.payload_hash =
+                  resolution.reconciliation_exception_resolution_command_hash
+        ) <> 1
+    ) THEN
+        RAISE EXCEPTION
+            'existing reconciliation exception authority does not have exactly one matching outbox event; restore or reconstruct verified provenance before migration 0022 (reconciliation_authority_outbox_retention_preflight)'
+            USING ERRCODE = '23514';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM accounting_core.reconciliation_run_transition_command AS transition
+        WHERE (
+            SELECT count(*)
+            FROM accounting_integration.outbox_event AS event
+            WHERE event.tenant_account_id = transition.tenant_account_id
+              AND event.event_type_code = 'reconciliation_run_reconciled'
+              AND event.aggregate_reference =
+                  'urn:cwl:accounting:reconciliation_run:'
+                  || transition.reconciliation_run_id::text
+              AND event.payload_reference =
+                  'urn:cwl:accounting:reconciliation_run_transition:'
+                  || transition.reconciliation_run_transition_command_id::text
+              AND event.payload_hash = transition.reconciliation_transition_command_hash
+        ) <> 1
+    ) THEN
+        RAISE EXCEPTION
+            'existing reconciliation lifecycle authority does not have exactly one matching outbox event; restore or reconstruct verified provenance before migration 0022 (reconciliation_authority_outbox_retention_preflight)'
+            USING ERRCODE = '23514';
+    END IF;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION accounting_core.enforce_reconciliation_authority_outbox_retention()
 RETURNS trigger
 LANGUAGE plpgsql
