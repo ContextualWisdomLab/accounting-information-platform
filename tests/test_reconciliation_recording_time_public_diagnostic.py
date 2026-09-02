@@ -38,6 +38,25 @@ class ReconciliationRecordingTimePublicDiagnosticTests(unittest.TestCase):
 
         self.assertIs(raised.exception.__cause__, database_error)
 
+    def test_unrelated_check_violation_is_not_relabelled_as_recording_time_failure(self) -> None:
+        """Only the named database provenance invariant receives domain translation."""
+        database_error = psycopg.errors.CheckViolation(
+            "some other accounting constraint (unrelated_constraint)"
+        )
+        with mock.patch.object(
+            resolution,
+            "_resolve_reconciliation_exception_once",
+            side_effect=database_error,
+        ):
+            with self.assertRaises(psycopg.errors.CheckViolation) as raised:
+                resolution.resolve_reconciliation_exception(
+                    _command(),
+                    "postgresql://example",
+                    _TENANT,
+                )
+
+        self.assertIs(raised.exception, database_error)
+
 
 if __name__ == "__main__":
     unittest.main()
