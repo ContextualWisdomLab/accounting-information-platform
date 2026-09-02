@@ -96,6 +96,14 @@ class DddArchitectureFitnessTests(unittest.TestCase):
         self.assertIn("does not authorize another service to write accounting tables", text)
         self.assertIn("0059-accounting-bounded-context-map.md", text)
 
+    def test_context_map_does_not_outrun_the_proposed_adr(self) -> None:
+        """Keep the context-map claim Proposed until ADR 0059 is integrated with evidence."""
+        context_map = CONTEXT_MAP.read_text(encoding="utf-8")
+        adr = CONTEXT_MAP_ADR.read_text(encoding="utf-8")
+        self.assertIn("Status: Proposed", adr)
+        self.assertIn("Status: proposed architecture", context_map)
+        self.assertNotIn("Status: accepted architecture", context_map)
+
     def test_proposed_adr_owns_the_context_map_decision_until_integration(self) -> None:
         """Keep an unintegrated architecture decision Proposed until evidence is complete."""
         text = CONTEXT_MAP_ADR.read_text(encoding="utf-8")
