@@ -9,13 +9,43 @@ BEGIN;
 --
 -- Migrations before 0024 allowed callers to supply recorded_at explicitly. The
 -- database cannot later prove whether a pre-0024 value came from the column
--- default or from a caller. Preserve those rows and timestamps exactly, but tag
--- them as legacy_unverified instead of silently relabelling them as trusted or
--- forcing an impossible delete/rewrite of immutable audit evidence. PostgreSQL
--- owns both recorded_at and the authority marker for every row inserted after
--- this migration. Legacy rows remain queryable audit evidence but cannot back a
--- new maker-checker resolution command that depends on trusted system time.
+-- default or from a caller. Preserve unresolved source rows and timestamps
+-- exactly as legacy_unverified, but do not grandfather a resolution command that
+-- already made those rows authority-bearing. Such a command may already have
+-- terminalized its exception and can feed a later lifecycle transition, so the
+-- upgrade must fail before durable schema change until that authority is handled
+-- by an explicitly reviewed audited remediation. Never manufacture database-
+-- clock provenance for a pre-0024 resolution command.
+--
+-- The resolution-command table is FORCE RLS. Give only the current migration
+-- role transaction-scoped all-tenant SELECT visibility for this preflight and
+-- remove it before installing durable authority changes. A failed migration
+-- rolls the temporary policy back with the transaction.
+CREATE POLICY reconciliation_resolution_recording_time_upgrade_visibility
+    ON accounting_core.reconciliation_exception_resolution_command
+    FOR SELECT
+    TO current_user
+    USING (true);
 
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM accounting_core.reconciliation_exception_resolution_command
+    ) THEN
+        RAISE EXCEPTION
+            'pre-0024 reconciliation resolution commands have unverifiable source recording-time authority; perform audited remediation before migration 0024 (reconciliation_resolution_legacy_recording_time_preflight)'
+            USING ERRCODE = '23514';
+    END IF;
+END;
+$$;
+
+DROP POLICY reconciliation_resolution_recording_time_upgrade_visibility
+    ON accounting_core.reconciliation_exception_resolution_command;
+
+-- Unresolved pre-0024 source rows remain audit evidence. Mark their chronology
+-- as unverified rather than rewriting it; only post-migration rows can acquire
+-- database_clock authority through the INSERT guards below.
 ALTER TABLE accounting_core.reconciliation_exception
     ADD COLUMN recording_time_authority_code text NOT NULL DEFAULT 'legacy_unverified'
         CHECK (recording_time_authority_code IN ('legacy_unverified', 'database_clock'));
