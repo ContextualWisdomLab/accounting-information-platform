@@ -11,7 +11,7 @@ This note records the application-authorization work needed before a buyer-facin
 3. Registered `complete_reconciliation` in `_OPERATION_PERMISSIONS` and `_HIGH_IMPACT_OPERATIONS`.
 4. Strengthened the contract to require a new durable authorization policy identifier because the operation/permission vocabulary changed.
 5. Bumped `AUTHORIZATION_POLICY_VERSION` to `accounting-authorization-v2` so immutable authorization-decision evidence does not claim the predecessor policy version for an expanded policy set.
-6. Corrected ADR 0055's stale malformed-period-close prose: current source conservatively classifies malformed/non-object `/period-closes` bodies as `hard_close_period`, records authorization evidence, then returns either 403 before domain work or the caller-useful 400 validation response for a genuinely hard-close-authorized principal. Invalid structure cannot bypass authorization.
+6. Corrected ADR 0064's stale malformed-period-close prose: current source conservatively classifies malformed/non-object `/period-closes` bodies as `hard_close_period`, records authorization evidence, then returns either 403 before domain work or the caller-useful 400 validation response for a genuinely hard-close-authorized principal. Invalid structure cannot bypass authorization.
 
 ## Authority boundary
 
