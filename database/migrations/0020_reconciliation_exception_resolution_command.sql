@@ -46,9 +46,7 @@ ALTER TABLE accounting_core.reconciliation_command_identity
             'run_reconciliation',
             'exception_resolution'
         )
-    ) NOT VALID;
-ALTER TABLE accounting_core.reconciliation_command_identity
-    VALIDATE CONSTRAINT reconciliation_command_identity_command_family_code_check;
+    );
 
 CREATE TABLE accounting_core.reconciliation_exception_resolution_command (
     reconciliation_exception_resolution_command_id uuid PRIMARY KEY DEFAULT uuidv7(),
