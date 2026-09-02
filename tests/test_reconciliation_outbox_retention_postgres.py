@@ -23,7 +23,7 @@ from tests.test_reconciliation_lifecycle_postgres import (
 
 
 class ReconciliationOutboxRetentionPostgresTests(unittest.TestCase):
-    """Prove committed reconciliation authority cannot lose its bound outbox evidence."""
+    """Prove committed reconciliation authority keeps exactly one bound outbox event."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -104,6 +104,64 @@ class ReconciliationOutboxRetentionPostgresTests(unittest.TestCase):
             ).fetchone()[0]
         return tenant_id, outbox_event_id
 
+    @staticmethod
+    def _outbox_identity(
+        connection: psycopg.Connection[object],
+        tenant_id: object,
+        outbox_event_id: object,
+    ) -> tuple[str, str, str, str]:
+        """Return the four linkage fields that bind one tenant-scoped outbox event."""
+        row = connection.execute(
+            """
+            SELECT event_type_code,
+                   aggregate_reference,
+                   payload_reference,
+                   payload_hash
+            FROM accounting_integration.outbox_event
+            WHERE tenant_account_id = %s
+              AND outbox_event_id = %s
+            """,
+            (tenant_id, outbox_event_id),
+        ).fetchone()
+        assert row is not None
+        return row
+
+    def _assert_duplicate_insert_rejected(
+        self,
+        tenant_id: object,
+        outbox_event_id: object,
+    ) -> None:
+        """Require a second exact authority event to fail at COMMIT."""
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            event_type, aggregate_reference, payload_reference, payload_hash = (
+                self._outbox_identity(connection, tenant_id, outbox_event_id)
+            )
+            with self.assertRaisesRegex(
+                psycopg.Error,
+                "reconciliation_authority_outbox_retention",
+            ):
+                connection.execute(
+                    """
+                    INSERT INTO accounting_integration.outbox_event (
+                        tenant_account_id,
+                        event_type_code,
+                        aggregate_reference,
+                        payload_reference,
+                        payload_hash
+                    )
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (
+                        tenant_id,
+                        event_type,
+                        aggregate_reference,
+                        payload_reference,
+                        payload_hash,
+                    ),
+                )
+                connection.commit()
+            connection.rollback()
+
     def test_committed_resolution_outbox_evidence_cannot_be_deleted(self) -> None:
         """Deleting the event after a valid commit must fail at the database boundary."""
         tenant_id, outbox_event_id = self._commit_resolution()
@@ -143,6 +201,64 @@ class ReconciliationOutboxRetentionPostgresTests(unittest.TestCase):
                 connection.commit()
             connection.rollback()
 
+    def test_committed_resolution_outbox_duplicate_cannot_be_inserted(self) -> None:
+        """A second exact event must not make one resolution command ambiguous."""
+        tenant_id, outbox_event_id = self._commit_resolution()
+        self._assert_duplicate_insert_rejected(tenant_id, outbox_event_id)
+
+    def test_unrelated_outbox_cannot_be_rekeyed_into_resolution_authority(self) -> None:
+        """An unrelated event cannot be updated into a duplicate resolution identity."""
+        tenant_id, outbox_event_id = self._commit_resolution()
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            event_type, aggregate_reference, payload_reference, payload_hash = (
+                self._outbox_identity(connection, tenant_id, outbox_event_id)
+            )
+            unrelated_event_id = connection.execute(
+                """
+                INSERT INTO accounting_integration.outbox_event (
+                    tenant_account_id,
+                    event_type_code,
+                    aggregate_reference,
+                    payload_reference,
+                    payload_hash
+                )
+                VALUES (
+                    %s,
+                    'reconciliation_retention_probe',
+                    'urn:cwl:accounting:retention_probe:aggregate',
+                    'urn:cwl:accounting:retention_probe:payload',
+                    %s
+                )
+                RETURNING outbox_event_id
+                """,
+                (tenant_id, "sha256:" + "0" * 64),
+            ).fetchone()[0]
+            with self.assertRaisesRegex(
+                psycopg.Error,
+                "reconciliation_authority_outbox_retention",
+            ):
+                connection.execute(
+                    """
+                    UPDATE accounting_integration.outbox_event
+                    SET event_type_code = %s,
+                        aggregate_reference = %s,
+                        payload_reference = %s,
+                        payload_hash = %s
+                    WHERE tenant_account_id = %s
+                      AND outbox_event_id = %s
+                    """,
+                    (
+                        event_type,
+                        aggregate_reference,
+                        payload_reference,
+                        payload_hash,
+                        tenant_id,
+                        unrelated_event_id,
+                    ),
+                )
+                connection.commit()
+            connection.rollback()
+
     def test_committed_lifecycle_outbox_evidence_cannot_be_deleted(self) -> None:
         """Lifecycle authority retains the matching event after its successful commit."""
         tenant_id, outbox_event_id = self._commit_lifecycle_transition()
@@ -161,6 +277,36 @@ class ReconciliationOutboxRetentionPostgresTests(unittest.TestCase):
                 )
                 connection.commit()
             connection.rollback()
+
+    def test_committed_lifecycle_outbox_duplicate_cannot_be_inserted(self) -> None:
+        """A second exact event must not make one lifecycle command ambiguous."""
+        tenant_id, outbox_event_id = self._commit_lifecycle_transition()
+        self._assert_duplicate_insert_rejected(tenant_id, outbox_event_id)
+
+    def test_published_at_update_preserves_resolution_authority(self) -> None:
+        """Publication metadata may advance without changing authority linkage."""
+        tenant_id, outbox_event_id = self._commit_resolution()
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            connection.execute(
+                """
+                UPDATE accounting_integration.outbox_event
+                SET published_at = clock_timestamp()
+                WHERE tenant_account_id = %s
+                  AND outbox_event_id = %s
+                """,
+                (tenant_id, outbox_event_id),
+            )
+            connection.commit()
+            published_at = connection.execute(
+                """
+                SELECT published_at
+                FROM accounting_integration.outbox_event
+                WHERE tenant_account_id = %s
+                  AND outbox_event_id = %s
+                """,
+                (tenant_id, outbox_event_id),
+            ).fetchone()[0]
+        self.assertIsNotNone(published_at)
 
 
 if __name__ == "__main__":
