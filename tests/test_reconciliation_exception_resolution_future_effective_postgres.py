@@ -16,6 +16,8 @@ from tests import test_postgres_posting as posting
 from tests.test_reconciliation_run_api import ReconciliationRunApiTests
 
 _EVIDENCE_HASH = "sha256:" + "f" * 64
+_SOURCE_HASH = "sha256:" + "e" * 64
+_COMMAND_HASH_SENTINEL = "sha256:" + "0" * 64
 
 
 class ReconciliationExceptionResolutionFutureEffectivePostgresTests(unittest.TestCase):
@@ -98,18 +100,8 @@ class ReconciliationExceptionResolutionFutureEffectivePostgresTests(unittest.Tes
             "effective_at": "2099-01-01T00:00:00Z",
         }
 
-    def test_future_effective_resolution_cannot_become_terminal_early(self) -> None:
-        """A future valid-time decision leaves command, status, and outbox unchanged."""
-        with self.assertRaisesRegex(
-            (AccountingValidationError, psycopg.Error),
-            "future|recording time|effective time",
-        ):
-            resolve_reconciliation_exception(
-                self._future_command(),
-                posting.DATABASE_URL,
-                self.fixture.case.policy.tenant_reference,
-            )
-
+    def _assert_no_resolution_side_effects(self) -> None:
+        """Require the exception to remain open with no command or outbox evidence."""
         with psycopg.connect(posting.DATABASE_URL) as connection:
             tenant_id = self._tenant_id(connection)
             status = connection.execute(
@@ -146,6 +138,70 @@ class ReconciliationExceptionResolutionFutureEffectivePostgresTests(unittest.Tes
         self.assertEqual(status, "open")
         self.assertEqual(command_count, 0)
         self.assertEqual(outbox_count, 0)
+
+    def test_future_effective_resolution_cannot_become_terminal_early(self) -> None:
+        """A future valid-time decision leaves command, status, and outbox unchanged."""
+        with self.assertRaisesRegex(
+            (AccountingValidationError, psycopg.Error),
+            "future|recording time|effective time",
+        ):
+            resolve_reconciliation_exception(
+                self._future_command(),
+                posting.DATABASE_URL,
+                self.fixture.case.policy.tenant_reference,
+            )
+        self._assert_no_resolution_side_effects()
+
+    def test_recording_time_cannot_be_forged_to_authorize_future_decision(self) -> None:
+        """The database replaces caller-shaped system time before temporal admission."""
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            tenant_id = self._tenant_id(connection)
+            connection.execute(
+                "SELECT set_config('app.tenant_record_id', %s, false)",
+                (str(tenant_id),),
+            )
+            with self.assertRaisesRegex(
+                psycopg.Error,
+                "reconciliation_exception_resolution_future_time",
+            ):
+                connection.execute(
+                    """
+                    INSERT INTO accounting_core.reconciliation_exception_resolution_command (
+                        tenant_account_id,
+                        reconciliation_run_id,
+                        reconciliation_exception_id,
+                        reconciliation_resolution_idempotency_key,
+                        target_resolution_status_code,
+                        resolution_evidence_reference,
+                        resolution_evidence_hash,
+                        source_payload_hash,
+                        reconciliation_exception_resolution_command_hash,
+                        actor_reference,
+                        purpose_code,
+                        effective_at,
+                        recorded_at
+                    )
+                    VALUES (
+                        %s, %s, %s, %s, 'resolved', %s, %s, %s, %s,
+                        'urn:cwl:principal:independent_reviewer',
+                        'bank_reconciliation_exception_review',
+                        '2099-01-01T00:00:00Z',
+                        '2100-01-01T00:00:00Z'
+                    )
+                    """,
+                    (
+                        tenant_id,
+                        self.opened["reconciliation_run_id"],
+                        self.exception_id,
+                        f"raw-future-resolve-{self.exception_id}",
+                        f"urn:cwl:evidence:reconciliation_exception:{self.exception_id}:raw-future",
+                        _EVIDENCE_HASH,
+                        _SOURCE_HASH,
+                        _COMMAND_HASH_SENTINEL,
+                    ),
+                )
+            connection.rollback()
+        self._assert_no_resolution_side_effects()
 
 
 if __name__ == "__main__":
