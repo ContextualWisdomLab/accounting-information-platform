@@ -1,6 +1,6 @@
 # ADR 0059: Accounting bounded-context map and architectural fitness
 
-- Status: Accepted
+- Status: Proposed
 - Date: 2026-09-01
 - Scope: accounting-information-platform modular monolith and Context Fabric contract boundary
 
