@@ -91,11 +91,17 @@ class ProductGapBaselineContractTests(unittest.TestCase):
         )
 
     def test_baseline_retains_post_commit_reconciliation_outbox_authority(self) -> None:
-        """Product truth must retain one reconciliation authority event after command commit."""
+        """Product truth must retain one immutable reconciliation authority event after commit."""
         text = BASELINE.read_text(encoding="utf-8")
         self.assertIn("exactly one matching outbox event", text)
         self.assertIn("post-commit", text)
+        self.assertIn("outbox_event_id", text)
+        self.assertIn("created_at", text)
         self.assertIn("published_at", text)
+        self.assertIn(
+            "retained event identifier and creation timestamp are immutable",
+            text,
+        )
 
     def test_changelog_does_not_claim_an_unpublished_tagged_release(self) -> None:
         """Changelog history must not claim a tag or release absent from GitHub."""
