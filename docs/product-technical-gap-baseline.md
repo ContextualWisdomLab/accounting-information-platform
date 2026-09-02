@@ -23,8 +23,8 @@ The repository is backend-first. No controller frontend is currently a release c
 | Immutable ISO 20022 bank evidence | Integrated foundation | `camt.053.001.14` revision pin, parser fail-closed behavior, immutable artifact/source hash, normalized entries/balances, bank-account assignment scope |
 | Deterministic bank reconciliation | Integrated foundation plus current hardening stack | Stable-reference precedence, exact amount/currency/direction, explicit abstention, split/aggregate conservation, immutable review evidence, exact book-to-bank bridge |
 | Database-owned close projection | Current dependency-root integration candidate | Run/approval/exception/statement/book/allocation populations loaded from one `REPEATABLE READ` snapshot; caller population or money substitution rejected; assigned cash journals proven book-scoped |
-| Evidence-backed reconciliation completion | Current stacked candidate, not protected-branch authority | Named idempotent command; database-derived populations/bridge/approvals; immutable transition command and outbox evidence; only `evaluating`/`review_required` → `reconciled`; deployment capability-role hardening remains open |
-| Immutable reconciliation exception resolution | Current stacked candidate, not protected-branch authority | Named maker-checker command; complete incoming-command payload identity kept separately from reviewed evidence; exception maker evidence frozen; terminal status and outbox atomic; exact replay/conflict semantics; legacy terminal history fails migration closed even for a non-`BYPASSRLS` migration owner |
+| Evidence-backed reconciliation completion | Current stacked candidate, not protected-branch authority | Named idempotent command; database-derived populations/bridge/approvals; immutable transition command and outbox evidence; post-commit exactly one matching outbox event remains bound while `published_at` may advance; only `evaluating`/`review_required` → `reconciled`; deployment capability-role hardening remains open |
+| Immutable reconciliation exception resolution | Current stacked candidate, not protected-branch authority | Named maker-checker command; complete incoming-command payload identity kept separately from reviewed evidence; exception maker evidence frozen; terminal status and outbox atomic; post-commit exactly one matching outbox event remains bound despite duplicate/re-key attempts while `published_at` may advance; exact replay/conflict semantics; legacy terminal history fails migration closed even for a non-`BYPASSRLS` migration owner |
 | Purpose-bound application authorization | Open | Versioned operation→permission contract, trusted identity adapter, durable allow/deny evidence, no tenant-auth-only high-impact authority |
 | Production controller reconciliation/close UX | Open | Figma source of truth, design tokens, Storybook scene/edge inventory, accessibility/i18n, exact-value tables/exports, screenshot verification, API actions bound to authorization |
 | Release/operations diligence | Open | Protected integration/release branches, exact-head checks/reviews, migration rehearsal, rollback/recovery evidence, observability, reproducible package/SBOM/provenance, immutable release evidence |
@@ -58,7 +58,8 @@ New technical requirements added by the reconciliation/close vertical:
 - database-owned tenant binding and forced RLS remain stronger than caller headers/GUCs;
 - no open-PR bytes from another repository become a production runtime dependency; only immutable released/versioned contracts cross repositories;
 - no direct cross-service SQL or foreign application implementation imports;
-- every external mutation must atomically record its authoritative result/evidence and transactional outbox fact where publication is part of the contract.
+- every external mutation must atomically record its authoritative result/evidence and transactional outbox fact where publication is part of the contract;
+- reconciliation completion and exception-resolution authority must retain exactly one matching outbox event post-commit: deleting or re-keying the bound identity, inserting a duplicate exact event, or re-keying an unrelated event into the same identity fails closed, while `published_at` remains publication metadata rather than accounting authority.
 
 ## DDD baseline
 
@@ -99,7 +100,7 @@ flowchart LR
 
 - **proposal ≠ journal**: a source event proposes accounting treatment; only AIS produces authoritative posted journal facts.
 - **statement entry ≠ journal line**: bank evidence is independent observed evidence and never posts automatically.
-- **exception terminal status ≠ reviewed resolution authority**: `resolved`/`superseded` is authoritative only when paired atomically with the immutable maker-checker resolution command and retained evidence.
+- **exception terminal status ≠ reviewed resolution authority**: `resolved`/`superseded` is authoritative only when paired atomically with the immutable maker-checker resolution command and retained evidence, and exactly one matching outbox event remains bound after commit.
 - **reconciliation approval ≠ period-close authority**: reconciliation completion proves reviewed evidence; close remains a separate command/authority boundary.
 - **tenant identity ≠ operation authority**: correct tenant binding does not imply permission to post, reverse, approve, close, publish, or submit tax evidence.
 - **capability role ≠ generic lifecycle editor**: a database role exists to implement a named command and may be further constrained by triggers/invariants.
@@ -115,9 +116,9 @@ flowchart LR
 | Bank statement acceptance | one statement ingestion command | duplicate delivery replays exact evidence; revision/scope/hash conflicts fail closed |
 | Reconciliation run | one run/lifecycle command | scope/cutoffs immutable after evaluation; transitions require owner evidence |
 | Reconciliation review | one match/approval decision | allocations conserve source capacity; terminal decisions bind immutable snapshots |
-| Reconciliation exception resolution | one maker-checker resolution command | owner/maker evidence is immutable; reviewer differs from owner; one command binds complete source payload + reviewed evidence; terminal status/outbox commit atomically |
-| Reconciliation completion | one completion command | exact database-derived populations/bridge + current approval/exception state; only lawful transition to `reconciled` |
-| Outbox record | one originating domain transaction | event evidence cannot exist without committed owning fact |
+| Reconciliation exception resolution | one maker-checker resolution command | owner/maker evidence is immutable; reviewer differs from owner; one command binds complete source payload + reviewed evidence; terminal status/outbox commit atomically and exactly one matching outbox event survives post-commit |
+| Reconciliation completion | one completion command | exact database-derived populations/bridge + current approval/exception state; only lawful transition to `reconciled`; exactly one matching outbox event remains bound post-commit |
+| Outbox record | one originating domain transaction | event evidence cannot exist without committed owning fact; reconciliation authority identity cannot later be detached or duplicated while `published_at` may advance independently |
 
 ## Core ERD baseline
 
@@ -186,7 +187,7 @@ Acceptance: reconciliation itself cannot post an adjustment journal.
 
 **Story:** As an auditor, I can trace close evidence to immutable statement artifacts, normalized entries/balances, posted journals, allocations, approvals/exceptions, exception-resolution commands, lifecycle transition command, actor/purpose, source hashes, system/effective times, and outbox evidence.
 
-Acceptance: replay at a historical knowledge cutoff excludes later evidence.
+Acceptance: replay at a historical knowledge cutoff excludes later evidence, and one immutable reconciliation command cannot become ambiguous through later duplicate or re-keyed authority outbox evidence.
 
 ### Operator/platform engineer
 
@@ -266,6 +267,7 @@ Mandatory realistic acceptance includes:
 - real PostgreSQL migration/install/runtime behavior with non-super/non-`BYPASSRLS` identities;
 - legacy terminal reconciliation history must make the exception-resolution migration fail closed even when FORCE RLS would otherwise hide rows from the migration owner;
 - duplicate/replay/idempotency conflict and concurrent writer cases;
+- committed reconciliation completion/resolution authority must retain exactly one matching outbox event post-commit across DELETE, identity re-key, duplicate INSERT, and unrelated-row re-key attempts while a `published_at`-only publication update remains valid;
 - exact monetary conservation and one-minor-unit failure;
 - cross-tenant/book/account/currency reference rejection;
 - source cutoff and bitemporal knowledge tests;
@@ -315,7 +317,7 @@ Both integration and release branches require ordinary branch/ruleset protection
 
 **Gap:** normal run creation opens `evaluating`; protected branch lacks the supported owner-control path to `reconciled`.
 
-**Current candidate:** named idempotent Python/domain command plus migration-owned immutable transition evidence, database-derived bridge/population identities, current approval/exception state, exact replay provenance and atomic outbox. The lifecycle command may transition only `evaluating`/`review_required` to `reconciled`; other lifecycle targets fail closed. A purpose-limited database capability role remains a separate deployment hardening gap rather than a property already supplied by the lifecycle candidate.
+**Current candidate:** named idempotent Python/domain command plus migration-owned immutable transition evidence, database-derived bridge/population identities, current approval/exception state, exact replay provenance and atomic outbox. Its authority outbox identity is required to remain singular after commit; delete/re-key/duplicate authority mutations fail closed while `published_at` publication remains allowed. The lifecycle command may transition only `evaluating`/`review_required` to `reconciled`; other lifecycle targets fail closed. A purpose-limited database capability role remains a separate deployment hardening gap rather than a property already supplied by the lifecycle candidate.
 
 **Action:** keep stacked until the dependency root integrates; then reacquire exact PostgreSQL/coverage/security/review evidence on the integrated parent head. Do not expose a generic status endpoint.
 
@@ -323,9 +325,9 @@ Both integration and release branches require ordinary branch/ruleset protection
 
 **Gap:** evidence-backed completion cannot lawfully accept an exception merely because a mutable status says `resolved` or `superseded`; protected branch lacks the immutable reviewer command that proves terminal exception authority.
 
-**Current candidate:** one tenant/run/exception-scoped command binds the complete incoming JSON source payload separately from retained resolution evidence, freezes maker identity/action/times, requires a distinct reviewer and purpose, commits terminal status plus outbox atomically, replays only exact evidence, and rejects legacy terminal history during migration. Because the legacy exception table is FORCE-RLS, the migration preflight uses transaction-scoped migration-user SELECT visibility and removes it before installing durable authority so a non-`BYPASSRLS` owner cannot falsely pass on hidden history.
+**Current candidate:** one tenant/run/exception-scoped command binds the complete incoming JSON source payload separately from retained resolution evidence, freezes maker identity/action/times, requires a distinct reviewer and purpose, commits terminal status plus outbox atomically, preserves exactly one matching outbox event post-commit, replays only exact evidence, and rejects legacy terminal history during migration. Because the legacy exception table is FORCE-RLS, the migration preflight uses transaction-scoped migration-user SELECT visibility and removes it before installing durable authority so a non-`BYPASSRLS` owner cannot falsely pass on hidden history.
 
-**Action:** keep stacked on the lifecycle candidate and acquire real non-super/non-`BYPASSRLS` PostgreSQL upgrade evidence plus exact coverage/security/review gates. After integration, the completion command must require every terminal exception to have exactly one matching immutable resolution command.
+**Action:** keep stacked on the lifecycle candidate and acquire real non-super/non-`BYPASSRLS` PostgreSQL upgrade evidence plus exact coverage/security/review gates. After integration, the completion command must require every terminal exception to have exactly one matching immutable resolution command and exactly one matching retained authority outbox event.
 
 ### P0 — purpose-bound application authorization before high-impact buyer mutation surface
 
