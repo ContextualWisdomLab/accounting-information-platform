@@ -24,7 +24,7 @@ If the trusted identity adapter is unavailable or raises unexpectedly, the route
 | Independent requests on one server obtain independent principals and permissions | `tests/test_request_scoped_authorization_context.py::test_each_request_resolves_its_own_validated_principal` |
 | Identity-adapter outage cannot fall back to cached/shared authority | `tests/test_request_scoped_authorization_context.py::test_identity_adapter_failure_is_fail_closed_before_audit_allow` |
 | Existing purpose/permission and audit behavior remains intact | `tests/test_authorization.py` plus the real PostgreSQL authorization tests exercised by Accounting Foundation CI |
-| Repository documentation exposes the same boundary | `docs/ARCHITECTURE.md`, `docs/SECURITY.md`, `docs/OPERABILITY.md`, ADR 0055, and `CHANGELOG.md` |
+| Repository documentation exposes the same boundary | `docs/ARCHITECTURE.md`, `docs/SECURITY.md`, `docs/OPERABILITY.md`, ADR 0064, and `CHANGELOG.md` |
 
 Focused exact-source verification during the bounded repair passed 25 authorization tests, repository validation, and Python compilation with `PYTHONPATH=src:.`. The normalized connector commit that adds this doctoring record is intentionally separate so ordinary synchronize-triggered exact-head workflows can validate the final source after the temporary repair workflow self-deleted.
 
