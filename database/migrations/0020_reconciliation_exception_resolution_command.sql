@@ -135,6 +135,11 @@ DECLARE
     tenant_reference text;
     canonical_command jsonb;
 BEGIN
+    -- System time is database-owned. Do not let a caller backdate or future-date
+    -- the recording timestamp to make an otherwise future-effective decision
+    -- appear authoritative before the review actually exists.
+    NEW.recorded_at := clock_timestamp();
+
     PERFORM accounting_core.acquire_reconciliation_run_lifecycle_lock(
         NEW.tenant_account_id,
         NEW.reconciliation_run_id
@@ -195,6 +200,12 @@ BEGIN
     IF NEW.effective_at < exception_effective_at THEN
         RAISE EXCEPTION
             'reconciliation exception resolution effective time cannot precede the exception (reconciliation_exception_resolution_time)'
+            USING ERRCODE = '23514';
+    END IF;
+
+    IF NEW.effective_at > NEW.recorded_at THEN
+        RAISE EXCEPTION
+            'reconciliation exception resolution effective time cannot be in the future relative to database recording time (reconciliation_exception_resolution_future_time)'
             USING ERRCODE = '23514';
     END IF;
 
