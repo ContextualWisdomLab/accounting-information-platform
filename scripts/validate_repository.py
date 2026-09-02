@@ -110,7 +110,7 @@ REQUIRED_FILES = (
     "docs/adr/0050-postgresql-concurrency-hot-partition.md",
     "docs/adr/0051-accounting-book-period-control.md",
     "docs/adr/0052-bank-statement-evidence-registry.md",
-    "docs/adr/0055-purpose-bound-authorization.md",
+    "docs/adr/0064-purpose-bound-authorization.md",
     "docs/doctoring/REFERENCES.md",
     "docs/doctoring/STANDARD_TRACEABILITY.md",
     "docs/superpowers/specs/2026-08-16-accounting-information-platform-design.md",
