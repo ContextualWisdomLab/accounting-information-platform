@@ -58,7 +58,7 @@ The 0020–0024 stack is unreleased and is not present on protected `develop`; t
 
 ## Primary-source basis
 
-PostgreSQL 18 documents that a constant default added with `ALTER TABLE ... ADD COLUMN` can be represented in metadata rather than rewriting each existing row, while a volatile default such as `clock_timestamp()` requires per-row evaluation. That is why the migration uses a constant `legacy_unverified` marker and never backfills old timestamps. PostgreSQL also documents that row-level `BEFORE` triggers may modify `NEW` before insertion, and that multiple triggers of the same kind fire alphabetically by trigger name, which supports the command admission ordering used by migration 0024. citeturn135631search0turn495404search0
+PostgreSQL 18 documents that a constant default added with `ALTER TABLE ... ADD COLUMN` can be represented in metadata rather than rewriting each existing row, while a volatile default such as `clock_timestamp()` requires per-row evaluation. That is why the migration uses a constant `legacy_unverified` marker and never backfills old timestamps. PostgreSQL also documents that row-level `BEFORE` triggers may modify `NEW` before insertion, and that multiple triggers of the same kind fire alphabetically by trigger name, which supports the command admission ordering used by migration 0024.
 
 The accounting interpretation is deliberately limited. IFRS Accounting Standards do not prescribe this database mechanism. The control supports auditable evidence chronology and separation of valid time from AIS recording time; it is not a compliance or certification claim.
 
