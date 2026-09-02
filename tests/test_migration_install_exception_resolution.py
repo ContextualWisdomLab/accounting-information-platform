@@ -13,7 +13,7 @@ from accounting_information_platform import migration_install
 
 
 class _Connection:
-    """Capture one forward migration execution."""
+    """Capture forward migration execution."""
 
     def __init__(self, *, fail: bool = False) -> None:
         self.fail = fail
@@ -40,19 +40,23 @@ class _Psycopg:
 
 
 class ReconciliationExceptionResolutionInstallTests(unittest.TestCase):
-    """Keep migration 0020 fail-closed at the exported install boundary."""
+    """Keep the complete reconciliation authority overlay fail-closed and ordered."""
 
-    def _paths(self, root: Path) -> tuple[Path, Path]:
-        """Create placeholder base and forward migration paths."""
+    def _paths(self, root: Path) -> tuple[Path, Path, Path, Path, Path]:
+        """Create base plus every required reconciliation authority migration path."""
         base = root / "0001_accounting_foundation.sql"
-        forward = root / "0020_reconciliation_exception_resolution_command.sql"
+        parent_authority = root / "0019_reconciliation_run_database_snapshot_authority.sql"
+        resolution = root / "0020_reconciliation_exception_resolution_command.sql"
+        outbox = root / "0021_reconciliation_exception_resolution_outbox_pair.sql"
+        retention = root / "0022_reconciliation_authority_outbox_retention.sql"
         base.write_text("BEGIN; COMMIT;", encoding="utf-8")
-        return base, forward
+        parent_authority.write_text("SELECT 'parent authority';", encoding="utf-8")
+        return base, parent_authority, resolution, outbox, retention
 
-    def test_missing_forward_migration_fails_before_base_install(self) -> None:
-        """The public loader cannot silently stop at migration 0019."""
+    def test_missing_resolution_migration_fails_before_base_install(self) -> None:
+        """The public loader cannot silently stop before exception-resolution authority."""
         with tempfile.TemporaryDirectory() as directory:
-            base, _forward = self._paths(Path(directory))
+            base, _parent, _resolution, _outbox, _retention = self._paths(Path(directory))
             base_loader = Mock()
             with patch.object(migration_install, "_apply_foundation_migration", base_loader):
                 with self.assertRaisesRegex(AccountingValidationError, "0020"):
@@ -61,12 +65,13 @@ class ReconciliationExceptionResolutionInstallTests(unittest.TestCase):
                     )
             base_loader.assert_not_called()
 
-    def test_forward_migration_executes_after_existing_chain(self) -> None:
-        """The exported loader applies the existing chain before migration 0020."""
+    def test_forward_migrations_execute_after_existing_chain_in_order(self) -> None:
+        """The exported loader applies parent authority through retention in canonical order."""
         with tempfile.TemporaryDirectory() as directory:
-            base, forward = self._paths(Path(directory))
-            forward.write_text("SELECT 'resolution authority';", encoding="utf-8")
-            connection = _Connection()
+            base, _parent, resolution, outbox, retention = self._paths(Path(directory))
+            resolution.write_text("SELECT 'resolution authority';", encoding="utf-8")
+            outbox.write_text("SELECT 'outbox authority';", encoding="utf-8")
+            retention.write_text("SELECT 'outbox retention';", encoding="utf-8")
             calls: list[str] = []
 
             def base_loader(database_url: str, migration_path: Path) -> None:
@@ -77,29 +82,47 @@ class ReconciliationExceptionResolutionInstallTests(unittest.TestCase):
             class _OrderedConnection(_Connection):
                 def execute(self, statement: str) -> None:
                     self.executed.append(statement)
-                    calls.append("forward")
+                    calls.append(statement)
 
             ordered_connection = _OrderedConnection()
             with patch.object(
                 migration_install, "_apply_foundation_migration", base_loader
             ), patch.object(
-                migration_install, "_import_psycopg", return_value=_Psycopg(ordered_connection)
+                migration_install,
+                "_import_psycopg",
+                return_value=_Psycopg(ordered_connection),
             ):
                 migration_install.apply_foundation_migration(
                     "postgresql://example", base
                 )
 
-            self.assertEqual(calls, ["base", "forward"])
             self.assertEqual(
-                ordered_connection.executed, ["SELECT 'resolution authority';"]
+                calls,
+                [
+                    "base",
+                    "SELECT 'parent authority';",
+                    "SELECT 'resolution authority';",
+                    "SELECT 'outbox authority';",
+                    "SELECT 'outbox retention';",
+                ],
             )
-            self.assertEqual(connection.executed, [])
+            self.assertEqual(
+                ordered_connection.executed,
+                [
+                    "SELECT 'parent authority';",
+                    "SELECT 'resolution authority';",
+                    "SELECT 'outbox authority';",
+                    "SELECT 'outbox retention';",
+                ],
+            )
 
     def test_forward_database_failure_keeps_original_cause(self) -> None:
         """Operators get one stable error while retaining the PostgreSQL root cause."""
         with tempfile.TemporaryDirectory() as directory:
-            base, forward = self._paths(Path(directory))
-            forward.write_text("SELECT 'resolution authority';", encoding="utf-8")
+            base, _parent, resolution, outbox, retention = self._paths(Path(directory))
+            resolution.write_text("SELECT 'resolution authority';", encoding="utf-8")
+            outbox.write_text("SELECT 'outbox authority';", encoding="utf-8")
+            retention.write_text("SELECT 'outbox retention';", encoding="utf-8")
             with patch.object(
                 migration_install, "_apply_foundation_migration", return_value=None
             ), patch.object(
@@ -109,7 +132,7 @@ class ReconciliationExceptionResolutionInstallTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(
                     AccountingValidationError,
-                    "exception-resolution migration failed",
+                    "Reconciliation authority migration failed",
                 ) as raised:
                     migration_install.apply_foundation_migration(
                         "postgresql://example", base
