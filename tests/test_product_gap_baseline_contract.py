@@ -76,12 +76,13 @@ class ProductGapBaselineContractTests(unittest.TestCase):
         self.assertIn("https://doi.org/10.14778/3785297.3785300", text)
         self.assertNotIn("Fast verification of strong database isolation (Extended Version)", text)
 
-    def test_baseline_requires_reconciliation_completion_permission_before_route(self) -> None:
-        """The durable gap must require the completion permission instead of implying it already exists."""
+    def test_baseline_requires_reconciliation_permissions_before_routes(self) -> None:
+        """The durable gap must require both lifecycle permissions before buyer mutation routes."""
         text = BASELINE.read_text(encoding="utf-8")
         required = (
-            "add an explicit `complete_reconciliation` → "
-            "`accounting.complete_reconciliation` permission before exposing the buyer-facing lifecycle route"
+            "add explicit `complete_reconciliation` → `accounting.complete_reconciliation` "
+            "and exception-resolution operation/permission mapping before exposing "
+            "buyer-facing lifecycle routes"
         )
         self.assertIn(required, text)
         self.assertNotIn(
@@ -105,6 +106,7 @@ class ProductGapBaselineContractTests(unittest.TestCase):
         self.assertRegex(readme, re.compile(r"full\s+cross-run\s+many-to-many\s+allocation"))
         self.assertNotIn("0014_reconciliation_candidate_allocation.sql", readme)
         self.assertNotIn("bank-statement ingestion and reconciliation", readme)
+        self.assertNotIn("deepwiki.com", readme.lower())
 
 
 if __name__ == "__main__":
