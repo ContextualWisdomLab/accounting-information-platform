@@ -54,6 +54,47 @@ CREATE CONSTRAINT TRIGGER reconciliation_exception_resolution_outbox_pair_guard
     FOR EACH ROW
     EXECUTE FUNCTION accounting_core.enforce_reconciliation_exception_resolution_outbox_pair();
 
+-- Reconciliation-run lifecycle authority has the same commit-time requirement:
+-- an immutable transition command and terminal run status are insufficient
+-- without the exact matching accounting outbox evidence. The application writes
+-- all three in one transaction; this deferred database guard makes that
+-- atomicity an invariant for direct SQL writers as well.
+CREATE OR REPLACE FUNCTION accounting_core.enforce_reconciliation_run_transition_outbox_pair()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    matching_outbox_event_count integer;
+BEGIN
+    SELECT count(*)
+    INTO matching_outbox_event_count
+    FROM accounting_integration.outbox_event AS event
+    WHERE event.tenant_account_id = NEW.tenant_account_id
+      AND event.event_type_code = 'reconciliation_run_reconciled'
+      AND event.aggregate_reference =
+          'urn:cwl:accounting:reconciliation_run:'
+          || NEW.reconciliation_run_id::text
+      AND event.payload_reference =
+          'urn:cwl:accounting:reconciliation_run_transition:'
+          || NEW.reconciliation_run_transition_command_id::text
+      AND event.payload_hash = NEW.reconciliation_transition_command_hash;
+
+    IF matching_outbox_event_count <> 1 THEN
+        RAISE EXCEPTION
+            'reconciliation lifecycle command, reconciled status, and matching outbox event must commit atomically (reconciliation_lifecycle_atomic_outbox)'
+            USING ERRCODE = '23514';
+    END IF;
+
+    RETURN NULL;
+END;
+$$;
+
+CREATE CONSTRAINT TRIGGER reconciliation_run_transition_outbox_pair_guard
+    AFTER INSERT ON accounting_core.reconciliation_run_transition_command
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.enforce_reconciliation_run_transition_outbox_pair();
+
 -- PR #43 owns the complete database-derived reconciliation bridge and both
 -- population identities through migration 0019's authority overlay. The child
 -- maker-checker slice must not replace that stronger parent boundary with a
