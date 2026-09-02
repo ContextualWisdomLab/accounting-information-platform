@@ -242,7 +242,7 @@ class ReconciliationLifecycleTests(unittest.TestCase):
         )
         self.bridge_mock.assert_called_once()
         sql = "\n".join(query for query, _parameters in _Ledger.connection.executed)
-        self.assertIn("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ", sql)
+        self.assertIn("SET TRANSACTION ISOLATION LEVEL READ COMMITTED", sql)
         self.assertIn("INSERT INTO accounting_integration.outbox_event", sql)
         self.assertIn("UPDATE accounting_core.reconciliation_run", sql)
 
