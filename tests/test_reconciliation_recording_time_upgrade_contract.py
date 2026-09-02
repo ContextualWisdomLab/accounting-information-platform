@@ -12,44 +12,42 @@ _MIGRATION = (
 
 
 class ReconciliationRecordingTimeUpgradeContractTests(unittest.TestCase):
-    """Keep pre-0024 caller-shaped system time from becoming trusted provenance."""
+    """Keep pre-0024 caller-shaped system time explicit without destroying history."""
 
-    def test_legacy_recording_time_rows_fail_closed_before_new_authority(self) -> None:
-        """Unverifiable pre-trigger rows must block installation before durable guards."""
+    def test_legacy_rows_remain_untrusted_while_new_rows_gain_database_authority(self) -> None:
+        """Upgrade must preserve old rows, tag provenance, and gate new command authority."""
         migration = _MIGRATION.read_text(encoding="utf-8")
-        marker = "reconciliation_recording_time_legacy_preflight"
-        exception_policy = "reconciliation_exception_recording_time_upgrade_visibility"
-        evidence_policy = "reconciliation_evidence_recording_time_upgrade_visibility"
-        durable_function = (
-            "CREATE OR REPLACE FUNCTION "
-            "accounting_core.assign_reconciliation_control_recorded_at"
-        )
 
-        self.assertIn(marker, migration)
+        self.assertGreaterEqual(
+            migration.count("ADD COLUMN recording_time_authority_code"),
+            2,
+        )
+        self.assertGreaterEqual(
+            migration.count("DEFAULT 'legacy_unverified'"),
+            2,
+        )
+        self.assertGreaterEqual(
+            migration.count("ALTER COLUMN recording_time_authority_code DROP DEFAULT"),
+            2,
+        )
         self.assertIn(
-            f"CREATE POLICY {exception_policy}",
+            "NEW.recording_time_authority_code := 'database_clock';",
             migration,
         )
         self.assertIn(
-            f"CREATE POLICY {evidence_policy}",
-            migration,
-        )
-        self.assertIn("FOR SELECT\n    TO current_user\n    USING (true);", migration)
-        self.assertIn("FROM accounting_core.reconciliation_exception", migration)
-        self.assertIn("FROM accounting_core.reconciliation_evidence", migration)
-        self.assertIn(
-            f"DROP POLICY {exception_policy}",
+            "accounting_core.reject_reconciliation_control_recording_time_mutation",
             migration,
         )
         self.assertIn(
-            f"DROP POLICY {evidence_policy}",
+            "accounting_core.require_reconciliation_exception_resolution_recording_time_authority",
             migration,
         )
-        self.assertLess(migration.index(marker), migration.index(durable_function))
-        self.assertLess(
-            migration.index(f"DROP POLICY {evidence_policy}"),
-            migration.index(durable_function),
+        self.assertIn(
+            "reconciliation_resolution_recording_time_authority_required",
+            migration,
         )
+        self.assertNotIn("reconciliation_recording_time_legacy_preflight", migration)
+        self.assertNotIn("recording_time_upgrade_visibility", migration)
 
 
 if __name__ == "__main__":
