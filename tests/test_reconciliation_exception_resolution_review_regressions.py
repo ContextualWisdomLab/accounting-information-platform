@@ -95,6 +95,24 @@ class ReconciliationExceptionResolutionReviewRegressionTests(unittest.TestCase):
         ):
             self.assertIn(field, guard)
 
+    def test_retained_review_evidence_is_database_bound_and_immutable(self) -> None:
+        """A resolution command cannot promote caller-shaped provenance into authority."""
+        migration = _MIGRATION.read_text(encoding="utf-8")
+        source = inspect.getsource(resolution._resolve_reconciliation_exception_once)
+        for marker in (
+            "reconciliation_evidence_id uuid NOT NULL",
+            "REFERENCES accounting_core.reconciliation_evidence",
+            "exception_resolution_review",
+            "reconciliation_exception_resolution_evidence_required",
+            "reconciliation_exception_resolution_evidence_time",
+            "reconciliation_evidence_immutable",
+        ):
+            self.assertIn(marker, migration)
+        self.assertIn("FROM accounting_core.reconciliation_evidence", source)
+        self.assertIn("evidence_payload_hash = %s", source)
+        self.assertIn("effective_at <= %s", source)
+        self.assertIn("recorded_at <= clock_timestamp()", source)
+
     def test_canonical_foundation_loader_installs_exception_resolution_migration(self) -> None:
         """Any shared PostgreSQL fixture using the canonical loader reaches migration 0020."""
         loader_source = inspect.getsource(persistence.apply_foundation_migration)
