@@ -1,4 +1,4 @@
-"""Contracts for installing the exception-resolution outbox authority migration."""
+"""Contracts for installing reconciliation outbox authority migrations."""
 
 from __future__ import annotations
 
@@ -37,21 +37,24 @@ class _Psycopg:
 
 
 class ReconciliationExceptionResolutionOutboxInstallTests(unittest.TestCase):
-    """Keep migration 0021 mandatory and ordered after migration 0020."""
+    """Keep outbox atomicity and post-commit retention mandatory and ordered."""
 
-    def _paths(self, root: Path) -> tuple[Path, Path, Path]:
-        """Create the base and both exception-resolution migration paths."""
+    def _paths(self, root: Path) -> tuple[Path, Path, Path, Path, Path]:
+        """Create base plus parent, resolution, outbox, and retention migration paths."""
         base = root / "0001_accounting_foundation.sql"
+        parent_authority = root / "0019_reconciliation_run_database_snapshot_authority.sql"
         resolution = root / "0020_reconciliation_exception_resolution_command.sql"
         outbox = root / "0021_reconciliation_exception_resolution_outbox_pair.sql"
+        retention = root / "0022_reconciliation_authority_outbox_retention.sql"
         base.write_text("BEGIN; COMMIT;", encoding="utf-8")
+        parent_authority.write_text("SELECT 'parent authority';", encoding="utf-8")
         resolution.write_text("SELECT 'resolution authority';", encoding="utf-8")
-        return base, resolution, outbox
+        return base, parent_authority, resolution, outbox, retention
 
     def test_missing_outbox_migration_fails_before_base_install(self) -> None:
         """The public loader cannot stop before the command/status/outbox invariant."""
         with tempfile.TemporaryDirectory() as directory:
-            base, _resolution, _outbox = self._paths(Path(directory))
+            base, _parent, _resolution, _outbox, _retention = self._paths(Path(directory))
             base_loader = Mock()
             with patch.object(migration_install, "_apply_foundation_migration", base_loader):
                 with self.assertRaisesRegex(AccountingValidationError, "0021"):
@@ -60,11 +63,25 @@ class ReconciliationExceptionResolutionOutboxInstallTests(unittest.TestCase):
                     )
             base_loader.assert_not_called()
 
-    def test_outbox_migration_executes_after_resolution_command_migration(self) -> None:
-        """The exported loader applies 0020 then 0021 on one autocommit connection."""
+    def test_missing_retention_migration_fails_before_base_install(self) -> None:
+        """The loader cannot admit atomicity without preserving the committed evidence pair."""
         with tempfile.TemporaryDirectory() as directory:
-            base, _resolution, outbox = self._paths(Path(directory))
+            base, _parent, _resolution, outbox, _retention = self._paths(Path(directory))
             outbox.write_text("SELECT 'outbox authority';", encoding="utf-8")
+            base_loader = Mock()
+            with patch.object(migration_install, "_apply_foundation_migration", base_loader):
+                with self.assertRaisesRegex(AccountingValidationError, "0022"):
+                    migration_install.apply_foundation_migration(
+                        "postgresql://unused", base
+                    )
+            base_loader.assert_not_called()
+
+    def test_outbox_migrations_execute_after_resolution_command_migration(self) -> None:
+        """The exported loader applies atomicity then retention after resolution authority."""
+        with tempfile.TemporaryDirectory() as directory:
+            base, _parent, _resolution, outbox, retention = self._paths(Path(directory))
+            outbox.write_text("SELECT 'outbox authority';", encoding="utf-8")
+            retention.write_text("SELECT 'outbox retention';", encoding="utf-8")
             connection = _Connection()
             with patch.object(
                 migration_install, "_apply_foundation_migration", return_value=None
@@ -79,7 +96,12 @@ class ReconciliationExceptionResolutionOutboxInstallTests(unittest.TestCase):
 
             self.assertEqual(
                 connection.executed,
-                ["SELECT 'resolution authority';", "SELECT 'outbox authority';"],
+                [
+                    "SELECT 'parent authority';",
+                    "SELECT 'resolution authority';",
+                    "SELECT 'outbox authority';",
+                    "SELECT 'outbox retention';",
+                ],
             )
 
 
