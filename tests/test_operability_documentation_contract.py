@@ -63,6 +63,17 @@ class OperabilityDocumentationContractTests(unittest.TestCase):
         self.assertIn("no matching immutable command", operability)
         self.assertIn("do not mint a command after the fact", operability)
 
+    def test_recording_time_upgrade_preserves_legacy_evidence_without_trusting_it(self) -> None:
+        """0024 guidance must keep old evidence and distinguish its time authority."""
+        operability = (ROOT / "docs" / "OPERABILITY.md").read_text(encoding="utf-8")
+
+        self.assertIn("legacy_unverified", operability)
+        self.assertIn("database_clock", operability)
+        self.assertIn("recording_time_authority_code", operability)
+        self.assertIn("preserve", operability.lower())
+        self.assertNotIn("reconciliation_recording_time_legacy_preflight", operability)
+        self.assertNotIn("fails closed with `reconciliation_recording_time_legacy_preflight`", operability)
+
 
 if __name__ == "__main__":
     unittest.main()
