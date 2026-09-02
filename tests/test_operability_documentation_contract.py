@@ -51,6 +51,18 @@ class OperabilityDocumentationContractTests(unittest.TestCase):
         self.assertIn("published_at", operability)
         self.assertIn("duplicate", operability)
 
+    def test_reconciliation_authority_event_orphan_guard_is_operationally_required(self) -> None:
+        """Reserved reconciliation authority events must be command-backed after 0023."""
+        operability = (ROOT / "docs" / "OPERABILITY.md").read_text(encoding="utf-8")
+
+        self.assertIn(
+            "database/migrations/0023_reconciliation_authority_outbox_orphan_guard.sql",
+            operability,
+        )
+        self.assertIn("reconciliation_authority_outbox_orphan", operability)
+        self.assertIn("no matching immutable command", operability)
+        self.assertIn("do not mint a command after the fact", operability)
+
 
 if __name__ == "__main__":
     unittest.main()
