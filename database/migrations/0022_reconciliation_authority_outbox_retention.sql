@@ -11,6 +11,30 @@ BEGIN;
 -- this retention guard was installed. A new trigger cannot repair an already
 -- missing/re-keyed/duplicated event, so accepting that state would silently
 -- bless broken authority provenance.
+--
+-- The command and outbox tables use FORCE RLS. The damage preflight is an
+-- all-tenant migration-owner check, so give only current_user temporary SELECT
+-- visibility for the three exact tables it reads. These policies live inside
+-- this migration transaction and are removed before durable runtime guards are
+-- installed; they do not widen application authority.
+CREATE POLICY reconciliation_authority_retention_upgrade_resolution_visibility
+    ON accounting_core.reconciliation_exception_resolution_command
+    FOR SELECT
+    TO current_user
+    USING (true);
+
+CREATE POLICY reconciliation_authority_retention_upgrade_transition_visibility
+    ON accounting_core.reconciliation_run_transition_command
+    FOR SELECT
+    TO current_user
+    USING (true);
+
+CREATE POLICY reconciliation_authority_retention_upgrade_outbox_visibility
+    ON accounting_integration.outbox_event
+    FOR SELECT
+    TO current_user
+    USING (true);
+
 DO $$
 BEGIN
     IF EXISTS (
@@ -63,6 +87,13 @@ BEGIN
     END IF;
 END;
 $$;
+
+DROP POLICY reconciliation_authority_retention_upgrade_outbox_visibility
+    ON accounting_integration.outbox_event;
+DROP POLICY reconciliation_authority_retention_upgrade_transition_visibility
+    ON accounting_core.reconciliation_run_transition_command;
+DROP POLICY reconciliation_authority_retention_upgrade_resolution_visibility
+    ON accounting_core.reconciliation_exception_resolution_command;
 
 CREATE OR REPLACE FUNCTION accounting_core.assert_reconciliation_authority_outbox_identity(
     checked_tenant_account_id uuid,
