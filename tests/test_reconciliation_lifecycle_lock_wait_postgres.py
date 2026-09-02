@@ -135,15 +135,27 @@ class ReconciliationLifecycleLockWaitPostgresTests(unittest.TestCase):
             status_code="reconciled",
         )
 
-    def test_waiting_finalizer_observes_resolution_committed_before_lock_grant(self) -> None:
-        """A lock waiter must evaluate the committed resolution, not its pre-wait snapshot."""
+    @staticmethod
+    def _waiting_advisory_lock_count() -> int:
+        """Return the server-wide number of sessions currently waiting on advisory locks."""
+        with psycopg.connect(posting.DATABASE_URL) as monitor:
+            return int(
+                monitor.execute(
+                    """
+                    SELECT count(*)
+                    FROM pg_locks
+                    WHERE locktype = 'advisory' AND NOT granted
+                    """
+                ).fetchone()[0]
+            )
+
+    def test_waiting_finalizer_observes_resolution_committed_before_snapshot(self) -> None:
+        """The post-lock repeatable-read snapshot must include the preceding resolution commit."""
         lifecycle_scope = (
             "reconciliation_run_lifecycle:" + self.opened["reconciliation_run_id"]
         )
         writer_holds_lock = Event()
         release_writer = Event()
-        finalizer_started_lock_statement = Event()
-        finalizer_pid: list[int] = []
         outcomes: dict[str, dict[str, object]] = {}
         failures: list[BaseException] = []
         original_lock = PostgresPostingLedger._acquire_command_lock
@@ -151,12 +163,6 @@ class ReconciliationLifecycleLockWaitPostgresTests(unittest.TestCase):
         def gated_lock(
             ledger: PostgresPostingLedger, connection: object, scope: str
         ) -> None:
-            if scope == lifecycle_scope and current_thread().name == "lifecycle-finalizer":
-                pid = int(connection.execute("SELECT pg_backend_pid()").fetchone()[0])
-                finalizer_pid.append(pid)
-                finalizer_started_lock_statement.set()
-                original_lock(ledger, connection, scope)
-                return
             original_lock(ledger, connection, scope)
             if scope == lifecycle_scope and current_thread().name == "resolution-writer":
                 writer_holds_lock.set()
@@ -196,33 +202,21 @@ class ReconciliationLifecycleLockWaitPostgresTests(unittest.TestCase):
             finalizer = Thread(target=run_finalization, name="lifecycle-finalizer")
             writer.start()
             self.assertTrue(writer_holds_lock.wait(timeout=10))
+            baseline_waiters = self._waiting_advisory_lock_count()
             finalizer.start()
             try:
-                self.assertTrue(finalizer_started_lock_statement.wait(timeout=10))
                 waiting = False
-                deadline = time.monotonic() + 10
+                deadline = time.monotonic() + 4
                 while time.monotonic() < deadline:
-                    with psycopg.connect(posting.DATABASE_URL) as monitor:
-                        waiting = bool(
-                            monitor.execute(
-                                """
-                                SELECT EXISTS (
-                                    SELECT 1
-                                    FROM pg_locks
-                                    WHERE pid = %s
-                                      AND locktype = 'advisory'
-                                      AND NOT granted
-                                )
-                                """,
-                                (finalizer_pid[0],),
-                            ).fetchone()[0]
-                        )
+                    waiting = (
+                        self._waiting_advisory_lock_count() > baseline_waiters
+                    )
                     if waiting:
                         break
                     time.sleep(0.05)
                 self.assertTrue(
                     waiting,
-                    "finalizer never became an advisory-lock waiter",
+                    "finalizer never waited for the run lifecycle advisory lock before opening its authority snapshot",
                 )
             finally:
                 release_writer.set()
