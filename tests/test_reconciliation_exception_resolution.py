@@ -6,6 +6,7 @@ import contextlib
 import unittest
 import unittest.mock as mock
 from datetime import datetime, timezone
+from typing import ClassVar
 from uuid import UUID
 
 from accounting_information_platform import AccountingValidationError, IdempotencyConflictError
@@ -122,8 +123,8 @@ class _Connection:
 class _Ledger:
     """Tenant-bound ledger double sharing one configured connection."""
 
-    connection = _Connection()
-    locks: list[str] = []
+    connection: ClassVar[_Connection] = _Connection()
+    locks: ClassVar[list[str]] = []
 
     def __init__(self, database_url: str, tenant_reference: str) -> None:
         self.database_url = database_url
