@@ -7,8 +7,6 @@ import json
 from typing import Mapping
 from uuid import UUID
 
-import psycopg
-
 from .core import (
     AccountingValidationError,
     IdempotencyConflictError,
@@ -29,7 +27,10 @@ _RESOLUTION_NEXT_ACTION = (
     "Review the remaining reconciliation exceptions and reviewed matches; when all "
     "controls and the exact book-to-bank bridge tie, execute the run reconciliation command."
 )
-_RECORDING_TIME_AUTHORITY_ERROR = "reconciliation_resolution_recording_time_authority_required"
+_CHECK_VIOLATION_SQLSTATE = "23514"
+_RECORDING_TIME_AUTHORITY_ERROR = (
+    "reconciliation_resolution_recording_time_authority_required"
+)
 _SERIALIZATION_FAILURE_SQLSTATE = "40001"
 _SERIALIZATION_ATTEMPTS = 3
 
@@ -92,14 +93,15 @@ def resolve_reconciliation_exception(
             )
         except Exception as error:
             if (
-                isinstance(error, psycopg.errors.CheckViolation)
+                getattr(error, "sqlstate", None) == _CHECK_VIOLATION_SQLSTATE
                 and _RECORDING_TIME_AUTHORITY_ERROR in str(error)
             ):
                 raise AccountingValidationError(
                     "reconciliation exception or retained review evidence predates the "
-                    "database-owned system-time authority boundary. Preserve the historical "
-                    "evidence and record a new reviewed exception/evidence set under the current "
-                    "database authority before retrying exception resolution."
+                    "database-owned system-time authority boundary. Preserve the "
+                    "historical evidence and record a new reviewed exception/evidence "
+                    "set under the current database authority before retrying exception "
+                    "resolution."
                 ) from error
             if (
                 getattr(error, "sqlstate", None) != _SERIALIZATION_FAILURE_SQLSTATE
