@@ -21,6 +21,7 @@ from tests import test_postgres_posting as posting
 from tests.test_reconciliation_run_api import ReconciliationRunApiTests
 
 _EVIDENCE_HASH = "sha256:" + "a" * 64
+_RESOLUTION_EVIDENCE_TYPE = "exception_resolution_review"
 
 
 class ReconciliationExceptionResolutionPostgresTests(unittest.TestCase):
@@ -32,7 +33,7 @@ class ReconciliationExceptionResolutionPostgresTests(unittest.TestCase):
         posting.PostgresPostingTests.setUpClass()
 
     def setUp(self) -> None:
-        """Open one evaluating run and persist one review exception."""
+        """Open one evaluating run and persist one review exception with retained evidence."""
         self.fixture = ReconciliationRunApiTests(
             "test_open_run_binds_statement_scope_and_replays"
         )
@@ -72,6 +73,16 @@ class ReconciliationExceptionResolutionPostgresTests(unittest.TestCase):
                     datetime(2026, 9, 2, 0, 10, tzinfo=timezone.utc),
                 ),
             ).fetchone()[0]
+            self.evidence_reference = (
+                f"urn:cwl:evidence:reconciliation_exception:{self.exception_id}:review"
+            )
+            self.evidence_id = self._retain_resolution_evidence(
+                connection,
+                tenant_id=tenant_id,
+                exception_id=self.exception_id,
+                evidence_reference=self.evidence_reference,
+                evidence_hash=_EVIDENCE_HASH,
+            )
             connection.commit()
 
     def _tenant_id(self, connection: psycopg.Connection) -> object:
@@ -85,6 +96,73 @@ class ReconciliationExceptionResolutionPostgresTests(unittest.TestCase):
             (self.opened["reconciliation_run_id"],),
         ).fetchone()[0]
 
+    def _retain_resolution_evidence(
+        self,
+        connection: psycopg.Connection,
+        *,
+        tenant_id: object,
+        exception_id: object,
+        evidence_reference: str,
+        evidence_hash: str,
+        effective_at: datetime | None = None,
+        recorded_at: datetime | None = None,
+    ) -> object:
+        """Persist one exception-scoped reviewed artifact in the AIS evidence registry."""
+        effective_at = effective_at or datetime(2026, 9, 2, 0, 15, tzinfo=timezone.utc)
+        if recorded_at is None:
+            row = connection.execute(
+                """
+                INSERT INTO accounting_core.reconciliation_evidence (
+                    tenant_account_id,
+                    reconciliation_run_id,
+                    reconciliation_exception_id,
+                    evidence_type_code,
+                    evidence_reference,
+                    evidence_payload_hash,
+                    effective_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING reconciliation_evidence_id
+                """,
+                (
+                    tenant_id,
+                    self.opened["reconciliation_run_id"],
+                    exception_id,
+                    _RESOLUTION_EVIDENCE_TYPE,
+                    evidence_reference,
+                    evidence_hash,
+                    effective_at,
+                ),
+            ).fetchone()
+        else:
+            row = connection.execute(
+                """
+                INSERT INTO accounting_core.reconciliation_evidence (
+                    tenant_account_id,
+                    reconciliation_run_id,
+                    reconciliation_exception_id,
+                    evidence_type_code,
+                    evidence_reference,
+                    evidence_payload_hash,
+                    effective_at,
+                    recorded_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING reconciliation_evidence_id
+                """,
+                (
+                    tenant_id,
+                    self.opened["reconciliation_run_id"],
+                    exception_id,
+                    _RESOLUTION_EVIDENCE_TYPE,
+                    evidence_reference,
+                    evidence_hash,
+                    effective_at,
+                    recorded_at,
+                ),
+            ).fetchone()
+        return row[0]
+
     def _command(self, **overrides: object) -> dict[str, object]:
         """Return one reviewed exception-resolution command."""
         command: dict[str, object] = {
@@ -96,14 +174,225 @@ class ReconciliationExceptionResolutionPostgresTests(unittest.TestCase):
             "resolution_status_code": "resolved",
             "actor_reference": "urn:cwl:principal:independent_reviewer",
             "purpose_code": "bank_reconciliation_exception_review",
-            "resolution_evidence_reference": (
-                f"urn:cwl:evidence:reconciliation_exception:{self.exception_id}:review"
-            ),
+            "resolution_evidence_reference": self.evidence_reference,
             "resolution_evidence_hash": _EVIDENCE_HASH,
             "effective_at": "2026-09-02T00:20:00Z",
         }
         command.update(overrides)
         return command
+
+    def _assert_no_resolution_side_effects(self) -> None:
+        """Assert failed evidence admission leaves command, status, and outbox unchanged."""
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            tenant_id = self._tenant_id(connection)
+            command_count = connection.execute(
+                """
+                SELECT count(*)
+                FROM accounting_core.reconciliation_exception_resolution_command
+                WHERE tenant_account_id = %s
+                  AND reconciliation_exception_id = %s
+                """,
+                (tenant_id, self.exception_id),
+            ).fetchone()[0]
+            status = connection.execute(
+                """
+                SELECT resolution_status_code
+                FROM accounting_core.reconciliation_exception
+                WHERE tenant_account_id = %s
+                  AND reconciliation_exception_id = %s
+                """,
+                (tenant_id, self.exception_id),
+            ).fetchone()[0]
+            outbox_count = connection.execute(
+                """
+                SELECT count(*)
+                FROM accounting_integration.outbox_event
+                WHERE tenant_account_id = %s
+                  AND aggregate_reference = %s
+                """,
+                (
+                    tenant_id,
+                    f"urn:cwl:accounting:reconciliation_exception:{self.exception_id}",
+                ),
+            ).fetchone()[0]
+        self.assertEqual(command_count, 0)
+        self.assertEqual(status, "open")
+        self.assertEqual(outbox_count, 0)
+
+    def test_nonexistent_resolution_evidence_fails_without_side_effects(self) -> None:
+        """A hash-shaped caller assertion cannot substitute for retained review evidence."""
+        with self.assertRaisesRegex(AccountingValidationError, "retained resolution evidence"):
+            resolve_reconciliation_exception(
+                self._command(
+                    reconciliation_idempotency_key=f"missing-evidence-{self.exception_id}",
+                    resolution_evidence_reference=(
+                        f"urn:cwl:evidence:reconciliation_exception:{self.exception_id}:missing"
+                    ),
+                ),
+                posting.DATABASE_URL,
+                self.fixture.case.policy.tenant_reference,
+            )
+        self._assert_no_resolution_side_effects()
+
+    def test_wrong_exception_resolution_evidence_fails_without_side_effects(self) -> None:
+        """Evidence retained for another exception cannot authorize this exception."""
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            tenant_id = self._tenant_id(connection)
+            other_exception_id = connection.execute(
+                """
+                INSERT INTO accounting_core.reconciliation_exception (
+                    tenant_account_id,
+                    reconciliation_run_id,
+                    exception_code,
+                    owner_reference,
+                    next_action,
+                    effective_at,
+                    resolution_status_code
+                )
+                VALUES (
+                    %s, %s, 'ambiguous_reference',
+                    'urn:cwl:principal:other_owner',
+                    'Retain review evidence for the other exception.',
+                    %s, 'open'
+                )
+                RETURNING reconciliation_exception_id
+                """,
+                (
+                    tenant_id,
+                    self.opened["reconciliation_run_id"],
+                    datetime(2026, 9, 2, 0, 10, tzinfo=timezone.utc),
+                ),
+            ).fetchone()[0]
+            other_reference = (
+                f"urn:cwl:evidence:reconciliation_exception:{other_exception_id}:review"
+            )
+            self._retain_resolution_evidence(
+                connection,
+                tenant_id=tenant_id,
+                exception_id=other_exception_id,
+                evidence_reference=other_reference,
+                evidence_hash=_EVIDENCE_HASH,
+            )
+            connection.commit()
+
+        with self.assertRaisesRegex(AccountingValidationError, "retained resolution evidence"):
+            resolve_reconciliation_exception(
+                self._command(
+                    reconciliation_idempotency_key=f"wrong-exception-{self.exception_id}",
+                    resolution_evidence_reference=other_reference,
+                ),
+                posting.DATABASE_URL,
+                self.fixture.case.policy.tenant_reference,
+            )
+        self._assert_no_resolution_side_effects()
+
+    def test_wrong_digest_resolution_evidence_fails_without_side_effects(self) -> None:
+        """The command digest must equal the retained artifact digest."""
+        with self.assertRaisesRegex(AccountingValidationError, "retained resolution evidence"):
+            resolve_reconciliation_exception(
+                self._command(
+                    reconciliation_idempotency_key=f"wrong-digest-{self.exception_id}",
+                    resolution_evidence_hash="sha256:" + "b" * 64,
+                ),
+                posting.DATABASE_URL,
+                self.fixture.case.policy.tenant_reference,
+            )
+        self._assert_no_resolution_side_effects()
+
+    def test_late_resolution_evidence_fails_without_side_effects(self) -> None:
+        """Evidence effective after the decision cannot retroactively authorize it."""
+        late_reference = (
+            f"urn:cwl:evidence:reconciliation_exception:{self.exception_id}:late-effective"
+        )
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            self._retain_resolution_evidence(
+                connection,
+                tenant_id=self._tenant_id(connection),
+                exception_id=self.exception_id,
+                evidence_reference=late_reference,
+                evidence_hash=_EVIDENCE_HASH,
+                effective_at=datetime(2026, 9, 2, 0, 25, tzinfo=timezone.utc),
+            )
+            connection.commit()
+        with self.assertRaisesRegex(AccountingValidationError, "retained resolution evidence"):
+            resolve_reconciliation_exception(
+                self._command(
+                    reconciliation_idempotency_key=f"late-evidence-{self.exception_id}",
+                    resolution_evidence_reference=late_reference,
+                ),
+                posting.DATABASE_URL,
+                self.fixture.case.policy.tenant_reference,
+            )
+        self._assert_no_resolution_side_effects()
+
+    def test_future_recorded_resolution_evidence_fails_without_side_effects(self) -> None:
+        """Evidence recorded after the decision system time cannot authorize it."""
+        late_reference = (
+            f"urn:cwl:evidence:reconciliation_exception:{self.exception_id}:late-recorded"
+        )
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            self._retain_resolution_evidence(
+                connection,
+                tenant_id=self._tenant_id(connection),
+                exception_id=self.exception_id,
+                evidence_reference=late_reference,
+                evidence_hash=_EVIDENCE_HASH,
+                recorded_at=datetime(2099, 1, 1, tzinfo=timezone.utc),
+            )
+            connection.commit()
+        with self.assertRaisesRegex(AccountingValidationError, "retained resolution evidence"):
+            resolve_reconciliation_exception(
+                self._command(
+                    reconciliation_idempotency_key=f"future-recorded-{self.exception_id}",
+                    resolution_evidence_reference=late_reference,
+                ),
+                posting.DATABASE_URL,
+                self.fixture.case.policy.tenant_reference,
+            )
+        self._assert_no_resolution_side_effects()
+
+    def test_database_rejects_direct_fabricated_resolution_evidence(self) -> None:
+        """PostgreSQL independently rejects fabricated evidence on direct command inserts."""
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            tenant_id = self._tenant_id(connection)
+            with self.assertRaisesRegex(
+                psycopg.Error,
+                "reconciliation_exception_resolution_evidence_required",
+            ):
+                connection.execute(
+                    """
+                    INSERT INTO accounting_core.reconciliation_exception_resolution_command (
+                        tenant_account_id,
+                        reconciliation_run_id,
+                        reconciliation_exception_id,
+                        reconciliation_resolution_idempotency_key,
+                        target_resolution_status_code,
+                        resolution_evidence_reference,
+                        resolution_evidence_hash,
+                        source_payload_hash,
+                        reconciliation_exception_resolution_command_hash,
+                        actor_reference,
+                        purpose_code,
+                        effective_at
+                    )
+                    VALUES (%s, %s, %s, %s, 'resolved', %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        tenant_id,
+                        self.opened["reconciliation_run_id"],
+                        self.exception_id,
+                        f"direct-fabricated-{self.exception_id}",
+                        f"urn:cwl:evidence:reconciliation_exception:{self.exception_id}:fabricated",
+                        _EVIDENCE_HASH,
+                        "sha256:" + "c" * 64,
+                        "sha256:" + "0" * 64,
+                        "urn:cwl:principal:independent_reviewer",
+                        "bank_reconciliation_exception_review",
+                        datetime(2026, 9, 2, 0, 20, tzinfo=timezone.utc),
+                    ),
+                )
+            connection.rollback()
+        self._assert_no_resolution_side_effects()
 
     def test_raw_terminal_status_without_resolution_command_fails(self) -> None:
         """Privileged SQL cannot manufacture maker-checker resolution authority."""
@@ -175,6 +464,15 @@ class ReconciliationExceptionResolutionPostgresTests(unittest.TestCase):
                 """,
                 (self._tenant_id(connection), self.exception_id),
             ).fetchone()[0]
+            bound_evidence_id = connection.execute(
+                """
+                SELECT reconciliation_evidence_id
+                FROM accounting_core.reconciliation_exception_resolution_command
+                WHERE tenant_account_id = %s
+                  AND reconciliation_exception_id = %s
+                """,
+                (self._tenant_id(connection), self.exception_id),
+            ).fetchone()[0]
             outbox = connection.execute(
                 """
                 SELECT event_type_code, payload_hash
@@ -191,6 +489,7 @@ class ReconciliationExceptionResolutionPostgresTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(status, "resolved")
         self.assertEqual(source_payload_hash, result["source_payload_hash"])
+        self.assertEqual(bound_evidence_id, self.evidence_id)
         self.assertEqual(outbox[0], "reconciliation_exception_resolved")
         self.assertEqual(
             outbox[1], result["reconciliation_exception_resolution_command_hash"]
@@ -330,6 +629,41 @@ class ReconciliationExceptionResolutionPostgresTests(unittest.TestCase):
                     (self._tenant_id(connection), self.exception_id),
                 )
             connection.rollback()
+
+    def test_resolution_artifact_is_immutable_after_command_authority(self) -> None:
+        """Retained reviewed evidence cannot be rewritten or deleted after it grants authority."""
+        resolve_reconciliation_exception(
+            self._command(),
+            posting.DATABASE_URL,
+            self.fixture.case.policy.tenant_reference,
+        )
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            tenant_id = self._tenant_id(connection)
+            for statement in (
+                """
+                UPDATE accounting_core.reconciliation_evidence
+                SET evidence_payload_hash = %s
+                WHERE tenant_account_id = %s
+                  AND reconciliation_evidence_id = %s
+                """,
+                """
+                DELETE FROM accounting_core.reconciliation_evidence
+                WHERE tenant_account_id = %s
+                  AND reconciliation_evidence_id = %s
+                """,
+            ):
+                with self.assertRaisesRegex(
+                    psycopg.Error,
+                    "reconciliation_evidence_immutable",
+                ):
+                    if statement.lstrip().startswith("UPDATE"):
+                        connection.execute(
+                            statement,
+                            ("sha256:" + "d" * 64, tenant_id, self.evidence_id),
+                        )
+                    else:
+                        connection.execute(statement, (tenant_id, self.evidence_id))
+                connection.rollback()
 
 
 if __name__ == "__main__":
