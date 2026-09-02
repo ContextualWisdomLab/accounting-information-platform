@@ -1,0 +1,112 @@
+name: Temporary PR47 review authority repair
+
+on:
+  push:
+    branches:
+      - feat/reconciliation-exception-resolution-command
+    paths:
+      - .github/workflows/_temp_pr47_review_repair.yml
+  workflow_dispatch:
+
+concurrency:
+  group: temp-pr47-review-repair-${{ github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  repair:
+    if: github.repository == 'ContextualWisdomLab/accounting-information-platform'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      ACCOUNTING_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/accounting_test
+      WORKFLOW_PUSH_TOKEN: ${{ secrets.PR_REVIEW_MERGE_TOKEN || secrets.OPENCODE_APPROVE_TOKEN }}
+    services:
+      postgres:
+        image: postgres:18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: accounting_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d accounting_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - name: Checkout exact writer head
+        uses: actions/checkout@631c942040754b6e095e929c1677c07e10ed4f87
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install pinned Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      - name: Install hash-locked quality dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --only-binary=:all: --require-hashes -r requirements-quality.txt
+
+      - name: Revalidate exact writer head
+        env:
+          EXPECTED_HEAD: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          remote_head="$(git ls-remote origin "refs/heads/${GITHUB_REF_NAME}" | awk '{print $1}')"
+          test -n "$remote_head"
+          test "$remote_head" = "$EXPECTED_HEAD"
+          test -f scripts/temp_pr47_review_repair.py
+          test -f .github/workflows/_temp_pr47_review_repair.yml
+
+      - name: Apply guarded review repairs
+        run: |
+          set -euo pipefail
+          python scripts/temp_pr47_review_repair.py
+          test ! -e scripts/temp_pr47_review_repair.py
+          test ! -e .github/workflows/_temp_pr47_review_repair.yml
+          git diff --check
+
+      - name: Run focused regression suite
+        run: |
+          set -euo pipefail
+          PYTHONPATH=src:. python -m unittest -v \
+            tests.test_reconciliation_exception_resolution_json_identity \
+            tests.test_reconciliation_exception_resolution_postgres \
+            tests.test_reconciliation_lifecycle_lock_wait_postgres
+          PYTHONPATH=src:. python -m ruff check src/accounting_information_platform/__init__.py src/accounting_information_platform/reconciliation_exception_resolution.py tests/test_reconciliation_lifecycle_lock_wait_postgres.py
+
+      - name: Run full repository quality gates
+        run: |
+          set -euo pipefail
+          PYTHONPATH=src:. python -m coverage run --branch -m unittest discover -s tests -p 'test_*.py'
+          python -m coverage report --fail-under=100 --show-missing
+          PYTHONPATH=src:. python scripts/validate_repository.py .
+          git diff --check
+
+      - name: Publish verified canonical successor
+        env:
+          EXPECTED_HEAD: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test -n "${WORKFLOW_PUSH_TOKEN:-}"
+          remote_head="$(git ls-remote origin "refs/heads/${GITHUB_REF_NAME}" | awk '{print $1}')"
+          test "$remote_head" = "$EXPECTED_HEAD"
+          test ! -e scripts/temp_pr47_review_repair.py
+          test ! -e .github/workflows/_temp_pr47_review_repair.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git diff --cached --check
+          test -n "$(git diff --cached --name-only)"
+          git commit -m "fix(reconciliation): close current authority review findings"
+          git remote set-url origin "https://x-access-token:${WORKFLOW_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin "HEAD:refs/heads/${GITHUB_REF_NAME}"
