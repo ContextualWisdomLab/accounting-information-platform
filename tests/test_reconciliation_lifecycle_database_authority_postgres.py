@@ -1,4 +1,4 @@
-"""Real PostgreSQL RED for database-owned reconciliation transition authority."""
+"""Real PostgreSQL regression for stacked database-owned reconciliation authority."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from datetime import timedelta
 import psycopg
 
 from accounting_information_platform import accept_reconciliation_run
-from accounting_information_platform import reconciliation_close_package as close_package
 from tests import test_postgres_posting as posting
 from tests.test_reconciliation_run_api import ReconciliationRunApiTests
 
@@ -104,45 +103,37 @@ class ReconciliationLifecycleDatabaseAuthorityPostgresTests(unittest.TestCase):
         assert row is not None
         return row
 
-    def test_database_replaces_caller_snapshot_with_authoritative_digest(self) -> None:
-        """A syntactically valid caller digest cannot become lifecycle snapshot authority."""
-        forged = "sha256:" + "f" * 64
+    def test_database_replaces_all_caller_transition_identities(self) -> None:
+        """Parent authority plus child evidence must replace all caller-selected identities."""
+        forged_snapshot = "sha256:" + "f" * 64
+        forged_statement_reference = "sha256:" + "a" * 64
+        forged_book_reference = "sha256:" + "b" * 64
         with psycopg.connect(posting.DATABASE_URL) as connection:
             tenant_id, _statement_id, _knowledge_cutoff_at, _currency_code = self._scope(
                 connection
             )
-            baseline = close_package._database_owned_close_projection_evidence(
-                connection,
-                tenant_id,
-                reconciliation_run_reference=self.opened["reconciliation_run_id"],
-            )
             persisted = self._insert_transition(
                 connection,
                 tenant_id=tenant_id,
-                statement_population_reference=baseline.statement_population_reference,
-                book_population_reference=baseline.book_population_reference,
-                snapshot_hash=forged,
-                key_suffix="forged-snapshot",
+                statement_population_reference=forged_statement_reference,
+                book_population_reference=forged_book_reference,
+                snapshot_hash=forged_snapshot,
+                key_suffix="forged-identities",
             )
             connection.rollback()
 
-        self.assertNotEqual(
-            persisted[0],
-            forged,
-            "PostgreSQL accepted a caller-shaped reconciliation_snapshot_hash as authority",
-        )
-        self.assertRegex(str(persisted[0]), r"^sha256:[0-9a-f]{64}$")
+        self.assertNotEqual(persisted[0], forged_snapshot)
+        self.assertNotEqual(persisted[1], forged_statement_reference)
+        self.assertNotEqual(persisted[2], forged_book_reference)
+        for value in persisted:
+            with self.subTest(value=value):
+                self.assertRegex(str(value), r"^sha256:[0-9a-f]{64}$")
 
     def test_database_rejects_transition_when_authoritative_bridge_does_not_tie(self) -> None:
         """Direct SQL cannot reconcile a run whose source-population bridge is untied."""
         with psycopg.connect(posting.DATABASE_URL) as connection:
             tenant_id, statement_id, knowledge_cutoff_at, currency_code = self._scope(
                 connection
-            )
-            baseline = close_package._database_owned_close_projection_evidence(
-                connection,
-                tenant_id,
-                reconciliation_run_reference=self.opened["reconciliation_run_id"],
             )
             connection.execute(
                 """
@@ -171,13 +162,13 @@ class ReconciliationLifecycleDatabaseAuthorityPostgresTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(
                 psycopg.Error,
-                "reconciliation_lifecycle_bridge_mismatch",
+                "reconciliation_database_bridge_unexplained",
             ):
                 self._insert_transition(
                     connection,
                     tenant_id=tenant_id,
-                    statement_population_reference=baseline.statement_population_reference,
-                    book_population_reference=baseline.book_population_reference,
+                    statement_population_reference="sha256:" + "c" * 64,
+                    book_population_reference="sha256:" + "d" * 64,
                     snapshot_hash="sha256:" + "e" * 64,
                     key_suffix="untied-bridge",
                 )
