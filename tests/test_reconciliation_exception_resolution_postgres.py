@@ -325,31 +325,47 @@ class ReconciliationExceptionResolutionPostgresTests(unittest.TestCase):
             )
         self._assert_no_resolution_side_effects()
 
-    def test_future_recorded_resolution_evidence_fails_without_side_effects(self) -> None:
-        """Evidence recorded after the decision system time cannot authorize it."""
-        late_reference = (
-            f"urn:cwl:evidence:reconciliation_exception:{self.exception_id}:late-recorded"
+    def test_forged_future_recorded_evidence_is_replaced_by_database_time(self) -> None:
+        """Caller-shaped system time is discarded before retained evidence is authoritative."""
+        evidence_reference = (
+            f"urn:cwl:evidence:reconciliation_exception:{self.exception_id}:recorded-at-probe"
         )
+        forged_recorded_at = datetime(2099, 1, 1, tzinfo=timezone.utc)
         with psycopg.connect(posting.DATABASE_URL) as connection:
-            self._retain_resolution_evidence(
+            tenant_id = self._tenant_id(connection)
+            before_insert = connection.execute("SELECT clock_timestamp()").fetchone()[0]
+            evidence_id = self._retain_resolution_evidence(
                 connection,
-                tenant_id=self._tenant_id(connection),
+                tenant_id=tenant_id,
                 exception_id=self.exception_id,
-                evidence_reference=late_reference,
+                evidence_reference=evidence_reference,
                 evidence_hash=_EVIDENCE_HASH,
-                recorded_at=datetime(2099, 1, 1, tzinfo=timezone.utc),
+                recorded_at=forged_recorded_at,
             )
+            after_insert = connection.execute("SELECT clock_timestamp()").fetchone()[0]
+            recorded_at = connection.execute(
+                """
+                SELECT recorded_at
+                FROM accounting_core.reconciliation_evidence
+                WHERE tenant_account_id = %s
+                  AND reconciliation_evidence_id = %s
+                """,
+                (tenant_id, evidence_id),
+            ).fetchone()[0]
             connection.commit()
-        with self.assertRaisesRegex(AccountingValidationError, "retained resolution evidence"):
-            resolve_reconciliation_exception(
-                self._command(
-                    reconciliation_idempotency_key=f"future-recorded-{self.exception_id}",
-                    resolution_evidence_reference=late_reference,
-                ),
-                posting.DATABASE_URL,
-                self.fixture.case.policy.tenant_reference,
-            )
-        self._assert_no_resolution_side_effects()
+
+        self.assertNotEqual(recorded_at, forged_recorded_at)
+        self.assertGreaterEqual(recorded_at, before_insert)
+        self.assertLessEqual(recorded_at, after_insert)
+        result = resolve_reconciliation_exception(
+            self._command(
+                reconciliation_idempotency_key=f"recorded-at-probe-{self.exception_id}",
+                resolution_evidence_reference=evidence_reference,
+            ),
+            posting.DATABASE_URL,
+            self.fixture.case.policy.tenant_reference,
+        )
+        self.assertEqual(result["resolution_status_code"], "resolved")
 
     def test_database_rejects_direct_fabricated_resolution_evidence(self) -> None:
         """PostgreSQL independently rejects fabricated evidence on direct command inserts."""
