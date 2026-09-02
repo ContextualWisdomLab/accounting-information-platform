@@ -130,7 +130,7 @@ class ReconciliationLifecycleDatabaseAuthorityPostgresTests(unittest.TestCase):
                 self.assertRegex(str(value), r"^sha256:[0-9a-f]{64}$")
 
     def test_database_rejects_transition_when_authoritative_bridge_does_not_tie(self) -> None:
-        """Direct SQL cannot reconcile a run whose source-population bridge is untied."""
+        """Direct SQL cannot reconcile a run after a statement source breaks the exact bridge."""
         with psycopg.connect(posting.DATABASE_URL) as connection:
             tenant_id, statement_id, knowledge_cutoff_at, currency_code = self._scope(
                 connection
@@ -162,7 +162,7 @@ class ReconciliationLifecycleDatabaseAuthorityPostgresTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(
                 psycopg.Error,
-                "reconciliation_database_bridge_unexplained",
+                "reconciliation_database_statement_equation",
             ):
                 self._insert_transition(
                     connection,
