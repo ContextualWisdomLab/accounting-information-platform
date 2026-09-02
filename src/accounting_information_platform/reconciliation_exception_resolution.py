@@ -373,8 +373,32 @@ def _require_resolution_command(
     return payload
 
 
+def _require_strict_json_value(value: object) -> None:
+    """Reject Python-only structures before they can influence command identity."""
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return
+    if isinstance(value, list):
+        for item in value:
+            _require_strict_json_value(item)
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise AccountingValidationError(
+                    "reconciliation exception resolution payload must use string JSON object "
+                    "keys. Supply the exact JSON command, then retry."
+                )
+            _require_strict_json_value(item)
+        return
+    raise AccountingValidationError(
+        "reconciliation exception resolution payload must contain only JSON values. Supply the "
+        "exact JSON command, then retry."
+    )
+
+
 def _source_payload_hash(command: Mapping[str, object]) -> str:
     """Hash the complete strict-JSON command so idempotency binds every received member."""
+    _require_strict_json_value(command)
     try:
         canonical = json.dumps(
             command,
