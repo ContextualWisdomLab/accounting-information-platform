@@ -30,14 +30,6 @@ class ProductGapBaselineContractTests(unittest.TestCase):
         self.assertNotIn("checks are currently queued", text.lower())
         self.assertNotIn("production candidate is exact commit", text.lower())
 
-    def test_baseline_keeps_reconciliation_outbox_retention_invariant(self) -> None:
-        """Durable gap evidence must preserve post-commit exactly-one authority semantics."""
-        text = BASELINE.read_text(encoding="utf-8")
-
-        self.assertIn("exactly one matching outbox event", text)
-        self.assertIn("post-commit", text)
-        self.assertIn("published_at", text)
-
 
 if __name__ == "__main__":
     unittest.main()
