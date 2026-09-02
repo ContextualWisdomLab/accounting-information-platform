@@ -53,6 +53,7 @@ CREATE TABLE accounting_core.reconciliation_exception_resolution_command (
     tenant_account_id uuid NOT NULL,
     reconciliation_run_id uuid NOT NULL,
     reconciliation_exception_id uuid NOT NULL,
+    reconciliation_evidence_id uuid NOT NULL,
     reconciliation_resolution_idempotency_key text NOT NULL
         CHECK (btrim(reconciliation_resolution_idempotency_key) <> ''),
     target_resolution_status_code text NOT NULL
@@ -82,6 +83,10 @@ CREATE TABLE accounting_core.reconciliation_exception_resolution_command (
             reconciliation_run_id,
             reconciliation_exception_id
         ),
+    FOREIGN KEY (reconciliation_evidence_id)
+        REFERENCES accounting_core.reconciliation_evidence (
+            reconciliation_evidence_id
+        ),
     UNIQUE (
         tenant_account_id,
         reconciliation_exception_resolution_command_id
@@ -101,6 +106,25 @@ CREATE INDEX reconciliation_exception_resolution_recorded_index
         recorded_at,
         reconciliation_exception_resolution_command_id
     );
+
+-- Reconciliation evidence is retained source/control evidence, not mutable
+-- operational state. Once migration 0020 is installed, changing or deleting a
+-- retained artifact would invalidate any later command that relies on it.
+CREATE OR REPLACE FUNCTION accounting_core.reject_reconciliation_evidence_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    RAISE EXCEPTION
+        'reconciliation evidence is immutable once retained (reconciliation_evidence_immutable)'
+        USING ERRCODE = '23514';
+END;
+$$;
+
+CREATE TRIGGER accounting_reconciliation_evidence_immutable_guard
+    BEFORE UPDATE OR DELETE ON accounting_core.reconciliation_evidence
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.reject_reconciliation_evidence_mutation();
 
 CREATE OR REPLACE FUNCTION accounting_core.reserve_reconciliation_exception_resolution_identity()
 RETURNS trigger
@@ -133,6 +157,9 @@ DECLARE
     exception_effective_at timestamptz;
     opening_command_hash text;
     tenant_reference text;
+    retained_evidence_id uuid;
+    retained_evidence_effective_at timestamptz;
+    retained_evidence_recorded_at timestamptz;
     canonical_command jsonb;
 BEGIN
     -- System time is database-owned. Do not let a caller backdate or future-date
@@ -209,12 +236,42 @@ BEGIN
             USING ERRCODE = '23514';
     END IF;
 
+    SELECT evidence.reconciliation_evidence_id,
+           evidence.effective_at,
+           evidence.recorded_at
+    INTO retained_evidence_id,
+         retained_evidence_effective_at,
+         retained_evidence_recorded_at
+    FROM accounting_core.reconciliation_evidence AS evidence
+    WHERE evidence.tenant_account_id = NEW.tenant_account_id
+      AND evidence.reconciliation_run_id = NEW.reconciliation_run_id
+      AND evidence.reconciliation_exception_id = NEW.reconciliation_exception_id
+      AND evidence.evidence_type_code = 'exception_resolution_review'
+      AND evidence.evidence_reference = NEW.resolution_evidence_reference
+      AND evidence.evidence_payload_hash = NEW.resolution_evidence_hash;
+
+    IF retained_evidence_id IS NULL THEN
+        RAISE EXCEPTION
+            'exception resolution requires one retained exception-scoped reviewed artifact whose reference and digest match the command (reconciliation_exception_resolution_evidence_required)'
+            USING ERRCODE = '23514';
+    END IF;
+
+    IF retained_evidence_effective_at > NEW.effective_at
+       OR retained_evidence_recorded_at > NEW.recorded_at THEN
+        RAISE EXCEPTION
+            'exception resolution evidence cannot become effective or be recorded after the resolution decision boundary (reconciliation_exception_resolution_evidence_time)'
+            USING ERRCODE = '23514';
+    END IF;
+
+    NEW.reconciliation_evidence_id := retained_evidence_id;
+
     SELECT jsonb_build_object(
         'actor_reference', NEW.actor_reference,
         'exception_code', exception_code_value,
         'exception_owner_reference', exception_owner_reference,
         'opening_command_hash', opening_command_hash,
         'purpose_code', NEW.purpose_code,
+        'reconciliation_evidence_id', NEW.reconciliation_evidence_id::text,
         'reconciliation_exception_id', NEW.reconciliation_exception_id::text,
         'reconciliation_idempotency_key', NEW.reconciliation_resolution_idempotency_key,
         'reconciliation_run_id', NEW.reconciliation_run_id::text,
