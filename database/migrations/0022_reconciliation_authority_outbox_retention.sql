@@ -3,8 +3,9 @@ BEGIN;
 -- Migration 0021 proves that each reconciliation authority command commits with
 -- exactly one matching accounting outbox event. Preserve that authority after
 -- commit as well: publishing may update delivery metadata, but deleting,
--- duplicating, or re-keying the tenant/type/reference/hash identity must not
--- detach or ambiguate a committed reconciliation command's durable evidence.
+-- duplicating, re-keying the tenant/type/reference/hash identity, or rewriting
+-- the retained event id/creation time must not detach, ambiguate, or falsify a
+-- committed reconciliation command's durable audit evidence.
 --
 -- Fail the forward migration if a database was damaged after 0021 but before
 -- this retention guard was installed. A new trigger cannot repair an already
@@ -168,6 +169,49 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 BEGIN
+    IF TG_OP = 'UPDATE'
+       AND (
+           OLD.outbox_event_id IS DISTINCT FROM NEW.outbox_event_id
+           OR OLD.created_at IS DISTINCT FROM NEW.created_at
+       )
+       AND (
+           EXISTS (
+               SELECT 1
+               FROM accounting_core.reconciliation_exception_resolution_command AS resolution
+               WHERE resolution.tenant_account_id = OLD.tenant_account_id
+                 AND OLD.event_type_code = CASE resolution.target_resolution_status_code
+                     WHEN 'resolved' THEN 'reconciliation_exception_resolved'
+                     WHEN 'superseded' THEN 'reconciliation_exception_superseded'
+                     ELSE NULL
+                 END
+                 AND OLD.aggregate_reference =
+                     'urn:cwl:accounting:reconciliation_exception:'
+                     || resolution.reconciliation_exception_id::text
+                 AND OLD.payload_reference =
+                     'urn:cwl:accounting:reconciliation_exception_resolution:'
+                     || resolution.reconciliation_exception_resolution_command_id::text
+                 AND OLD.payload_hash =
+                     resolution.reconciliation_exception_resolution_command_hash
+           )
+           OR EXISTS (
+               SELECT 1
+               FROM accounting_core.reconciliation_run_transition_command AS transition
+               WHERE transition.tenant_account_id = OLD.tenant_account_id
+                 AND OLD.event_type_code = 'reconciliation_run_reconciled'
+                 AND OLD.aggregate_reference =
+                     'urn:cwl:accounting:reconciliation_run:'
+                     || transition.reconciliation_run_id::text
+                 AND OLD.payload_reference =
+                     'urn:cwl:accounting:reconciliation_run_transition:'
+                     || transition.reconciliation_run_transition_command_id::text
+                 AND OLD.payload_hash = transition.reconciliation_transition_command_hash
+           )
+       ) THEN
+        RAISE EXCEPTION
+            'committed reconciliation authority outbox event id and created_at are immutable; only publication metadata may change (reconciliation_authority_outbox_audit_identity)'
+            USING ERRCODE = '23514';
+    END IF;
+
     IF TG_OP IN ('DELETE', 'UPDATE') THEN
         PERFORM accounting_core.assert_reconciliation_authority_outbox_identity(
             OLD.tenant_account_id,
@@ -205,11 +249,13 @@ CREATE CONSTRAINT TRIGGER reconciliation_authority_outbox_retention_delete_guard
     EXECUTE FUNCTION accounting_core.enforce_reconciliation_authority_outbox_retention();
 
 CREATE CONSTRAINT TRIGGER reconciliation_authority_outbox_retention_update_guard
-    AFTER UPDATE OF tenant_account_id,
+    AFTER UPDATE OF outbox_event_id,
+                    tenant_account_id,
                     event_type_code,
                     aggregate_reference,
                     payload_reference,
-                    payload_hash
+                    payload_hash,
+                    created_at
     ON accounting_integration.outbox_event
     DEFERRABLE INITIALLY DEFERRED
     FOR EACH ROW
