@@ -65,13 +65,16 @@ jobs:
           test -n "$remote_head"
           test "$remote_head" = "$EXPECTED_HEAD"
           test -f scripts/temp_pr47_review_repair.py
+          test -f scripts/temp_pr47_snapshot_authority_repair.py
           test -f .github/workflows/_temp_pr47_review_repair.yml
 
       - name: Apply guarded review repairs
         run: |
           set -euo pipefail
           python scripts/temp_pr47_review_repair.py
+          python scripts/temp_pr47_snapshot_authority_repair.py
           test ! -e scripts/temp_pr47_review_repair.py
+          test ! -e scripts/temp_pr47_snapshot_authority_repair.py
           test ! -e .github/workflows/_temp_pr47_review_repair.yml
           git diff --check
 
@@ -81,8 +84,14 @@ jobs:
           PYTHONPATH=src:. python -m unittest -v \
             tests.test_reconciliation_exception_resolution_json_identity \
             tests.test_reconciliation_exception_resolution_postgres \
-            tests.test_reconciliation_lifecycle_lock_wait_postgres
-          PYTHONPATH=src:. python -m ruff check src/accounting_information_platform/__init__.py src/accounting_information_platform/reconciliation_exception_resolution.py tests/test_reconciliation_lifecycle_lock_wait_postgres.py
+            tests.test_reconciliation_lifecycle_lock_wait_postgres \
+            tests.test_reconciliation_lifecycle_postgres
+          PYTHONPATH=src:. python -m ruff check \
+            src/accounting_information_platform/__init__.py \
+            src/accounting_information_platform/reconciliation_exception_resolution.py \
+            src/accounting_information_platform/reconciliation_lifecycle.py \
+            tests/test_reconciliation_lifecycle_lock_wait_postgres.py \
+            tests/test_reconciliation_lifecycle_postgres.py
 
       - name: Run full repository quality gates
         run: |
@@ -101,6 +110,7 @@ jobs:
           remote_head="$(git ls-remote origin "refs/heads/${GITHUB_REF_NAME}" | awk '{print $1}')"
           test "$remote_head" = "$EXPECTED_HEAD"
           test ! -e scripts/temp_pr47_review_repair.py
+          test ! -e scripts/temp_pr47_snapshot_authority_repair.py
           test ! -e .github/workflows/_temp_pr47_review_repair.yml
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
