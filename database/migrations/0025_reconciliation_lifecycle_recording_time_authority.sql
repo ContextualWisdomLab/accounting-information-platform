@@ -7,12 +7,46 @@ BEGIN;
 -- timestamp to make a future-effective decision appear current.
 --
 -- Migration 0019 allowed callers to supply recorded_at explicitly. Existing
--- transition rows therefore remain immutable audit evidence, but their system
--- timestamp cannot be proven to have come from the database clock. Preserve
--- those rows and timestamps exactly and mark them legacy_unverified. Only rows
--- inserted after this migration receive database_clock authority. Downstream
--- close/replay boundaries must fail closed on legacy_unverified transition time.
--- This repair changes no journal, period-close, or accounting-policy authority.
+-- lifecycle transition rows are immutable, and the database cannot prove after
+-- the fact whether their recorded_at value came from the column default or from
+-- a caller. Unlike ordinary historical observations, those rows already make a
+-- run `reconciled` and can feed close evidence. Silently relabelling them would
+-- therefore promote unverifiable chronology into financial-control authority.
+-- Fail the upgrade instead. An operator must use an explicit audited remediation
+-- migration backed by the original transition/outbox evidence, or retain the old
+-- release until that provenance is resolved. Never manufacture database-clock
+-- provenance for a pre-0025 transition.
+--
+-- The transition table is FORCE RLS. Give only the current migration role
+-- transaction-scoped all-tenant SELECT visibility for this preflight and remove
+-- it before installing durable authority changes. A failed migration rolls the
+-- temporary policy back with the transaction.
+CREATE POLICY reconciliation_lifecycle_recording_time_upgrade_visibility
+    ON accounting_core.reconciliation_run_transition_command
+    FOR SELECT
+    TO current_user
+    USING (true);
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM accounting_core.reconciliation_run_transition_command
+    ) THEN
+        RAISE EXCEPTION
+            'pre-0025 reconciliation lifecycle transitions have unverifiable recording-time authority; perform audited remediation before migration 0025 (reconciliation_lifecycle_legacy_recording_time_preflight)'
+            USING ERRCODE = '23514';
+    END IF;
+END;
+$$;
+
+DROP POLICY reconciliation_lifecycle_recording_time_upgrade_visibility
+    ON accounting_core.reconciliation_run_transition_command;
+
+-- The authority marker makes the valid/system-time distinction explicit in the
+-- relational model and prevents later code from inferring trust merely from the
+-- presence of a timestamp. The preflight above means no legacy row is silently
+-- admitted into an installation that has completed 0025.
 ALTER TABLE accounting_core.reconciliation_run_transition_command
     ADD COLUMN recording_time_authority_code text NOT NULL DEFAULT 'legacy_unverified'
         CHECK (recording_time_authority_code IN ('legacy_unverified', 'database_clock'));
