@@ -17,13 +17,15 @@ No initial or changed `run_status_code` is a generic database field edit. On agg
 
 Review evidence also has immutable aggregate membership. Candidate, match, statement allocation, journal allocation, approval, and exception rows may not change either `tenant_account_id` or `reconciliation_run_id` after creation. Without that invariant, a privileged writer could evade a reconciled run's evidence freeze by reassigning an existing row to another evaluating run before or after mutating it. Corrections are new/superseding evidence in the destination run, never cross-aggregate row reassignment.
 
-The application performs the authority-bearing read under one PostgreSQL `REPEATABLE READ` transaction. It executes `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`, acquires the run lifecycle transaction advisory lock before the first data query establishes the MVCC snapshot, then reads the run, review population, exception population, immutable opening-command evidence, and the database-owned statement/book populations used by the exact book-to-bank bridge. The transition fails closed when:
+The application performs the authority-bearing read under one PostgreSQL `READ COMMITTED` transaction. It executes `SET TRANSACTION ISOLATION LEVEL READ COMMITTED`, then acquires the shared run lifecycle transaction advisory lock before tenant, run, review, exception, opening-command, statement-population, or book-population reads. This order is deliberate: the advisory-lock call is itself a SQL statement. Under `REPEATABLE READ`, that lock statement can establish a transaction snapshot before waiting, so a finalizer that waits behind a guarded evidence writer can retain a snapshot that predates the writer's commit after the lock is granted. Under `READ COMMITTED`, each later authority query receives a fresh statement snapshot; therefore a commit completed by the prior lock holder is visible after the wait. Every supported reconciliation-evidence mutation path uses the same run lifecycle lock, so once finalization owns the lock no later guarded aggregate mutation can race the authority reads and status/outbox write.
+
+The transition fails closed when:
 
 - the run is absent, terminal, or already reconciled under another command;
 - the lifecycle idempotency key was used for different evidence or was already used as the run-opening command key;
 - any match remains `proposed`;
 - an `approved` or `rejected` match lacks decision-consistent immutable approval evidence;
-- any reconciliation exception remains `open`;
+- any reconciliation exception remains `open` or lacks matching immutable maker-checker resolution-command evidence;
 - immutable opening-command provenance is missing; or
 - the database-owned exact bridge cannot tie without an unexplained difference.
 
@@ -39,11 +41,11 @@ PostgreSQL independently enforces the initial state, legal transition edge, evid
 2. `reconciliation_run_transition_command` is tenant-scoped, forced-RLS, immutable command evidence with at most one `reconciled` transition per run and durable statement/book population identities.
 3. A database trigger recomputes the transition-command hash from the opening command, run/tenant identity, target status, snapshot hash, statement population, book population, actor, purpose, effective time, and idempotency identity.
 4. A changed `run_status_code` is rejected unless it is the supported `reconciled` target backed by exactly one transition command in the same transaction. All other changed targets require a future named lifecycle command and are fail-closed today.
-5. Candidate, match, allocation, approval, and exception writes acquire the same run lifecycle transaction advisory lock. Their tenant/run aggregate membership is immutable. Once the run is `reconciled`, reviewed evidence is frozen and corrections require a new/superseding run rather than mutation behind existing close evidence.
-6. The transition insertion independently checks for proposed matches, open exceptions, and terminal approval/snapshot consistency before it can authorize the status update.
+5. Candidate, match, allocation, approval, exception, and exception-resolution paths acquire the same run lifecycle transaction advisory lock. Their tenant/run aggregate membership is immutable. `READ COMMITTED` is used by finalization so a wait on that lock cannot pin a pre-wait transaction snapshot; after acquisition, later authority reads observe the preceding guarded writer's commit. Once the run is `reconciled`, reviewed evidence is frozen and corrections require a new/superseding run rather than mutation behind existing close evidence.
+6. The transition insertion independently checks for proposed matches, unresolved or unauthoritatively terminal exceptions, and terminal approval/snapshot consistency before it can authorize the status update.
 7. Exact replay reads the persisted transition evidence, including source-population identities; it does not recalculate those identities against a later database state.
 
-The service computes `reconciliation_snapshot_hash` from database-owned source facts and exact Decimal bridge values observed in the protected snapshot. The database stores and binds that digest but does **not** independently rederive every bridge component inside SQL in this slice. This limitation is deliberate and must not be represented as database-side recomputation of the complete monetary bridge. Moving snapshot derivation fully into PostgreSQL is a future option only if parity/property tests prove exact equivalence with the domain representation.
+The service computes `reconciliation_snapshot_hash` from database-owned source facts and exact Decimal bridge values observed while it owns the lifecycle lock. The database stores and binds that digest but does **not** independently rederive every bridge component inside SQL in this slice. This limitation is deliberate and must not be represented as database-side recomputation of the complete monetary bridge. Moving snapshot derivation fully into PostgreSQL is a future option only if parity/property tests prove exact equivalence with the domain representation.
 
 ## DDD mapping
 
@@ -54,7 +56,7 @@ The service computes `reconciliation_snapshot_hash` from database-owned source f
 - **Value evidence:** lifecycle idempotency key, target status, exact reconciliation snapshot hash, statement population reference, book population reference, actor reference, purpose code, effective time, command hash.
 - **Domain event:** `reconciliation_run_reconciled` through the accounting transactional outbox.
 - **Domain service:** `reconcile_reconciliation_run()` reconstructs eligibility from repositories/database-owned facts and performs the transition transaction.
-- **Invariant:** a run is born in `evaluating`, every later changed run status requires a named command, and `reconciled` specifically means one reviewed run whose exact source bridge ties, whose source population identities are durably retained for replay, whose terminal matches carry current immutable decisions, whose exceptions are not open, and whose transition is backed by one immutable command.
+- **Invariant:** a run is born in `evaluating`, every later changed run status requires a named command, and `reconciled` specifically means one reviewed run whose exact source bridge ties, whose source population identities are durably retained for replay, whose terminal matches carry current immutable decisions, whose exceptions have matching immutable maker-checker command evidence, and whose transition is backed by one immutable command.
 - **Anti-corruption boundary:** bank evidence remains non-posting input; external billing, identity, architecture, and orchestration contexts cannot write reconciliation or accounting tables directly.
 
 The lifecycle aggregate remains separate from the period-close aggregate. This avoids making statement ingestion, matching, reconciliation review, journal posting, and period close one oversized transaction boundary.
@@ -62,6 +64,8 @@ The lifecycle aggregate remains separate from the period-close aggregate. This a
 ## Consequences
 
 Controllers gain a supported repository-owned path from run evaluation to review-complete reconciliation. Direct terminal insertion and direct status SQL no longer constitute valid product operations. A reconciled run is stable enough to become close-package evidence because later review-population mutation and cross-run evidence reassignment are rejected, and an exact replay can reproduce the same source-population references without observing later statement/journal data.
+
+`READ COMMITTED` is an intentional concurrency choice for the finalization service, not a weakening of accounting consistency. The lifecycle advisory lock is the aggregate serialization primitive. The isolation level ensures that the statement executed after a lock wait sees the commit that released the lock instead of retaining a pre-wait snapshot. This contract depends on every authority-bearing reconciliation evidence writer retaining the shared lifecycle-lock guard; any path that can mutate eligible evidence without that lock is a P1 integration defect.
 
 The public surface introduced here is the package API. A buyer-facing HTTP lifecycle route should be added only with the purpose-bound authorization integration so the route cannot create an unauthenticated high-impact control path. Until that integration lands, this ADR does not claim that a controller HTTP endpoint exists.
 
@@ -71,18 +75,22 @@ This slice does not yet introduce a dedicated PostgreSQL login/capability role s
 
 Acceptance evidence must bind to one unchanged exact head and include:
 
-- unit tests for input validation, exact replay/conflict, replayed source-population provenance, legal states, match/approval completeness, open exceptions, bridge failure, missing provenance, deterministic snapshot binding, and lock ordering;
+- unit tests for input validation, exact replay/conflict, replayed source-population provenance, legal states, match/approval completeness, maker-checker exception authority, bridge failure, missing provenance, deterministic snapshot binding, and lock ordering;
+- an isolation regression proving lifecycle finalization configures `READ COMMITTED` before taking the shared run lifecycle lock, so subsequent authority reads can observe a commit completed while that lock was awaited;
 - migration/repository contracts proving statement and book population references are required immutable transition evidence, are included in the database-owned transition-command digest, and review-evidence tenant/run membership cannot be reassigned;
 - real PostgreSQL tests proving a raw terminal-state run `INSERT` fails, raw `UPDATE ... SET run_status_code='reconciled'` fails without lifecycle command evidence, raw SQL cannot manufacture another changed lifecycle target without its own named command, cross-run evidence reassignment fails, the supported command writes transition + status + outbox atomically, exact replay is idempotent and returns the same source-population provenance, and reviewed evidence freezes after reconciliation;
+- a real PostgreSQL concurrency test in which finalization waits behind a lifecycle-lock-protected evidence mutation and, after lock grant, evaluates the committed evidence rather than a pre-wait snapshot;
 - existing real PostgreSQL close-projection tests proving statement/book populations and exact bridge values are database-derived under the correct accounting-book scope;
 - exact 100% owned production statement/branch coverage and public-docstring/repository contracts; and
 - current-head CI, SAST, security/dependency, reproducibility/SBOM/provenance, and required review evidence.
 
 ## Research basis
 
-PostgreSQL `REPEATABLE READ` uses a transaction snapshot established at the first non-transaction-control statement, so acquiring the lifecycle advisory lock before the first data read prevents the transition from observing a snapshot that predates a concurrent evidence writer which is already serialized on the same lock. Row locks protect the run state from conflicting writers, while transaction-level advisory locks provide an application-defined coordination primitive that is released automatically at transaction end.
+PostgreSQL `READ COMMITTED` starts each command with a snapshot of rows committed before that command began. `REPEATABLE READ`, by contrast, fixes the transaction snapshot from the first non-transaction-control statement. Because `pg_advisory_xact_lock(...)` is invoked by a SQL statement, using it as the first statement in a `REPEATABLE READ` transaction can pin a pre-wait snapshot. The lifecycle service therefore combines the shared transaction-level advisory lock with `READ COMMITTED`: a waiter acquires the lock only after the preceding guarded writer commits/releases it, and the later authority queries take snapshots after that point. Row locks continue to protect the run state from conflicting writers, while transaction-level advisory locks provide the wider application-defined aggregate coordination primitive and release automatically at transaction end.
 
 ### References
+
+PostgreSQL Global Development Group. (2026). *PostgreSQL 18 documentation: Transaction isolation*. https://www.postgresql.org/docs/18/transaction-iso.html
 
 PostgreSQL Global Development Group. (2026). *PostgreSQL 18 documentation: SELECT*. https://www.postgresql.org/docs/18/sql-select.html
 
