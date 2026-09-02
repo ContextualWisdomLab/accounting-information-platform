@@ -15,13 +15,14 @@ from .persistence import (
 def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
     """Apply the complete checked-in foundation chain through the canonical loader."""
     forward_migration_paths = (
+        migration_path.parent / "0019_reconciliation_run_database_snapshot_authority.sql",
         migration_path.parent / "0020_reconciliation_exception_resolution_command.sql",
         migration_path.parent / "0021_reconciliation_exception_resolution_outbox_pair.sql",
     )
     for forward_migration_path in forward_migration_paths:
         if not forward_migration_path.is_file():
             raise AccountingValidationError(
-                "Required reconciliation exception-resolution migration is missing at "
+                "Required reconciliation authority migration is missing at "
                 f"{forward_migration_path}. Restore the checked-in migration chain, then retry."
             )
 
@@ -35,16 +36,15 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
                 connection.execute(forward_migration_path.read_text(encoding="utf-8"))
     except Exception as error:
         raise AccountingValidationError(
-            "Reconciliation exception-resolution migration failed. Inspect the PostgreSQL "
-            "error, restore a clean database, then retry the complete foundation migration."
+            "Reconciliation authority migration failed. Inspect the PostgreSQL error, restore "
+            "a clean database, then retry the complete foundation migration."
         ) from error
 
 
-# A large integration-test surface historically imports the loader from the
-# persistence module directly. During this stacked migration, keep that legacy
-# import path pointed at the exported complete-chain loader so isolated suites
-# cannot stop before the current exception-resolution authority boundary and
-# accidentally depend on test discovery order.
+# A large integration-test and operator surface historically imports the loader
+# from persistence directly. Keep that compatibility path on the complete-chain
+# installer so no supported install can stop before the current database-owned
+# reconciliation authority and exception-resolution boundaries.
 _persistence.apply_foundation_migration = apply_foundation_migration
 
 
