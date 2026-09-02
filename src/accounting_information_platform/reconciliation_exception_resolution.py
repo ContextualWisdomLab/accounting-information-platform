@@ -21,6 +21,7 @@ from .reconciliation_run import (
     _parse_uuid,
 )
 
+_RESOLUTION_EVIDENCE_TYPE = "exception_resolution_review"
 _RESOLUTION_HASH_SENTINEL = "sha256:" + "0" * 64
 _RESOLUTION_NEXT_ACTION = (
     "Review the remaining reconciliation exceptions and reviewed matches; when all "
@@ -230,6 +231,36 @@ def _resolve_reconciliation_exception_once(
             raise AccountingValidationError(
                 "exception resolution effective_at cannot precede the exception effective time. "
                 "Supply the actual review time, then retry."
+            )
+
+        retained_evidence = connection.execute(
+            """
+            SELECT reconciliation_evidence_id
+            FROM accounting_core.reconciliation_evidence
+            WHERE tenant_account_id = %s
+              AND reconciliation_run_id = %s
+              AND reconciliation_exception_id = %s
+              AND evidence_type_code = %s
+              AND evidence_reference = %s
+              AND evidence_payload_hash = %s
+              AND effective_at <= %s
+              AND recorded_at <= clock_timestamp()
+            """,
+            (
+                tenant_id,
+                run_id,
+                exception_id,
+                _RESOLUTION_EVIDENCE_TYPE,
+                evidence_reference,
+                evidence_hash,
+                effective_at,
+            ),
+        ).fetchone()
+        if retained_evidence is None:
+            raise AccountingValidationError(
+                "retained resolution evidence does not match this tenant, run, exception, "
+                "review-evidence type, digest, or decision time. Retain the reviewed artifact "
+                "in AIS, then retry the exception resolution."
             )
 
         resolution_id, resolution_hash, _recorded_at = connection.execute(
