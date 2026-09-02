@@ -18,6 +18,7 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
         migration_path.parent / "0019_reconciliation_run_database_snapshot_authority.sql",
         migration_path.parent / "0020_reconciliation_exception_resolution_command.sql",
         migration_path.parent / "0021_reconciliation_exception_resolution_outbox_pair.sql",
+        migration_path.parent / "0022_reconciliation_authority_outbox_retention.sql",
     )
     for forward_migration_path in forward_migration_paths:
         if not forward_migration_path.is_file():
