@@ -8,6 +8,14 @@ The branch was restacked non-destructively on exact #29 head `843f0e3bbe10f3bb98
 
 This repair changes architecture description and fitness evidence only. It does not grant accounting runtime authority, alter a database migration, change a reconciliation decision, post/reverse a journal, close a fiscal period, or consume mutable foreign-repository implementation code.
 
+## Decision-status consistency repair
+
+A second evidence defect remained after ADR 0059 itself was restored to `Status: Proposed`: `docs/CONTEXT_MAP.md` still began with `Status: accepted architecture`. That presentation could cause a reviewer or a later Agent to treat an unintegrated Draft decision as accepted despite the parent dependency still being under repair and the exact-head verification gate being incomplete. The contradiction is governance-significant because the Context Map is the code-current ownership authority used by the architecture fitness test.
+
+The repair was test-first. Commit `b3123838185bfc2e0f8084499ff229dfdbf0f8d5` added a regression requiring ADR 0059 to remain `Status: Proposed`, the Context Map to say `Status: proposed architecture`, and the Context Map not to claim `Status: accepted architecture`. On the predecessor tree that contract is RED because the stale accepted claim is still present. Successor commit `c126219308f44f873285c02cb2dda26530f3215a` changes only the Context Map status claim to `proposed architecture`; it does not change bounded contexts, data authority, Shared Kernel scope, or runtime behavior.
+
+Concrete failure scene: an implementation Agent preparing a new accounting module reads the Context Map before the ADR and interprets `accepted architecture` as protected-branch evidence. It then treats a proposed cross-repository boundary as settled and builds against it before released conformance evidence exists. Keeping both the ADR and its Context Map explicitly Proposed prevents that evidence escalation. Promotion to Accepted requires the same exact protected integration evidence described by ADR 0059; a queued workflow, predecessor check, Draft PR, or source inspection is insufficient.
+
 ## Evidence boundary
 
 The relevant architecture-description authority was rechecked against the publisher on 2026-09-02. ISO lists **ISO/IEC/IEEE 42010:2022, Software, systems and enterprise — Architecture description, Edition 2** as the currently published International Standard; the 2011 edition is withdrawn and replaced by the 2022 edition. The standard specifies requirements for architecture descriptions and their concepts/relationships, viewpoints, frameworks and languages; it does not prescribe Domain-Driven Design, a directory structure, a microservice split, or a specific implementation method. Accordingly, ADR 0059 and the Context Map use it only as architecture-description guidance and make no standards-conformance claim.
@@ -23,7 +31,8 @@ The architecture slice remains GREEN only when all of the following are true on 
 3. accounting domain/application source does not import foreign ContextualWisdomLab application implementations;
 4. the only declared Context Fabric Shared Kernel is a later immutable released provider-neutral contract grammar, never mutable open-PR bytes;
 5. journal/ledger balances, reconciliation monetary populations, policy, posting authority and close authority remain Accounting-owned and are not promoted into the EA Decision Plane;
-6. an upstream restack that adds, removes or materially reassigns a production module must update the Context Map and rerun the architecture fitness gate before merge.
+6. an upstream restack that adds, removes or materially reassigns a production module must update the Context Map and rerun the architecture fitness gate before merge;
+7. ADR 0059 and the Context Map must not claim Accepted architecture before the exact protected integration evidence exists.
 
 Queued, skipped, stale, predecessor or model-only workflow results are not GREEN evidence.
 
