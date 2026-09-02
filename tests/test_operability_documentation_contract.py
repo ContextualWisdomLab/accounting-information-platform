@@ -36,6 +36,21 @@ class OperabilityDocumentationContractTests(unittest.TestCase):
             operability,
         )
 
+    def test_reconciliation_outbox_retention_migration_is_operationally_required(self) -> None:
+        """Operations must install 0022 and preserve exactly-one authority evidence."""
+        operability = (ROOT / "docs" / "OPERABILITY.md").read_text(encoding="utf-8")
+
+        self.assertIn(
+            "database/migrations/0022_reconciliation_authority_outbox_retention.sql",
+            operability,
+        )
+        self.assertIn(
+            "exactly one matching outbox event",
+            operability,
+        )
+        self.assertIn("published_at", operability)
+        self.assertIn("duplicate", operability)
+
 
 if __name__ == "__main__":
     unittest.main()
