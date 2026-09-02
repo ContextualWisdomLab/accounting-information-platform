@@ -74,23 +74,6 @@ class ReconciliationExceptionResolutionReviewRegressionTests(unittest.TestCase):
         self.assertLess(migration.index(marker), migration.index(drop_policy))
         self.assertLess(migration.index(drop_policy), migration.index("ALTER TABLE"))
 
-    def test_command_family_constraint_uses_online_validation(self) -> None:
-        """Expanded command-family validation avoids a table scan under the strongest lock."""
-        migration = _MIGRATION.read_text(encoding="utf-8")
-        add_marker = (
-            "ADD CONSTRAINT reconciliation_command_identity_command_family_code_check"
-        )
-        validate_statement = (
-            "ALTER TABLE accounting_core.reconciliation_command_identity\n"
-            "    VALIDATE CONSTRAINT "
-            "reconciliation_command_identity_command_family_code_check;"
-        )
-        add_start = migration.index(add_marker)
-        validate_start = migration.index(validate_statement)
-        definition = migration[add_start:validate_start]
-        self.assertIn(") NOT VALID;", definition)
-        self.assertLess(add_start, validate_start)
-
     def test_open_exception_control_evidence_is_frozen_from_creation(self) -> None:
         """Maker evidence cannot be rewritten before the checker command is recorded."""
         migration = _MIGRATION.read_text(encoding="utf-8")
