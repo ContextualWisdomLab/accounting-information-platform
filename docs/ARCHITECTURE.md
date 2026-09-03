@@ -32,6 +32,7 @@ Metering and billing remain authoritative for usage, pricing, invoice intent, pa
 | `close_control` | Open / soft-close / hard-close state and close evidence |
 | `trial_balance` | Deterministic aggregation from the authoritative journal population or hard-close snapshot |
 | `reporting_projection` | Versioned statements, ledgers, balances, rollforwards and close-package reads |
+| `financial_reporting` | Canonical exact-value report artifacts, structured explanations, and taxonomy-profile-driven XBRL serialization; no independent journal query or accounting calculation |
 | `integration_outbox` | Transactional publication evidence and append-only audit history |
 | `tax_interface` | VAT register and fail-closed HomeTax submission evidence; no NTS transport in this foundation |
 | `bank_statement_registry` | Immutable camt.053.001.14 statement/entry evidence, bank-account-to-book mapping, and host artifact locators |
@@ -104,6 +105,28 @@ The current HTTP / library surface includes:
 - fail-closed HomeTax submission evidence and receipt history.
 
 Detailed request / response and behavioral contracts live in the corresponding ADRs. Read models do not become alternate posting authorities.
+
+## Financial-report artifact and XBRL boundary
+
+The financial-statement package remains the sole numerical source for every downstream report format.
+
+```text
+posted journal / close snapshot
+    -> repeatable-read four-statement package
+    -> canonical financial report artifact
+       -> exact-value renderer input
+       -> structured explanation records
+       -> injected taxonomy profile
+          -> deterministic XBRL 2.1 instance
+```
+
+`build_financial_report_artifact` verifies all four statements, current/comparison identity, exact statement totals, profit-or-loss arithmetic, the financial-position equation, equity rollforward, cash-flow rollforward, and cross-statement income/cash ties. It then retains source paths, statement snapshot references, the canonical source package, and SHA-256 identities. It does not query PostgreSQL or create a second formula source.
+
+`export_xbrl_instance` verifies and rebuilds the report artifact before serialization. A caller cannot modify a derived fact and merely recalculate an outer digest. The injected `XbrlTaxonomyProfile` independently identifies the reporting standard, taxonomy release, namespace, schema entry point, package digest, concept mappings, and period types. No official IFRS, DART, or other filing profile is bundled by this slice.
+
+The serializer emits an XBRL 2.1 instance envelope only. Schema/linkbase loading, Calculations 1.1, Formula, Inline XBRL, jurisdiction validation, filing submission, accessible HTML/PDF/spreadsheet rendering, persistent report runs, localized explanations, and approved management commentary remain successor boundaries recorded in ADR 0067 and `docs/FINANCIAL_REPORTING.md`.
+
+Structured explanations are deterministic message codes with exact parameters and evidence paths. A localized renderer or Contextual Orchestrator interpreter may consume them, but neither can change accounting facts. Model-generated prose remains proposed, must be verified against the artifact, and requires human approval before publication.
 
 ## Billing integration
 
