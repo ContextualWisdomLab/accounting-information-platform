@@ -1,4 +1,4 @@
-"""Canonical exact-decimal financial-report artifact construction."""
+"""Canonical exact-decimal financial-report proposal construction."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ def build_financial_report_artifact(
     statement_package: Mapping[str, object],
     report_context: FinancialReportContext,
 ) -> dict[str, object]:
-    """Build a deterministic exact-decimal artifact from one statement package."""
+    """Build a deterministic unverified proposal from caller-supplied statements."""
     if not isinstance(statement_package, Mapping):
         raise AccountingValidationError("statement_package must be a mapping")
     if not isinstance(report_context, FinancialReportContext):
@@ -80,6 +80,9 @@ def build_financial_report_artifact(
         _json_bytes(
             {
                 "report_contract_version": 1,
+                "truth_status_code": "proposed",
+                "source_authority_code": "caller_supplied_statement_package",
+                "publication_readiness_code": "unverified",
                 "source_package_hash": source_hash,
                 "report_context": context_document,
             },
@@ -88,8 +91,12 @@ def build_financial_report_artifact(
     )
     artifact_document: dict[str, object] = {
         "report_contract_version": 1,
+        "truth_status_code": "proposed",
+        "source_authority_code": "caller_supplied_statement_package",
+        "publication_readiness_code": "unverified",
+        "authoritative_report": False,
         "report_artifact_reference": (
-            "urn:cwl:accounting:financial_report:"
+            "urn:cwl:accounting:financial_report_proposal:"
             + identity_hash.split(":", 1)[1]
         ),
         "source_package_hash": source_hash,
@@ -318,7 +325,7 @@ def _direction(change_amount: Decimal) -> str:
 def _snapshot_references(
     statement_documents: Mapping[str, Mapping[str, object]],
 ) -> list[str]:
-    """Collect unique current and comparative snapshot references in stable order."""
+    """Collect claimed snapshot references in stable statement order."""
     snapshot_references: list[str] = []
     for statement_type in _STATEMENT_TYPES:
         for snapshot_key in (
