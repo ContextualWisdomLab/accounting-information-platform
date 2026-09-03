@@ -128,6 +128,10 @@ class ReconciliationLifecyclePrelockSnapshotRedTests(unittest.TestCase):
                             self._raw_transition(connection, tenant_id)
                             connection.commit()
                         finally:
+                            # A rejected transition leaves the transaction aborted.
+                            # Clear that state before releasing the session advisory lock
+                            # so cleanup cannot mask the authority error under test.
+                            connection.rollback()
                             connection.execute(
                                 "SELECT pg_advisory_unlock(hashtext(%s), hashtext(%s))",
                                 (self.fixture.case.policy.tenant_reference, lifecycle_scope),
