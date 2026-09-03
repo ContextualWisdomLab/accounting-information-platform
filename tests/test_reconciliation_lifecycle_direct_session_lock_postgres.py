@@ -146,7 +146,6 @@ class ReconciliationLifecycleDirectSessionLockPostgresTests(unittest.TestCase):
                 future = executor.submit(attempt_raw_transition)
                 self.assertTrue(worker_started.wait(timeout=10))
 
-                blocked = False
                 deadline = time.monotonic() + 5
                 with psycopg.connect(posting.DATABASE_URL, autocommit=True) as monitor:
                     while time.monotonic() < deadline and not future.done():
@@ -155,13 +154,13 @@ class ReconciliationLifecycleDirectSessionLockPostgresTests(unittest.TestCase):
                             (worker_pid["value"],),
                         ).fetchone()[0]
                         if writer_pid in blockers:
-                            blocked = True
                             break
 
-                if blocked:
-                    writer.commit()
-                else:
-                    writer.rollback()
+                # The predecessor implementation can block here; the repaired
+                # guard fails before that wait. Commit the eligibility-changing
+                # exception in either case, then prove the raw attempt cannot
+                # become authority from its earlier statement/transaction state.
+                writer.commit()
                 future.result(timeout=10)
 
         self.assertEqual(len(worker_error), 1)
@@ -170,9 +169,20 @@ class ReconciliationLifecycleDirectSessionLockPostgresTests(unittest.TestCase):
             "reconciliation_lifecycle_session_lock_required",
             str(worker_error[0]),
         )
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            committed_exception_count = connection.execute(
+                """
+                SELECT count(*)
+                FROM accounting_core.reconciliation_exception
+                WHERE reconciliation_run_id = %s
+                  AND exception_code = 'late_direct_sql_exception'
+                """,
+                (self.opened["reconciliation_run_id"],),
+            ).fetchone()[0]
+        self.assertEqual(committed_exception_count, 1)
 
     def test_transaction_lock_alone_is_not_session_lock_proof(self) -> None:
-        """An xact lock cannot substitute for a committed pre-transaction session lease."""
+        """A transaction lock cannot substitute for the required session-level hold."""
         lifecycle_scope = (
             "reconciliation_run_lifecycle:" + self.opened["reconciliation_run_id"]
         )
