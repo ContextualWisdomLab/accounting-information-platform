@@ -86,6 +86,7 @@ def reconcile_reconciliation_run(
     immutable command evidence; changed retries fail closed.
     """
     command = _require_transition_command(payload, tenant_reference)
+    source_payload_hash = _source_payload_hash(command)
     run_id = _parse_uuid(
         str(command.get("reconciliation_run_id") or ""), "reconciliation_run_id"
     )
@@ -113,7 +114,8 @@ def reconcile_reconciliation_run(
 
         prior = connection.execute(
             """
-            SELECT reconciliation_run_id, actor_reference, purpose_code, effective_at
+            SELECT reconciliation_run_id, actor_reference, purpose_code, effective_at,
+                   source_payload_hash
             FROM accounting_core.reconciliation_run_transition_command
             WHERE tenant_account_id = %s
               AND reconciliation_transition_idempotency_key = %s
@@ -121,10 +123,18 @@ def reconcile_reconciliation_run(
             (tenant_id, idempotency_key),
         ).fetchone()
         if prior is not None:
-            if prior != (run_id, actor_reference, purpose_code, effective_at):
+            expected = (
+                run_id,
+                actor_reference,
+                purpose_code,
+                effective_at,
+                source_payload_hash,
+            )
+            if prior != expected:
                 raise IdempotencyConflictError(
                     "reconciliation lifecycle idempotency key was already used with different "
-                    "transition evidence. Supply a new reconciliation_idempotency_key, then retry."
+                    "transition evidence or source payload. Supply a new "
+                    "reconciliation_idempotency_key, then retry."
                 )
             return _load_transition_document(
                 connection,
@@ -247,10 +257,11 @@ def reconcile_reconciliation_run(
                 tenant_account_id, reconciliation_run_id,
                 reconciliation_transition_idempotency_key, target_run_status_code,
                 reconciliation_snapshot_hash, statement_population_reference,
-                book_population_reference, reconciliation_transition_command_hash,
-                actor_reference, purpose_code, effective_at
+                book_population_reference, source_payload_hash,
+                reconciliation_transition_command_hash, actor_reference,
+                purpose_code, effective_at
             )
-            VALUES (%s, %s, %s, 'reconciled', %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, 'reconciled', %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING reconciliation_run_transition_command_id,
                       reconciliation_transition_command_hash, recorded_at
             """,
@@ -261,6 +272,7 @@ def reconcile_reconciliation_run(
                 snapshot_hash,
                 bridge.statement_population_reference,
                 bridge.book_population_reference,
+                source_payload_hash,
                 _TRANSITION_HASH_SENTINEL,
                 actor_reference,
                 purpose_code,
@@ -321,6 +333,47 @@ def _require_transition_command(payload: object, tenant_reference: str) -> Mappi
             "reconciliation_action_code must be reconcile. Supply the supported lifecycle action, then retry."
         )
     return payload
+
+
+def _require_strict_json_value(value: object) -> None:
+    """Reject Python-only structures before they can influence lifecycle identity."""
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return
+    if isinstance(value, list):
+        for item in value:
+            _require_strict_json_value(item)
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise AccountingValidationError(
+                    "reconciliation lifecycle payload must use string JSON object keys. "
+                    "Supply the exact JSON command, then retry."
+                )
+            _require_strict_json_value(item)
+        return
+    raise AccountingValidationError(
+        "reconciliation lifecycle payload must contain only JSON values. Supply the exact JSON "
+        "command, then retry."
+    )
+
+
+def _source_payload_hash(command: Mapping[str, object]) -> str:
+    """Hash the complete strict-JSON lifecycle command for idempotent replay identity."""
+    _require_strict_json_value(command)
+    try:
+        canonical = json.dumps(
+            command,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    except (TypeError, ValueError) as error:
+        raise AccountingValidationError(
+            "reconciliation lifecycle payload must contain JSON-compatible values. Supply the "
+            "exact JSON command, then retry."
+        ) from error
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _canonical_text(value: object, field_name: str) -> str:
@@ -493,7 +546,8 @@ def _load_transition_document(
                transition.actor_reference, transition.purpose_code,
                transition.effective_at, transition.recorded_at, run.run_status_code,
                transition.statement_population_reference,
-               transition.book_population_reference
+               transition.book_population_reference,
+               transition.source_payload_hash
         FROM accounting_core.reconciliation_run_transition_command AS transition
         JOIN accounting_core.reconciliation_run AS run
           ON run.tenant_account_id = transition.tenant_account_id
@@ -522,6 +576,7 @@ def _load_transition_document(
         "recorded_at": _format_timestamp(row[6]),
         "statement_population_reference": row[8],
         "book_population_reference": row[9],
+        "source_payload_hash": row[10],
         "next_action": _RECONCILED_NEXT_ACTION,
         "replayed": replayed,
     }
