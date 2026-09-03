@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 from ..core import AccountingValidationError
 
 _URI_SCHEMES = frozenset({"http", "https", "urn"})
-_RESERVED_PREFIXES = frozenset({"xml", "xmlns", "xbrli", "link", "xlink", "iso4217"})
+_RESERVED_PREFIXES = frozenset({"xbrli", "link", "xlink", "iso4217"})
 _FACT_PATTERN = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$")
 _CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 _XML_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9._-]*$")
@@ -39,23 +39,40 @@ def _mapping_text(source_mapping: Mapping[str, object], field_name: str) -> str:
 
 
 def _required_text(raw_value: object, field_name: str) -> str:
-    """Require a non-empty string without leading or trailing whitespace."""
+    """Require canonical non-empty text that is valid in XML 1.0."""
     if not isinstance(raw_value, str) or not raw_value or raw_value.strip() != raw_value:
         raise AccountingValidationError(f"{field_name} must be a canonical non-empty string")
+    _xml_text(raw_value, field_name)
     return raw_value
 
 
 def _optional_text(raw_value: object, field_name: str) -> str:
-    """Normalize an absent optional string while rejecting non-canonical values."""
+    """Normalize absent text while rejecting non-canonical or XML-unsafe values."""
     if raw_value is None:
         return ""
     if not isinstance(raw_value, str) or raw_value.strip() != raw_value:
         raise AccountingValidationError(f"{field_name} must be a canonical string")
+    _xml_text(raw_value, field_name)
     return raw_value
 
 
+def _xml_text(text_value: str, field_name: str) -> None:
+    """Reject characters that XML 1.0 cannot represent."""
+    for character in text_value:
+        code_point = ord(character)
+        if not (
+            code_point in {0x9, 0xA, 0xD}
+            or 0x20 <= code_point <= 0xD7FF
+            or 0xE000 <= code_point <= 0xFFFD
+            or 0x10000 <= code_point <= 0x10FFFF
+        ):
+            raise AccountingValidationError(
+                f"{field_name} contains a character forbidden by XML 1.0"
+            )
+
+
 def _absolute_uri(raw_value: object, field_name: str) -> str:
-    """Require an absolute HTTP, HTTPS, or URN identifier."""
+    """Require an XML-safe absolute HTTP, HTTPS, or URN identifier."""
     uri_text = _required_text(raw_value, field_name)
     parsed_uri = urlparse(uri_text)
     if parsed_uri.scheme.lower() not in _URI_SCHEMES:
@@ -68,7 +85,11 @@ def _absolute_uri(raw_value: object, field_name: str) -> str:
 
 
 def _amount(raw_value: object, field_name: str) -> Decimal:
-    """Parse one finite exact decimal and normalize signed zero."""
+    """Parse one finite exact decimal and reject binary floating-point input."""
+    if isinstance(raw_value, float):
+        raise AccountingValidationError(
+            f"{field_name} must not use binary floating-point"
+        )
     try:
         decimal_amount = Decimal(str(raw_value))
     except (InvalidOperation, ValueError) as error:
@@ -93,9 +114,9 @@ def _json_bytes(raw_value: object, error_message: str) -> bytes:
             separators=(",", ":"),
             allow_nan=False,
         )
-    except (TypeError, ValueError) as error:
+        return json_text.encode("utf-8")
+    except (TypeError, ValueError, UnicodeEncodeError) as error:
         raise AccountingValidationError(error_message) from error
-    return json_text.encode("utf-8")
 
 
 def _digest(raw_bytes: bytes) -> str:
