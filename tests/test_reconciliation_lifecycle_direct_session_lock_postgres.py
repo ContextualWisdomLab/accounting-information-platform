@@ -157,7 +157,6 @@ class ReconciliationLifecycleDirectSessionLockPostgresTests(unittest.TestCase):
                         if writer_pid in blockers:
                             blocked = True
                             break
-                        time.sleep(0.02)
 
                 if blocked:
                     writer.commit()
@@ -171,6 +170,25 @@ class ReconciliationLifecycleDirectSessionLockPostgresTests(unittest.TestCase):
             "reconciliation_lifecycle_session_lock_required",
             str(worker_error[0]),
         )
+
+    def test_transaction_lock_alone_is_not_session_lock_proof(self) -> None:
+        """An xact lock cannot substitute for a committed pre-transaction session lease."""
+        lifecycle_scope = (
+            "reconciliation_run_lifecycle:" + self.opened["reconciliation_run_id"]
+        )
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            tenant_id = self._tenant_id(connection)
+            connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+                (self.fixture.case.policy.tenant_reference, lifecycle_scope),
+            )
+            with self.assertRaisesRegex(
+                psycopg.Error,
+                "reconciliation_lifecycle_session_lock_required",
+            ):
+                self._raw_transition(connection, tenant_id)
+            connection.rollback()
 
     def test_read_committed_raw_transition_requires_pre_statement_session_lock(self) -> None:
         """READ COMMITTED raw DML cannot wait after deriving a predecessor statement snapshot."""
