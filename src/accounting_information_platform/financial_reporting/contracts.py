@@ -164,7 +164,12 @@ class XbrlTaxonomyProfile:
         )
         if _HASH_PATTERN.fullmatch(taxonomy_package_hash) is None:
             raise AccountingValidationError("taxonomy_package_hash is not a SHA-256 digest")
-        mapping_records = tuple(self.concept_mappings)
+        try:
+            mapping_records = tuple(self.concept_mappings)
+        except TypeError as error:
+            raise AccountingValidationError(
+                "concept_mappings must contain XbrlConceptMapping values"
+            ) from error
         if not mapping_records or any(
             not isinstance(mapping_record, XbrlConceptMapping)
             for mapping_record in mapping_records
