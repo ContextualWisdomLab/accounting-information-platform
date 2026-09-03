@@ -17,6 +17,8 @@ _FACT_PATTERN = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$")
 _CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 _XML_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9._-]*$")
 _HASH_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+_NUMERIC_MAX_INTEGRAL_DIGITS = 32
+_NUMERIC_MAX_FRACTIONAL_DIGITS = 6
 
 
 def _book_reference(source_mapping: Mapping[str, object]) -> str:
@@ -85,7 +87,7 @@ def _absolute_uri(raw_value: object, field_name: str) -> str:
 
 
 def _amount(raw_value: object, field_name: str) -> Decimal:
-    """Parse one finite exact decimal and reject binary floating-point input."""
+    """Parse one finite exact decimal within the accounting numeric storage domain."""
     if isinstance(raw_value, float):
         raise AccountingValidationError(
             f"{field_name} must not use binary floating-point"
@@ -96,6 +98,16 @@ def _amount(raw_value: object, field_name: str) -> Decimal:
         raise AccountingValidationError(f"{field_name} must be a finite decimal") from error
     if not decimal_amount.is_finite():
         raise AccountingValidationError(f"{field_name} must be a finite decimal")
+    decimal_tuple = decimal_amount.as_tuple()
+    fractional_digits = max(-decimal_tuple.exponent, 0)
+    integral_digits = max(len(decimal_tuple.digits) + decimal_tuple.exponent, 0)
+    if (
+        integral_digits > _NUMERIC_MAX_INTEGRAL_DIGITS
+        or fractional_digits > _NUMERIC_MAX_FRACTIONAL_DIGITS
+    ):
+        raise AccountingValidationError(
+            f"{field_name} must fit PostgreSQL numeric(38, 6) without rounding"
+        )
     return abs(decimal_amount) if decimal_amount == 0 else decimal_amount
 
 
