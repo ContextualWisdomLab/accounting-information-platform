@@ -40,6 +40,21 @@ class AccountingDocumentationCiAcceptanceTests(unittest.TestCase):
                     "Foundation CI acceptance",
                 )
 
+    def test_path_filter_detection_rejects_quoted_yaml_keys(self) -> None:
+        """Quoted YAML mapping keys cannot hide paths or paths-ignore filters."""
+        for trigger_block in (
+            '    "paths": ["src/**"]\n',
+            "    'paths-ignore': ['docs/**', '*.md']\n",
+            '    pull_request: {"paths": ["src/**"]}\n',
+            "    push: {'paths-ignore': ['docs/**', '*.md']}\n",
+        ):
+            with self.subTest(trigger_block=trigger_block):
+                self.assertIsNotNone(
+                    PATH_FILTER.search(trigger_block),
+                    "quoted YAML path-filter keys would let documentation bypass Accounting "
+                    "Foundation CI acceptance",
+                )
+
     def test_accounting_ci_does_not_ignore_documentation_changes(self) -> None:
         """Docs and Markdown changes must not bypass repository accounting validation."""
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
