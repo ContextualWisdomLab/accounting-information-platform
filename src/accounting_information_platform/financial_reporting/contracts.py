@@ -111,11 +111,12 @@ class XbrlConceptMapping:
             self.concept_local_name,
             "concept_local_name",
         )
+        period_type_code = _required_text(self.period_type_code, "period_type_code")
         if _FACT_PATTERN.fullmatch(fact_code) is None:
             raise AccountingValidationError("fact_code is not a canonical reporting code")
         if _XML_NAME_PATTERN.fullmatch(concept_local_name) is None:
             raise AccountingValidationError("concept_local_name is not an XML local name")
-        if self.period_type_code not in {"duration", "instant"}:
+        if period_type_code not in {"duration", "instant"}:
             raise AccountingValidationError("period_type_code must be duration or instant")
 
 
