@@ -8,10 +8,24 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+PATH_FILTER = re.compile(r"(?m)^\s+paths(?:-ignore)?:\s*$")
 
 
 class AccountingDocumentationCiAcceptanceTests(unittest.TestCase):
     """Keep documentation changes inside exact-head and integrated-head acceptance."""
+
+    def test_path_filter_detection_rejects_inline_yaml_values(self) -> None:
+        """Inline path filters must be detected as strongly as block-style filters."""
+        for trigger_block in (
+            "    paths: ['src/**']\n",
+            "    paths-ignore: ['docs/**', '*.md']\n",
+        ):
+            with self.subTest(trigger_block=trigger_block):
+                self.assertIsNotNone(
+                    PATH_FILTER.search(trigger_block),
+                    "inline YAML path filters would let documentation bypass Accounting "
+                    "Foundation CI acceptance",
+                )
 
     def test_accounting_ci_does_not_ignore_documentation_changes(self) -> None:
         """Docs and Markdown changes must not bypass repository accounting validation."""
@@ -22,11 +36,10 @@ class AccountingDocumentationCiAcceptanceTests(unittest.TestCase):
             "  push:", 1
         )[0]
         push_block = workflow.split("  push:", 1)[1].split("\npermissions:", 1)[0]
-        path_filter = re.compile(r"(?m)^\s+paths(?:-ignore)?:\s*$")
 
         for trigger_block in (pull_request_block, push_block):
             self.assertIsNone(
-                path_filter.search(trigger_block),
+                PATH_FILTER.search(trigger_block),
                 "Accounting Foundation CI pull_request/push triggers must not define "
                 "paths or paths-ignore filters; authority-bearing documentation must "
                 "receive the same exact-head acceptance as source changes.",
