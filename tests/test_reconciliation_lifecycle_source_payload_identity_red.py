@@ -1,4 +1,4 @@
-"""RED contract for reconciliation lifecycle source-payload idempotency."""
+"""RED/GREEN contract for reconciliation lifecycle source-payload idempotency."""
 
 from __future__ import annotations
 
@@ -11,16 +11,17 @@ from tests.test_reconciliation_lifecycle import (
     _EFFECTIVE_AT,
     _Ledger,
     _RUN_ID,
+    _SOURCE_PAYLOAD_HASH,
     _TENANT,
     _command,
 )
 
 
-class ReconciliationLifecycleSourcePayloadIdentityRedTests(unittest.TestCase):
+class ReconciliationLifecycleSourcePayloadIdentityTests(unittest.TestCase):
     """Require one idempotency key to identify the complete received lifecycle command."""
 
     def test_changed_ignored_payload_member_cannot_replay_original_transition(self) -> None:
-        """A materially changed JSON command must conflict even when core fields match."""
+        """A materially changed JSON command conflicts even when normalized fields match."""
         _Ledger.connection = type(_Ledger.connection)()
         _Ledger.locks = []
         _Ledger.connection.prior_transition = (
@@ -28,6 +29,7 @@ class ReconciliationLifecycleSourcePayloadIdentityRedTests(unittest.TestCase):
             "urn:cwl:principal:controller",
             "month_end_reconciliation",
             _EFFECTIVE_AT,
+            _SOURCE_PAYLOAD_HASH,
         )
         changed_command = _command(request_context={"review_batch": "changed"})
 
