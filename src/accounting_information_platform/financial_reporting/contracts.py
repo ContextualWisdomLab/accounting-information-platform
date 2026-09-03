@@ -35,7 +35,11 @@ class FinancialReportContext:
         """Reject incomplete report context before artifact generation."""
         _absolute_uri(self.entity_identifier_scheme, "entity_identifier_scheme")
         _required_text(self.entity_identifier_value, "entity_identifier_value")
-        if re.fullmatch(r"[A-Z]{3}", self.reporting_currency_code) is None:
+        reporting_currency_code = _required_text(
+            self.reporting_currency_code,
+            "reporting_currency_code",
+        )
+        if re.fullmatch(r"[A-Z]{3}", reporting_currency_code) is None:
             raise AccountingValidationError(
                 "reporting_currency_code must be an uppercase three-letter currency code"
             )
@@ -102,9 +106,14 @@ class XbrlConceptMapping:
 
     def __post_init__(self) -> None:
         """Reject mappings that cannot become unambiguous XBRL facts."""
-        if _FACT_PATTERN.fullmatch(self.fact_code) is None:
+        fact_code = _required_text(self.fact_code, "fact_code")
+        concept_local_name = _required_text(
+            self.concept_local_name,
+            "concept_local_name",
+        )
+        if _FACT_PATTERN.fullmatch(fact_code) is None:
             raise AccountingValidationError("fact_code is not a canonical reporting code")
-        if _XML_NAME_PATTERN.fullmatch(self.concept_local_name) is None:
+        if _XML_NAME_PATTERN.fullmatch(concept_local_name) is None:
             raise AccountingValidationError("concept_local_name is not an XML local name")
         if self.period_type_code not in {"duration", "instant"}:
             raise AccountingValidationError("period_type_code must be duration or instant")
@@ -133,17 +142,26 @@ class XbrlTaxonomyProfile:
             or self.profile_version < 1
         ):
             raise AccountingValidationError("profile_version must be a positive integer")
-        if _CODE_PATTERN.fullmatch(self.reporting_standard_code) is None:
+        reporting_standard_code = _required_text(
+            self.reporting_standard_code,
+            "reporting_standard_code",
+        )
+        if _CODE_PATTERN.fullmatch(reporting_standard_code) is None:
             raise AccountingValidationError("reporting_standard_code must be lower snake case")
         _required_text(self.taxonomy_release_code, "taxonomy_release_code")
-        if _XML_NAME_PATTERN.fullmatch(self.taxonomy_prefix) is None:
+        taxonomy_prefix = _required_text(self.taxonomy_prefix, "taxonomy_prefix")
+        if _XML_NAME_PATTERN.fullmatch(taxonomy_prefix) is None:
             raise AccountingValidationError("taxonomy_prefix is not an XML prefix")
-        normalized_prefix = self.taxonomy_prefix.lower()
+        normalized_prefix = taxonomy_prefix.lower()
         if normalized_prefix.startswith("xml") or normalized_prefix in _RESERVED_PREFIXES:
             raise AccountingValidationError("taxonomy_prefix is reserved")
         _absolute_uri(self.taxonomy_namespace_uri, "taxonomy_namespace_uri")
         _absolute_uri(self.schema_reference_uri, "schema_reference_uri")
-        if _HASH_PATTERN.fullmatch(self.taxonomy_package_hash) is None:
+        taxonomy_package_hash = _required_text(
+            self.taxonomy_package_hash,
+            "taxonomy_package_hash",
+        )
+        if _HASH_PATTERN.fullmatch(taxonomy_package_hash) is None:
             raise AccountingValidationError("taxonomy_package_hash is not a SHA-256 digest")
         mapping_records = tuple(self.concept_mappings)
         if not mapping_records or any(
