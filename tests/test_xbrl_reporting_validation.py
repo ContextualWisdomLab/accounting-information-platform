@@ -40,6 +40,16 @@ class ExportValidationTests(unittest.TestCase):
         with self.assertRaises(AccountingValidationError):
             reporting.export_xbrl_instance(self.artifact, object())
 
+    def test_taxonomy_profile_rejects_non_iterable_concept_mappings(self) -> None:
+        """Reject malformed mapping containers through the domain error contract."""
+        for raw_mappings in (None, 1):
+            with self.subTest(raw_mappings=raw_mappings):
+                with self.assertRaisesRegex(
+                    AccountingValidationError,
+                    "concept_mappings",
+                ):
+                    _valid_profile(concept_mappings=raw_mappings)
+
     def test_rejects_artifact_envelope_tampering(self) -> None:
         """Reject source, digest, derived-field, and JSON-shape tampering."""
         invalid_artifacts: list[dict[str, object]] = []
