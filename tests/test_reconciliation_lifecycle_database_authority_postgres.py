@@ -77,12 +77,13 @@ class ReconciliationLifecycleDatabaseAuthorityPostgresTests(unittest.TestCase):
                 reconciliation_snapshot_hash,
                 statement_population_reference,
                 book_population_reference,
+                source_payload_hash,
                 reconciliation_transition_command_hash,
                 actor_reference,
                 purpose_code,
                 effective_at
             )
-            VALUES (%s, %s, %s, 'reconciled', %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, 'reconciled', %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING reconciliation_snapshot_hash,
                       statement_population_reference,
                       book_population_reference
@@ -94,6 +95,7 @@ class ReconciliationLifecycleDatabaseAuthorityPostgresTests(unittest.TestCase):
                 snapshot_hash,
                 statement_population_reference,
                 book_population_reference,
+                "sha256:" + "d" * 64,
                 "sha256:" + "0" * 64,
                 "urn:cwl:principal:database_authority_test",
                 "month_end_reconciliation",
