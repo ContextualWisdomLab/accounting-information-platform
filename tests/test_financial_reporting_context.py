@@ -68,6 +68,7 @@ class ContextAndProfileValidationTests(unittest.TestCase):
             {"concept_local_name": "bad:name"},
             {"concept_local_name": 1},
             {"period_type_code": "quarter"},
+            {"period_type_code": []},
         )
         for overrides in invalid_overrides:
             with self.subTest(overrides=overrides):
