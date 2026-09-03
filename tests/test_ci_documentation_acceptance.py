@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
@@ -21,11 +22,15 @@ class AccountingDocumentationCiAcceptanceTests(unittest.TestCase):
             "  push:", 1
         )[0]
         push_block = workflow.split("  push:", 1)[1].split("\npermissions:", 1)[0]
+        path_filter = re.compile(r"(?m)^\s+paths(?:-ignore)?:\s*$")
 
         for trigger_block in (pull_request_block, push_block):
-            self.assertNotIn("paths-ignore:", trigger_block)
-            self.assertNotIn("docs/**", trigger_block)
-            self.assertNotIn("*.md", trigger_block)
+            self.assertIsNone(
+                path_filter.search(trigger_block),
+                "Accounting Foundation CI pull_request/push triggers must not define "
+                "paths or paths-ignore filters; authority-bearing documentation must "
+                "receive the same exact-head acceptance as source changes.",
+            )
 
 
 if __name__ == "__main__":
