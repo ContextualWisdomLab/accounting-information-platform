@@ -8,41 +8,50 @@ That is an accounting-control defect even though caller-selected hashes are repl
 
 ## Constraints
 
-- Keep `reconciliation_run` as the aggregate root and preserve the application two-phase session-lock plus fresh-`REPEATABLE READ` protocol.
+- Keep `reconciliation_run` as the aggregate root and preserve the application session-lock commit followed by fresh `REPEATABLE READ` protocol.
 - Do not weaken PostgreSQL-owned statement/book population identities, exact Decimal bridge validation, maker-checker exception authority, idempotency, immutable command evidence, or transactional outbox pairing.
 - Do not rely on a caller-supplied GUC or Boolean flag as lock evidence.
-- Raw table DML that does not enter the safe protocol must fail closed before any database-authority population query executes.
-- The repair is an unreleased forward migration; previously released/protected migration history is not rewritten.
+- Raw table DML that does not enter the required lock protocol must fail closed before any database-authority population query executes.
+- The repair is an unreleased forward migration; protected/released migration history is not rewritten.
 
 ## RED
 
-`tests/test_reconciliation_lifecycle_direct_session_lock_postgres.py` uses two real PostgreSQL connections. One connection owns the tenant/run lifecycle transaction lock and creates an eligibility-changing open exception. A second connection begins a raw transition statement without the required pre-statement session lock under both default `READ COMMITTED` and explicit `REPEATABLE READ`. If the predecessor implementation reaches its later transaction-lock wait, the test releases the writer only after PostgreSQL reports the blocking edge. The raw path must still fail with `reconciliation_lifecycle_session_lock_required`; it may not resume from the predecessor statement/transaction snapshot.
+`tests/test_reconciliation_lifecycle_direct_session_lock_postgres.py` uses real PostgreSQL. One connection owns the tenant/run lifecycle transaction lock and creates an eligibility-changing open exception while a second connection attempts raw transition DML without the required session lock under both `READ COMMITTED` and `REPEATABLE READ`. The test observes PostgreSQL blocking edges when the predecessor path reaches them and requires the raw path to fail with `reconciliation_lifecycle_session_lock_required`, never to resume into authority from the predecessor snapshot.
 
-The test was committed before the production repair. Hosted execution remains exact-head evidence only when the corresponding workflow actually runs; queued or predecessor results are non-passing.
+A separate RED deliberately acquires only the exact transaction advisory lock in `REPEATABLE READ`. That lock must not be accepted as evidence that the caller owns the session-scoped lifecycle lock. The test was committed before the corresponding lock-type repair. Hosted execution is exact-head evidence only when the workflow actually runs; queued or predecessor results remain non-passing.
 
 ## Selected repair
 
-Migration `0027_reconciliation_lifecycle_session_lock_authority.sql` installs a first-sorting `BEFORE INSERT` trigger on `accounting_core.reconciliation_run_transition_command`. Before `...database_authority_guard` can query any reconciliation source population, the new trigger resolves the database-owned tenant reference, derives the exact two-int advisory-lock keys used by the application, and checks `pg_catalog.pg_locks` for a granted exclusive advisory lock owned by `pg_backend_pid()` in the current database.
+Migration `0027_reconciliation_lifecycle_session_lock_authority.sql` installs a first-sorting `BEFORE INSERT` trigger on `accounting_core.reconciliation_run_transition_command`, before `accounting_reconciliation_transition_database_authority_guard` can query reconciliation populations.
 
-The two-int advisory key is matched through `classid`, `objid`, and `objsubid = 2`, using unsigned 32-bit normalization of PostgreSQL `hashtext()` results for the OID-backed `pg_locks` columns. Absence of the exact backend-held lock raises SQLSTATE `55000` with stable marker `reconciliation_lifecycle_session_lock_required` before database-owned snapshot derivation begins.
+PostgreSQL session-level and transaction-level advisory locks share the same key space, and `pg_locks` does not by itself identify the acquisition API. The guard therefore verifies the two required lock forms together rather than treating one `pg_locks` row as sufficient evidence:
 
-This does not grant authority merely because a caller supplies snapshot/population hashes; those values are still replaced by the existing database authority overlay. It also does not turn reconciliation into posting or period-close authority.
+1. `pg_advisory_unlock(hashtext(tenant_reference), hashtext(lifecycle_scope))` must report that the backend actually owned a session-level hold. Transaction-only ownership returns false and is rejected.
+2. While that session hold is temporarily decremented, `pg_locks` must still report the exact two-int tenant/run key as a granted `ExclusiveLock` for `pg_backend_pid()`. That surviving hold is the required transaction-level lock, so no other backend can enter the key during the probe.
+3. The trigger immediately reacquires the session lock before returning or rejecting, restoring the application lock lifetime.
+4. `current_setting('transaction_isolation')` must be `repeatable read`.
+
+The application already follows the stronger sequence: acquire session lock, commit, open fresh `REPEATABLE READ`, then acquire the transaction lock before authority reads. Raw database acceptance that intentionally exercises the table-level authority must follow the same sequence. A raw insert with neither lock or with only the transaction lock fails before database-owned snapshot derivation.
+
+The guard does not trust caller snapshot/population hashes; the existing database authority overlay still replaces them and verifies exact bridge arithmetic. It also does not create posting, reversal, period-close, or accounting-policy authority.
 
 ## Alternatives rejected
 
 **Acquire only `pg_advisory_xact_lock` inside the existing trigger chain.** Rejected because the statement or repeatable-read transaction snapshot can already exist before that later wait completes.
 
-**Switch lifecycle authority to `READ COMMITTED`.** Rejected because sequential review, exception, bank-statement, journal, and bridge queries could then observe different statement snapshots.
+**Treat an exact `pg_locks` row as session-lock proof.** Rejected because session and transaction advisory locks share the same key space and the view does not encode which acquisition API created the hold.
 
-**Trust a session GUC or request flag saying the lock was acquired.** Rejected because a caller with direct SQL capability could forge that assertion without owning the server lock.
+**Switch lifecycle authority to `READ COMMITTED`.** Rejected because sequential review, exception, bank-statement, journal, and bridge queries could observe different statement snapshots.
 
-**Remove direct database authority and trust only the Python application path.** Rejected for this slice because the checked-in database model deliberately treats PostgreSQL constraints/triggers as an independent bypass boundary. Replacing that architecture requires a separate ADR and capability migration, not an implicit weakening.
+**Trust a session GUC or request flag.** Rejected because a direct SQL caller could forge it without owning the lock manager state.
+
+**Remove direct database authority and trust only the Python application path.** Rejected for this slice because the current database model intentionally treats PostgreSQL constraints and triggers as an independent bypass boundary. Replacing that architecture requires an explicit capability/ADR change.
 
 ## Risk and follow-up
 
-`pg_locks` is a server lock-manager view, so exact PostgreSQL acceptance is mandatory. The migration must be tested on PostgreSQL 18 with both isolation levels, exact tenant/run key matching, positive supported application finalization, direct raw rejection, and the existing bridge/population tests. The complete unchanged head must then pass 100% owned statement/branch coverage, public-docstring/repository contracts, SAST/security/dependency checks, reproducible package/SBOM/provenance, and current-head review before this finding can be resolved.
+The database guard verifies the live lock state and isolation mode; the application and positive raw acceptance tests remain responsible for the complete acquisition order, including the preliminary session-lock commit before the fresh repeatable-read transaction. A database principal with broad advisory-lock and raw table authority could deliberately reproduce both lock forms in another order, which is one reason raw lifecycle-table DML must not be granted to the eventual least-privilege runtime role. Issue #44 should expose only the named lifecycle command boundary and remove raw status/transition/outbox authority from application identities.
 
-The broader least-privilege database capability should eventually expose only named reconciliation commands rather than raw transition/status/outbox DML. This migration remains defense in depth until that capability is integrated.
+Exact PostgreSQL acceptance remains mandatory. The unchanged candidate must exercise both isolation modes, transaction-lock-only rejection, exact tenant/run key matching, positive supported finalization, safe raw database-authority acceptance, forged identity replacement, untied bridge rejection, 100% owned statement/branch coverage, public-docstring/repository contracts, SAST/security/dependency checks, reproducible package/SBOM/provenance, and current-head review before this finding can be closed.
 
 ## References
 
