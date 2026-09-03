@@ -87,6 +87,18 @@ class FoundationInstallManifestContractTests(unittest.TestCase):
                 self.assertIn(migration_thirteen, text)
                 self.assertLess(text.index(migration_twelve), text.index(migration_thirteen))
 
+    def test_required_files_and_install_docs_include_authorization_evidence(self) -> None:
+        """Authorization evidence follows reconciliation allocation in every install guide."""
+        migration_fourteen = "database/migrations/0014_reconciliation_candidate_allocation.sql"
+        migration_fifteen = "database/migrations/0015_authorization_decision_evidence.sql"
+        self.assertIn(migration_fifteen, set(REQUIRED_FILES))
+        for relative_path in ("docs/OPERABILITY.md", "docs/ARCHITECTURE.md"):
+            with self.subTest(relative_path=relative_path):
+                text = (ROOT / relative_path).read_text(encoding="utf-8")
+                self.assertIn(migration_fourteen, text)
+                self.assertIn(migration_fifteen, text)
+                self.assertLess(text.index(migration_fourteen), text.index(migration_fifteen))
+
     def test_install_fails_closed_when_reconciliation_control_migration_is_missing(self) -> None:
         """The public foundation loader may not silently omit migration 0013."""
         original_is_file = Path.is_file
@@ -109,6 +121,22 @@ class FoundationInstallManifestContractTests(unittest.TestCase):
 
         def is_file(path: Path) -> bool:
             if path.name == "0014_reconciliation_candidate_allocation.sql":
+                return False
+            return original_is_file(path)
+
+        with patch.object(Path, "is_file", is_file):
+            with self.assertRaises(AccountingValidationError):
+                apply_foundation_migration(
+                    "postgresql://unused",
+                    ROOT / "database/migrations/0001_accounting_foundation.sql",
+                )
+
+    def test_install_fails_closed_when_authorization_evidence_migration_is_missing(self) -> None:
+        """The public foundation loader may not silently omit authorization evidence."""
+        original_is_file = Path.is_file
+
+        def is_file(path: Path) -> bool:
+            if path.name == "0015_authorization_decision_evidence.sql":
                 return False
             return original_is_file(path)
 

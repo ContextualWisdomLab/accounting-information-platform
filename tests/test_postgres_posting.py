@@ -68,6 +68,11 @@ from accounting_information_platform import (
 )
 import psycopg
 
+from accounting_information_platform.authorization import (
+    AuthenticatedPrincipal,
+    authorize,
+    record_authorization_decision,
+)
 from accounting_information_platform.persistence import (
     _fiscal_year_identity,
     apply_foundation_migration,
@@ -4501,7 +4506,7 @@ class PostgresPostingTests(unittest.TestCase):
         missing_status, _missing = self._http_legal_entities(tenant_header=missing_tenant)
         with self.assertRaisesRegex(AccountingValidationError, "tenant_account"):
             lookup_legal_entities(DATABASE_URL, missing_tenant)
-        self.assertEqual(missing_status, 404)
+        self.assertEqual(missing_status, 503)
         missing_server.shutdown()
 
     def test_http_reads_income_statement_and_balance_sheet(self) -> None:
@@ -11988,6 +11993,222 @@ class PostgresPostingTests(unittest.TestCase):
             fake_server.serve_forever.assert_called_once()
         server.shutdown()
 
+    def test_http_requires_route_permission_and_records_authorization_evidence(self) -> None:
+        """HTTP route permissions gate domain work and retain both allowed and denied decisions."""
+        context = AuthenticatedPrincipal(
+            principal_reference="urn:cwl:principal:catalog-reader",
+            tenant_reference=self.policy.tenant_reference,
+            authentication_context_reference="urn:cwl:authentication:catalog-reader",
+            granted_permission_codes=frozenset({"accounting.read_catalog"}),
+            purpose_code="catalog_read",
+            credential_evidence_reference="urn:cwl:auth-evidence:catalog-reader",
+            principal_kind="human",
+        )
+        server = self._start_http_server(authorization_context=context)
+
+        allowed_status, _allowed_body = self._http_account_role_mappings()
+        denied_status, denied_body = self._http_json(
+            "POST", "/journal-proposals", self._billing_validated_payload()
+        )
+        publish_status, _publish_body = self._http_publish_outbox(str(uuid.uuid4()))
+        forged_status, _forged_body = self._http_account_role_mappings(
+            tenant_header="urn:cwl:tenant_other"
+        )
+
+        self.assertEqual(allowed_status, 200)
+        self.assertEqual(denied_status, 403)
+        self.assertIn("accounting.post_proposal", str(denied_body))
+        self.assertEqual(publish_status, 403)
+        self.assertEqual(forged_status, 403)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), 0)
+        self.assertEqual(
+            self._count_table("accounting_integration.authorization_decision_record"),
+            3,
+        )
+        with psycopg.connect(DATABASE_URL) as connection:
+            connection.execute(
+                "SELECT set_config('app.tenant_account_id', %s, false)",
+                (self.tenant_id,),
+            )
+            decisions = connection.execute(
+                """
+                SELECT operation_code, permission_code, decision_code, principal_tenant_reference
+                FROM accounting_integration.authorization_decision_record
+                WHERE tenant_account_id = %s
+                ORDER BY recorded_at, authorization_decision_record_id
+                """,
+                (self.tenant_id,),
+            ).fetchall()
+        self.assertEqual(
+            decisions,
+            [
+                ("read_catalog", "accounting.read_catalog", "allowed", self.policy.tenant_reference),
+                ("post_proposal", "accounting.post_proposal", "denied", self.policy.tenant_reference),
+                ("publish_outbox", "accounting.publish_outbox", "denied", self.policy.tenant_reference),
+            ],
+        )
+        for mutation in (
+            "UPDATE accounting_integration.authorization_decision_record "
+            "SET decision_code = 'allowed' WHERE tenant_account_id = %s",
+            "DELETE FROM accounting_integration.authorization_decision_record "
+            "WHERE tenant_account_id = %s",
+        ):
+            with self.subTest(mutation=mutation.split()[0]):
+                with psycopg.connect(DATABASE_URL) as connection:
+                    connection.execute(
+                        "SELECT set_config('app.tenant_account_id', %s, false)",
+                        (self.tenant_id,),
+                    )
+                    with self.assertRaisesRegex(
+                        psycopg.errors.CheckViolation,
+                        "authorization decision evidence is append-only",
+                    ):
+                        connection.execute(mutation, (self.tenant_id,))
+        server.shutdown()
+
+    def test_malformed_period_close_is_denied_and_recorded_before_validation(self) -> None:
+        """Unclassifiable close input cannot bypass high-impact authorization or write rows."""
+        context = AuthenticatedPrincipal(
+            principal_reference="urn:cwl:principal:catalog-reader",
+            tenant_reference=self.policy.tenant_reference,
+            authentication_context_reference="urn:cwl:authentication:catalog-reader",
+            granted_permission_codes=frozenset({"accounting.read_close"}),
+            purpose_code="close_read",
+            credential_evidence_reference="urn:cwl:auth-evidence:catalog-reader",
+            principal_kind="human",
+        )
+        server = self._start_http_server(authorization_context=context)
+
+        malformed_status, _malformed = self._http_raw(
+            "POST", "/period-closes", b"not-json", self.policy.tenant_reference
+        )
+        non_object_status, _non_object = self._http_raw(
+            "POST", "/period-closes", b"[]", self.policy.tenant_reference
+        )
+
+        self.assertEqual(malformed_status, 403)
+        self.assertEqual(non_object_status, 403)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), 0)
+        self.assertEqual(self._count_table("accounting_integration.outbox_event"), 0)
+        self.assertEqual(
+            self._count_table("accounting_integration.authorization_decision_record"),
+            2,
+        )
+        server.shutdown()
+
+    def test_authorized_malformed_period_close_preserves_validation_error(self) -> None:
+        """A hard-close-capable caller still receives client validation after audit authorization."""
+        context = AuthenticatedPrincipal(
+            principal_reference="urn:cwl:principal:close-writer",
+            tenant_reference=self.policy.tenant_reference,
+            authentication_context_reference="urn:cwl:authentication:close-writer",
+            granted_permission_codes=frozenset({"accounting.hard_close_period"}),
+            purpose_code="period_close",
+            credential_evidence_reference="urn:cwl:auth-evidence:close-writer",
+            principal_kind="human",
+        )
+        server = self._start_http_server(authorization_context=context)
+
+        malformed_status, _malformed = self._http_raw(
+            "POST", "/period-closes", b"not-json", self.policy.tenant_reference
+        )
+        non_object_status, _non_object = self._http_raw(
+            "POST", "/period-closes", b"[]", self.policy.tenant_reference
+        )
+
+        self.assertEqual(malformed_status, 400)
+        self.assertEqual(non_object_status, 400)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), 0)
+        self.assertEqual(self._count_table("accounting_integration.outbox_event"), 0)
+        self.assertEqual(
+            self._count_table("accounting_integration.authorization_decision_record"),
+            2,
+        )
+        server.shutdown()
+
+    def test_authorization_evidence_retains_principal_and_requested_tenants(self) -> None:
+        """A cross-tenant denial retains both sides of the attempted scope."""
+        principal_tenant = "urn:cwl:tenant_principal_other"
+        context = AuthenticatedPrincipal(
+            principal_reference="urn:cwl:principal:cross-tenant",
+            tenant_reference=principal_tenant,
+            authentication_context_reference="urn:cwl:authentication:cross-tenant",
+            granted_permission_codes=frozenset({"accounting.read_catalog"}),
+            purpose_code="catalog_read",
+            credential_evidence_reference="urn:cwl:auth-evidence:cross-tenant",
+            principal_kind="human",
+        )
+        decision = authorize(context, self.policy.tenant_reference, "read_catalog")
+        record_authorization_decision(
+            DATABASE_URL,
+            self.policy.tenant_reference,
+            decision,
+            "cross-tenant-test",
+        )
+
+        with psycopg.connect(DATABASE_URL) as connection:
+            connection.execute(
+                "SELECT set_config('app.tenant_account_id', %s, false)",
+                (self.tenant_id,),
+            )
+            tenants = connection.execute(
+                """
+                SELECT principal_tenant_reference, requested_tenant_reference
+                FROM accounting_integration.authorization_decision_record
+                WHERE tenant_account_id = %s AND correlation_reference = 'cross-tenant-test'
+                """,
+                (self.tenant_id,),
+            ).fetchone()
+        self.assertEqual(tenants, (principal_tenant, self.policy.tenant_reference))
+
+    def test_http_accepts_maximum_length_command_identity(self) -> None:
+        """A command key at the evidence limit remains executable after correlation tagging."""
+        context = AuthenticatedPrincipal(
+            principal_reference="urn:cwl:principal:posting-reader",
+            tenant_reference=self.policy.tenant_reference,
+            authentication_context_reference="urn:cwl:authentication:posting-reader",
+            granted_permission_codes=frozenset(
+                {"accounting.read_catalog", "accounting.post_proposal"}
+            ),
+            purpose_code="posting_control",
+            credential_evidence_reference="urn:cwl:auth-evidence:posting-reader",
+            principal_kind="human",
+        )
+        server = self._start_http_server(authorization_context=context)
+        payload = self._billing_validated_payload(
+            idempotency_key="x" * (512 - len("idempotency_key:")),
+            proposal_id=str(uuid.uuid4()),
+        )
+        fallback_payload = self._billing_validated_payload(
+            idempotency_key="x" * 512,
+            proposal_id=str(uuid.uuid4()),
+        )
+
+        status, _body = self._http_json("POST", "/journal-proposals", payload)
+        fallback_status, _fallback_body = self._http_json(
+            "POST", "/journal-proposals", fallback_payload
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(fallback_status, 200)
+        self.assertEqual(self._count_table("accounting_core.general_journal"), 2)
+        with psycopg.connect(DATABASE_URL) as connection:
+            connection.execute(
+                "SELECT set_config('app.tenant_account_id', %s, false)",
+                (self.tenant_id,),
+            )
+            correlation_lengths = connection.execute(
+                """
+                SELECT length(correlation_reference)
+                FROM accounting_integration.authorization_decision_record
+                WHERE tenant_account_id = %s
+                ORDER BY recorded_at, authorization_decision_record_id
+                """,
+                (self.tenant_id,),
+            ).fetchall()
+        self.assertEqual([row[0] for row in correlation_lengths], [512, len("/journal-proposals")])
+        server.shutdown()
+
     def test_post_proposal_catalog_misses_write_zero_rows(self) -> None:
         """Unmapped roles, missing books, and closed periods write no durable rows."""
         self._delete_role_mapping("tax_payable")
@@ -13180,12 +13401,49 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(document["line_count"], 2)
         uuid.UUID(str(document["receipt_id"]))
 
-    def _start_http_server(self, tenant_reference: str | None = None):
+    def _start_http_server(
+        self,
+        tenant_reference: str | None = None,
+        authorization_context: AuthenticatedPrincipal | None = None,
+    ):
+        bound_tenant = self.policy.tenant_reference if tenant_reference is None else tenant_reference
+        if authorization_context is None:
+            authorization_context = AuthenticatedPrincipal(
+                principal_reference="urn:cwl:principal:test-suite",
+                tenant_reference=bound_tenant,
+                authentication_context_reference="urn:cwl:authentication:test-suite",
+                granted_permission_codes=frozenset(
+                    {
+                        "accounting.read_catalog",
+                        "accounting.read_journal",
+                        "accounting.read_financial_statement",
+                        "accounting.read_close",
+                        "accounting.read_audit",
+                        "accounting.read_tax_artifact",
+                        "accounting.read_bank_statement",
+                        "accounting.read_receipt",
+                        "accounting.post_proposal",
+                        "accounting.post_adjustment",
+                        "accounting.reverse_journal",
+                        "accounting.open_period",
+                        "accounting.soft_close_period",
+                        "accounting.hard_close_period",
+                        "accounting.publish_outbox",
+                        "accounting.submit_tax_artifact",
+                        "accounting.manage_bank_account",
+                        "accounting.ingest_bank_statement",
+                    }
+                ),
+                purpose_code="test_control",
+                credential_evidence_reference="urn:cwl:auth-evidence:test-suite",
+                principal_kind="human",
+            )
         server = create_journal_proposal_server(
             DATABASE_URL,
-            self.policy.tenant_reference if tenant_reference is None else tenant_reference,
+            bound_tenant,
             "127.0.0.1",
             0,
+            request_principal_resolver=lambda _request: authorization_context,
         )
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()

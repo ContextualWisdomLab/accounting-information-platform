@@ -16,6 +16,8 @@ Google Open Source Security Team. (2026a). *OSV-Scanner: Project source scanning
 
 Google Open Source Security Team. (2026b). *OSV-Scanner: Supported artifacts and manifests*. https://google.github.io/osv-scanner/supported-languages-and-lockfiles/
 
+Hu, V. C., Ferraiolo, D., Kuhn, D. R., Schnitzer, A., Sandlin, K., Miller, R., & Scarfone, K. (2019). *Guide to attribute based access control (ABAC) definition and considerations* (NIST Special Publication 800-162, updated August 2, 2019). National Institute of Standards and Technology. https://doi.org/10.6028/NIST.SP.800-162
+
 IFRS Foundation. (2022). *IAS 1 presentation of financial statements*. https://www.ifrs.org/issued-standards/list-of-standards/ias-1-presentation-of-financial-statements/
 
 IFRS Foundation. (2022). *IAS 7 statement of cash flows*. https://www.ifrs.org/issued-standards/list-of-standards/ias-7-statement-of-cash-flows/
@@ -30,11 +32,21 @@ IFRS Foundation. (2024). *IFRS 18 presentation and disclosure in financial state
 
 IFRS Foundation. (2024). *Post-implementation review of IFRS 15 revenue from contracts with customers: Project summary and feedback statement*. https://www.ifrs.org/projects/completed-projects/2024/pir-ifrs-15/
 
+International Organization for Standardization. (2022). *ISO/IEC/IEEE 42010:2022 software, systems and enterprise—Architecture description*. https://www.iso.org/standard/74393.html
+
 International Organization for Standardization. (2026). *ISO 20022-1:2026 financial services—Universal financial industry message scheme—Part 1: Metamodel* (3rd ed.). https://www.iso.org/standard/20022-1
 
 International Organization for Standardization. (2026). *ISO 20022-4:2026 financial services—Universal financial industry message scheme—Part 4: XML Schema generation* (2nd ed.). https://www.iso.org/standard/20022-4
 
 International Organization for Standardization. (2026). *ISO 20022-9:2026 financial services—Universal financial industry message scheme—Part 9: Syntax generation requirements and rules* (1st ed.). https://www.iso.org/standard/20022-9
+
+International Telecommunication Union. (2025). *OpenID Connect Core 1.0—Errata Set 2* (Recommendation ITU-T X.1285). https://www.itu.int/rec/T-REC-X.1285-202505-I/en
+
+Internet Engineering Task Force. (2017). *Uniform Resource Names (URNs)* (RFC 8141). https://doi.org/10.17487/RFC8141
+
+Internet Engineering Task Force. (2022). *HTTP/1.1* (RFC 9112). https://www.rfc-editor.org/rfc/rfc9112
+
+Internet Engineering Task Force. (2024). *Universally unique IDentifiers (UUIDs)* (RFC 9562). https://www.rfc-editor.org/rfc/rfc9562
 
 ISO 20022 Registration Authority. (2026). *Bank-to-Customer Cash Management: camt.053.001.14 BankToCustomerStatementV14*. https://www.iso20022.org/iso-20022-message-definitions?search=camt.053
 
@@ -42,15 +54,15 @@ ISO 20022 Registration Authority. (n.d.). *Terms of use*. https://www.iso20022.o
 
 ISO 20022 Registration Authority. (n.d.). *Intellectual property rights*. https://www.iso20022.org/intellectual-property-rights
 
-International Organization for Standardization. (2022). *ISO/IEC/IEEE 42010:2022 software, systems and enterprise—Architecture description*. https://www.iso.org/standard/74393.html
-
-Internet Engineering Task Force. (2022). *HTTP/1.1* (RFC 9112). https://www.rfc-editor.org/rfc/rfc9112
-
-Internet Engineering Task Force. (2024). *Universally unique IDentifiers (UUIDs)* (RFC 9562). https://www.rfc-editor.org/rfc/rfc9562
+Joint Task Force. (2020). *Security and privacy controls for information systems and organizations* (NIST Special Publication 800-53 Revision 5; Release 5.2.0 current August 27, 2025). National Institute of Standards and Technology. https://doi.org/10.6028/NIST.SP.800-53r5
 
 Korea Legislation Research Institute. (2024b). *Income Tax Act* [Unofficial translation]. https://elaw.klri.re.kr/eng_service/lawView.do?hseq=51753&lang=ENG
 
 Korea Legislation Research Institute. (2024a). *Value-Added Tax Act* [Unofficial translation]. https://elaw.klri.re.kr/eng_service/lawView.do?hseq=53110&lang=ENG
+
+Logrippo, L. (2025). Data flow security in role-based access control. *Journal of Information Security and Applications*. https://doi.org/10.1016/j.jisa.2025.103997
+
+OpenID Foundation. (2014). *OpenID Connect Core 1.0 incorporating errata set 2*. https://openid.net/specs/openid-connect-core-1_0.html
 
 PostgreSQL Global Development Group. (2026). *PostgreSQL 18.4 release notes*. https://www.postgresql.org/docs/release/18.4/
 

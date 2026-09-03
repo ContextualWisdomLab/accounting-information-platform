@@ -33,6 +33,7 @@ Metering and billing remain authoritative for usage, pricing, invoice intent, pa
 | `trial_balance` | Deterministic aggregation from the authoritative journal population or hard-close snapshot |
 | `reporting_projection` | Versioned statements, ledgers, balances, rollforwards and close-package reads |
 | `integration_outbox` | Transactional publication evidence and append-only audit history |
+| `purpose_bound_authorization` | Host-validated principal decisions, route-to-permission mapping, and immutable authorization evidence |
 | `tax_interface` | VAT register and fail-closed HomeTax submission evidence; no NTS transport in this foundation |
 | `bank_statement_registry` | Immutable camt.053.001.14 statement/entry evidence, bank-account-to-book mapping, and host artifact locators |
 
@@ -56,7 +57,7 @@ Deferred constraint triggers recompute persisted journal lines at commit. A dura
 
 The application runtime database login is separate from the migration owner and from administrative / break-glass identities. Tenant-scoped tables use RLS and the runtime path is tested with a non-owner, non-superuser, non-`BYPASSRLS` login. Purpose-limited soft-close exceptions use explicit role membership; ordinary runtime identities do not inherit `accounting_closing_writer`.
 
-The HTTP surface currently binds tenant identity through the configured AIS tenant plus `X-CWL-Tenant-Reference`. That header is not a general credential. Production exposure therefore requires a trusted host or gateway that authenticates the caller before traffic reaches this process. Purpose-bound application authorization is tracked separately from the database-credential boundary and must not be inferred from request-body fields, model output, or database GUCs.
+The HTTP surface binds tenant identity through the configured AIS tenant plus `X-CWL-Tenant-Reference`, and maps every accounting route to a purpose-bound permission before domain dispatch. That header is not a general credential. Production exposure therefore requires a trusted host or gateway whose request-scoped resolver authenticates each caller before accounting authorization and returns a validated `AuthenticatedPrincipal` with an explicit `human`, `service`, or `agent` kind; the server does not cache one caller identity for later requests. Missing, unknown, tenant-mismatched, or insufficient decisions fail closed and are retained with both principal and requested tenant references. Authority is never inferred from request-body fields, model output, or database GUCs.
 
 ## Posting transaction
 
@@ -130,6 +131,7 @@ Shared fiscal-calendar dates do not collapse independent accounting books into o
 12. `database/migrations/0012_bank_assignment_command_identity.sql` — tenant-scoped bank-account-assignment command identity, replay/conflict evidence, and the active book-scope uniqueness guard.
 13. `database/migrations/0013_reconciliation_run_exception_evidence.sql` — durable reconciliation-run and exception evidence required by the installed bank-reconciliation control chain.
 14. `database/migrations/0014_reconciliation_candidate_allocation.sql` — durable reconciliation candidate, single-approved match, and exact statement/journal allocation rows with forced tenant RLS.
+15. `database/migrations/0015_authorization_decision_evidence.sql` — tenant-scoped, append-only application authorization decisions.
 
 ## Durable soft-close command evidence
 

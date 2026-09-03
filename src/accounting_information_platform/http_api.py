@@ -52,6 +52,12 @@ from .accept import (
 )
 from .bank_statement import MemoryArtifactStore
 from .billing_pull import accept_billing_proposal_pull
+from .authorization import (
+    AuthenticatedPrincipal,
+    authorize,
+    period_close_operation,
+    record_authorization_decision,
+)
 from .core import AccountingValidationError, IdempotencyConflictError, _require_reference
 
 
@@ -93,6 +99,87 @@ _OUTBOX_PUBLISH_PATH = re.compile(
 )
 _MAX_REQUEST_BODY_BYTES = 1_048_576
 
+_GET_AUTH_OPERATIONS = {
+    POSTING_RECEIPT_PATH: "read_receipt",
+    TRIAL_BALANCE_PATH: "read_financial_statement",
+    FINANCIAL_STATEMENT_PATH: "read_financial_statement",
+    FINANCIAL_STATEMENT_PACKAGE_PATH: "read_financial_statement",
+    ACCOUNT_ROLE_MAPPING_PATH: "read_catalog",
+    ACCOUNTING_BOOK_PATH: "read_catalog",
+    LEGAL_ENTITY_PATH: "read_catalog",
+    CHART_ACCOUNT_PATH: "read_catalog",
+    ACCOUNT_LEDGER_PATH: "read_journal",
+    ACCOUNT_BALANCE_PATH: "read_financial_statement",
+    ACCOUNT_ROLLFORWARD_PATH: "read_financial_statement",
+    UNAPPLIED_CASH_ROLLFORWARD_PATH: "read_financial_statement",
+    VAT_PERIOD_REGISTER_PATH: "read_tax_artifact",
+    HOME_TAX_SUBMISSION_PATH: "read_tax_artifact",
+    BANK_STATEMENT_PATH: "read_bank_statement",
+    BANK_STATEMENT_ENTRY_PATH: "read_bank_statement",
+    RECEIVABLE_AGING_PATH: "read_financial_statement",
+    PAYABLE_AGING_PATH: "read_financial_statement",
+    PERIOD_CLOSE_PACKAGE_PATH: "read_close",
+    JOURNAL_PATH: "read_journal",
+    JOURNAL_REVERSAL_PATH: "read_journal",
+    PERIOD_CLOSE_PATH: "read_close",
+    FISCAL_PERIOD_PATH: "read_close",
+    OUTBOX_PATH: "read_audit",
+    AUDIT_EVENT_PATH: "read_audit",
+}
+
+_POST_AUTH_OPERATIONS = {
+    JOURNAL_PATH: "post_adjustment",
+    JOURNAL_PROPOSAL_PATH: "post_proposal",
+    JOURNAL_REVERSAL_PATH: "reverse_journal",
+    BILLING_PROPOSAL_PULL_PATH: "post_proposal",
+    HOME_TAX_SUBMISSION_PATH: "submit_tax_artifact",
+    BANK_ACCOUNT_PATH: "manage_bank_account",
+    BANK_ACCOUNT_ASSIGNMENT_PATH: "manage_bank_account",
+    BANK_STATEMENT_PATH: "ingest_bank_statement",
+    FISCAL_PERIOD_PATH: "open_period",
+}
+
+_GET_AUTH_MISMATCH_ACTIONS = {
+    POSTING_RECEIPT_PATH: "lookup",
+    TRIAL_BALANCE_PATH: "trial-balance read",
+    FINANCIAL_STATEMENT_PATH: "financial-statement read",
+    FINANCIAL_STATEMENT_PACKAGE_PATH: "financial-statement-package read",
+    ACCOUNT_ROLE_MAPPING_PATH: "mapping read",
+    ACCOUNTING_BOOK_PATH: "accounting-book list",
+    LEGAL_ENTITY_PATH: "legal-entity list",
+    CHART_ACCOUNT_PATH: "chart-account read",
+    ACCOUNT_LEDGER_PATH: "account-ledger read",
+    ACCOUNT_BALANCE_PATH: "account-balance read",
+    ACCOUNT_ROLLFORWARD_PATH: "account-rollforward read",
+    UNAPPLIED_CASH_ROLLFORWARD_PATH: "unapplied-cash-rollforward read",
+    VAT_PERIOD_REGISTER_PATH: "vat-period-register read",
+    HOME_TAX_SUBMISSION_PATH: "home-tax-submission read",
+    BANK_STATEMENT_PATH: "bank-statement read",
+    BANK_STATEMENT_ENTRY_PATH: "bank-statement-entry read",
+    RECEIVABLE_AGING_PATH: "receivable-aging read",
+    PAYABLE_AGING_PATH: "payable-aging read",
+    PERIOD_CLOSE_PACKAGE_PATH: "period-close-package read",
+    JOURNAL_PATH: "journal read",
+    JOURNAL_REVERSAL_PATH: "journal-reversal list",
+    PERIOD_CLOSE_PATH: "period-close list",
+    FISCAL_PERIOD_PATH: "period read",
+    OUTBOX_PATH: "outbox read",
+    AUDIT_EVENT_PATH: "audit-event read",
+}
+
+_POST_AUTH_MISMATCH_ACTIONS = {
+    JOURNAL_PATH: "journal",
+    JOURNAL_PROPOSAL_PATH: "proposal",
+    JOURNAL_REVERSAL_PATH: "reversal",
+    BILLING_PROPOSAL_PULL_PATH: "pull",
+    PERIOD_CLOSE_PATH: "close",
+    HOME_TAX_SUBMISSION_PATH: "home-tax-submission",
+    BANK_ACCOUNT_PATH: "bank-account",
+    BANK_ACCOUNT_ASSIGNMENT_PATH: "bank-account-assignment",
+    BANK_STATEMENT_PATH: "bank-statement",
+    FISCAL_PERIOD_PATH: "period open",
+}
+
 
 class JournalProposalServer(ThreadingHTTPServer):
     """HTTP server bound to one AIS tenant and PostgreSQL URL."""
@@ -102,10 +189,12 @@ class JournalProposalServer(ThreadingHTTPServer):
         server_address: tuple[str, int],
         database_url: str,
         tenant_reference: str,
+        request_principal_resolver: Callable[[object], AuthenticatedPrincipal | None] | None = None,
     ) -> None:
         """Bind *server_address* to one tenant's posting endpoint."""
         self.database_url = database_url
         self.tenant_reference = tenant_reference
+        self.request_principal_resolver = request_principal_resolver
         self.artifact_store = MemoryArtifactStore()
         super().__init__(server_address, JournalProposalHandler)
 
@@ -120,6 +209,13 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == HEALTHZ_PATH:
             self._write_json(200, {"status": "ok"})
+            return
+        operation = _GET_AUTH_OPERATIONS.get(parsed.path)
+        if operation is not None and not self._authorize_request(
+            operation,
+            parsed.path,
+            _GET_AUTH_MISMATCH_ACTIONS.get(parsed.path, "accounting read"),
+        ):
             return
         if parsed.path == BILLING_PROPOSAL_PULL_PATH:
             self._write_error(
@@ -251,6 +347,17 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         if raw_body is None:
             return
         parsed_path = urlparse(self.path).path
+        operation = _post_authorization_operation(parsed_path, raw_body)
+        if operation is not None and not self._authorize_request(
+            operation,
+            _authorization_correlation(parsed_path, raw_body),
+            (
+                "outbox publish"
+                if _OUTBOX_PUBLISH_PATH.fullmatch(parsed_path)
+                else _POST_AUTH_MISMATCH_ACTIONS.get(parsed_path, "accounting command")
+            ),
+        ):
+            return
         if parsed_path == JOURNAL_PATH:
             self._post_adjusting_journal(raw_body)
             return
@@ -1660,6 +1767,58 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             return None
         return tenant_header
 
+    def _authorize_request(
+        self,
+        operation_code: str,
+        correlation_reference: str,
+        mismatch_action: str = "accounting operation",
+    ) -> bool:
+        """Authorize and durably record a routed operation before domain work begins."""
+        tenant_header = self._bound_tenant_header(mismatch_action)
+        if tenant_header is None:
+            return False
+        resolver = self.server.request_principal_resolver
+        try:
+            principal = None if resolver is None else resolver(self)
+            decision = authorize(
+                principal,
+                tenant_header,
+                operation_code,
+            )
+        except Exception:
+            self._write_error(
+                503,
+                'caller identity validation is unavailable. Ask the platform operator to restore the trusted identity adapter, then retry.',
+            )
+            return False
+        try:
+            record_authorization_decision(
+                self.server.database_url,
+                self.server.tenant_reference,
+                decision,
+                correlation_reference,
+            )
+        except AccountingValidationError as error:
+            self._write_error(503, str(error))
+            return False
+        except Exception:
+            self._write_error(
+                503,
+                "authorization evidence is unavailable. Ask the platform operator to restore the audit store, then retry.",
+            )
+            return False
+        if not decision.allowed:
+            if decision.permission_code:
+                message = (
+                    f"authorization denied for operation {operation_code}; obtain permission "
+                    f"{decision.permission_code} for purpose {decision.purpose_code}, then retry."
+                )
+            else:
+                message = "authorization denied for an unknown accounting operation; retry with a supported route."
+            self._write_error(403, message)
+            return False
+        return True
+
     def _read_json_object(self, raw_body: bytes, supply_what: str) -> dict[str, object] | None:
         try:
             payload = json.loads(raw_body.decode("utf-8"))
@@ -1769,19 +1928,60 @@ def _first_query(fields: dict[str, list[str]], name: str) -> str:
     return values[0] if values else ""
 
 
+def _post_authorization_operation(path: str, raw_body: bytes) -> str | None:
+    """Return a POST operation code, selecting soft versus hard close from the command body."""
+    if path != PERIOD_CLOSE_PATH:
+        if _OUTBOX_PUBLISH_PATH.fullmatch(path):
+            return "publish_outbox"
+        return _POST_AUTH_OPERATIONS.get(path)
+    try:
+        payload = json.loads(raw_body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return period_close_operation(None)
+    if not isinstance(payload, dict):
+        return period_close_operation(None)
+    return period_close_operation(payload.get("period_status_code"))
+
+
+def _authorization_correlation(path: str, raw_body: bytes) -> str:
+    """Extract only a bounded command identity for authorization evidence."""
+    try:
+        payload = json.loads(raw_body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return path
+    if isinstance(payload, dict):
+        for field in (
+            "idempotency_key",
+            "reversal_idempotency_key",
+            "assignment_idempotency_key",
+            "ingestion_idempotency_key",
+        ):
+            value = payload.get(field)
+            if (
+                isinstance(value, str)
+                and 0 < len(value)
+                and len(f"{field}:{value}") <= 512
+            ):
+                return f"{field}:{value}"
+    return path
+
+
 def create_journal_proposal_server(
     database_url: str,
     tenant_reference: str,
     host: str = "127.0.0.1",
     port: int = 0,
+    request_principal_resolver: Callable[[JournalProposalHandler], AuthenticatedPrincipal | None] | None = None,
 ) -> JournalProposalServer:
-    """Create a stdlib HTTP server that posts Billing proposals, AIS adjusting journals, pulls, closes, opens periods, accepts bank-statement evidence, and reads TB, statements, journals, reversals, receivable aging, payable aging, outbox, and audit history."""
+    """Create an HTTP server whose trusted adapter resolves one principal per request."""
     if not database_url:
         raise AccountingValidationError(
             "ACCOUNTING_DATABASE_URL is empty. Set a PostgreSQL 18 URL and retry posting."
         )
     _require_reference(tenant_reference, "tenant reference")
-    return JournalProposalServer((host, port), database_url, tenant_reference)
+    return JournalProposalServer(
+        (host, port), database_url, tenant_reference, request_principal_resolver
+    )
 
 
 def run_journal_proposal_server(
@@ -1790,8 +1990,9 @@ def run_journal_proposal_server(
     host: str | None = None,
     port: int | None = None,
     serve: Callable[[], None] | None = None,
+    request_principal_resolver: Callable[[JournalProposalHandler], AuthenticatedPrincipal | None] | None = None,
 ) -> JournalProposalServer:
-    """Bind 127.0.0.1:$PORT by default and serve AIS HTTP commands."""
+    """Bind 127.0.0.1:$PORT and resolve caller identity independently per request."""
     resolved_url = (
         database_url
         if database_url is not None
@@ -1814,7 +2015,11 @@ def run_journal_proposal_server(
     else:
         resolved_port = port
     server = create_journal_proposal_server(
-        resolved_url, resolved_tenant, resolved_host, resolved_port
+        resolved_url,
+        resolved_tenant,
+        resolved_host,
+        resolved_port,
+        request_principal_resolver,
     )
     runner = server.serve_forever if serve is None else serve
     runner()
