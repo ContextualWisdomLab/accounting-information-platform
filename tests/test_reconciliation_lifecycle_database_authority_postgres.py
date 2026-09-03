@@ -56,6 +56,22 @@ class ReconciliationLifecycleDatabaseAuthorityPostgresTests(unittest.TestCase):
         assert row is not None
         return row[0], row[1], row[2], str(row[3])
 
+    def _begin_safe_raw_transition(self, connection: psycopg.Connection) -> None:
+        """Enter the same pre-statement session/fresh-snapshot protocol as production."""
+        lifecycle_scope = (
+            "reconciliation_run_lifecycle:" + self.opened["reconciliation_run_id"]
+        )
+        connection.execute(
+            "SELECT pg_advisory_lock(hashtext(%s), hashtext(%s))",
+            (self.fixture.case.policy.tenant_reference, lifecycle_scope),
+        )
+        connection.commit()
+        connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        connection.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+            (self.fixture.case.policy.tenant_reference, lifecycle_scope),
+        )
+
     def _insert_transition(
         self,
         connection: psycopg.Connection,
@@ -66,7 +82,7 @@ class ReconciliationLifecycleDatabaseAuthorityPostgresTests(unittest.TestCase):
         snapshot_hash: str,
         key_suffix: str,
     ) -> tuple[object, ...]:
-        """Insert raw transition evidence without using the supported application command."""
+        """Insert raw transition evidence after entering the required lock protocol."""
         row = connection.execute(
             """
             INSERT INTO accounting_core.reconciliation_run_transition_command (
@@ -111,6 +127,7 @@ class ReconciliationLifecycleDatabaseAuthorityPostgresTests(unittest.TestCase):
         """Derive one rolled-back authority identity set under a caller session zone."""
         with psycopg.connect(posting.DATABASE_URL) as connection:
             connection.execute("SELECT set_config('TimeZone', %s, false)", (time_zone,))
+            self._begin_safe_raw_transition(connection)
             tenant_id, _statement_id, _knowledge_cutoff_at, _currency_code = self._scope(
                 connection
             )
@@ -131,6 +148,7 @@ class ReconciliationLifecycleDatabaseAuthorityPostgresTests(unittest.TestCase):
         forged_statement_reference = "sha256:" + "a" * 64
         forged_book_reference = "sha256:" + "b" * 64
         with psycopg.connect(posting.DATABASE_URL) as connection:
+            self._begin_safe_raw_transition(connection)
             tenant_id, _statement_id, _knowledge_cutoff_at, _currency_code = self._scope(
                 connection
             )
@@ -163,6 +181,7 @@ class ReconciliationLifecycleDatabaseAuthorityPostgresTests(unittest.TestCase):
     def test_database_rejects_transition_when_authoritative_bridge_does_not_tie(self) -> None:
         """Direct SQL cannot reconcile a run after a statement source breaks the exact bridge."""
         with psycopg.connect(posting.DATABASE_URL) as connection:
+            self._begin_safe_raw_transition(connection)
             tenant_id, statement_id, knowledge_cutoff_at, currency_code = self._scope(
                 connection
             )
