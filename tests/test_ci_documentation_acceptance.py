@@ -27,6 +27,19 @@ class AccountingDocumentationCiAcceptanceTests(unittest.TestCase):
                     "Foundation CI acceptance",
                 )
 
+    def test_path_filter_detection_rejects_flow_style_event_mappings(self) -> None:
+        """Flow-style event mappings cannot hide paths or paths-ignore filters."""
+        for trigger_block in (
+            "    pull_request: {paths: ['src/**']}\n",
+            "    push: {paths-ignore: ['docs/**', '*.md']}\n",
+        ):
+            with self.subTest(trigger_block=trigger_block):
+                self.assertIsNotNone(
+                    PATH_FILTER.search(trigger_block),
+                    "flow-style YAML path filters would let documentation bypass Accounting "
+                    "Foundation CI acceptance",
+                )
+
     def test_accounting_ci_does_not_ignore_documentation_changes(self) -> None:
         """Docs and Markdown changes must not bypass repository accounting validation."""
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
