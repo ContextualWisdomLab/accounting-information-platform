@@ -6,6 +6,7 @@ import hashlib
 import importlib
 import json
 import re
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
@@ -35,6 +36,777 @@ _SQL_SKIP_DATE = date.min
 _SQL_SKIP_DATETIME = datetime(1, 1, 1, tzinfo=timezone.utc)
 _SQL_SKIP_UUID = UUID(int=0)
 _CLOSING_JOURNAL_PATTERN = "urn:cwl:accounting:general_journal:period_closing:%"
+_READINESS_CONNECT_TIMEOUT_SECONDS = 5
+_READINESS_STATEMENT_TIMEOUT_MILLISECONDS = 5_000
+_READINESS_FUNCTIONS = (
+    "accounting_core.guard_journal_line_book_scope()",
+    "accounting_core.current_tenant_account_id()",
+    "accounting_core.guard_period_insert()",
+    "accounting_core.assert_journal_balance()",
+    "accounting_core.guard_reversal_temporal_order()",
+    "accounting_core.guard_reversal_lineage_insert()",
+    "accounting_core.reject_finalized_fact_mutation()",
+    "accounting_core.guard_finalized_journal_extension()",
+    "accounting_integration.reject_period_open_command_mutation()",
+    "accounting_core.guard_soft_close_evidence_update()",
+    "accounting_integration.reject_statement_mutation()",
+    "accounting_core.reject_reconciliation_run_scope_mutation()",
+)
+_READINESS_COLUMNS = (
+    ("accounting_core", "chart_account", "account_class_code"),
+    ("accounting_reporting", "trial_balance_snapshot", "close_idempotency_key"),
+    (
+        "accounting_core",
+        "accounting_book_period_control",
+        "soft_close_idempotency_key",
+    ),
+    (
+        "accounting_core",
+        "accounting_book_period_control",
+        "soft_close_source_payload_hash",
+    ),
+    (
+        "accounting_core",
+        "accounting_book_period_control",
+        "soft_close_source_journal_count",
+    ),
+    ("accounting_core", "bank_account_assignment", "assignment_idempotency_key"),
+    ("accounting_core", "bank_account_assignment", "assignment_command_hash"),
+)
+_READINESS_RLS_POLICIES = (
+    ("accounting_core", "account_role_mapping", "account_mapping_isolation"),
+    ("accounting_core", "accounting_book", "accounting_book_isolation"),
+    ("accounting_core", "accounting_book_period_control", "accounting_book_period_isolation"),
+    ("accounting_core", "bank_account_assignment", "bank_account_assignment_isolation"),
+    ("accounting_core", "bank_account_record", "bank_account_record_isolation"),
+    ("accounting_core", "chart_account", "chart_account_isolation"),
+    ("accounting_core", "fiscal_calendar", "fiscal_calendar_isolation"),
+    ("accounting_core", "fiscal_period", "fiscal_period_isolation"),
+    ("accounting_core", "general_journal", "general_journal_isolation"),
+    ("accounting_core", "journal_entry_line", "journal_entry_isolation"),
+    ("accounting_core", "journal_match_allocation", "journal_match_allocation_isolation"),
+    ("accounting_core", "journal_reversal", "journal_reversal_isolation"),
+    ("accounting_core", "journal_source_reference", "journal_source_isolation"),
+    ("accounting_core", "legal_entity_record", "legal_entity_isolation"),
+    ("accounting_core", "reconciliation_candidate", "reconciliation_candidate_isolation"),
+    ("accounting_core", "reconciliation_evidence", "reconciliation_evidence_isolation"),
+    ("accounting_core", "reconciliation_exception", "reconciliation_exception_isolation"),
+    ("accounting_core", "reconciliation_match", "reconciliation_match_isolation"),
+    ("accounting_core", "reconciliation_run", "reconciliation_run_isolation"),
+    ("accounting_core", "statement_match_allocation", "statement_match_allocation_isolation"),
+    ("accounting_integration", "bank_statement_artifact", "bank_statement_artifact_isolation"),
+    ("accounting_integration", "bank_statement_entry", "bank_statement_entry_isolation"),
+    ("accounting_integration", "bank_statement_entry_detail", "bank_statement_detail_isolation"),
+    ("accounting_integration", "bank_statement_record", "bank_statement_record_isolation"),
+    ("accounting_integration", "fiscal_period_open_command", "fiscal_period_open_command_isolation"),
+    ("accounting_integration", "home_tax_submission", "home_tax_submission_isolation"),
+    ("accounting_integration", "journal_proposal_record", "journal_proposal_isolation"),
+    ("accounting_integration", "outbox_event", "outbox_event_isolation"),
+    ("accounting_integration", "posting_receipt", "posting_receipt_isolation"),
+    ("accounting_reporting", "trial_balance_line", "trial_line_isolation"),
+    ("accounting_reporting", "trial_balance_snapshot", "trial_snapshot_isolation"),
+)
+_READINESS_RLS_TABLES = tuple(
+    (schema_name, table_name)
+    for schema_name, table_name, _policy_name in _READINESS_RLS_POLICIES
+)
+_READINESS_TENANT_FUNCTION_FINGERPRINT = "9c2cfaea74d193cadc39f46c242dd9a5"
+_READINESS_COLUMN_FINGERPRINTS = (
+    ("accounting_core", "account_role_mapping", 10, "dedc64e5c9fd53c0c38be2d14e3cffae2f2a879ba903d2994e49371988fe9974"),
+    ("accounting_core", "accounting_book", 9, "7399e895b1d329ce2225db6e7efbb9ee7b33870ccc25324f9417e7f9c6df12d3"),
+    ("accounting_core", "accounting_book_period_control", 10, "34c15ac952d044644030ebd1572abea1c1735504fe42b6ab3b12b21f4a16363d"),
+    ("accounting_core", "bank_account_assignment", 11, "3f0525ce187b8177a450795d3152be09456c484921d3519225877b14a00762c3"),
+    ("accounting_core", "bank_account_record", 6, "789c6f67bef0dfe092c9a8cc01c6565fe760324dba55441cb78dbed422140933"),
+    ("accounting_core", "chart_account", 10, "00cf50d6767e93dd5c8e08c7548d5a106f79e1d2cab788520feebcfc734c7774"),
+    ("accounting_core", "fiscal_calendar", 5, "98592e7dd88b3cd557e34cb569ad56b4a44f6c77c9c6a2eafcf8a78ad40ffed8"),
+    ("accounting_core", "fiscal_period", 9, "9ebd9155188a34619d03e2d5e062870d5fa4b3696481b07d75726ed0869a08cb"),
+    ("accounting_core", "general_journal", 15, "7a4c9f3ceaabb0c6b62aa84d29ccfaba558a1ef05dbea56fe618d4fac9a67213"),
+    ("accounting_core", "journal_entry_line", 10, "c67aba7bfb7afffd4b934474c1120901c6527de471255ded778b58b89ee0fbc7"),
+    ("accounting_core", "journal_match_allocation", 7, "6e02b58f45c91e4d4d9be19a3e4b296e6b79c1fa117eeb4d6d18f3a2424a4e02"),
+    ("accounting_core", "journal_reversal", 6, "d14f8508cdc2427c20a12de4c01110257e3eea125122205b13bec718aa7e0357"),
+    ("accounting_core", "journal_source_reference", 6, "b6da66657b76cfde57a7d29d3b54ba9f1e0face4a42556bebc9519e2bf9e658c"),
+    ("accounting_core", "legal_entity_record", 8, "8d3ca7767d97cd3cb1f1079aede5a64851dd13838427bae8ec0f89d3a9521a5b"),
+    ("accounting_core", "reconciliation_candidate", 9, "3604bec1f054717623d5625101e071fb12e99a05db311d94f1b7e47874fb14d8"),
+    ("accounting_core", "reconciliation_evidence", 9, "5ca30a43ae8e40291166ac2c0d58be4ae97f0ac017d68185768b56c3bd29068a"),
+    ("accounting_core", "reconciliation_exception", 9, "c5d64cb854348e796a02b91c7d2e036209fff504030b3503f6418ee7c9340d76"),
+    ("accounting_core", "reconciliation_match", 7, "6a819f98e37334047d135ea107c449bcbe73ec699fe1253e77224e1c95e28877"),
+    ("accounting_core", "reconciliation_run", 12, "0e0bb7771504d6765f84d401ce8c93806af9b6da3d1232777331f44d1a1fb99b"),
+    ("accounting_core", "runtime_tenant_binding", 7, "737cb26fefab313e0d1493ee29efc2eb8179012eef41b9bcc72515cddba4b062"),
+    ("accounting_core", "statement_match_allocation", 7, "443d000c078ecc946af417feaf2ce326b666e925d21c393d88cc7ad05c0634f3"),
+    ("accounting_core", "tenant_account", 3, "84cca03fd15500baf0a1cc69d7c16ccd84e0fd4ca9868226e9a49a5408bacfa3"),
+    ("accounting_integration", "bank_statement_artifact", 6, "1579cf1bc24f49d82fb726a56f5a7e8b9e5e90546ea61bad4d8ddc3a0db0c2a5"),
+    ("accounting_integration", "bank_statement_entry", 23, "901945fdfa37b3fc88c6b2a2c3b12e11ebedb9a73c6ac396446408b10ac247ba"),
+    ("accounting_integration", "bank_statement_entry_detail", 13, "f911fd0ecd7bc4a2f2a9c3464f9be5cdcd426345cc372194c06e0263e9a303c8"),
+    ("accounting_integration", "bank_statement_record", 16, "b4b952b4190cffd0f4728b7bb36b2806f5d3f410a33088f40a8674df5ef43f27"),
+    ("accounting_integration", "fiscal_period_open_command", 9, "a5fe15c4aa442c5758f02eeaef109d4e094dfb69f35fe0f41e44179a41cb419b"),
+    ("accounting_integration", "home_tax_submission", 14, "a5a57e31b530af134d7b12a641089552e361b5ec534965bb287e34b032788341"),
+    ("accounting_integration", "journal_proposal_record", 9, "cd9b60e16c9c915fb80b5f60fce351d9694aced846c21f3af615adb7b059768e"),
+    ("accounting_integration", "outbox_event", 8, "cf0a8d212e2f703996882c05573facba683b240f3fbffa6df3d0caaab55a4ef3"),
+    ("accounting_integration", "posting_receipt", 8, "901d09055edb9d560ba09118e5843ad8ef6145b882ef55ea6ee1e3fb9acda942"),
+    ("accounting_reporting", "trial_balance_line", 7, "d4444986d7f37011866fed3125238240f4fbda402764bf20ef1f3c7c453729fd"),
+    ("accounting_reporting", "trial_balance_snapshot", 10, "c000256659212235d9c0d38cf4ee6842b79ddd72f10abce709e28a36e4d70e42"),
+)
+_READINESS_TABLES = tuple(
+    f"{schema_name}.{table_name}"
+    for schema_name, table_name, _column_count, _fingerprint in _READINESS_COLUMN_FINGERPRINTS
+)
+_READINESS_CONSTRAINTS = (
+    # PostgreSQL 18 pg_get_constraintdef() fingerprints cover every
+    # migration-defined primary, unique, foreign-key, and check constraint.
+    ("accounting_core", "account_role_mapping", "account_role_mapping_check", "c", "fd403eae41fb814541dbc5e90844922d"),
+    ("accounting_core", "account_role_mapping", "account_role_mapping_pkey", "p", "76fdee80b79368a32b2c4c844135ce3e"),
+    ("accounting_core", "account_role_mapping", "account_role_mapping_tenant_account_id_accounting_book_id_a_key", "u", "894d030515bbd8998e504e35256591e4"),
+    ("accounting_core", "account_role_mapping", "account_role_mapping_tenant_account_id_accounting_book_id_fkey", "f", "92838a9a2e8af53916aaad6f380006bc"),
+    ("accounting_core", "account_role_mapping", "account_role_mapping_tenant_account_id_chart_account_id_fkey", "f", "9b66fdb37b8a17cf6404327a5aeb7091"),
+    ("accounting_core", "accounting_book", "accounting_book_check", "c", "fd403eae41fb814541dbc5e90844922d"),
+    ("accounting_core", "accounting_book", "accounting_book_pkey", "p", "52adcd1348a12c7cabe0e69e0606d277"),
+    ("accounting_core", "accounting_book", "accounting_book_reporting_currency_code_check", "c", "f99eb68af09c3a782e5ac99a232de29f"),
+    ("accounting_core", "accounting_book", "accounting_book_tenant_account_id_accounting_book_id_key", "u", "40ff8d31661dc3dc28637746f3064c2d"),
+    ("accounting_core", "accounting_book", "accounting_book_tenant_account_id_legal_entity_id_accountin_key", "u", "c1668255ec27423abc948861c1f45812"),
+    ("accounting_core", "accounting_book", "accounting_book_tenant_account_id_legal_entity_id_book_role_key", "u", "70e5dbaf731086de511713ad7d06b54a"),
+    ("accounting_core", "accounting_book", "accounting_book_tenant_account_id_legal_entity_id_fkey", "f", "2ae6e1f0ff555615d99a9a2238228ae5"),
+    ("accounting_core", "accounting_book_period_control", "accounting_book_period_contro_tenant_account_id_accounting__key", "u", "792c8be17d0f6063cf4b8bfa3dd9b5aa"),
+    ("accounting_core", "accounting_book_period_control", "accounting_book_period_contro_tenant_account_id_accounting_fkey", "f", "92838a9a2e8af53916aaad6f380006bc"),
+    ("accounting_core", "accounting_book_period_control", "accounting_book_period_contro_tenant_account_id_accounting_key1", "u", "359a39451b69e5dbb5bb8771fd41e3f7"),
+    ("accounting_core", "accounting_book_period_control", "accounting_book_period_contro_tenant_account_id_fiscal_per_fkey", "f", "4952d239e1577ff446787f11cdcca1a6"),
+    ("accounting_core", "accounting_book_period_control", "accounting_book_period_control_period_status_code_check", "c", "e2d9e685bf489c5de53b2c9cbac1035f"),
+    ("accounting_core", "accounting_book_period_control", "accounting_book_period_control_pkey", "p", "84d64414709cd929d16184762f5a469d"),
+    ("accounting_core", "accounting_book_period_control", "soft_close_evidence_complete_check", "c", "b0c01ee22824af75c5faa9e6fef705e1"),
+    ("accounting_core", "bank_account_assignment", "bank_account_assignment_check", "c", "fd403eae41fb814541dbc5e90844922d"),
+    ("accounting_core", "bank_account_assignment", "bank_account_assignment_command_hash_format", "c", "2e3d46754adf91011085059e5910a8ab"),
+    ("accounting_core", "bank_account_assignment", "bank_account_assignment_command_key_present", "c", "f38926f6b77818270f4cd81692cf91df"),
+    ("accounting_core", "bank_account_assignment", "bank_account_assignment_pkey", "p", "f2a4fcdf8b3066184293dca827b0cfd0"),
+    ("accounting_core", "bank_account_assignment", "bank_account_assignment_reconciliation_scope_identity", "u", "0f9f3199e1b43dd4299899a26c144b63"),
+    ("accounting_core", "bank_account_assignment", "bank_account_assignment_tenant_account_id_accounting_book__fkey", "f", "92838a9a2e8af53916aaad6f380006bc"),
+    ("accounting_core", "bank_account_assignment", "bank_account_assignment_tenant_account_id_accounting_book_fkey1", "f", "092a0fa1372eeaa82f4c5d904b1f386e"),
+    ("accounting_core", "bank_account_assignment", "bank_account_assignment_tenant_account_id_bank_account_assi_key", "u", "e8ea3eb723b0603482cdee35eac637e6"),
+    ("accounting_core", "bank_account_assignment", "bank_account_assignment_tenant_account_id_bank_account_rec_fkey", "f", "f7b61bd255e18838b0102aaab5bbc818"),
+    ("accounting_core", "bank_account_assignment", "bank_account_assignment_tenant_account_id_legal_entity_id__fkey", "f", "4a313a10faf28875b126e02a8b635cd9"),
+    ("accounting_core", "bank_account_assignment", "bank_account_assignment_tenant_account_id_legal_entity_id_fkey", "f", "2ae6e1f0ff555615d99a9a2238228ae5"),
+    ("accounting_core", "bank_account_record", "bank_account_record_account_currency_code_check", "c", "79d3e374eeeef0d6cb410e5d41927401"),
+    ("accounting_core", "bank_account_record", "bank_account_record_account_identifier_hash_check", "c", "83186ffd2f84cbb393d02278ab230139"),
+    ("accounting_core", "bank_account_record", "bank_account_record_bank_account_reference_check", "c", "9824c77602625f921511e31cf47a0cea"),
+    ("accounting_core", "bank_account_record", "bank_account_record_pkey", "p", "854eee056b489d85272d11b1961051df"),
+    ("accounting_core", "bank_account_record", "bank_account_record_tenant_account_id_bank_account_record_i_key", "u", "3dbb3f0bde976eb211b5226625c9607c"),
+    ("accounting_core", "bank_account_record", "bank_account_record_tenant_account_id_bank_account_referenc_key", "u", "64226960cce0a65cd1552317255094d5"),
+    ("accounting_core", "bank_account_record", "bank_account_record_tenant_account_id_fkey", "f", "d264b1dc903f5f56aa6362492af0914a"),
+    ("accounting_core", "chart_account", "account_class_check", "c", "96374f4c8a39b9254ccc77140ad500c6"),
+    ("accounting_core", "chart_account", "chart_account_book_identity", "u", "aca5f809983b8764b9999a2abb0ec3a2"),
+    ("accounting_core", "chart_account", "chart_account_check", "c", "fd403eae41fb814541dbc5e90844922d"),
+    ("accounting_core", "chart_account", "chart_account_normal_balance_code_check", "c", "733618cbddbcc4c4291ea2f65c6bfb36"),
+    ("accounting_core", "chart_account", "chart_account_pkey", "p", "52d20b0d4a01d16bdb46e8ca54a7d50f"),
+    ("accounting_core", "chart_account", "chart_account_tenant_account_id_accounting_book_id_chart_ac_key", "u", "5e436b04249d0e9443ccdbc41c0b9ce0"),
+    ("accounting_core", "chart_account", "chart_account_tenant_account_id_accounting_book_id_fkey", "f", "92838a9a2e8af53916aaad6f380006bc"),
+    ("accounting_core", "chart_account", "chart_account_tenant_account_id_chart_account_id_key", "u", "ee4d76e6525ee05bd804657284699d25"),
+    ("accounting_core", "fiscal_calendar", "fiscal_calendar_pkey", "p", "125a4192503c3d13452bca3f951112c0"),
+    ("accounting_core", "fiscal_calendar", "fiscal_calendar_tenant_account_id_calendar_code_key", "u", "bd566c694bef2af9c53fd675dd748d38"),
+    ("accounting_core", "fiscal_calendar", "fiscal_calendar_tenant_account_id_fiscal_calendar_id_key", "u", "9851c3e31bfd2a65b66c0c717e6b4681"),
+    ("accounting_core", "fiscal_calendar", "fiscal_calendar_tenant_account_id_fkey", "f", "d264b1dc903f5f56aa6362492af0914a"),
+    ("accounting_core", "fiscal_period", "fiscal_period_check", "c", "6eb04100a75ab5bf6e6441ffd47cbde1"),
+    ("accounting_core", "fiscal_period", "fiscal_period_period_status_code_check", "c", "e2d9e685bf489c5de53b2c9cbac1035f"),
+    ("accounting_core", "fiscal_period", "fiscal_period_pkey", "p", "08d95d723c7ffccf0977d2c20dcb5bce"),
+    ("accounting_core", "fiscal_period", "fiscal_period_tenant_account_id_fiscal_calendar_id_fkey", "f", "1b28425204c7e84a81758b6c8b7858e7"),
+    ("accounting_core", "fiscal_period", "fiscal_period_tenant_account_id_fiscal_calendar_id_period_c_key", "u", "824eda55fb0f78af83d34f9fc1a04a32"),
+    ("accounting_core", "fiscal_period", "fiscal_period_tenant_account_id_fiscal_period_id_key", "u", "c8d4017fa040f3765dafdccd358aecea"),
+    ("accounting_core", "general_journal", "general_journal_functional_currency_code_check", "c", "365e738e4e7e0016ae36410cffb33170"),
+    ("accounting_core", "general_journal", "general_journal_journal_status_code_check", "c", "ee280a28ab5af00b280f0b07295ce1fe"),
+    ("accounting_core", "general_journal", "general_journal_pkey", "p", "ce75d35c5d091ad059820d128973064a"),
+    ("accounting_core", "general_journal", "general_journal_tenant_account_id_accounting_book_id_fkey", "f", "92838a9a2e8af53916aaad6f380006bc"),
+    ("accounting_core", "general_journal", "general_journal_tenant_account_id_fiscal_period_id_fkey", "f", "4952d239e1577ff446787f11cdcca1a6"),
+    ("accounting_core", "general_journal", "general_journal_tenant_account_id_general_journal_id_key", "u", "814bc76ab1205396b87f3ccb74e494cf"),
+    ("accounting_core", "general_journal", "general_journal_tenant_account_id_journal_reference_key", "u", "cddca9293168481abd161bd1b54fbf86"),
+    ("accounting_core", "general_journal", "general_journal_tenant_account_id_legal_entity_id_accounti_fkey", "f", "4a313a10faf28875b126e02a8b635cd9"),
+    ("accounting_core", "general_journal", "general_journal_tenant_account_id_legal_entity_id_fkey", "f", "2ae6e1f0ff555615d99a9a2238228ae5"),
+    ("accounting_core", "general_journal", "general_journal_tenant_account_id_source_proposal_record_i_fkey", "f", "01f31e9185acfc26c8cae43fecbe4650"),
+    ("accounting_core", "general_journal", "general_journal_transaction_currency_code_check", "c", "783e4b2d809d1725982a3bf62dfc4b8a"),
+    ("accounting_core", "journal_entry_line", "journal_entry_line_check", "c", "fd0923bfd05c850b37ebafe0778b252c"),
+    ("accounting_core", "journal_entry_line", "journal_entry_line_credit_amount_check", "c", "628fd63022fcf7de70c6f7f5c9a2bbb5"),
+    ("accounting_core", "journal_entry_line", "journal_entry_line_debit_amount_check", "c", "bb716d3ca17c3fd9e2f92206d99abf5c"),
+    ("accounting_core", "journal_entry_line", "journal_entry_line_line_number_check", "c", "cf471c99cef0c5cf447706af09b5fa5f"),
+    ("accounting_core", "journal_entry_line", "journal_entry_line_pkey", "p", "a5bf3bb5895aa73c26e5708dfe85e202"),
+    ("accounting_core", "journal_entry_line", "journal_entry_line_tenant_account_id_chart_account_id_fkey", "f", "9b66fdb37b8a17cf6404327a5aeb7091"),
+    ("accounting_core", "journal_entry_line", "journal_entry_line_tenant_account_id_general_journal_id_fkey", "f", "abdd3a5f73d9f1bd1547c06c4565816b"),
+    ("accounting_core", "journal_entry_line", "journal_entry_line_tenant_account_id_general_journal_id_lin_key", "u", "65fdbefc6cfdf4635eb0016a1fb42e65"),
+    ("accounting_core", "journal_match_allocation", "journal_match_allocation_allocated_amount_check", "c", "91199dfae54e61691629871683a36df6"),
+    ("accounting_core", "journal_match_allocation", "journal_match_allocation_journal_reference_check", "c", "6cafa987f2bf77992e30f19b00e19d4d"),
+    ("accounting_core", "journal_match_allocation", "journal_match_allocation_pkey", "p", "6d17539b970ea3fec47f8faa17118c89"),
+    ("accounting_core", "journal_match_allocation", "journal_match_allocation_reconciliation_match_id_fkey", "f", "d5f6e8c11f721b109273f2398d77085e"),
+    ("accounting_core", "journal_match_allocation", "journal_match_allocation_tenant_account_id_reconciliation__fkey", "f", "3e513aba3aedc6a16ea7b1109a804beb"),
+    ("accounting_core", "journal_reversal", "journal_reversal_check", "c", "2b3be4c5d7b132831d5740f812b7aa51"),
+    ("accounting_core", "journal_reversal", "journal_reversal_pkey", "p", "0a46f8fd47427f7b8aab5d8986fcaf2a"),
+    ("accounting_core", "journal_reversal", "journal_reversal_tenant_account_id_fkey", "f", "d264b1dc903f5f56aa6362492af0914a"),
+    ("accounting_core", "journal_reversal", "journal_reversal_tenant_account_id_original_journal_id_fkey", "f", "232f2326b5bbfa5504298670970a3763"),
+    ("accounting_core", "journal_reversal", "journal_reversal_tenant_account_id_original_journal_id_key", "u", "c38c5991a7050c0c80bde5bb3a490c8f"),
+    ("accounting_core", "journal_reversal", "journal_reversal_tenant_account_id_reversal_journal_id_fkey", "f", "a7e153b5485e61ea1617ac7db79bef9e"),
+    ("accounting_core", "journal_reversal", "journal_reversal_tenant_account_id_reversal_journal_id_key", "u", "42e106a6a59832e3ac30200e5a38180d"),
+    ("accounting_core", "journal_source_reference", "journal_source_reference_pkey", "p", "f77240c561269f314163b07b1fcd291a"),
+    ("accounting_core", "journal_source_reference", "journal_source_reference_source_payload_hash_check", "c", "bd060c8dddfeac59e811ab5fc9185206"),
+    ("accounting_core", "journal_source_reference", "journal_source_reference_tenant_account_id_general_journal__key", "u", "fe082776480b5312c0da8d6289336714"),
+    ("accounting_core", "journal_source_reference", "journal_source_reference_tenant_account_id_general_journal_fkey", "f", "abdd3a5f73d9f1bd1547c06c4565816b"),
+    ("accounting_core", "legal_entity_record", "legal_entity_record_check", "c", "fd403eae41fb814541dbc5e90844922d"),
+    ("accounting_core", "legal_entity_record", "legal_entity_record_functional_currency_code_check", "c", "365e738e4e7e0016ae36410cffb33170"),
+    ("accounting_core", "legal_entity_record", "legal_entity_record_pkey", "p", "99976dac413c1f85bd3578841a124fa3"),
+    ("accounting_core", "legal_entity_record", "legal_entity_record_tenant_account_id_fkey", "f", "d264b1dc903f5f56aa6362492af0914a"),
+    ("accounting_core", "legal_entity_record", "legal_entity_record_tenant_account_id_legal_entity_code_val_key", "u", "47d8ac73817151daa66a2d7909f1fb57"),
+    ("accounting_core", "legal_entity_record", "legal_entity_record_tenant_account_id_legal_entity_id_key", "u", "3509106d2bd9146f50dfcc794aa4a322"),
+    ("accounting_core", "reconciliation_candidate", "reconciliation_candidate_journal_amount_check", "c", "a2306f8d90d3d293ea7415b329dbfec5"),
+    ("accounting_core", "reconciliation_candidate", "reconciliation_candidate_journal_reference_check", "c", "6cafa987f2bf77992e30f19b00e19d4d"),
+    ("accounting_core", "reconciliation_candidate", "reconciliation_candidate_pkey", "p", "6af3ffa2bf2af2ec7813fe51b26136a5"),
+    ("accounting_core", "reconciliation_candidate", "reconciliation_candidate_rule_code_check", "c", "bc6942a27bf31a748162bca5ce57c83e"),
+    ("accounting_core", "reconciliation_candidate", "reconciliation_candidate_statement_amount_check", "c", "7db4be7bc9e34902f3dae2765a4fdc69"),
+    ("accounting_core", "reconciliation_candidate", "reconciliation_candidate_statement_entry_reference_check", "c", "245a4de35b1918a37f59fe2063bec2af"),
+    ("accounting_core", "reconciliation_candidate", "reconciliation_candidate_tenant_account_id_reconciliation__fkey", "f", "3e513aba3aedc6a16ea7b1109a804beb"),
+    ("accounting_core", "reconciliation_candidate", "reconciliation_candidate_tenant_account_id_reconciliation_r_key", "u", "25f6f3d408b5ca7c5adc2b8481eaa7fd"),
+    ("accounting_core", "reconciliation_evidence", "reconciliation_evidence_evidence_payload_hash_check", "c", "a0fc5214b60ab9cb53ef71cf408800fc"),
+    ("accounting_core", "reconciliation_evidence", "reconciliation_evidence_evidence_reference_check", "c", "a6e693f892ae491937e6856594943666"),
+    ("accounting_core", "reconciliation_evidence", "reconciliation_evidence_evidence_type_code_check", "c", "9961091d4a31cdf406edf807a9fe22b4"),
+    ("accounting_core", "reconciliation_evidence", "reconciliation_evidence_pkey", "p", "b351c41e3137d8cc0302c646b9fc22f5"),
+    ("accounting_core", "reconciliation_evidence", "reconciliation_evidence_tenant_account_id_reconciliation__fkey1", "f", "e2262723980faf75816e9fd0ddea34b6"),
+    ("accounting_core", "reconciliation_evidence", "reconciliation_evidence_tenant_account_id_reconciliation_r_fkey", "f", "3e513aba3aedc6a16ea7b1109a804beb"),
+    ("accounting_core", "reconciliation_evidence", "reconciliation_evidence_tenant_account_id_reconciliation_ru_key", "u", "a549ab88a62c88592e8d82866cc9944d"),
+    ("accounting_core", "reconciliation_exception", "reconciliation_exception_exception_code_check", "c", "10614e198bec347411903c95e599d444"),
+    ("accounting_core", "reconciliation_exception", "reconciliation_exception_next_action_check", "c", "00c8533f2a67ef1393d8ad66f7e7a965"),
+    ("accounting_core", "reconciliation_exception", "reconciliation_exception_owner_reference_check", "c", "64a6c9569e1ec7b788fa73bf564722b2"),
+    ("accounting_core", "reconciliation_exception", "reconciliation_exception_pkey", "p", "c9e6418125f5b0641175d1fbbb021203"),
+    ("accounting_core", "reconciliation_exception", "reconciliation_exception_resolution_status_code_check", "c", "4e5beb9351364966675e902332e2e92c"),
+    ("accounting_core", "reconciliation_exception", "reconciliation_exception_tenant_account_id_reconciliation__fkey", "f", "3e513aba3aedc6a16ea7b1109a804beb"),
+    ("accounting_core", "reconciliation_exception", "reconciliation_exception_tenant_account_id_reconciliation_r_key", "u", "37affddefc01e6e3c7a17e0f6d00d322"),
+    ("accounting_core", "reconciliation_match", "reconciliation_match_match_status_code_check", "c", "7077caa9b1b02587594ec051075a923d"),
+    ("accounting_core", "reconciliation_match", "reconciliation_match_pkey", "p", "1256820721433bd948ab637f52074a6f"),
+    ("accounting_core", "reconciliation_match", "reconciliation_match_reconciliation_candidate_id_fkey", "f", "f1fb2e1059df2d2560da0df59078be90"),
+    ("accounting_core", "reconciliation_match", "reconciliation_match_tenant_account_id_reconciliation_run__fkey", "f", "3e513aba3aedc6a16ea7b1109a804beb"),
+    ("accounting_core", "reconciliation_match", "reconciliation_match_tenant_account_id_reconciliation_run_i_key", "u", "044c572e9275e7532433060adcd72cc6"),
+    ("accounting_core", "reconciliation_run", "reconciliation_run_check", "c", "17d0ad9bfe9b90dd5fa6ebfda75e4e3a"),
+    ("accounting_core", "reconciliation_run", "reconciliation_run_check1", "c", "cd2472b80af72f910f9686473a760747"),
+    ("accounting_core", "reconciliation_run", "reconciliation_run_currency_code_check", "c", "4bfdd32f7cd7c89d5450f23ef6144f58"),
+    ("accounting_core", "reconciliation_run", "reconciliation_run_matching_policy_version_check", "c", "e526ec6f84e157f774641decc08a62d1"),
+    ("accounting_core", "reconciliation_run", "reconciliation_run_pkey", "p", "163213397f8dc5bbbb352d4fb471f381"),
+    ("accounting_core", "reconciliation_run", "reconciliation_run_run_status_code_check", "c", "b71d41855e13698a531ac2d393111104"),
+    ("accounting_core", "reconciliation_run", "reconciliation_run_tenant_account_id_legal_entity_id_acco_fkey1", "f", "232b00c9eb87ba38aac41f0e7f7200a1"),
+    ("accounting_core", "reconciliation_run", "reconciliation_run_tenant_account_id_legal_entity_id_accou_fkey", "f", "4a313a10faf28875b126e02a8b635cd9"),
+    ("accounting_core", "reconciliation_run", "reconciliation_run_tenant_account_id_legal_entity_id_fkey", "f", "2ae6e1f0ff555615d99a9a2238228ae5"),
+    ("accounting_core", "reconciliation_run", "reconciliation_run_tenant_account_id_reconciliation_run_id_key", "u", "2d7e119455ca717675c53f54f2ece8e8"),
+    ("accounting_core", "runtime_tenant_binding", "runtime_tenant_binding_check", "c", "fd403eae41fb814541dbc5e90844922d"),
+    ("accounting_core", "runtime_tenant_binding", "runtime_tenant_binding_pkey", "p", "af7ccf2ac895ce7502ab8439b53a3afe"),
+    ("accounting_core", "runtime_tenant_binding", "runtime_tenant_binding_runtime_tenant_binding_id_tenant_acc_key", "u", "6c9695d8d033b1fd223216339c2bb0c2"),
+    ("accounting_core", "runtime_tenant_binding", "runtime_tenant_binding_tenant_account_id_fkey", "f", "d264b1dc903f5f56aa6362492af0914a"),
+    ("accounting_core", "statement_match_allocation", "statement_match_allocation_allocated_amount_check", "c", "91199dfae54e61691629871683a36df6"),
+    ("accounting_core", "statement_match_allocation", "statement_match_allocation_pkey", "p", "6d17539b970ea3fec47f8faa17118c89"),
+    ("accounting_core", "statement_match_allocation", "statement_match_allocation_reconciliation_match_id_fkey", "f", "d5f6e8c11f721b109273f2398d77085e"),
+    ("accounting_core", "statement_match_allocation", "statement_match_allocation_statement_entry_reference_check", "c", "245a4de35b1918a37f59fe2063bec2af"),
+    ("accounting_core", "statement_match_allocation", "statement_match_allocation_tenant_account_id_reconciliatio_fkey", "f", "3e513aba3aedc6a16ea7b1109a804beb"),
+    ("accounting_core", "tenant_account", "tenant_account_pkey", "p", "2b3784ac644769b0b5ed25609b140f13"),
+    ("accounting_core", "tenant_account", "tenant_account_tenant_account_code_key", "u", "c7d1b1ee518f08f3907103feadf5b291"),
+    ("accounting_integration", "bank_statement_artifact", "bank_statement_artifact_artifact_byte_length_check", "c", "25700d8635825b6ed3df1dc1c9b2df68"),
+    ("accounting_integration", "bank_statement_artifact", "bank_statement_artifact_artifact_store_reference_check", "c", "236b9449403267a553d8cd80ba0e3087"),
+    ("accounting_integration", "bank_statement_artifact", "bank_statement_artifact_pkey", "p", "aaf955d4f861ea486ae4d2ad0a0a3d16"),
+    ("accounting_integration", "bank_statement_artifact", "bank_statement_artifact_source_artifact_hash_check", "c", "ca5daedf0a828b0488ea77681fa88449"),
+    ("accounting_integration", "bank_statement_artifact", "bank_statement_artifact_tenant_account_id_bank_statement_ar_key", "u", "6659498ed58e8838c241ab74e685f75c"),
+    ("accounting_integration", "bank_statement_artifact", "bank_statement_artifact_tenant_account_id_fkey", "f", "d264b1dc903f5f56aa6362492af0914a"),
+    ("accounting_integration", "bank_statement_artifact", "bank_statement_artifact_tenant_account_id_source_artifact_h_key", "u", "4d677b22bd40bd1938cfbde217351902"),
+    ("accounting_integration", "bank_statement_entry", "bank_statement_entry_counterparty_evidence_hash_check", "c", "5c41cc062fb02613715b9bc7ff2e0cb1"),
+    ("accounting_integration", "bank_statement_entry", "bank_statement_entry_credit_debit_code_check", "c", "1cf04c46ae4d4b97cc257b3675c5ad69"),
+    ("accounting_integration", "bank_statement_entry", "bank_statement_entry_entry_amount_check", "c", "92988afa3b9236871b3489f6eaede0c9"),
+    ("accounting_integration", "bank_statement_entry", "bank_statement_entry_entry_currency_code_check", "c", "826c2c906630cc51a033496e88c08030"),
+    ("accounting_integration", "bank_statement_entry", "bank_statement_entry_entry_sequence_number_check", "c", "45df5e4b67714f5b184e7d901f1d1219"),
+    ("accounting_integration", "bank_statement_entry", "bank_statement_entry_pkey", "p", "15800f49b3f91ddd6971777fbcf8c640"),
+    ("accounting_integration", "bank_statement_entry", "bank_statement_entry_source_entry_hash_check", "c", "136856e8d838d35fc457ff467cdabc2e"),
+    ("accounting_integration", "bank_statement_entry", "bank_statement_entry_source_locator_path_check", "c", "b68e98a85e3e86f7d30d696e62758ae1"),
+    ("accounting_integration", "bank_statement_entry", "bank_statement_entry_tenant_account_id_bank_statement_entry_key", "u", "620081c2c2495fbf9a91cb1c8f2e99b3"),
+    ("accounting_integration", "bank_statement_entry", "bank_statement_entry_tenant_account_id_bank_statement_reco_fkey", "f", "b05657531c15d1f3a4b20ad54dd677a8"),
+    ("accounting_integration", "bank_statement_entry", "bank_statement_entry_tenant_account_id_bank_statement_recor_key", "u", "9ec9f137980e3be3d923669cc117e473"),
+    ("accounting_integration", "bank_statement_entry_detail", "bank_statement_entry_detail_credit_debit_code_check", "c", "1cf04c46ae4d4b97cc257b3675c5ad69"),
+    ("accounting_integration", "bank_statement_entry_detail", "bank_statement_entry_detail_detail_amount_check", "c", "033b108d19193ddc9d26bef974fce875"),
+    ("accounting_integration", "bank_statement_entry_detail", "bank_statement_entry_detail_detail_currency_code_check", "c", "575ce281a503d150d6851a08b20d10ec"),
+    ("accounting_integration", "bank_statement_entry_detail", "bank_statement_entry_detail_detail_sequence_number_check", "c", "f842e3dbb010311fd0043f628efc916b"),
+    ("accounting_integration", "bank_statement_entry_detail", "bank_statement_entry_detail_pkey", "p", "d075c1dd6f40460f361a07018cd81c6e"),
+    ("accounting_integration", "bank_statement_entry_detail", "bank_statement_entry_detail_source_detail_hash_check", "c", "c70893eeead3339da6f16ce8059a4206"),
+    ("accounting_integration", "bank_statement_entry_detail", "bank_statement_entry_detail_source_locator_path_check", "c", "b68e98a85e3e86f7d30d696e62758ae1"),
+    ("accounting_integration", "bank_statement_entry_detail", "bank_statement_entry_detail_tenant_account_id_bank_stateme_fkey", "f", "54fcd5664a0426acb8cb0f19429bb6d6"),
+    ("accounting_integration", "bank_statement_entry_detail", "bank_statement_entry_detail_tenant_account_id_bank_stateme_key1", "u", "d774cd9afd0e413a2b1b58843110e8aa"),
+    ("accounting_integration", "bank_statement_entry_detail", "bank_statement_entry_detail_tenant_account_id_bank_statemen_key", "u", "010ad6d10fa4063040274f3f9b5f6980"),
+    ("accounting_integration", "bank_statement_record", "bank_statement_record_closing_balance_hash_check", "c", "ecc7eaf4b0636bc01d4272368af0a6d9"),
+    ("accounting_integration", "bank_statement_record", "bank_statement_record_ingestion_idempotency_key_check", "c", "4594874be2d055c93b16b316c59d18ff"),
+    ("accounting_integration", "bank_statement_record", "bank_statement_record_message_definition_identifier_check", "c", "35c5a24907adac53c6647bda186b4a3c"),
+    ("accounting_integration", "bank_statement_record", "bank_statement_record_normalized_payload_hash_check", "c", "894c0a94f0fe3c21a9903823960362bc"),
+    ("accounting_integration", "bank_statement_record", "bank_statement_record_opening_balance_hash_check", "c", "54a8063b820c77ef1872ab9e7737667b"),
+    ("accounting_integration", "bank_statement_record", "bank_statement_record_pkey", "p", "29ef019564694e8d91c541c1b51c728b"),
+    ("accounting_integration", "bank_statement_record", "bank_statement_record_source_artifact_hash_check", "c", "ca5daedf0a828b0488ea77681fa88449"),
+    ("accounting_integration", "bank_statement_record", "bank_statement_record_statement_identity_reference_check", "c", "de0e829272a82f85e9ec341eab15f28f"),
+    ("accounting_integration", "bank_statement_record", "bank_statement_record_tenant_account_id_bank_account_recor_fkey", "f", "f7b61bd255e18838b0102aaab5bbc818"),
+    ("accounting_integration", "bank_statement_record", "bank_statement_record_tenant_account_id_bank_account_record_key", "u", "3b0d0c3762efbcea7fa4484e6d249c7b"),
+    ("accounting_integration", "bank_statement_record", "bank_statement_record_tenant_account_id_bank_statement_art_fkey", "f", "f6958e54e9a0a06810ce8da65a0b06fa"),
+    ("accounting_integration", "bank_statement_record", "bank_statement_record_tenant_account_id_bank_statement_reco_key", "u", "c05a8c0654b1ac44f2a151d1745f2357"),
+    ("accounting_integration", "bank_statement_record", "bank_statement_record_tenant_account_id_ingestion_idempoten_key", "u", "7f98ca9dbd3472e5b04deb1d052be857"),
+    ("accounting_integration", "bank_statement_record", "bank_statement_record_tenant_account_id_source_artifact_has_key", "u", "4d677b22bd40bd1938cfbde217351902"),
+    ("accounting_integration", "fiscal_period_open_command", "fiscal_period_open_command_check", "c", "044a111841a7fa95687de15dabe3d77a"),
+    ("accounting_integration", "fiscal_period_open_command", "fiscal_period_open_command_period_open_idempotency_key_check", "c", "5730a3ae577d0b4166041c1f6f30957a"),
+    ("accounting_integration", "fiscal_period_open_command", "fiscal_period_open_command_pkey", "p", "38fce57b6e505780d968f335183084fd"),
+    ("accounting_integration", "fiscal_period_open_command", "fiscal_period_open_command_source_payload_hash_check", "c", "bd060c8dddfeac59e811ab5fc9185206"),
+    ("accounting_integration", "fiscal_period_open_command", "fiscal_period_open_command_tenant_account_id_fiscal_period__key", "u", "6b745bb8702beb61b65d46b21ff8ddb7"),
+    ("accounting_integration", "fiscal_period_open_command", "fiscal_period_open_command_tenant_account_id_fiscal_period_fkey", "f", "4952d239e1577ff446787f11cdcca1a6"),
+    ("accounting_integration", "fiscal_period_open_command", "fiscal_period_open_command_tenant_account_id_legal_entity__fkey", "f", "2ae6e1f0ff555615d99a9a2238228ae5"),
+    ("accounting_integration", "fiscal_period_open_command", "fiscal_period_open_command_tenant_account_id_period_open_id_key", "u", "793bb48354ed1ce69ff5cc828522698e"),
+    ("accounting_integration", "home_tax_submission", "home_tax_submission_pkey", "p", "414fa81980ffdedcd2d7194f5c12fcc3"),
+    ("accounting_integration", "home_tax_submission", "home_tax_submission_register_payload_hash_check", "c", "545054151722ee43c2eaf8a78179dc94"),
+    ("accounting_integration", "home_tax_submission", "home_tax_submission_rejection_reason_code_check", "c", "9e45f793ba470c47822b4984bba24773"),
+    ("accounting_integration", "home_tax_submission", "home_tax_submission_source_payload_hash_check", "c", "bd060c8dddfeac59e811ab5fc9185206"),
+    ("accounting_integration", "home_tax_submission", "home_tax_submission_source_payload_reference_check", "c", "a8c30ba10f288f20ccaa80616074861f"),
+    ("accounting_integration", "home_tax_submission", "home_tax_submission_submission_idempotency_key_check", "c", "dd6cd9c58c3ead1cf7773c09f39de391"),
+    ("accounting_integration", "home_tax_submission", "home_tax_submission_submission_status_code_check", "c", "e1498ed3fd56bb72c582ddb6db42f7ba"),
+    ("accounting_integration", "home_tax_submission", "home_tax_submission_tenant_account_id_accounting_book_id_fkey", "f", "92838a9a2e8af53916aaad6f380006bc"),
+    ("accounting_integration", "home_tax_submission", "home_tax_submission_tenant_account_id_fiscal_period_id_fkey", "f", "4952d239e1577ff446787f11cdcca1a6"),
+    ("accounting_integration", "home_tax_submission", "home_tax_submission_tenant_account_id_home_tax_submission_i_key", "u", "269dd08fd8881bbad0cbb31686f64d72"),
+    ("accounting_integration", "home_tax_submission", "home_tax_submission_tenant_account_id_legal_entity_id_fkey", "f", "2ae6e1f0ff555615d99a9a2238228ae5"),
+    ("accounting_integration", "home_tax_submission", "home_tax_submission_tenant_account_id_submission_idempotenc_key", "u", "bff5ba8ed66073f5bedec3269823b459"),
+    ("accounting_integration", "journal_proposal_record", "journal_proposal_record_pkey", "p", "60cad40e89c772c6d3542a01b312b9da"),
+    ("accounting_integration", "journal_proposal_record", "journal_proposal_record_proposal_contract_version_check", "c", "17c4d4e5ce1fdfe7c9592c42ebd18b56"),
+    ("accounting_integration", "journal_proposal_record", "journal_proposal_record_proposal_status_code_check", "c", "70bef7fca926801d5d82d7227ecabb28"),
+    ("accounting_integration", "journal_proposal_record", "journal_proposal_record_source_payload_hash_check", "c", "bd060c8dddfeac59e811ab5fc9185206"),
+    ("accounting_integration", "journal_proposal_record", "journal_proposal_record_tenant_account_id_external_proposal_key", "u", "7289478b5a739bbcf9271e56c4911639"),
+    ("accounting_integration", "journal_proposal_record", "journal_proposal_record_tenant_account_id_fkey", "f", "d264b1dc903f5f56aa6362492af0914a"),
+    ("accounting_integration", "journal_proposal_record", "journal_proposal_record_tenant_account_id_idempotency_key_key", "u", "01cbb17c53e588b8bcf06ea9926bfe33"),
+    ("accounting_integration", "journal_proposal_record", "journal_proposal_record_tenant_account_id_proposal_record_i_key", "u", "9107276ff426e1ba714ebdf14d9d8a3a"),
+    ("accounting_integration", "outbox_event", "outbox_event_payload_hash_check", "c", "cb48b6a4c2a0c781d3cb47a1981b82cf"),
+    ("accounting_integration", "outbox_event", "outbox_event_pkey", "p", "4372930136ba6cd593285866ed333ae7"),
+    ("accounting_integration", "outbox_event", "outbox_event_tenant_account_id_fkey", "f", "d264b1dc903f5f56aa6362492af0914a"),
+    ("accounting_integration", "posting_receipt", "posting_receipt_pkey", "p", "4c7ecac00512ce54c61d6021da84ddcc"),
+    ("accounting_integration", "posting_receipt", "posting_receipt_receipt_payload_hash_check", "c", "2908949ee55d29075f31c18354d7d2cf"),
+    ("accounting_integration", "posting_receipt", "posting_receipt_receipt_status_code_check", "c", "8db3fa357c873e3232570c761122f173"),
+    ("accounting_integration", "posting_receipt", "posting_receipt_tenant_account_id_general_journal_id_fkey", "f", "abdd3a5f73d9f1bd1547c06c4565816b"),
+    ("accounting_integration", "posting_receipt", "posting_receipt_tenant_account_id_posting_receipt_id_key", "u", "fed205f58cbc62309aca65411d56d4a1"),
+    ("accounting_integration", "posting_receipt", "posting_receipt_tenant_account_id_proposal_record_id_fkey", "f", "d783b0ba8b94a20fa644bdc9c1c12d83"),
+    ("accounting_integration", "posting_receipt", "posting_receipt_tenant_account_id_proposal_record_id_key", "u", "9107276ff426e1ba714ebdf14d9d8a3a"),
+    ("accounting_reporting", "trial_balance_line", "trial_balance_line_credit_total_amount_check", "c", "e895ac2bf9fb6428c70dd42634f93a33"),
+    ("accounting_reporting", "trial_balance_line", "trial_balance_line_debit_total_amount_check", "c", "7e1b5a6965c0c7a1dddbd02bacabaa7e"),
+    ("accounting_reporting", "trial_balance_line", "trial_balance_line_pkey", "p", "1fdaf3191a55a07d5472ce2060ea1087"),
+    ("accounting_reporting", "trial_balance_line", "trial_balance_line_tenant_account_id_chart_account_id_fkey", "f", "9b66fdb37b8a17cf6404327a5aeb7091"),
+    ("accounting_reporting", "trial_balance_line", "trial_balance_line_tenant_account_id_trial_balance_snapsho_fkey", "f", "00e8b0d0b0f3778260b34f0a5b0837f3"),
+    ("accounting_reporting", "trial_balance_line", "trial_balance_line_tenant_account_id_trial_balance_snapshot_key", "u", "6af95a9042dbcc3203c139111d39cc18"),
+    ("accounting_reporting", "trial_balance_snapshot", "close_idempotency_nonempty_check", "c", "7953f37e0cda34bb8fdc1d813cd2b252"),
+    ("accounting_reporting", "trial_balance_snapshot", "close_idempotency_tenant_key_unique", "u", "2dd996893c62710a9721e1b8ae457d25"),
+    ("accounting_reporting", "trial_balance_snapshot", "close_snapshot_scope_unique", "u", "027773b128c23df5f239a689eb1c29ce"),
+    ("accounting_reporting", "trial_balance_snapshot", "trial_balance_snapshot_pkey", "p", "f97ba301b9f6f0afb0e8a84bbbc79ec5"),
+    ("accounting_reporting", "trial_balance_snapshot", "trial_balance_snapshot_snapshot_currency_code_check", "c", "9c69206729d79fce77ceb109ba8d4f55"),
+    ("accounting_reporting", "trial_balance_snapshot", "trial_balance_snapshot_source_journal_count_check", "c", "8ed2ae583b41cd4afbf1da6edb0e5fc3"),
+    ("accounting_reporting", "trial_balance_snapshot", "trial_balance_snapshot_source_payload_hash_check", "c", "bd060c8dddfeac59e811ab5fc9185206"),
+    ("accounting_reporting", "trial_balance_snapshot", "trial_balance_snapshot_tenant_account_id_accounting_book_i_fkey", "f", "92838a9a2e8af53916aaad6f380006bc"),
+    ("accounting_reporting", "trial_balance_snapshot", "trial_balance_snapshot_tenant_account_id_accounting_book_id_key", "u", "243f309e680c83c30f274419f1f4a468"),
+    ("accounting_reporting", "trial_balance_snapshot", "trial_balance_snapshot_tenant_account_id_fiscal_period_id_fkey", "f", "4952d239e1577ff446787f11cdcca1a6"),
+    ("accounting_reporting", "trial_balance_snapshot", "trial_balance_snapshot_tenant_account_id_legal_entity_id_fkey", "f", "2ae6e1f0ff555615d99a9a2238228ae5"),
+    ("accounting_reporting", "trial_balance_snapshot", "trial_balance_snapshot_tenant_account_id_trial_balance_snap_key", "u", "139d8b37509d6b5d8ba1ee479cf64890"),
+)
+_READINESS_INDEX_DEFINITIONS = (
+    # MD5 fingerprints are generated from PostgreSQL 18 pg_get_indexdef().
+    (
+        "accounting_integration",
+        "home_tax_submission_scope_order_index",
+        "accounting_integration",
+        "home_tax_submission",
+        False,
+        "",
+        "d6b1b688aece25340f915c0a0d9f8b50",
+    ),
+    (
+        "accounting_integration",
+        "journal_proposal_tenant_received_index",
+        "accounting_integration",
+        "journal_proposal_record",
+        False,
+        "",
+        "c8fa3fb6e9260045dd8157d7fe3b8b4b",
+    ),
+    (
+        "accounting_core",
+        "general_journal_tenant_period_date_index",
+        "accounting_core",
+        "general_journal",
+        False,
+        "",
+        "5c426ce4a8f04aad8e99c4b59e5f5b71",
+    ),
+    (
+        "accounting_core",
+        "journal_entry_tenant_journal_index",
+        "accounting_core",
+        "journal_entry_line",
+        False,
+        "",
+        "5072afea7396a298f8cc243fee1a4eb3",
+    ),
+    (
+        "accounting_integration",
+        "outbox_event_pending_created_index",
+        "accounting_integration",
+        "outbox_event",
+        False,
+        "published_at IS NULL",
+        "fc4ccb0e4fca277698e24ae7dc930153",
+    ),
+    (
+        "accounting_core",
+        "reversal_event_tenant_reversed_index",
+        "accounting_core",
+        "journal_reversal",
+        False,
+        "",
+        "71f39d81b1d456e6821af4327cc8fd40",
+    ),
+    (
+        "accounting_integration",
+        "posting_receipt_tenant_created_index",
+        "accounting_integration",
+        "posting_receipt",
+        False,
+        "",
+        "89fc500a7f7d35f860a04ef8f333dd97",
+    ),
+    (
+        "accounting_integration",
+        "home_tax_submission_tenant_created_index",
+        "accounting_integration",
+        "home_tax_submission",
+        False,
+        "",
+        "989da24e0b7905e00bf84c531d0a481c",
+    ),
+    (
+        "accounting_core",
+        "runtime_tenant_binding_active_index",
+        "accounting_core",
+        "runtime_tenant_binding",
+        True,
+        "valid_to IS NULL",
+        "ba8c772c745da4ee6477ecad42b1cc3b",
+    ),
+    (
+        "accounting_core",
+        "accounting_book_period_scope_index",
+        "accounting_core",
+        "accounting_book_period_control",
+        False,
+        "",
+        "cb9f53ec5912bd7f81bdbf7984b302b3",
+    ),
+    (
+        "accounting_core",
+        "accounting_book_period_soft_close_key_index",
+        "accounting_core",
+        "accounting_book_period_control",
+        True,
+        "soft_close_idempotency_key IS NOT NULL",
+        "16a9d03ccaa464e216bbeac73fba113e",
+    ),
+    (
+        "accounting_integration",
+        "bank_statement_account_period_index",
+        "accounting_integration",
+        "bank_statement_record",
+        False,
+        "",
+        "f1c8b50a192c553a9e42d61dfd8d088a",
+    ),
+    (
+        "accounting_integration",
+        "bank_statement_entry_order_index",
+        "accounting_integration",
+        "bank_statement_entry",
+        False,
+        "",
+        "8c916af412e96b617698a04de28265f8",
+    ),
+    (
+        "accounting_core",
+        "bank_account_assignment_command_key_scope",
+        "accounting_core",
+        "bank_account_assignment",
+        True,
+        "",
+        "64ac2bc9357e787bcacaa6a8e1f396e6",
+    ),
+    (
+        "accounting_core",
+        "bank_account_assignment_active_book_scope",
+        "accounting_core",
+        "bank_account_assignment",
+        True,
+        "valid_to IS NULL",
+        "b2630c8c9c671bb11266fba47d1831f3",
+    ),
+    (
+        "accounting_core",
+        "reconciliation_run_scope_index",
+        "accounting_core",
+        "reconciliation_run",
+        False,
+        "",
+        "da3de4858f6a576e7ca77d93dfdcb0e4",
+    ),
+    (
+        "accounting_core",
+        "reconciliation_exception_run_index",
+        "accounting_core",
+        "reconciliation_exception",
+        False,
+        "",
+        "b7170b69a7c4eaaf3924f774c3d12b0b",
+    ),
+    (
+        "accounting_core",
+        "reconciliation_evidence_run_index",
+        "accounting_core",
+        "reconciliation_evidence",
+        False,
+        "",
+        "d4ae874758fc23e85321f68d256d046b",
+    ),
+    (
+        "accounting_core",
+        "reconciliation_candidate_run_reference_index",
+        "accounting_core",
+        "reconciliation_candidate",
+        False,
+        "",
+        "6437127d9851ad2fcae9bdfd27645352",
+    ),
+    (
+        "accounting_core",
+        "reconciliation_match_approved_single",
+        "accounting_core",
+        "reconciliation_match",
+        True,
+        "match_status_code = 'approved'::text",
+        "c2ac9dd58cecb53c83ab231ab07f6b62",
+    ),
+    (
+        "accounting_core",
+        "reconciliation_allocation_run_reference_index",
+        "accounting_core",
+        "statement_match_allocation",
+        False,
+        "",
+        "ec236d72041f66d51a31be2e0edfd886",
+    ),
+    (
+        "accounting_core",
+        "journal_allocation_run_reference_index",
+        "accounting_core",
+        "journal_match_allocation",
+        False,
+        "",
+        "d3f4d334a92af03ef68bda117af03655",
+    ),
+)
+_READINESS_BALANCE_TRIGGERS = (
+    # MD5 fingerprints are generated from PostgreSQL 18 pg_get_functiondef() for
+    # the checked-in 0005_closed_period_guard.sql definition.
+    (
+        "accounting_core",
+        "general_journal",
+        "general_journal_balance_guard",
+        "accounting_core",
+        "assert_journal_balance",
+        21,
+        "3747f99334249a1ee8cfdb286f4a2691",
+    ),
+    (
+        "accounting_core",
+        "journal_entry_line",
+        "journal_entry_balance_guard",
+        "accounting_core",
+        "assert_journal_balance",
+        29,
+        "3747f99334249a1ee8cfdb286f4a2691",
+    ),
+)
+
+_READINESS_CONTROL_TRIGGERS = (
+    (
+        "accounting_core",
+        "journal_entry_line",
+        "journal_line_book_scope_guard",
+        "accounting_core",
+        "guard_journal_line_book_scope",
+        23,
+        "tenant_account_id,general_journal_id,chart_account_id",
+    ),
+    (
+        "accounting_core",
+        "general_journal",
+        "closed_period_guard",
+        "accounting_core",
+        "guard_period_insert",
+        7,
+        "",
+    ),
+    (
+        "accounting_core",
+        "journal_reversal",
+        "journal_reversal_first_temporal_guard",
+        "accounting_core",
+        "guard_reversal_temporal_order",
+        7,
+        "",
+    ),
+    (
+        "accounting_core",
+        "journal_reversal",
+        "journal_reversal_second_finalization_guard",
+        "accounting_core",
+        "guard_reversal_lineage_insert",
+        7,
+        "",
+    ),
+    (
+        "accounting_core",
+        "general_journal",
+        "general_journal_immutable_guard",
+        "accounting_core",
+        "reject_finalized_fact_mutation",
+        27,
+        "",
+    ),
+    (
+        "accounting_core",
+        "journal_entry_line",
+        "journal_entry_immutable_guard",
+        "accounting_core",
+        "reject_finalized_fact_mutation",
+        27,
+        "",
+    ),
+    (
+        "accounting_core",
+        "journal_source_reference",
+        "journal_source_immutable_guard",
+        "accounting_core",
+        "reject_finalized_fact_mutation",
+        27,
+        "",
+    ),
+    (
+        "accounting_core",
+        "journal_reversal",
+        "journal_reversal_immutable_guard",
+        "accounting_core",
+        "reject_finalized_fact_mutation",
+        27,
+        "",
+    ),
+    (
+        "accounting_integration",
+        "posting_receipt",
+        "posting_receipt_immutable_guard",
+        "accounting_core",
+        "reject_finalized_fact_mutation",
+        27,
+        "",
+    ),
+    (
+        "accounting_integration",
+        "journal_proposal_record",
+        "journal_proposal_immutable_guard",
+        "accounting_core",
+        "reject_finalized_fact_mutation",
+        27,
+        "",
+    ),
+    (
+        "accounting_core",
+        "journal_entry_line",
+        "journal_entry_finalized_guard",
+        "accounting_core",
+        "guard_finalized_journal_extension",
+        7,
+        "",
+    ),
+    (
+        "accounting_core",
+        "journal_source_reference",
+        "journal_source_finalized_guard",
+        "accounting_core",
+        "guard_finalized_journal_extension",
+        7,
+        "",
+    ),
+    (
+        "accounting_integration",
+        "fiscal_period_open_command",
+        "fiscal_period_open_command_immutable",
+        "accounting_integration",
+        "reject_period_open_command_mutation",
+        27,
+        "",
+    ),
+    (
+        "accounting_core",
+        "accounting_book_period_control",
+        "soft_close_evidence_immutable_guard",
+        "accounting_core",
+        "guard_soft_close_evidence_update",
+        19,
+        "soft_close_idempotency_key,soft_close_source_payload_hash,soft_close_source_journal_count",
+    ),
+    (
+        "accounting_integration",
+        "bank_statement_artifact",
+        "bank_statement_artifact_immutable_guard",
+        "accounting_integration",
+        "reject_statement_mutation",
+        27,
+        "",
+    ),
+    (
+        "accounting_integration",
+        "bank_statement_record",
+        "bank_statement_record_immutable_guard",
+        "accounting_integration",
+        "reject_statement_mutation",
+        27,
+        "",
+    ),
+    (
+        "accounting_integration",
+        "bank_statement_entry",
+        "bank_statement_entry_immutable_guard",
+        "accounting_integration",
+        "reject_statement_mutation",
+        27,
+        "",
+    ),
+    (
+        "accounting_integration",
+        "bank_statement_entry_detail",
+        "bank_statement_entry_detail_immutable_guard",
+        "accounting_integration",
+        "reject_statement_mutation",
+        27,
+        "",
+    ),
+    (
+        "accounting_core",
+        "reconciliation_run",
+        "reconciliation_run_scope_guard",
+        "accounting_core",
+        "reject_reconciliation_run_scope_mutation",
+        19,
+        "tenant_account_id,legal_entity_id,accounting_book_id,bank_account_assignment_id,currency_code,bank_cutoff_at,book_cutoff_at,matching_policy_version,knowledge_cutoff_at",
+    ),
+)
+
+_READINESS_CONTROL_FUNCTION_FINGERPRINTS = {
+    ("accounting_core", "guard_journal_line_book_scope"): "d5405804549eebcdf5671e806e5b44cf",
+    ("accounting_core", "guard_period_insert"): "9f9279beee5d7f0e5e7d35855a26239a",
+    ("accounting_core", "guard_reversal_temporal_order"): "f246ad19efc8aeae4a4ade2447bd385f",
+    ("accounting_core", "guard_reversal_lineage_insert"): "05930c3362ed781dbddac4867c1dff3f",
+    ("accounting_core", "reject_finalized_fact_mutation"): "bd0805588ceb59b3bf8b3b044562cc07",
+    ("accounting_core", "guard_finalized_journal_extension"): "fce00d3dbe97d45c5102908f07ffc0d9",
+    ("accounting_integration", "reject_period_open_command_mutation"): "9b876e04b2c18c1f2f68592b261166bc",
+    ("accounting_core", "guard_soft_close_evidence_update"): "1df9550334c4dcb6f2f1c4f8e8e6daa7",
+    ("accounting_integration", "reject_statement_mutation"): "5a8e89e5e5322c8659dc8eb3dee4858c",
+    ("accounting_core", "reject_reconciliation_run_scope_mutation"): "863b6ca92b9ec815f5c5688bc2f74892",
+}
+
 
 
 class PostgresPostingLedger:
@@ -4275,13 +5047,54 @@ class PostgresPostingLedger:
                 self._active_connection = None
 
     @contextmanager
-    def _session(self) -> Iterator[object]:
+    def _session(self, *, readiness: bool = False) -> Iterator[object]:
         if self._active_connection is not None:
             yield self._active_connection
             return
         psycopg = _import_psycopg()
         try:
-            connection = psycopg.connect(self._database_url)
+            database_url = self._database_url
+            if readiness:
+                connection_options = psycopg.conninfo.conninfo_to_dict(database_url)
+                host_list = (
+                    connection_options.get("host")
+                    or connection_options.get("hostaddr")
+                    or ""
+                )
+                if "," in host_list:
+                    raise AccountingValidationError(
+                        "readiness requires a single PostgreSQL host."
+                    )
+                configured_timeout = connection_options.get("connect_timeout")
+                timeout_seconds = (
+                    int(configured_timeout) if configured_timeout is not None else None
+                )
+                if (
+                    timeout_seconds is None
+                    or timeout_seconds <= 0
+                    or timeout_seconds > _READINESS_CONNECT_TIMEOUT_SECONDS
+                ):
+                    connection_options["connect_timeout"] = str(
+                        _READINESS_CONNECT_TIMEOUT_SECONDS
+                    )
+                startup_options = connection_options.get("options") or ""
+                configured_statement_timeout = (
+                    _readiness_statement_timeout_milliseconds(startup_options)
+                )
+                if (
+                    configured_statement_timeout is None
+                    or configured_statement_timeout <= 0
+                    or configured_statement_timeout
+                    > _READINESS_STATEMENT_TIMEOUT_MILLISECONDS
+                ):
+                    connection_options["options"] = (
+                        f"{startup_options} -c statement_timeout="
+                        f"{_READINESS_STATEMENT_TIMEOUT_MILLISECONDS}ms"
+                    ).strip()
+                database_url = psycopg.conninfo.make_conninfo(**connection_options)
+            connection = psycopg.connect(database_url)
+        except AccountingValidationError:
+            raise
         except Exception as error:
             raise AccountingValidationError(
                 "PostgreSQL is not reachable. Start PostgreSQL 18, set ACCOUNTING_DATABASE_URL "
@@ -4299,6 +5112,432 @@ class PostgresPostingLedger:
         finally:
             connection.close()
 
+    def check_readiness(self) -> None:
+        """Verify PostgreSQL 18, tenant binding, and the complete schema contract."""
+        try:
+            readiness_deadline = (
+                time.monotonic()
+                + _READINESS_STATEMENT_TIMEOUT_MILLISECONDS / 1000
+            )
+            with self._session(readiness=True) as connection:
+                self._require_tenant(
+                    connection,
+                    allow_privileged=False,
+                    statement_deadline=readiness_deadline,
+                )
+                _set_readiness_statement_timeout(connection, readiness_deadline)
+                version_ok, tables_ok, functions_ok, columns_ok, constraints_ok, control_triggers_ok, indexes_ok = connection.execute(
+                    """
+                    SELECT
+                        current_setting('server_version_num')::integer
+                            BETWEEN 180000 AND 189999,
+                        NOT EXISTS (
+                            SELECT 1
+                            FROM unnest(%s::text[]) AS required(object_name)
+                            WHERE to_regclass(required.object_name) IS NULL
+                        ),
+                        NOT EXISTS (
+                            SELECT 1
+                            FROM unnest(%s::text[]) AS required(function_name)
+                            WHERE to_regprocedure(required.function_name) IS NULL
+                        ),
+                        NOT EXISTS (
+                            SELECT 1
+                            FROM unnest(%s::text[], %s::text[], %s::text[])
+                                AS required(schema_name, table_name, column_name)
+                            LEFT JOIN pg_catalog.pg_namespace
+                              ON pg_namespace.nspname = required.schema_name
+                            LEFT JOIN pg_catalog.pg_class
+                              ON pg_class.relnamespace = pg_namespace.oid
+                             AND pg_class.relname = required.table_name
+                            LEFT JOIN pg_catalog.pg_attribute
+                              ON pg_attribute.attrelid = pg_class.oid
+                             AND pg_attribute.attname = required.column_name
+                             AND pg_attribute.attnum > 0
+                             AND NOT pg_attribute.attisdropped
+                            WHERE pg_attribute.attrelid IS NULL
+                        ),
+                        NOT EXISTS (
+                            SELECT 1
+                            FROM unnest(
+                                %s::text[], %s::text[], %s::text[],
+                                %s::text[], %s::text[]
+                            ) AS required(
+                                schema_name, table_name, constraint_name,
+                                constraint_type, constraint_fingerprint
+                            )
+                            LEFT JOIN pg_catalog.pg_namespace
+                              ON pg_namespace.nspname = required.schema_name
+                            LEFT JOIN pg_catalog.pg_class
+                              ON pg_class.relnamespace = pg_namespace.oid
+                             AND pg_class.relname = required.table_name
+                            LEFT JOIN pg_catalog.pg_constraint
+                              ON pg_constraint.conrelid = pg_class.oid
+                             AND pg_constraint.conname = required.constraint_name
+                            WHERE pg_constraint.oid IS NULL
+                               OR pg_constraint.contype::text <> required.constraint_type
+                               OR NOT pg_constraint.convalidated
+                               OR COALESCE(
+                                    (
+                                        pg_catalog.to_jsonb(pg_constraint)
+                                            ->> 'conenforced'
+                                    )::boolean,
+                                    true
+                                  ) IS NOT TRUE
+                               OR pg_constraint.condeferrable
+                               OR pg_constraint.condeferred
+                               OR pg_catalog.md5(
+                                    pg_catalog.pg_get_constraintdef(
+                                        pg_constraint.oid, true
+                                    )
+                                  ) <> required.constraint_fingerprint
+                        )
+                        AND NOT EXISTS (
+                            SELECT 1
+                            FROM unnest(
+                                %s::text[], %s::text[], %s::text[],
+                                %s::text[], %s::text[], %s::smallint[],
+                                %s::text[]
+                            ) AS required(
+                                schema_name, table_name, trigger_name,
+                                function_schema, function_name, trigger_type,
+                                function_fingerprint
+                            )
+                            LEFT JOIN pg_catalog.pg_namespace AS trigger_namespace
+                              ON trigger_namespace.nspname = required.schema_name
+                            LEFT JOIN pg_catalog.pg_class AS relation
+                              ON relation.relnamespace = trigger_namespace.oid
+                             AND relation.relname = required.table_name
+                            LEFT JOIN pg_catalog.pg_trigger AS trigger
+                              ON trigger.tgrelid = relation.oid
+                             AND trigger.tgname = required.trigger_name
+                            LEFT JOIN pg_catalog.pg_namespace AS function_namespace
+                              ON function_namespace.nspname = required.function_schema
+                            LEFT JOIN pg_catalog.pg_proc AS function
+                              ON function.oid = trigger.tgfoid
+                             AND function.pronamespace = function_namespace.oid
+                             AND function.proname = required.function_name
+                             AND pg_catalog.pg_get_function_identity_arguments(function.oid) = ''
+                            WHERE trigger.oid IS NULL
+                               OR function.oid IS NULL
+                               OR trigger.tgenabled <> 'O'
+                               OR trigger.tgisinternal
+                               OR trigger.tgtype <> required.trigger_type
+                               OR trigger.tgconstraint = 0
+                               OR NOT trigger.tgdeferrable
+                               OR NOT trigger.tginitdeferred
+                               OR trigger.tgqual IS NOT NULL
+                               OR pg_catalog.cardinality(trigger.tgattr) <> 0
+                               OR pg_catalog.md5(pg_catalog.pg_get_functiondef(function.oid))
+                                  <> required.function_fingerprint
+                        ),
+                        NOT EXISTS (
+                            SELECT 1
+                            FROM unnest(
+                                %s::text[], %s::text[], %s::text[],
+                                %s::text[], %s::text[], %s::smallint[],
+                                %s::text[], %s::text[]
+                            ) AS required(
+                                schema_name, table_name, trigger_name,
+                                function_schema, function_name, trigger_type,
+                                trigger_columns, function_fingerprint
+                            )
+                            LEFT JOIN pg_catalog.pg_namespace AS trigger_namespace
+                              ON trigger_namespace.nspname = required.schema_name
+                            LEFT JOIN pg_catalog.pg_class AS relation
+                              ON relation.relnamespace = trigger_namespace.oid
+                             AND relation.relname = required.table_name
+                            LEFT JOIN pg_catalog.pg_trigger AS trigger
+                              ON trigger.tgrelid = relation.oid
+                             AND trigger.tgname = required.trigger_name
+                            LEFT JOIN pg_catalog.pg_namespace AS function_namespace
+                              ON function_namespace.nspname = required.function_schema
+                            LEFT JOIN pg_catalog.pg_proc AS function
+                              ON function.oid = trigger.tgfoid
+                             AND function.pronamespace = function_namespace.oid
+                             AND function.proname = required.function_name
+                             AND pg_catalog.pg_get_function_identity_arguments(function.oid) = ''
+                            WHERE trigger.oid IS NULL
+                               OR function.oid IS NULL
+                               OR trigger.tgenabled <> 'O'
+                               OR trigger.tgisinternal
+                               OR trigger.tgtype <> required.trigger_type
+                               OR trigger.tgconstraint <> 0
+                               OR trigger.tgdeferrable
+                               OR trigger.tginitdeferred
+                               OR trigger.tgqual IS NOT NULL
+                               OR COALESCE(
+                                    pg_catalog.array_to_string(
+                                        ARRAY(
+                                            SELECT attribute.attname::text
+                                            FROM unnest(trigger.tgattr::smallint[])
+                                                 WITH ORDINALITY
+                                                 AS trigger_column(attnum, position)
+                                            JOIN pg_catalog.pg_attribute AS attribute
+                                              ON attribute.attrelid = relation.oid
+                                             AND attribute.attnum = trigger_column.attnum
+                                            ORDER BY trigger_column.position
+                                        ),
+                                        ','
+                                    ),
+                                    ''
+                                  ) <> required.trigger_columns
+                               OR pg_catalog.md5(pg_catalog.pg_get_functiondef(function.oid))
+                                  <> required.function_fingerprint
+                        ),
+                        NOT EXISTS (
+                            SELECT 1
+                            FROM unnest(
+                                %s::text[], %s::text[], %s::text[],
+                                %s::text[], %s::boolean[], %s::text[],
+                                %s::text[]
+                            ) AS required(
+                                schema_name, index_name, table_schema,
+                                table_name, index_unique, index_predicate,
+                                index_fingerprint
+                            )
+                            LEFT JOIN pg_catalog.pg_namespace AS index_namespace
+                              ON index_namespace.nspname = required.schema_name
+                            LEFT JOIN pg_catalog.pg_class AS index_relation
+                              ON index_relation.relnamespace = index_namespace.oid
+                             AND index_relation.relname = required.index_name
+                            LEFT JOIN pg_catalog.pg_index AS index_definition
+                              ON index_definition.indexrelid = index_relation.oid
+                            LEFT JOIN pg_catalog.pg_namespace AS table_namespace
+                              ON table_namespace.nspname = required.table_schema
+                            LEFT JOIN pg_catalog.pg_class AS table_relation
+                              ON table_relation.relnamespace = table_namespace.oid
+                             AND table_relation.relname = required.table_name
+                            WHERE index_relation.oid IS NULL
+                               OR index_definition.indexrelid IS NULL
+                               OR index_definition.indrelid <> table_relation.oid
+                               OR NOT index_definition.indisvalid
+                               OR NOT index_definition.indisready
+                               OR NOT index_definition.indislive
+                               OR index_definition.indisunique <> required.index_unique
+                               OR index_definition.indisprimary
+                               OR index_definition.indisexclusion
+                               OR index_definition.indisreplident
+                               OR index_definition.indnullsnotdistinct
+                               OR COALESCE(
+                                    pg_catalog.pg_get_expr(
+                                        index_definition.indpred,
+                                        index_definition.indrelid,
+                                        true
+                                    ),
+                                    ''
+                                  ) <> required.index_predicate
+                               OR pg_catalog.md5(
+                                    pg_catalog.pg_get_indexdef(
+                                        index_definition.indexrelid
+                                    )
+                                  ) <> required.index_fingerprint
+                        )
+                    """,
+                    (
+                        list(_READINESS_TABLES),
+                        list(_READINESS_FUNCTIONS),
+                        [item[0] for item in _READINESS_COLUMNS],
+                        [item[1] for item in _READINESS_COLUMNS],
+                        [item[2] for item in _READINESS_COLUMNS],
+                        [item[0] for item in _READINESS_CONSTRAINTS],
+                        [item[1] for item in _READINESS_CONSTRAINTS],
+                        [item[2] for item in _READINESS_CONSTRAINTS],
+                        [item[3] for item in _READINESS_CONSTRAINTS],
+                        [item[4] for item in _READINESS_CONSTRAINTS],
+                        [item[0] for item in _READINESS_BALANCE_TRIGGERS],
+                        [item[1] for item in _READINESS_BALANCE_TRIGGERS],
+                        [item[2] for item in _READINESS_BALANCE_TRIGGERS],
+                        [item[3] for item in _READINESS_BALANCE_TRIGGERS],
+                        [item[4] for item in _READINESS_BALANCE_TRIGGERS],
+                        [item[5] for item in _READINESS_BALANCE_TRIGGERS],
+                        [item[6] for item in _READINESS_BALANCE_TRIGGERS],
+                        [item[0] for item in _READINESS_CONTROL_TRIGGERS],
+                        [item[1] for item in _READINESS_CONTROL_TRIGGERS],
+                        [item[2] for item in _READINESS_CONTROL_TRIGGERS],
+                        [item[3] for item in _READINESS_CONTROL_TRIGGERS],
+                        [item[4] for item in _READINESS_CONTROL_TRIGGERS],
+                        [item[5] for item in _READINESS_CONTROL_TRIGGERS],
+                        [item[6] for item in _READINESS_CONTROL_TRIGGERS],
+                        [
+                            _READINESS_CONTROL_FUNCTION_FINGERPRINTS[(item[3], item[4])]
+                            for item in _READINESS_CONTROL_TRIGGERS
+                        ],
+                        [item[0] for item in _READINESS_INDEX_DEFINITIONS],
+                        [item[1] for item in _READINESS_INDEX_DEFINITIONS],
+                        [item[2] for item in _READINESS_INDEX_DEFINITIONS],
+                        [item[3] for item in _READINESS_INDEX_DEFINITIONS],
+                        [item[4] for item in _READINESS_INDEX_DEFINITIONS],
+                        [item[5] for item in _READINESS_INDEX_DEFINITIONS],
+                        [item[6] for item in _READINESS_INDEX_DEFINITIONS],
+                    ),
+                ).fetchone()
+                _set_readiness_statement_timeout(connection, readiness_deadline)
+                rls_ok = connection.execute(
+                    """
+                    SELECT NOT EXISTS (
+                        SELECT 1
+                        FROM unnest(%s::text[], %s::text[])
+                            AS required(schema_name, table_name)
+                        LEFT JOIN pg_catalog.pg_namespace AS namespace
+                          ON namespace.nspname = required.schema_name
+                        LEFT JOIN pg_catalog.pg_class AS relation
+                          ON relation.relnamespace = namespace.oid
+                         AND relation.relname = required.table_name
+                        WHERE relation.oid IS NULL
+                           OR NOT relation.relrowsecurity
+                           OR NOT relation.relforcerowsecurity
+                    )
+                    """,
+                    (
+                        [schema_name for schema_name, _table_name in _READINESS_RLS_TABLES],
+                        [table_name for _schema_name, table_name in _READINESS_RLS_TABLES],
+                    ),
+                ).fetchone()[0]
+                _set_readiness_statement_timeout(connection, readiness_deadline)
+                policies_ok = connection.execute(
+                    """
+                    SELECT (
+                        SELECT count(*)
+                        FROM pg_catalog.pg_policies AS actual
+                        WHERE (actual.schemaname, actual.tablename) IN (
+                            SELECT required.schema_name, required.table_name
+                            FROM unnest(%s::text[], %s::text[])
+                                AS required(schema_name, table_name)
+                        )
+                    ) = %s
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM unnest(%s::text[], %s::text[], %s::text[])
+                            AS required(schema_name, table_name, policy_name)
+                        LEFT JOIN pg_catalog.pg_policies AS actual
+                          ON actual.schemaname = required.schema_name
+                         AND actual.tablename = required.table_name
+                         AND actual.policyname = required.policy_name
+                        WHERE actual.policyname IS NULL
+                           OR actual.permissive <> 'PERMISSIVE'
+                           OR pg_catalog.array_to_string(actual.roles, ',') <> 'public'
+                           OR actual.cmd <> 'ALL'
+                           OR COALESCE(actual.qual, '')
+                              <> '(tenant_account_id = accounting_core.current_tenant_account_id())'
+                           OR COALESCE(actual.with_check, '')
+                              <> '(tenant_account_id = accounting_core.current_tenant_account_id())'
+                    )
+                    """,
+                    (
+                        [schema_name for schema_name, _table_name, _policy_name in _READINESS_RLS_POLICIES],
+                        [table_name for _schema_name, table_name, _policy_name in _READINESS_RLS_POLICIES],
+                        len(_READINESS_RLS_POLICIES),
+                        [schema_name for schema_name, _table_name, _policy_name in _READINESS_RLS_POLICIES],
+                        [table_name for _schema_name, table_name, _policy_name in _READINESS_RLS_POLICIES],
+                        [policy_name for _schema_name, _table_name, policy_name in _READINESS_RLS_POLICIES],
+                    ),
+                ).fetchone()[0]
+                _set_readiness_statement_timeout(connection, readiness_deadline)
+                tenant_function_ok = connection.execute(
+                    """
+                    SELECT COALESCE(
+                        (
+                            SELECT pg_catalog.md5(pg_catalog.pg_get_functiondef(function.oid))
+                            FROM pg_catalog.pg_proc AS function
+                            JOIN pg_catalog.pg_namespace AS namespace
+                              ON namespace.oid = function.pronamespace
+                            WHERE namespace.nspname = 'accounting_core'
+                              AND function.proname = 'current_tenant_account_id'
+                              AND pg_catalog.pg_get_function_identity_arguments(function.oid) = ''
+                        ),
+                        ''
+                    ) = %s
+                    """,
+                    (_READINESS_TENANT_FUNCTION_FINGERPRINT,),
+                ).fetchone()[0]
+                _set_readiness_statement_timeout(connection, readiness_deadline)
+                column_rows = connection.execute(
+                    """
+                    SELECT namespace.nspname,
+                           relation.relname,
+                           attribute.attname,
+                           pg_catalog.format_type(attribute.atttypid, attribute.atttypmod),
+                           attribute.attnotnull,
+                           COALESCE(
+                               pg_catalog.pg_get_expr(default_value.adbin, default_value.adrelid),
+                               ''
+                           ),
+                           attribute.attidentity::text,
+                           attribute.attgenerated::text,
+                           COALESCE(
+                               collation_namespace.nspname || '.' || collation_row.collname,
+                               ''
+                           )
+                    FROM pg_catalog.pg_attribute AS attribute
+                    JOIN pg_catalog.pg_class AS relation
+                      ON relation.oid = attribute.attrelid
+                    JOIN pg_catalog.pg_namespace AS namespace
+                      ON namespace.oid = relation.relnamespace
+                    LEFT JOIN pg_catalog.pg_attrdef AS default_value
+                      ON default_value.adrelid = relation.oid
+                     AND default_value.adnum = attribute.attnum
+                    LEFT JOIN pg_catalog.pg_collation AS collation_row
+                      ON collation_row.oid = attribute.attcollation
+                     AND attribute.attcollation <> 0
+                    LEFT JOIN pg_catalog.pg_namespace AS collation_namespace
+                      ON collation_namespace.oid = collation_row.collnamespace
+                    WHERE namespace.nspname IN (
+                        'accounting_core', 'accounting_integration', 'accounting_reporting'
+                    )
+                      AND relation.relkind IN ('r', 'p')
+                      AND attribute.attnum > 0
+                      AND NOT attribute.attisdropped
+                    ORDER BY namespace.nspname, relation.relname, attribute.attnum
+                    """
+                ).fetchall()
+                column_groups: dict[tuple[str, str], list[list[object]]] = {}
+                for row in column_rows:
+                    column_groups.setdefault((row[0], row[1]), []).append(list(row[2:]))
+                required_column_fingerprints = {
+                    (schema_name, table_name): (column_count, fingerprint)
+                    for schema_name, table_name, column_count, fingerprint
+                    in _READINESS_COLUMN_FINGERPRINTS
+                }
+                actual_column_fingerprints = {
+                    table_key: (
+                        required_column_fingerprints[table_key][0],
+                        hashlib.sha256(
+                            json.dumps(
+                                metadata[: required_column_fingerprints[table_key][0]],
+                                separators=(",", ":"),
+                            ).encode("utf-8")
+                        ).hexdigest(),
+                    )
+                    for table_key, metadata in column_groups.items()
+                    if table_key in required_column_fingerprints
+                }
+                columns_ok &= actual_column_fingerprints == required_column_fingerprints
+                if not version_ok:
+                    raise AccountingValidationError("PostgreSQL 18 is required.")
+                if not all(
+                    (
+                        tables_ok,
+                        functions_ok,
+                        rls_ok,
+                        policies_ok,
+                        tenant_function_ok,
+                        columns_ok,
+                        constraints_ok,
+                        control_triggers_ok,
+                        indexes_ok,
+                    )
+                ):
+                    raise AccountingValidationError(
+                        "accounting database schema is incomplete."
+                    )
+        except AccountingValidationError:
+            raise
+        except Exception as error:
+            raise AccountingValidationError(
+                "accounting service readiness could not be verified."
+            ) from error
+
     def _acquire_command_lock(self, connection: object, command_scope: str) -> None:
         """Serialize one tenant command scope until the current transaction ends."""
         connection.execute(
@@ -4306,7 +5545,15 @@ class PostgresPostingLedger:
             (self._tenant_reference, command_scope),
         )
 
-    def _require_tenant(self, connection: object) -> UUID:
+    def _require_tenant(
+        self,
+        connection: object,
+        *,
+        allow_privileged: bool = True,
+        statement_deadline: float | None = None,
+    ) -> UUID:
+        if statement_deadline is not None:
+            _set_readiness_statement_timeout(connection, statement_deadline)
         row = connection.execute(
             """
             SELECT tenant_account_id
@@ -4320,6 +5567,8 @@ class PostgresPostingLedger:
                 f"Tenant {self._tenant_reference} is not recorded. Create the tenant_account row, then retry posting."
             )
         requested_tenant_id = row[0]
+        if statement_deadline is not None:
+            _set_readiness_statement_timeout(connection, statement_deadline)
         bound_tenant_id = connection.execute(
             "SELECT accounting_core.current_tenant_account_id()"
         ).fetchone()[0]
@@ -4331,6 +5580,13 @@ class PostgresPostingLedger:
                     "then retry the request."
                 )
             return requested_tenant_id
+        if not allow_privileged:
+            raise AccountingValidationError(
+                "this request cannot be authorized for the requested tenant. "
+                "Ask the platform operator to verify tenant provisioning, then retry."
+            )
+        if statement_deadline is not None:
+            _set_readiness_statement_timeout(connection, statement_deadline)
         rolsuper, rolbypassrls = connection.execute(
             """
             SELECT rolsuper, rolbypassrls
@@ -6295,6 +7551,15 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             f"{allocation_control_migration_path}. Restore "
             "database/migrations/0014_reconciliation_candidate_allocation.sql, then retry."
         )
+    policy_repair_migration_path = (
+        migration_path.parent / "0015_reconciliation_policy_repair.sql"
+    )
+    if not policy_repair_migration_path.is_file():
+        raise AccountingValidationError(
+            "Reconciliation policy-repair migration is missing at "
+            f"{policy_repair_migration_path}. Restore "
+            "database/migrations/0015_reconciliation_policy_repair.sql, then retry."
+        )
     psycopg = _import_psycopg()
     try:
         with psycopg.connect(
@@ -6320,11 +7585,67 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             connection.execute(
                 allocation_control_migration_path.read_text(encoding="utf-8")
             )
+            connection.execute(
+                policy_repair_migration_path.read_text(encoding="utf-8")
+            )
     except Exception as error:
         raise AccountingValidationError(
             "Foundation migration failed. Inspect the PostgreSQL error, restore a clean "
             "database, then retry the migration."
         ) from error
+
+
+def _readiness_statement_timeout_milliseconds(options: str) -> int | None:
+    """Read the last libpq statement-timeout option, if one is configured."""
+    matches = list(
+        re.finditer(
+            r"(?:^|\s)(?:-c\s*|--)?statement_timeout\s*=\s*(\S+)",
+            options,
+            re.IGNORECASE,
+        )
+    )
+    if not matches:
+        return None
+    value = re.fullmatch(
+        r"(?P<amount>\d+(?:\.\d+)?)(?P<unit>us|ms|s|min|h|d)?",
+        matches[-1].group(1),
+        re.IGNORECASE,
+    )
+    if value is None:
+        return None
+    unit_milliseconds = {
+        "us": Decimal("0.001"),
+        "ms": Decimal("1"),
+        "s": Decimal("1000"),
+        "min": Decimal("60000"),
+        "h": Decimal("3600000"),
+        "d": Decimal("86400000"),
+    }
+    return int(
+        Decimal(value.group("amount"))
+        * unit_milliseconds.get(
+            (value.group("unit") or "ms").lower(), Decimal("1")
+        )
+    )
+
+
+def _set_readiness_statement_timeout(connection: object, deadline: float) -> None:
+    """Apply only the remaining total readiness budget to the next statement."""
+    remaining_milliseconds = int((deadline - time.monotonic()) * 1000)
+    if remaining_milliseconds <= 0:
+        raise AccountingValidationError("readiness time budget expired.")
+    configured_timeout = connection.execute(
+        "SELECT current_setting('statement_timeout')::interval"
+    ).fetchone()[0]
+    if isinstance(configured_timeout, timedelta) and configured_timeout > timedelta(0):
+        remaining_milliseconds = min(
+            remaining_milliseconds,
+            max(1, int(configured_timeout.total_seconds() * 1000)),
+        )
+    connection.execute(
+        "SELECT pg_catalog.set_config('statement_timeout', %s, false)",
+        (f"{remaining_milliseconds}ms",),
+    )
 
 
 def _import_psycopg():

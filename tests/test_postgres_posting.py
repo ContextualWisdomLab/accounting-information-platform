@@ -6,6 +6,7 @@ import http.client
 import json
 import os
 import tempfile
+import time
 import unittest
 import urllib.error
 import urllib.parse
@@ -67,6 +68,8 @@ from accounting_information_platform import (
     run_journal_proposal_server,
 )
 import psycopg
+from psycopg import sql
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
 from accounting_information_platform.persistence import (
     _fiscal_year_identity,
@@ -10237,6 +10240,9 @@ class PostgresPostingTests(unittest.TestCase):
         health_status, health_body = self._http_json(
             "GET", "/healthz", None, tenant_header=None
         )
+        ready_status, ready_body = self._http_json(
+            "GET", "/readyz", None, tenant_header=None
+        )
         live_status, live_balance = self._http_trial_balance()
         close_status, close_receipt = self._http_json("POST", "/period-closes", close_body)
         replay_status, replay_receipt = self._http_json("POST", "/period-closes", close_body)
@@ -10254,6 +10260,8 @@ class PostgresPostingTests(unittest.TestCase):
 
         self.assertEqual(health_status, 200)
         self.assertEqual(health_body, {"status": "ok"})
+        self.assertEqual(ready_status, 503)
+        self.assertEqual(ready_body["status"], "not_ready")
         self.assertEqual(live_status, 200)
         self.assertEqual(live_balance["balance_source_code"], "live")
         self.assertEqual(live_balance["period_status_code"], "open")
@@ -10452,6 +10460,194 @@ class PostgresPostingTests(unittest.TestCase):
         self.assertEqual(self._count_table("accounting_core.general_journal"), journals_before)
         self.assertEqual(self._period_status("2026-08"), "hard_closed")
         server.shutdown()
+
+    def test_http_readyz_fails_closed_when_database_is_unreachable(self) -> None:
+        """Readiness reports an actionable 503 without exposing driver details."""
+        server = create_journal_proposal_server(
+            "postgresql://postgres:postgres@127.0.0.1:1/accounting_test?connect_timeout=1",
+            self.policy.tenant_reference,
+            "127.0.0.1",
+            0,
+        )
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self._http_server = server
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        status, body = self._http_json("GET", "/readyz", None, tenant_header=None)
+
+        self.assertEqual(status, 503)
+        self.assertEqual(body["status"], "not_ready")
+        self.assertIn("PostgreSQL 18", str(body["error_message"]))
+        self.assertNotIn("connection refused", str(body["error_message"]).lower())
+
+    def test_http_readyz_disables_response_caching(self) -> None:
+        """Readiness responses cannot be reused after the database state changes."""
+        self._start_http_server()
+        connection = http.client.HTTPConnection("127.0.0.1", self._http_port())
+        try:
+            connection.request("GET", "/readyz")
+            response = connection.getresponse()
+            response.read()
+        finally:
+            connection.close()
+
+        self.assertEqual(response.status, 503)
+        self.assertEqual(response.getheader("Cache-Control"), "no-store")
+
+    def test_readiness_rejects_an_incomplete_accounting_schema(self) -> None:
+        """Readiness fails closed when a required accounting object is absent."""
+        ledger = PostgresPostingLedger(DATABASE_URL, self.policy.tenant_reference)
+        session = mock.MagicMock()
+        session.__enter__.return_value = session
+        session.execute.return_value.fetchone.return_value = (
+            True,
+            False,
+            True,
+            True,
+            True,
+            True,
+            True,
+        )
+
+        with mock.patch.object(ledger, "_session", return_value=session):
+            with mock.patch.object(ledger, "_require_tenant"):
+                with self.assertRaisesRegex(
+                    AccountingValidationError, "accounting database schema is incomplete"
+                ):
+                    ledger.check_readiness()
+
+    def test_readiness_masks_database_probe_errors(self) -> None:
+        """Readiness does not expose an unexpected database probe error."""
+        ledger = PostgresPostingLedger(DATABASE_URL, self.policy.tenant_reference)
+        session = mock.MagicMock()
+        session.__enter__.return_value = session
+        session.execute.side_effect = RuntimeError("internal database detail")
+
+        with mock.patch.object(ledger, "_session", return_value=session):
+            with mock.patch.object(ledger, "_require_tenant"):
+                with self.assertRaisesRegex(
+                    AccountingValidationError,
+                    "accounting service readiness could not be verified",
+                ) as raised:
+                    ledger.check_readiness()
+        self.assertNotIn("internal database detail", str(raised.exception))
+
+    def test_readiness_rejects_an_unsupported_postgresql_version(self) -> None:
+        """Readiness rejects a server outside the PostgreSQL 18 contract."""
+        ledger = PostgresPostingLedger(DATABASE_URL, self.policy.tenant_reference)
+        session = mock.MagicMock()
+        session.__enter__.return_value = session
+        session.execute.return_value.fetchone.return_value = (
+            False,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+        )
+
+        with mock.patch.object(ledger, "_session", return_value=session):
+            with mock.patch.object(ledger, "_require_tenant"):
+                with self.assertRaisesRegex(
+                    AccountingValidationError, "PostgreSQL 18 is required"
+                ):
+                    ledger.check_readiness()
+
+    def test_http_readyz_rejects_a_nonresponsive_database_target(self) -> None:
+        """Readiness applies a bounded default timeout to a nonresponsive target."""
+        server = create_journal_proposal_server(
+            "postgresql://postgres:postgres@198.51.100.1:5432/accounting_test",
+            self.policy.tenant_reference,
+            "127.0.0.1",
+            0,
+        )
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self._http_server = server
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        started_at = time.monotonic()
+        status, body = self._http_json("GET", "/readyz", None, tenant_header=None)
+        elapsed_seconds = time.monotonic() - started_at
+
+        self.assertEqual(status, 503)
+        self.assertEqual(body["status"], "not_ready")
+        self.assertLess(elapsed_seconds, 8)
+
+    def test_http_readyz_rejects_a_database_before_the_latest_migration(self) -> None:
+        """Readiness rejects a real database stopped before migration 0014."""
+        database_name = f"aip_ready_{uuid.uuid4().hex[:12]}"
+        settings = conninfo_to_dict(DATABASE_URL)
+        settings["dbname"] = database_name
+        partial_database_url = make_conninfo(**settings)
+        tenant_reference = "urn:cwl:tenant_partial_readiness"
+        with psycopg.connect(DATABASE_URL, autocommit=True) as admin:
+            admin.execute(
+                sql.SQL("CREATE DATABASE {} WITH TEMPLATE template0").format(
+                    sql.Identifier(database_name)
+                )
+            )
+        try:
+            migration_paths = sorted(
+                (ROOT / "database" / "migrations").glob("*.sql")
+            )
+            with psycopg.connect(
+                partial_database_url,
+                autocommit=True,
+                cursor_factory=psycopg.ClientCursor,
+            ) as partial_database:
+                for migration_path in migration_paths:
+                    if migration_path.name.startswith("0014_"):
+                        break
+                    partial_database.execute(migration_path.read_text(encoding="utf-8"))
+                tenant_id = uuid.uuid4()
+                partial_database.execute(
+                    """
+                    INSERT INTO accounting_core.tenant_account (
+                        tenant_account_id, tenant_account_code
+                    ) VALUES (%s, %s)
+                    """,
+                    (tenant_id, tenant_reference),
+                )
+                role_oid = partial_database.execute(
+                    "SELECT oid FROM pg_catalog.pg_roles WHERE rolname = session_user"
+                ).fetchone()[0]
+                partial_database.execute(
+                    """
+                    INSERT INTO accounting_core.runtime_tenant_binding (
+                        runtime_role_oid, runtime_role_name, tenant_account_id
+                    ) VALUES (%s, session_user, %s)
+                    """,
+                    (role_oid, tenant_id),
+                )
+
+            server = create_journal_proposal_server(
+                partial_database_url,
+                tenant_reference,
+                "127.0.0.1",
+                0,
+            )
+            thread = Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            self._http_server = server
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+
+            status, body = self._http_json("GET", "/readyz", None, tenant_header=None)
+
+            self.assertEqual(status, 503)
+            self.assertEqual(body["status"], "not_ready")
+        finally:
+            with psycopg.connect(DATABASE_URL, autocommit=True) as admin:
+                admin.execute(
+                    sql.SQL("DROP DATABASE {} WITH (FORCE)").format(
+                        sql.Identifier(database_name)
+                    )
+                )
 
     def test_http_soft_closes_then_hard_closes_period(self) -> None:
         """POST /period-closes soft-closes, then hard-closes, without a second close route."""

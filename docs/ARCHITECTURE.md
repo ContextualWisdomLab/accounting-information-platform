@@ -58,6 +58,24 @@ The application runtime database login is separate from the migration owner and 
 
 The HTTP surface currently binds tenant identity through the configured AIS tenant plus `X-CWL-Tenant-Reference`. That header is not a general credential. Production exposure therefore requires a trusted host or gateway that authenticates the caller before traffic reaches this process. Purpose-bound application authorization is tracked separately from the database-credential boundary and must not be inferred from request-body fields, model output, or database GUCs.
 
+The mounted HTTP surface exposes `GET /healthz` as process liveness and
+`GET /readyz` as database readiness. Readiness checks PostgreSQL connectivity,
+an active bound runtime tenant, and the required checked-in migration/schema
+contract through migration `0015`, including the enabled database-owned
+DEFERRABLE balance triggers, their exact relation/function registrations, and
+their unrestricted event definitions without `WHEN` predicates or `UPDATE OF`
+column filters; it also requires forced RLS and exact public tenant-isolation
+policies on every tenant-scoped fact table plus the canonical tenant-binding
+function definition. Recorded canonical column metadata is an ordered prefix,
+so compatible additive tables and columns do not remove an instance from
+service while missing or altered required columns fail closed. It installs the
+statement bound before the first connected readiness command, uses a single-host
+connection and one total five-second readiness budget, applies the remaining
+budget before each catalog statement, preserves stricter configured timeouts, and
+does not accept the privileged fallback used by accounting commands. Neither probe is caller authentication
+or release evidence, and readiness responses use `Cache-Control: no-store` to
+prevent stale intermediary reuse.
+
 ## Posting transaction
 
 A proposal follows one authoritative transaction boundary:
@@ -102,6 +120,7 @@ The current HTTP / library surface includes:
 - income statement, balance sheet, changes in equity, cash-flow and statement packages;
 - period-close package and VAT period register;
 - fail-closed HomeTax submission evidence and receipt history.
+- `/healthz` liveness and `/readyz` database-readiness probes.
 
 Detailed request / response and behavioral contracts live in the corresponding ADRs. Read models do not become alternate posting authorities.
 
@@ -130,6 +149,7 @@ Shared fiscal-calendar dates do not collapse independent accounting books into o
 12. `database/migrations/0012_bank_assignment_command_identity.sql` — tenant-scoped bank-account-assignment command identity, replay/conflict evidence, and the active book-scope uniqueness guard.
 13. `database/migrations/0013_reconciliation_run_exception_evidence.sql` — durable reconciliation-run and exception evidence required by the installed bank-reconciliation control chain.
 14. `database/migrations/0014_reconciliation_candidate_allocation.sql` — durable reconciliation candidate, single-approved match, and exact statement/journal allocation rows with forced tenant RLS.
+15. `database/migrations/0015_reconciliation_policy_repair.sql` — idempotent forward repair that installs the four reconciliation tenant policies on databases already running migration `0014`.
 
 ## Durable soft-close command evidence
 

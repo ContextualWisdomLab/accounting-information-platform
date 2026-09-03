@@ -1,4 +1,4 @@
-"""Thin stdlib HTTP boundary for Billing proposals, AIS adjusting journals, pulls, receipts, close, open, TB, statements, catalog, ledgers, balances, rollforwards, leftover-cash rollforward, VAT period register, HomeTax submission, receivable aging, payable aging, period-close packages, journals, reversals, bank-statement evidence, outbox, and audit history."""
+"""Thin stdlib HTTP boundary for accounting commands, reads, and operations."""
 
 from __future__ import annotations
 
@@ -53,10 +53,12 @@ from .accept import (
 from .bank_statement import MemoryArtifactStore
 from .billing_pull import accept_billing_proposal_pull
 from .core import AccountingValidationError, IdempotencyConflictError, _require_reference
+from .persistence import PostgresPostingLedger
 
 
 TENANT_HEADER = "X-CWL-Tenant-Reference"
 HEALTHZ_PATH = "/healthz"
+READYZ_PATH = "/readyz"
 BILLING_PROPOSAL_PULL_PATH = "/billing-proposal-pulls"
 JOURNAL_PROPOSAL_PATH = "/journal-proposals"
 JOURNAL_REVERSAL_PATH = "/journal-reversals"
@@ -111,15 +113,18 @@ class JournalProposalServer(ThreadingHTTPServer):
 
 
 class JournalProposalHandler(BaseHTTPRequestHandler):
-    """Serve proposal POST, reverse, reversal list, pull, receipt GET, close, TB, catalog, journal, leftover-cash rollforward, VAT period register, receivable aging, payable aging, period-close package, bank-statement evidence, outbox, audit history, and healthz."""
+    """Serve accounting commands and reads plus liveness and readiness probes."""
 
     server: JournalProposalServer
 
     def do_GET(self) -> None:
-        """Route healthz, receipt, trial-balance, catalog, journal, leftover-cash rollforward, reversal list, close list, outbox, audit history, aging, bank-statement evidence, and GET 405s."""
+        """Route operational probes, accounting reads, and GET-only 405s."""
         parsed = urlparse(self.path)
         if parsed.path == HEALTHZ_PATH:
             self._write_json(200, {"status": "ok"})
+            return
+        if parsed.path == READYZ_PATH:
+            self._get_readyz()
             return
         if parsed.path == BILLING_PROPOSAL_PULL_PATH:
             self._write_error(
@@ -233,7 +238,8 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             return
         self._write_error(
             404,
-            "unknown path. GET /posting-receipts?idempotency_key=, GET /trial-balances, "
+            "unknown path. GET /healthz, GET /readyz, GET /posting-receipts?idempotency_key=, "
+            "GET /trial-balances, "
             "GET /financial-statements, GET /financial-statement-packages, "
             "GET /account-role-mappings, GET /accounting-books, "
             "GET /legal-entities, GET /chart-accounts, GET /account-ledgers, "
@@ -244,6 +250,27 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
             "GET /journal-reversals, GET /period-closes, GET /fiscal-periods, "
             "GET /outbox-events?event_type_code=, or GET /audit-events, then retry.",
         )
+
+    def _get_readyz(self) -> None:
+        """Return readiness only when the bound tenant and core schema are usable."""
+        try:
+            PostgresPostingLedger(
+                self.server.database_url, self.server.tenant_reference
+            ).check_readiness()
+        except AccountingValidationError:
+            self._write_json(
+                503,
+                {
+                    "status": "not_ready",
+                    "error_message": (
+                        "Accounting service is not ready. Verify PostgreSQL 18 "
+                        "connectivity, migrations, and tenant provisioning, then retry."
+                    ),
+                },
+                cache_control="no-store",
+            )
+            return
+        self._write_json(200, {"status": "ready"}, cache_control="no-store")
 
     def do_POST(self) -> None:
         """Route journal-proposal accept, adjusting journal, reverse, Billing pull, close, outbox publish, audit-history 405, and GET-only POST 405s."""
@@ -1727,11 +1754,19 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
     def _write_error(self, status_code: int, error_message: str) -> None:
         self._write_json(status_code, {"error_message": error_message})
 
-    def _write_json(self, status_code: int, document: dict[str, object]) -> None:
+    def _write_json(
+        self,
+        status_code: int,
+        document: dict[str, object],
+        *,
+        cache_control: str | None = None,
+    ) -> None:
         payload = json.dumps(document, separators=(",", ":"), sort_keys=True).encode("utf-8")
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
+        if cache_control is not None:
+            self.send_header("Cache-Control", cache_control)
         self.end_headers()
         self.wfile.write(payload)
 

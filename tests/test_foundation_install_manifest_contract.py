@@ -27,6 +27,9 @@ class FoundationInstallManifestContractTests(unittest.TestCase):
             }
             <= required
         )
+        self.assertIn(
+            "database/migrations/0015_reconciliation_policy_repair.sql", required
+        )
 
     def test_install_docs_include_runtime_tenant_binding_after_concurrency_migration(self) -> None:
         """Operators must install runtime tenant binding before granting runtime access."""
@@ -109,6 +112,22 @@ class FoundationInstallManifestContractTests(unittest.TestCase):
 
         def is_file(path: Path) -> bool:
             if path.name == "0014_reconciliation_candidate_allocation.sql":
+                return False
+            return original_is_file(path)
+
+        with patch.object(Path, "is_file", is_file):
+            with self.assertRaises(AccountingValidationError):
+                apply_foundation_migration(
+                    "postgresql://unused",
+                    ROOT / "database/migrations/0001_accounting_foundation.sql",
+                )
+
+    def test_install_fails_closed_when_policy_repair_migration_is_missing(self) -> None:
+        """The public foundation loader may not silently omit migration 0015."""
+        original_is_file = Path.is_file
+
+        def is_file(path: Path) -> bool:
+            if path.name == "0015_reconciliation_policy_repair.sql":
                 return False
             return original_is_file(path)
 
