@@ -187,8 +187,8 @@ class ReconciliationLifecycleDirectSessionLockPostgresTests(unittest.TestCase):
             "reconciliation_run_lifecycle:" + self.opened["reconciliation_run_id"]
         )
         with psycopg.connect(posting.DATABASE_URL) as connection:
-            tenant_id = self._tenant_id(connection)
             connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            tenant_id = self._tenant_id(connection)
             connection.execute(
                 "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
                 (self.fixture.case.policy.tenant_reference, lifecycle_scope),
