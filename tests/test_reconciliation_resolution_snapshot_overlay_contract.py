@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import unittest
 
 
@@ -57,6 +58,32 @@ class ReconciliationResolutionSnapshotOverlayContractTests(unittest.TestCase):
         for token in required_tokens:
             with self.subTest(token=token):
                 self.assertIn(token, sql)
+
+    def test_snapshot_hash_serializes_temporal_values_canonically(self) -> None:
+        """Database-owned snapshot hashes must not depend on session TimeZone or DateStyle."""
+        parent_sql = PARENT_AUTHORITY_MIGRATION.read_text(encoding="utf-8")
+        child_sql = CHILD_AUTHORITY_MIGRATION.read_text(encoding="utf-8")
+
+        for expression in (
+            "journal.posted_at",
+            "exception.effective_at",
+            "knowledge_cutoff_at",
+        ):
+            with self.subTest(parent_timestamp=expression):
+                self.assertRegex(
+                    parent_sql,
+                    rf"to_char\(\s*{re.escape(expression)}\s+AT TIME ZONE 'UTC'",
+                )
+        self.assertRegex(
+            parent_sql,
+            r"to_char\(\s*journal\.accounting_date\s*,\s*'YYYY-MM-DD'\s*\)",
+        )
+        for expression in ("resolution.effective_at", "resolution.recorded_at"):
+            with self.subTest(child_timestamp=expression):
+                self.assertRegex(
+                    child_sql,
+                    rf"to_char\(\s*{re.escape(expression)}\s+AT TIME ZONE 'UTC'",
+                )
 
 
 if __name__ == "__main__":
