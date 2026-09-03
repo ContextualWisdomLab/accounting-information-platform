@@ -39,6 +39,10 @@ class FinancialReportContext:
             raise AccountingValidationError(
                 "reporting_currency_code must be an uppercase three-letter currency code"
             )
+        if type(self.current_period_start_date) is not date or type(
+            self.current_period_end_date
+        ) is not date:
+            raise AccountingValidationError("current period values must be dates")
         if self.current_period_end_date < self.current_period_start_date:
             raise AccountingValidationError("current period dates are out of order")
         comparison_pair = (
@@ -49,6 +53,11 @@ class FinancialReportContext:
             raise AccountingValidationError(
                 "comparison period start and end dates must be supplied together"
             )
+        if comparison_pair[0] and (
+            type(self.comparison_period_start_date) is not date
+            or type(self.comparison_period_end_date) is not date
+        ):
+            raise AccountingValidationError("comparison period values must be dates")
         if (
             comparison_pair[0]
             and self.comparison_period_end_date < self.comparison_period_start_date
@@ -129,7 +138,8 @@ class XbrlTaxonomyProfile:
         _required_text(self.taxonomy_release_code, "taxonomy_release_code")
         if _XML_NAME_PATTERN.fullmatch(self.taxonomy_prefix) is None:
             raise AccountingValidationError("taxonomy_prefix is not an XML prefix")
-        if self.taxonomy_prefix.lower() in _RESERVED_PREFIXES:
+        normalized_prefix = self.taxonomy_prefix.lower()
+        if normalized_prefix.startswith("xml") or normalized_prefix in _RESERVED_PREFIXES:
             raise AccountingValidationError("taxonomy_prefix is reserved")
         _absolute_uri(self.taxonomy_namespace_uri, "taxonomy_namespace_uri")
         _absolute_uri(self.schema_reference_uri, "schema_reference_uri")
