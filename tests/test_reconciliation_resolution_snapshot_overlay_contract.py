@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-import re
 import unittest
 
 
@@ -19,6 +18,12 @@ CHILD_AUTHORITY_MIGRATION = (
     / "database"
     / "migrations"
     / "0021_reconciliation_exception_resolution_outbox_pair.sql"
+)
+TEMPORAL_AUTHORITY_MIGRATION = (
+    ROOT
+    / "database"
+    / "migrations"
+    / "0025_reconciliation_lifecycle_recording_time_authority.sql"
 )
 
 
@@ -59,31 +64,18 @@ class ReconciliationResolutionSnapshotOverlayContractTests(unittest.TestCase):
             with self.subTest(token=token):
                 self.assertIn(token, sql)
 
-    def test_snapshot_hash_serializes_temporal_values_canonically(self) -> None:
-        """Database-owned snapshot hashes must not depend on session TimeZone or DateStyle."""
-        parent_sql = PARENT_AUTHORITY_MIGRATION.read_text(encoding="utf-8")
-        child_sql = CHILD_AUTHORITY_MIGRATION.read_text(encoding="utf-8")
+    def test_snapshot_hash_functions_pin_temporal_output_configuration(self) -> None:
+        """Authority digests must be independent of caller TimeZone and DateStyle settings."""
+        sql = TEMPORAL_AUTHORITY_MIGRATION.read_text(encoding="utf-8")
 
-        for expression in (
-            "journal.posted_at",
-            "exception.effective_at",
-            "knowledge_cutoff_at",
+        for signature in (
+            "accounting_core.reconciliation_run_database_snapshot_authority(uuid, uuid)",
+            "accounting_core.assign_reconciliation_run_resolution_snapshot()",
         ):
-            with self.subTest(parent_timestamp=expression):
-                self.assertRegex(
-                    parent_sql,
-                    rf"to_char\(\s*{re.escape(expression)}\s+AT TIME ZONE 'UTC'",
-                )
-        self.assertRegex(
-            parent_sql,
-            r"to_char\(\s*journal\.accounting_date\s*,\s*'YYYY-MM-DD'\s*\)",
-        )
-        for expression in ("resolution.effective_at", "resolution.recorded_at"):
-            with self.subTest(child_timestamp=expression):
-                self.assertRegex(
-                    child_sql,
-                    rf"to_char\(\s*{re.escape(expression)}\s+AT TIME ZONE 'UTC'",
-                )
+            with self.subTest(signature=signature):
+                self.assertIn(f"ALTER FUNCTION {signature}", sql)
+        self.assertGreaterEqual(sql.count("SET TimeZone TO 'UTC'"), 2)
+        self.assertGreaterEqual(sql.count("SET DateStyle TO 'ISO, YMD'"), 2)
 
 
 if __name__ == "__main__":
