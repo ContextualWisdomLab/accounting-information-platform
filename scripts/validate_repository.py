@@ -122,12 +122,17 @@ PLACEHOLDER_PATTERN = re.compile(
 )
 TWO_WORD_SNAKE_PATTERN = re.compile(r"^[a-z][a-z0-9]*_[a-z0-9_]+$")
 HASH_TOKEN_PATTERN = re.compile(r"--hash=sha256:([0-9a-f]{64})")
-PINNED_REQUIREMENT_PATTERN = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==")
+PINNED_REQUIREMENT_PATTERN = re.compile(
+    r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s\\]+)"
+)
 COVERAGE_UNIVERSAL_WHEEL_HASH = (
     "964730a1e9de9c0cf11be6a1a3c79ce419c34882842abd256086ba4698705e84"
 )
 COVERAGE_CP313_MANYLINUX_X86_64_WHEEL_HASH = (
     "12b59c90084e3234fb11184886bf4a40f4f16a8c8f867be2e087b81f8e8868d4"
+)
+PSYCOPG_BINARY_CP314_MANYLINUX_X86_64_WHEEL_HASH = (
+    "8c0056529e68dbe9184cd4019a1f3d8f3a4ead2f6fc7a5afcf27d3314edd1277"
 )
 SCHEMA_NAME_PATTERN = re.compile(
     r"\bCREATE\s+SCHEMA(?:\s+IF\s+NOT\s+EXISTS)?\s+([A-Za-z_][A-Za-z0-9_]*)",
@@ -334,7 +339,9 @@ def validate_quality_requirements(requirements_text: str) -> tuple[str, ...]:
     """Require hash-locked coverage wheels and the no-build-isolation packaging backend."""
     errors: list[str] = []
     package_hashes: dict[str, set[str]] = {}
-    current_package: str | None = None
+    package_version_hashes: dict[tuple[str, str], set[str]] = {}
+    seen_requirements: set[tuple[str, str]] = set()
+    current_requirement: tuple[str, str] | None = None
 
     for raw_line in requirements_text.splitlines():
         line = raw_line.strip()
@@ -346,15 +353,26 @@ def validate_quality_requirements(requirements_text: str) -> tuple[str, ...]:
             name_match = PINNED_REQUIREMENT_PATTERN.match(requirement_line)
             if name_match is None:
                 errors.append(f"unrecognized quality dependency line: {requirement_line}")
-                current_package = None
+                current_requirement = None
             else:
-                current_package = name_match.group(1).lower()
-                package_hashes.setdefault(current_package, set())
+                current_requirement = (
+                    re.sub(r"[-_.]+", "-", name_match.group(1)).lower(),
+                    name_match.group(2),
+                )
+                if current_requirement in seen_requirements:
+                    errors.append(
+                        "quality dependency stanza appears more than once: "
+                        f"{current_requirement[0]}=={current_requirement[1]}"
+                    )
+                seen_requirements.add(current_requirement)
+                package_hashes.setdefault(current_requirement[0], set())
+                package_version_hashes.setdefault(current_requirement, set())
         if hashes:
-            if current_package is None:
+            if current_requirement is None:
                 errors.append("hash lock is not attached to a quality dependency")
             else:
-                package_hashes.setdefault(current_package, set()).update(hashes)
+                package_hashes[current_requirement[0]].update(hashes)
+                package_version_hashes[current_requirement].update(hashes)
 
     if not any(package_hashes.values()):
         errors.append("quality dependencies must be hash locked")
@@ -404,6 +422,12 @@ def validate_quality_requirements(requirements_text: str) -> tuple[str, ...]:
         )
     elif not package_hashes["psycopg-binary"]:
         errors.append("psycopg-binary must be hash locked")
+    elif PSYCOPG_BINARY_CP314_MANYLINUX_X86_64_WHEEL_HASH not in package_version_hashes.get(
+        ("psycopg-binary", "3.3.4"), set()
+    ):
+        errors.append(
+            "psycopg-binary must pin the CPython 3.14 manylinux x86_64 wheel hash"
+        )
 
     return tuple(errors)
 
