@@ -39,6 +39,7 @@ class ContextAndProfileValidationTests(unittest.TestCase):
             {"entity_identifier_scheme": "https://example.com/\u0000"},
             {"entity_identifier_value": "ENTITY\u0000"},
             {"reporting_currency_code": "krw"},
+            {"reporting_currency_code": 410},
             {"current_period_start_date": "2026-01-01"},
             {"current_period_end_date": "2026-12-31"},
             {"comparison_period_start_date": "2025-01-01"},
@@ -63,7 +64,9 @@ class ContextAndProfileValidationTests(unittest.TestCase):
         """Reject noncanonical fact codes, XML names, and period types."""
         invalid_overrides = (
             {"fact_code": "bad"},
+            {"fact_code": 1},
             {"concept_local_name": "bad:name"},
+            {"concept_local_name": 1},
             {"period_type_code": "quarter"},
         )
         for overrides in invalid_overrides:
@@ -84,8 +87,10 @@ class ContextAndProfileValidationTests(unittest.TestCase):
             {"profile_version": "1"},
             {"profile_version": 0},
             {"reporting_standard_code": "Bad-Code"},
+            {"reporting_standard_code": 1},
             {"taxonomy_release_code": " "},
             {"taxonomy_prefix": "1bad"},
+            {"taxonomy_prefix": 1},
             {"taxonomy_prefix": "xml"},
             {"taxonomy_prefix": "xmlFuture"},
             {"taxonomy_namespace_uri": "relative"},
@@ -93,6 +98,7 @@ class ContextAndProfileValidationTests(unittest.TestCase):
             {"schema_reference_uri": "relative"},
             {"schema_reference_uri": "https://example.com/\u0000"},
             {"taxonomy_package_hash": "bad"},
+            {"taxonomy_package_hash": 1},
             {"concept_mappings": ()},
             {"concept_mappings": ("bad",)},
             {"concept_mappings": (_valid_mapping(), duplicate_fact)},
