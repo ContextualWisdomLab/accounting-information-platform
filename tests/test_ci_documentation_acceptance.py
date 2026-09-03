@@ -8,7 +8,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PATH_FILTER = re.compile(r"(?m)(?:^[ \t]+|[{,][ \t]*)paths(?:-ignore)?[ \t]*:")
+PATH_FILTER = re.compile(
+    r"(?m)(?:^[ \t]+|[{,][ \t]*)(?:(?P<quote>[\"'])paths(?:-ignore)?(?P=quote)|paths(?:-ignore)?)[ \t]*:"
+)
 
 
 class AccountingDocumentationCiAcceptanceTests(unittest.TestCase):
