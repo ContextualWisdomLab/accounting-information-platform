@@ -30,13 +30,17 @@ The foundation ERD is maintained in [ERD.md](ERD.md). PostgreSQL migrations are 
 
 Financial-statement, cash-flow, changes-in-equity, aging, account-balance, ledger, rollforward, VAT-register, and period-close-package reads are deterministic projections over authoritative journal, period, catalog, and snapshot facts. They do not create a second statutory ledger.
 
-## Canonical financial-report artifact
+## Canonical financial-report proposal
 
-The first financial-reporting slice is deliberately stateless and adds no migration. Its canonical document contains:
+The first financial-reporting slice is deliberately stateless and adds no migration. Its document is an internally consistent **proposal**, not an authoritative report. It contains:
 
 ```text
 report_contract_version
-report_artifact_reference
+truth_status_code = proposed
+source_authority_code = caller_supplied_statement_package
+publication_readiness_code = unverified
+authoritative_report = false
+report_artifact_reference = urn:cwl:accounting:financial_report_proposal:{sha256}
 report_artifact_hash
 source_package_hash
 tenant_reference
@@ -53,7 +57,9 @@ explanation_records
 source_statement_package
 ```
 
-`report_context` contains the filing-independent entity identifier scheme/value, reporting currency, current start/end dates, optional comparison start/end dates, and decimal precision.
+`report_context` contains a caller-supplied filing-independent entity identifier scheme/value, reporting currency, current start/end dates, optional comparison start/end dates, and decimal precision. At this layer these values are validated for shape and internal consistency only. They are not derived from AIS-owned legal entity, book, currency, fiscal calendar, or close facts.
+
+`source_snapshot_references` contains the snapshot references claimed by the supplied statement package. A SHA-shaped value, database-looking identifier, or matching reference across four supplied statements does not prove that the snapshot exists in PostgreSQL.
 
 Each `fact_record` contains:
 
@@ -76,9 +82,9 @@ parameter_map
 source_evidence_paths
 ```
 
-This artifact is a signed-content candidate, not a database aggregate. Its full source statement package is retained so an exporter or validator can reproduce every derived field without reopening the ledger. A later object-storage implementation must classify and protect the artifact as financial evidence.
+The proposal retains its full source statement package so an exporter can reproduce every derived field without reopening the ledger. Its digest proves content identity, not source authority. A later object-storage implementation must classify and protect both proposal and authoritative report artifacts as financial evidence while preserving their distinct truth status.
 
-## XBRL taxonomy-profile value model
+## XBRL proposal value model
 
 The stateless `XbrlTaxonomyProfile` value object contains:
 
@@ -102,23 +108,38 @@ concept_local_name
 period_type_code
 ```
 
-The profile does not contain journal formulas and is not a taxonomy parser. It is the reviewed bridge from canonical report facts to one immutable official or custom taxonomy package. One profile cannot map two canonical facts to the same concept or map one fact more than once.
+The profile does not contain journal formulas and is not a taxonomy parser. It is a reviewed bridge from canonical proposal facts to one immutable official or custom taxonomy package. One profile cannot map two canonical facts to the same concept or map one fact more than once. A profile cannot attest that the supplied report data came from AIS.
+
+The XBRL export result additionally contains:
+
+```text
+truth_status_code = proposed
+source_authority_code = caller_supplied_statement_package
+publication_readiness_code = unverified
+authoritative_report = false
+xbrl_validation_status_code = not_run
+filing_readiness_code = not_ready
+```
+
+Those values are fixed by the low-level serializer and cannot be promoted by caller input.
 
 ## Planned normalized reporting registry
 
-The current stateless contract prepares the following 3NF successor. Names are design candidates and require a migration ADR before they become executable truth.
+The current stateless proposal contract prepares the following 3NF owner path. Names are design candidates and require a migration ADR before they become executable truth.
 
-### Report generation and artifact identity
+### Report command, source authority, and artifact identity
 
-- `financial_report_run`: one tenant/entity/book/period/report-purpose command, idempotency identity, report context, knowledge cutoff, source package hash, status, actor, purpose, and recorded time.
-- `financial_report_source`: links one run to the authoritative four-statement package, snapshot population references, and source artifact digest.
-- `financial_report_artifact`: immutable media type, object-storage reference, byte length, content digest, renderer/version, encryption, retention, legal-hold, supersession, and withdrawal evidence.
+- `financial_report_run`: one authenticated tenant/entity/book/period/report-purpose command, idempotency identity, owner-derived report context, knowledge cutoff, source package hash, close/live/provisional state, status, actor, decision, and recorded time.
+- `financial_report_source`: links one run to the AIS-owned four-statement population, journal population or hard-close snapshot, fiscal calendar, reporting currency/policy, source artifact digest, and database transaction evidence.
+- `financial_report_artifact`: immutable truth status, media type, object-storage reference, byte length, content digest, renderer/version, encryption, retention, legal-hold, supersession, and withdrawal evidence.
 - `financial_report_fact`: normalized canonical fact code, period context, period type, statement type, exact amount, currency, and artifact/run identity.
-- `financial_report_fact_evidence`: ordered source statement path and snapshot reference for one fact.
-- `financial_report_explanation`: explanation code, status, direction, locale-independent exact parameter bundle identity, and review/publication status.
+- `financial_report_fact_evidence`: ordered AIS-owned statement path, source population reference, and snapshot/journal evidence for one fact.
+- `financial_report_explanation`: explanation code, status, direction, locale-independent exact parameter bundle identity, evidence status, and review/publication status.
 - `financial_report_explanation_evidence`: ordered fact/source references supporting one explanation.
 
-The database should not duplicate the complete report JSON into every normalized table. The immutable artifact preserves the canonical package; normalized rows support governed query, validation, approval, and impact analysis.
+The owner command accepts identifiers and purpose context, never report amounts. It derives reporting currency and date ranges from AIS-owned master/calendar facts and loads the statement package inside one PostgreSQL `REPEATABLE READ` transaction. Only this path may create an authoritative report identity after required validation and approval.
+
+The database should not duplicate the complete report JSON into every normalized table. The immutable artifact preserves the canonical package; normalized rows support governed query, source-authority verification, validation, approval, and impact analysis.
 
 ### Taxonomy and mapping release
 
@@ -132,11 +153,11 @@ Official taxonomy text, labels, schemas, linkbases, or licensed files must not b
 
 - `report_validation_run`: artifact/profile/validator/version/command identity, start/end state, environment, and provenance.
 - `report_validation_result`: rule/specification/jurisdiction code, severity, fact/context locator, message code, evidence, and resolution state.
-- `report_approval_record`: maker-checker decision over one exact artifact, taxonomy profile, validation population, purpose, locale, and publication target.
+- `report_approval_record`: maker-checker decision over one exact owner-bound artifact, source population, taxonomy profile, validation population, purpose, locale, and publication target.
 - `report_publication_receipt`: immutable output identity, destination, delivery/submission reference, acceptance/rejection state, regulator/customer evidence, and recorded time.
 - `report_withdrawal_record`: append-only withdrawal/supersession decision and successor artifact reference.
 
-A validation success does not post journals, approve a report, or prove regulator acceptance. An approval does not alter source financial facts. A publication receipt does not overwrite the artifact or historical filing state.
+A validation success does not post journals, prove source authority, approve a report, or prove regulator acceptance. An approval does not alter source financial facts. A publication receipt does not overwrite the artifact or historical filing state.
 
 ## Bank-statement evidence data
 
@@ -149,21 +170,22 @@ A validation success does not post journals, approve a report, or prove regulato
 
 ## Normalization and integrity rules
 
-- Account role, chart account, journal line, period, command evidence, receipt, and publication event are separate facts.
+- Account role, chart account, journal line, period, command evidence, receipt, report source, validation, approval, and publication event are separate facts.
 - A provider, bank, regulator, filing, or source-system identifier is never an internal primary key.
 - Legal entity, book, chart account, fiscal period, journal, receipt, tax-command, report, and profile references preserve tenant scope through composite keys where the relationship crosses tables.
 - `general_journal` preserves legal-entity/book consistency with a composite foreign key, while `journal_entry_line` preserves same-book chart-account scope with a database trigger so the normalized line does not duplicate `accounting_book_id` merely to enforce the relationship.
 - Historical master-data, taxonomy-profile, mapping, approval, and publication rows close their validity interval rather than being overwritten.
 - Posted journals are never updated or deleted; finalized journal populations cannot be extended after receipt issuance.
-- Report artifacts and publication receipts are append-only. Corrections create a new artifact and explicit supersession/withdrawal evidence.
+- Report proposals, authoritative report artifacts, validation results, approvals, and publication receipts are append-only. Corrections create a new artifact and explicit supersession/withdrawal evidence.
 - Exact debit, credit, fact, and validation amounts use PostgreSQL `numeric` and application `Decimal`; binary floating-point accounting amounts are rejected at input boundaries.
 - Command idempotency is tenant-scoped and tied to immutable source/command evidence so exact retries replay and changed evidence fails closed.
+- Content digest, caller claim, test fixture, or taxonomy profile cannot elevate truth status. Authority requires the owner command and retained PostgreSQL source provenance.
 - XBRL profile mappings cannot change the source report amount. A sign, scale, dimension, unit, or concept transformation must be explicit, versioned, reviewed, and independently validated.
-- Report facts, presentation labels, localized explanations, model-generated prose, validation findings, approvals, and filing receipts are separate facts.
+- Report facts, presentation labels, localized explanations, model-generated prose, validation findings, approvals, filing receipts, and regulator acceptance are separate facts.
 
 ## Future extensions
 
-Revenue contracts and performance obligations, durable receivable/payable subledgers, cash-application evidence, deterministic bank-statement matching, foreign-exchange rates and remeasurement, fixed assets, intercompany balances and eliminations, consolidation, reporting-taxonomy profile persistence, statement notes, dimensions, segment reporting, EPS, and jurisdiction filing adapters are later normalized modules. They will reference, not duplicate, the journal authority and will not let external statement, renderer, validator, regulator response, or model output post accounting facts automatically.
+Revenue contracts and performance obligations, durable receivable/payable subledgers, cash-application evidence, deterministic bank-statement matching, foreign-exchange rates and remeasurement, fixed assets, intercompany balances and eliminations, consolidation, reporting-taxonomy profile persistence, statement notes, dimensions, segment reporting, EPS, and jurisdiction filing adapters are later normalized modules. They will reference, not duplicate, the journal authority and will not let an external statement, caller-supplied proposal, renderer, validator, regulator response, or model output post accounting facts or mint authoritative report origin automatically.
 
 ## Runtime tenant binding
 
