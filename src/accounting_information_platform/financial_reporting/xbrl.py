@@ -1,4 +1,4 @@
-"""Deterministic XBRL 2.1 serialization from canonical report artifacts."""
+"""Deterministic XBRL 2.1 serialization from unverified report proposals."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ def export_xbrl_instance(
     report_artifact: Mapping[str, object],
     taxonomy_profile: XbrlTaxonomyProfile,
 ) -> dict[str, object]:
-    """Serialize a verified report artifact as a deterministic XBRL 2.1 instance."""
+    """Serialize an unverified report proposal as a deterministic XBRL instance."""
     if not isinstance(report_artifact, Mapping):
         raise AccountingValidationError("report_artifact must be a mapping")
     if not isinstance(taxonomy_profile, XbrlTaxonomyProfile):
@@ -121,8 +121,16 @@ def export_xbrl_instance(
     artifact_hash = str(artifact_document["report_artifact_hash"])
     return {
         "export_contract_version": 1,
+        "truth_status_code": artifact_document["truth_status_code"],
+        "source_authority_code": artifact_document["source_authority_code"],
+        "publication_readiness_code": artifact_document[
+            "publication_readiness_code"
+        ],
+        "authoritative_report": False,
+        "xbrl_validation_status_code": "not_run",
+        "filing_readiness_code": "not_ready",
         "media_type": "application/xbrl+xml",
-        "file_name": f"financial-report-{artifact_hash[7:23]}.xbrl",
+        "file_name": f"financial-report-proposal-{artifact_hash[7:23]}.xbrl",
         "report_artifact_reference": artifact_document[
             "report_artifact_reference"
         ],
