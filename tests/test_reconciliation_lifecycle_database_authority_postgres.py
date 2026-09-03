@@ -103,6 +103,26 @@ class ReconciliationLifecycleDatabaseAuthorityPostgresTests(unittest.TestCase):
         assert row is not None
         return row
 
+    def _transition_identities_in_timezone(
+        self, time_zone: str, key_suffix: str
+    ) -> tuple[object, ...]:
+        """Derive one rolled-back authority identity set under a caller session zone."""
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            connection.execute("SELECT set_config('TimeZone', %s, false)", (time_zone,))
+            tenant_id, _statement_id, _knowledge_cutoff_at, _currency_code = self._scope(
+                connection
+            )
+            persisted = self._insert_transition(
+                connection,
+                tenant_id=tenant_id,
+                statement_population_reference="sha256:" + "a" * 64,
+                book_population_reference="sha256:" + "b" * 64,
+                snapshot_hash="sha256:" + "c" * 64,
+                key_suffix=key_suffix,
+            )
+            connection.rollback()
+        return persisted
+
     def test_database_replaces_all_caller_transition_identities(self) -> None:
         """Parent authority plus child evidence must replace all caller-selected identities."""
         forged_snapshot = "sha256:" + "f" * 64
@@ -128,6 +148,15 @@ class ReconciliationLifecycleDatabaseAuthorityPostgresTests(unittest.TestCase):
         for value in persisted:
             with self.subTest(value=value):
                 self.assertRegex(str(value), r"^sha256:[0-9a-f]{64}$")
+
+    def test_database_authority_identities_ignore_caller_session_timezone(self) -> None:
+        """Equivalent retained facts must hash identically in different session zones."""
+        utc = self._transition_identities_in_timezone("UTC", "timezone-utc")
+        seoul = self._transition_identities_in_timezone(
+            "Asia/Seoul", "timezone-asia-seoul"
+        )
+
+        self.assertEqual(utc, seoul)
 
     def test_database_rejects_transition_when_authoritative_bridge_does_not_tie(self) -> None:
         """Direct SQL cannot reconcile a run after a statement source breaks the exact bridge."""
