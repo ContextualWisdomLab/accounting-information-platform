@@ -19,6 +19,8 @@ from accounting_information_platform.reconciliation_bridge import (
 from accounting_information_platform.reconciliation_read_model import (
     ReconciliationCloseReviewInput,
     ReconciliationCloseReviewScope,
+    ReconciliationAllocationEvidence,
+    ReconciliationReviewedMatch,
     build_reconciliation_close_review,
 )
 
@@ -76,7 +78,34 @@ class ReconciliationCloseReviewBridgeScopeTests(unittest.TestCase):
             matched_journal_references=("journal-001",),
             allocated_amount=Decimal("100.00"),
             exception_code=None,
-            next_action="Review the deterministic proposal; do not post a journal from it.",
+            next_action="Review the deterministic proposal; do not post a journal.",
+            reconciliation_match_reference="reconciliation-match-001",
+        )
+
+    @staticmethod
+    def _reviewed_match() -> ReconciliationReviewedMatch:
+        return ReconciliationReviewedMatch(
+            reconciliation_match_reference="reconciliation-match-001",
+            candidate_reference="candidate-001",
+            candidate_statement_reference="stmt-001",
+            candidate_journal_reference="journal-001",
+            statement_amount=Decimal("100.00"),
+            journal_amount=Decimal("100.00"),
+            rule_code="provider_reference",
+            statement_allocations=(
+                ReconciliationAllocationEvidence(
+                    allocation_reference="statement-allocation-001",
+                    source_reference="stmt-001",
+                    allocated_amount=Decimal("100.00"),
+                ),
+            ),
+            journal_allocations=(
+                ReconciliationAllocationEvidence(
+                    allocation_reference="journal-allocation-001",
+                    source_reference="journal-001",
+                    allocated_amount=Decimal("100.00"),
+                ),
+            ),
         )
 
     def test_current_bridge_cannot_be_relabelled_to_another_same_currency_scope(self) -> None:
@@ -94,6 +123,7 @@ class ReconciliationCloseReviewBridgeScopeTests(unittest.TestCase):
                     bridge_result=self._bridge(),
                     decisions=(self._match(),),
                     expected_statement_entry_references=("stmt-001",),
+                    reviewed_matches=(self._reviewed_match(),),
                     scope=foreign_scope,
                 )
             )
@@ -113,6 +143,7 @@ class ReconciliationCloseReviewBridgeScopeTests(unittest.TestCase):
                     bridge_result=self._bridge(run_reference="run-current"),
                     decisions=(self._match(),),
                     expected_statement_entry_references=("stmt-001",),
+                    reviewed_matches=(self._reviewed_match(),),
                     scope=current_scope,
                     preceding_bridge_result=self._bridge(
                         run_reference="run-foreign",
@@ -144,6 +175,7 @@ class ReconciliationCloseReviewBridgeScopeTests(unittest.TestCase):
                     ),
                     decisions=(self._match(),),
                     expected_statement_entry_references=("stmt-001",),
+                    reviewed_matches=(self._reviewed_match(),),
                     scope=current_scope,
                 )
             )
