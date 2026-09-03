@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import unittest
 import xml.etree.ElementTree as element_tree
+from datetime import date
 from decimal import Decimal
 
 from accounting_information_platform import (
@@ -40,6 +41,20 @@ class FinancialReportingContractTests(unittest.TestCase):
         self.assertEqual(report_artifact, repeated_artifact)
         self.assertEqual(statement_package, original_package)
         self.assertEqual(report_artifact["report_contract_version"], 1)
+        self.assertEqual(report_artifact["truth_status_code"], "proposed")
+        self.assertEqual(
+            report_artifact["source_authority_code"],
+            "caller_supplied_statement_package",
+        )
+        self.assertEqual(
+            report_artifact["publication_readiness_code"],
+            "unverified",
+        )
+        self.assertTrue(
+            str(report_artifact["report_artifact_reference"]).startswith(
+                "urn:cwl:accounting:financial_report_proposal:"
+            )
+        )
         self.assertRegex(
             str(report_artifact["source_package_hash"]),
             r"^sha256:[0-9a-f]{64}$",
@@ -116,6 +131,12 @@ class FinancialReportingContractTests(unittest.TestCase):
         )
         self.assertEqual(first_export, second_export)
         self.assertEqual(first_export["media_type"], "application/xbrl+xml")
+        self.assertEqual(first_export["truth_status_code"], "proposed")
+        self.assertEqual(
+            first_export["publication_readiness_code"],
+            "unverified",
+        )
+        self.assertFalse(first_export["authoritative_report"])
         self.assertRegex(
             str(first_export["xbrl_instance_hash"]),
             r"^sha256:[0-9a-f]{64}$",
@@ -158,6 +179,63 @@ class FinancialReportingContractTests(unittest.TestCase):
                 ("current_instant", "1500.00"),
                 ("comparison_instant", "1300.00"),
             },
+        )
+
+    def test_caller_supplied_balanced_data_never_mints_authoritative_report_truth(self) -> None:
+        """Classify arbitrary balanced data and caller dates/currency as unverified."""
+        synthetic_package = _statement_package()
+        synthetic_package["tenant_reference"] = "unrecorded-tenant"
+        synthetic_package["legal_entity_reference"] = "unrecorded-entity"
+        for statement_name in (
+            "income_statement",
+            "balance_sheet",
+            "changes_in_equity",
+            "cash_flow",
+        ):
+            synthetic_package[statement_name]["tenant_reference"] = (
+                "unrecorded-tenant"
+            )
+            synthetic_package[statement_name]["legal_entity_reference"] = (
+                "unrecorded-entity"
+            )
+        relabelled_context = FinancialReportContext(
+            entity_identifier_scheme="https://attacker.example/entities",
+            entity_identifier_value="RELABELLED-ENTITY",
+            reporting_currency_code="USD",
+            current_period_start_date=date(2030, 1, 1),
+            current_period_end_date=date(2030, 12, 31),
+            comparison_period_start_date=date(2029, 1, 1),
+            comparison_period_end_date=date(2029, 12, 31),
+            decimal_precision=2,
+        )
+
+        report_artifact = build_financial_report_artifact(
+            synthetic_package,
+            relabelled_context,
+        )
+        xbrl_export = export_xbrl_instance(
+            report_artifact,
+            _taxonomy_profile(),
+        )
+
+        self.assertEqual(report_artifact["truth_status_code"], "proposed")
+        self.assertEqual(
+            report_artifact["source_authority_code"],
+            "caller_supplied_statement_package",
+        )
+        self.assertEqual(
+            report_artifact["publication_readiness_code"],
+            "unverified",
+        )
+        self.assertNotIn(
+            "urn:cwl:accounting:financial_report:",
+            report_artifact["report_artifact_reference"],
+        )
+        self.assertFalse(xbrl_export["authoritative_report"])
+        self.assertEqual(xbrl_export["truth_status_code"], "proposed")
+        self.assertEqual(
+            xbrl_export["publication_readiness_code"],
+            "unverified",
         )
 
     def test_package_root_exports_the_reporting_api(self) -> None:
