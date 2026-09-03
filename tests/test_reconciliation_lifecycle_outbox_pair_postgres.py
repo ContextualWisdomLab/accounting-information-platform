@@ -47,10 +47,27 @@ class ReconciliationLifecycleOutboxPairPostgresTests(unittest.TestCase):
             (self.opened["reconciliation_run_id"],),
         ).fetchone()[0]
 
+    def _begin_safe_raw_transition(self, connection: psycopg.Connection) -> None:
+        """Enter the current pre-statement lock/fresh-snapshot database protocol."""
+        lifecycle_scope = (
+            "reconciliation_run_lifecycle:" + self.opened["reconciliation_run_id"]
+        )
+        connection.execute(
+            "SELECT pg_advisory_lock(hashtext(%s), hashtext(%s))",
+            (self.fixture.case.policy.tenant_reference, lifecycle_scope),
+        )
+        connection.commit()
+        connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        connection.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+            (self.fixture.case.policy.tenant_reference, lifecycle_scope),
+        )
+
     def test_direct_transition_and_status_cannot_commit_without_outbox(self) -> None:
         """Direct SQL cannot create reconciled authority while omitting its event receipt."""
         transition_key = f"missing-outbox-{uuid.uuid4().hex}"
         with psycopg.connect(posting.DATABASE_URL) as connection:
+            self._begin_safe_raw_transition(connection)
             tenant_id = self._tenant_id(connection)
             connection.execute(
                 """
@@ -62,12 +79,13 @@ class ReconciliationLifecycleOutboxPairPostgresTests(unittest.TestCase):
                     reconciliation_snapshot_hash,
                     statement_population_reference,
                     book_population_reference,
+                    source_payload_hash,
                     reconciliation_transition_command_hash,
                     actor_reference,
                     purpose_code,
                     effective_at
                 )
-                VALUES (%s, %s, %s, 'reconciled', %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, 'reconciled', %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     tenant_id,
@@ -76,6 +94,7 @@ class ReconciliationLifecycleOutboxPairPostgresTests(unittest.TestCase):
                     "sha256:" + "d" * 64,
                     "sha256:" + "1" * 64,
                     "sha256:" + "2" * 64,
+                    "sha256:" + "3" * 64,
                     "sha256:" + "0" * 64,
                     "urn:cwl:principal:database_authority_test",
                     "month_end_reconciliation",
