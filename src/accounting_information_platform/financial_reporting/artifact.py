@@ -325,20 +325,22 @@ def _direction(change_amount: Decimal) -> str:
 def _snapshot_references(
     statement_documents: Mapping[str, Mapping[str, object]],
 ) -> list[str]:
-    """Collect claimed snapshot references in stable statement order."""
+    """Require each claimed snapshot identity to agree across all four statements."""
     snapshot_references: list[str] = []
-    for statement_type in _STATEMENT_TYPES:
-        for snapshot_key in (
-            "snapshot_record_id",
-            "comparison_snapshot_record_id",
-        ):
-            snapshot_reference = _optional_text(
+    for snapshot_key in (
+        "snapshot_record_id",
+        "comparison_snapshot_record_id",
+    ):
+        references = [
+            _optional_text(
                 statement_documents[statement_type].get(snapshot_key),
                 snapshot_key,
             )
-            if (
-                snapshot_reference
-                and snapshot_reference not in snapshot_references
-            ):
-                snapshot_references.append(snapshot_reference)
+            for statement_type in _STATEMENT_TYPES
+        ]
+        first_reference = references[0]
+        if any(reference != first_reference for reference in references[1:]):
+            raise AccountingValidationError("snapshot references do not match")
+        if first_reference:
+            snapshot_references.append(first_reference)
     return snapshot_references
