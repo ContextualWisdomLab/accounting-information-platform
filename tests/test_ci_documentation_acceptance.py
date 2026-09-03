@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PATH_FILTER = re.compile(r"(?m)^[ \t]+paths(?:-ignore)?:[ \t]*[^\r\n]*$")
+PATH_FILTER = re.compile(r"(?m)(?:^[ \t]+|[{,][ \t]*)paths(?:-ignore)?[ \t]*:")
 
 
 class AccountingDocumentationCiAcceptanceTests(unittest.TestCase):
