@@ -76,4 +76,19 @@ CREATE TRIGGER accounting_reconciliation_transition_recording_time_guard
     FOR EACH ROW
     EXECUTE FUNCTION accounting_core.assign_reconciliation_lifecycle_recorded_at();
 
+-- Database authority hashes contain date/timestamptz values inside jsonb. Their
+-- text representation must not inherit caller session TimeZone or DateStyle,
+-- otherwise identical retained accounting facts can receive different durable
+-- snapshot/population identities. Pin the output configuration at each public
+-- hash-producing database function; PostgreSQL restores the caller settings when
+-- the function returns.
+ALTER FUNCTION accounting_core.reconciliation_run_database_snapshot_authority(uuid, uuid)
+    SET TimeZone TO 'UTC';
+ALTER FUNCTION accounting_core.reconciliation_run_database_snapshot_authority(uuid, uuid)
+    SET DateStyle TO 'ISO, YMD';
+ALTER FUNCTION accounting_core.assign_reconciliation_run_resolution_snapshot()
+    SET TimeZone TO 'UTC';
+ALTER FUNCTION accounting_core.assign_reconciliation_run_resolution_snapshot()
+    SET DateStyle TO 'ISO, YMD';
+
 COMMIT;
