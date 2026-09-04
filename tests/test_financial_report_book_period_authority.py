@@ -22,8 +22,9 @@ class FinancialReportBookPeriodAuthorityTests(unittest.TestCase):
         self.assertRegex(
             migration,
             re.compile(
-                r"FOREIGN KEY\s*\(tenant_account_id, accounting_book_id, fiscal_period_id\)\s*"
-                r"REFERENCES accounting_core\.accounting_book_period_control\s*\(\s*"
+                r"FOREIGN KEY\s*\(\s*tenant_account_id\s*,\s*accounting_book_id\s*,\s*"
+                r"fiscal_period_id\s*\)\s*REFERENCES\s+"
+                r"accounting_core\.accounting_book_period_control\s*\(\s*"
                 r"tenant_account_id\s*,\s*accounting_book_id\s*,\s*fiscal_period_id\s*\)",
                 re.IGNORECASE | re.MULTILINE,
             ),
@@ -35,8 +36,9 @@ class FinancialReportBookPeriodAuthorityTests(unittest.TestCase):
         self.assertRegex(
             migration,
             re.compile(
-                r"FOREIGN KEY\s*\(tenant_account_id, accounting_book_id, comparison_fiscal_period_id\)\s*"
-                r"REFERENCES accounting_core\.accounting_book_period_control\s*\(\s*"
+                r"FOREIGN KEY\s*\(\s*tenant_account_id\s*,\s*accounting_book_id\s*,\s*"
+                r"comparison_fiscal_period_id\s*\)\s*REFERENCES\s+"
+                r"accounting_core\.accounting_book_period_control\s*\(\s*"
                 r"tenant_account_id\s*,\s*accounting_book_id\s*,\s*fiscal_period_id\s*\)",
                 re.IGNORECASE | re.MULTILINE,
             ),
