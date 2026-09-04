@@ -49,6 +49,7 @@ SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE
     period_status_value text;
+    journal_write_role_value text;
 BEGIN
     SELECT accounting_book_period_control.period_status_code
       INTO period_status_value
@@ -67,6 +68,20 @@ BEGIN
     IF period_status_value = 'hard_closed' THEN
         RAISE EXCEPTION
             'hard-close trial balance evidence is immutable (trial_balance_snapshot_immutable)'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    journal_write_role_value := nullif(
+        current_setting('accounting_core.journal_write_role', true),
+        ''
+    );
+
+    IF period_status_value <> 'soft_closed'
+       OR journal_write_role_value IS DISTINCT FROM 'period_closing'
+       OR NOT pg_has_role(session_user, 'accounting_closing_writer', 'MEMBER')
+    THEN
+        RAISE EXCEPTION
+            'trial balance snapshot creation requires the purpose-limited hard-close writer (trial_balance_snapshot_authority_required)'
             USING ERRCODE = 'check_violation';
     END IF;
 
