@@ -2,7 +2,7 @@
 
 ## Deployment preconditions
 
-Use PostgreSQL 18 and keep the migration owner, application runtime login and administrative / break-glass identities separate. Apply migrations in numeric order through `0019_reconciliation_run_command_evidence.sql` before starting the service. Do not run the application with a table-owner, superuser or `BYPASSRLS` login.
+Use PostgreSQL 18 and keep the migration owner, application runtime login and administrative / break-glass identities separate. Apply migrations in the checked-in authority order through `0025_reconciliation_lifecycle_recording_time_authority.sql` before starting the service. Do not run the application with a table-owner, superuser or `BYPASSRLS` login.
 
 Required environment values are deployment-specific. At minimum, configure the accounting database URL and bind this AIS process to exactly one tenant reference. Secrets belong in an approved secret store; do not place database passwords, NTS credentials, bearer tokens or provider secrets in journal payloads, logs or outbox events.
 
@@ -32,6 +32,13 @@ database/migrations/0016_reconciliation_approval_evidence.sql
 database/migrations/0017_reconciliation_approval_lock_order.sql
 database/migrations/0018_bank_statement_balance_evidence.sql
 database/migrations/0019_reconciliation_run_command_evidence.sql
+database/migrations/0019_reconciliation_run_database_snapshot_authority.sql
+database/migrations/0020_reconciliation_exception_resolution_command.sql
+database/migrations/0021_reconciliation_exception_resolution_outbox_pair.sql
+database/migrations/0022_reconciliation_authority_outbox_retention.sql
+database/migrations/0023_reconciliation_authority_outbox_orphan_guard.sql
+database/migrations/0024_reconciliation_control_recording_time_authority.sql
+database/migrations/0025_reconciliation_lifecycle_recording_time_authority.sql
 ```
 
 Migration `0015_reconciliation_multi_match_conservation.sql` replaces the run-wide single-approved-match shortcut from `0014` with tenant/run-scoped match identity plus exact statement/journal allocation conservation. It permits multiple independently approved matches, including split and aggregate allocation populations, only when no authoritative source amount is over-consumed and grants no journal-posting authority.
@@ -42,23 +49,46 @@ Migration `0017_reconciliation_approval_lock_order.sql` is a forward repair for 
 
 Migration `0018_bank_statement_balance_evidence.sql` preserves the exact numeric amount, currency, credit/debit direction, typed effective date/time, sequence, locator, source hash, and standard-versus-proprietary balance-type discriminator for every camt.053 balance. The effective date/time is distinct from statement period and system `recorded_at`; existing balance hashes remain on the statement row for compatibility. The numeric rows are immutable, forced-RLS evidence that a reconciliation bridge may read but that cannot post, reverse, or mutate a journal.
 
-Migration `0019_reconciliation_run_command_evidence.sql` records the immutable command identity that opens a reconciliation run from one persisted bank statement and active bank-account assignment. The tenant-scoped idempotency key, command hash, source hash, and object-store reference are forced-RLS evidence; new runs exclude source facts recorded after `knowledge_cutoff_at`, and a deferred database guard requires one command per run with statement-to-assignment bank-account provenance. The public run API opens only `evaluating` scope and does not match, approve, close, or post journals.
+Migration `0019_reconciliation_run_command_evidence.sql` records the immutable command identity that opens a reconciliation run from one persisted bank statement and active bank-account assignment, then adds the evidence-derived run-finalization command and shared reconciliation command-identity namespace. The tenant-scoped idempotency key, command hash, source hash, and object-store reference are forced-RLS evidence; new runs exclude source facts recorded after `knowledge_cutoff_at`, and a deferred database guard requires one command per run with statement-to-assignment bank-account provenance. The public run API opens only `evaluating` scope and cannot post journals or close periods.
+
+The unreleased lifecycle-parent overlay `0019_reconciliation_run_database_snapshot_authority.sql` must run after the base 0019 migration and before migrations 0020/0021/0022/0023/0024/0025. It defines `accounting_core.reconciliation_run_database_snapshot_authority`, independently reconstructs the exact bank-statement and assigned cash-book populations and bridge, and replaces caller-selected transition snapshot, statement-population, and book-population identities. The supported installer treats this overlay as part of the complete chain even though its filename shares the base numeric prefix; do not sort migrations by filename alone and accidentally omit it.
+
+Migration `0020_reconciliation_exception_resolution_command.sql` makes exception resolution a named maker-checker command rather than a mutable status shortcut. The database requires an active reviewable run, one open tenant/run/exception, a reviewer distinct from the exception owner, retained evidence reference/hash, temporal causality, the shared reconciliation idempotency namespace, and a database-derived command hash. A raw terminal status update is rejected unless its matching command already exists in the transaction; a deferred pair guard requires command and terminal status to commit together, then terminal exception evidence is immutable. Run finalization accepts an exception only when its terminal status and retained resolution command agree. This command does not post a journal; any correcting journal is a separate authorized General Ledger command.
+
+Migration `0021_reconciliation_exception_resolution_outbox_pair.sql` extends that deferred database boundary so every immutable exception-resolution command must also commit exactly one matching accounting outbox event. PostgreSQL derives the required event type from the terminal decision and binds tenant, exception aggregate reference, resolution-command payload reference, and the database-assigned command hash. The same migration adds the child resolution-evidence snapshot overlay: parent `accounting_reconciliation_transition_database_authority_guard` derives the exact bridge and all three server-owned transition identities first; `accounting_reconciliation_transition_evidence_snapshot_guard` composes the immutable ordered exception-resolution command population second while preserving the parent statement/book references; `accounting_reconciliation_transition_hash_guard` binds the final snapshot last. Direct SQL that commits command/status authority without the matching publication receipt, supplies forged transition identities, omits durable resolution-command evidence, or presents an untied bridge fails closed.
+
+Migration `0022_reconciliation_authority_outbox_retention.sql` preserves the exactly one matching outbox event invariant after command commit for both reconciliation exception-resolution and run-lifecycle authority. Deferred outbox-side guards validate the old identity on DELETE or identity re-key and the new identity on INSERT or identity re-key, so a bound event cannot disappear and a duplicate event cannot be inserted or manufactured by updating an unrelated row. Publication remains supported because `published_at` is not part of the guarded authority identity. The migration preflight refuses any existing reconciliation command with zero or multiple matching events; restore or reconstruct verified provenance before retrying and never fabricate evidence to satisfy the migration.
+
+Migration `0023_reconciliation_authority_outbox_orphan_guard.sql` reserves `reconciliation_exception_resolved`, `reconciliation_exception_superseded`, and `reconciliation_run_reconciled` as command-backed accounting authority event types. An INSERT or identity-changing UPDATE cannot create one of those events unless its tenant, aggregate reference, payload reference, and payload hash match the exact immutable exception-resolution or run-transition command. The upgrade preflight temporarily gives only the current migration user all-tenant SELECT visibility across the forced-RLS command/outbox tables, rejects any pre-existing orphan authority event, and drops those temporary policies before installing the durable runtime guard. Quarantine and investigate an orphan event; do not mint a command after the fact merely to make the migration pass.
+
+Migration `0024_reconciliation_control_recording_time_authority.sql` makes `reconciliation_exception.recorded_at` and `reconciliation_evidence.recorded_at` database-owned for new rows while preserving unresolved pre-0024 source history exactly. Before changing either source table, a temporary `FOR SELECT TO current_user USING (true)` policy exposes the forced-RLS resolution-command table to the migration owner. If a pre-0024 resolution command already exists, the migration aborts with `reconciliation_resolution_legacy_recording_time_preflight`: that command has already made its exception terminal, while the source exception/review `recorded_at` values remain unverifiable and must not become input to a later reconciled transition. On a database without such commands, existing unresolved source rows receive `legacy_unverified`, their stored timestamps are not changed, and the marker default is removed. `BEFORE INSERT` guards overwrite caller-supplied `recorded_at` and authority markers with PostgreSQL `clock_timestamp()` plus `database_clock`; UPDATE guards make that pair immutable. A new maker-checker resolution command requires the exact exception and retained review artifact to carry `database_clock`. Do not delete, rewrite, relabel, or invent provenance to bypass either legacy boundary.
+
+Migration `0025_reconciliation_lifecycle_recording_time_authority.sql` has a stricter upgrade contract because a lifecycle transition already makes a run `reconciled` and can support close evidence. Migration 0019 allowed privileged callers to supply transition `recorded_at`, so a pre-0025 transition timestamp cannot be proven retroactively. Before any durable 0025 schema change, a temporary `FOR SELECT TO current_user USING (true)` policy exposes the forced-RLS transition history to the migration owner; if any transition row exists, the migration aborts with `reconciliation_lifecycle_legacy_recording_time_preflight`. Do not delete, rewrite, relabel, or invent system-time provenance to make this pass. Keep the prior release or execute a separately reviewed audited remediation backed by the original transition/status/outbox evidence. Creating a new run alone does not remove the old immutable transition and cannot satisfy the preflight. On databases that pass, new transition rows carry explicit `recording_time_authority_code = 'database_clock'`; PostgreSQL overwrites any caller-shaped `recorded_at` with `clock_timestamp()` and rejects `effective_at > recorded_at` using `reconciliation_lifecycle_future_time`. A rejected future-effective transition leaves command, run status, and outbox authority rolled back together. This migration does not post/reverse journals, close fiscal periods, or alter accounting policy.
 
 Migration `0007_runtime_tenant_binding.sql` replaces caller-selected tenant authority with owner-controlled runtime-login binding. Migration `0008_fiscal_period_open_command.sql` adds forced-RLS, append-only command evidence so fiscal-period-open retries are bound to the original tenant key and source hash. Both must be installed before runtime database privileges are treated as production-ready.
 
-After installation, prove with the actual runtime login that supported reads and writes work for its tenant, another tenant is inaccessible, the login is not a migration owner / superuser / `BYPASSRLS`, and direct SQL cannot bypass journal immutability or period controls.
+After installation, prove with the actual runtime login that supported reads and writes work for its tenant, another tenant is inaccessible, the login is not a migration owner / superuser / `BYPASSRLS`, and direct SQL cannot bypass journal immutability, period controls, reconciliation lifecycle controls, exception-resolution authority, reconciliation authority-event admission, or reconciliation recording-time provenance.
 
 ## Concurrency and hot-write operations
 
 The multithreaded HTTP server gives each request an independent PostgreSQL
 transaction. Each new session bounds lock waits to five seconds and idle
 transactions to sixty seconds. State-changing proposal, adjusting, reversal,
-HomeTax, period-open, period-close, and reconciliation-run commands acquire tenant-scoped
-transaction advisory locks. Posting/reversal re-read their selected period
-after acquiring the shared period lock; close selects the period row with
-`FOR UPDATE` before evaluating its package. A lock timeout rolls back the
-transaction and must be retried after the operator resolves the competing
-command.
+HomeTax, period-open, period-close, reconciliation-run, and ordinary command
+paths acquire tenant-scoped transaction advisory locks through
+`pg_advisory_xact_lock`; those locks live until the surrounding transaction ends.
+Reconciliation run finalization is intentionally different: it acquires the
+run-lifecycle advisory key with session-scoped `pg_advisory_lock` on the owning
+database connection before opening the `REPEATABLE READ` authority snapshot,
+holds that session lock across the evidence read and transaction, and explicitly
+releases it with `pg_advisory_unlock` in the `finally` path. Exception resolution
+uses the same tenant/run lifecycle key through the transaction-scoped command-lock
+helper after transaction isolation begins; SQLSTATE `40001` retries restart the
+whole resolution transaction so a waiter reloads the committed command/evidence.
+Posting/reversal re-read their selected period after acquiring the shared period
+lock; close selects the period row with `FOR UPDATE` before evaluating its package.
+A lock timeout rolls back the transaction and must be retried after the operator
+resolves the competing command.
 
 Migration `0006_concurrency_hot_partition.sql` adds tenant-leading indexes to
 the high-write proposal, journal, line, reversal, receipt, HomeTax, and outbox
@@ -66,6 +96,20 @@ populations. Monitor `pg_stat_activity`, `pg_locks`, lock-wait duration, and
 index usage before introducing physical hash-by-tenant/time partitions. A
 partition migration must preserve every tenant-scoped primary/unique key,
 foreign key, RLS policy, idempotency decision, and outbox ordering invariant.
+
+## Reconciliation exception operations
+
+Use `resolve_reconciliation_exception()` only after an authorized reviewer has inspected the retained exception evidence. The exception owner and resolution actor must differ. Supply the exact evidence reference and canonical SHA-256 digest, purpose code, effective time, and a new reconciliation idempotency key. Exact replay under the original key returns the immutable receipt; changed evidence under that key is a conflict and requires a new reviewed command.
+
+Do not repair an exception by updating `resolution_status_code` directly, and do not grant a runtime role raw insert/update/outbox DML as a substitute for the named command. The future least-privilege database capability tracked in issue #44 must expose the command boundary. HTTP exposure remains blocked until the purpose-bound authentication/authorization path tracked in #34 / issue #9 binds the authenticated principal to the command; payload actor strings are evidence, not authentication.
+
+Migration `0020` deliberately refuses installation while pre-0020 terminal exception rows exist without named maker-checker command provenance. Creating a new reconciliation run does **not** satisfy that preflight because the legacy terminal rows remain in the database. Stop the upgrade/release path, take and verify a restorable backup, inventory every affected tenant/run/exception, and use the checked-in `scripts/repair_pre_0020_exception_resolution.py` only as the bounded, explicitly reviewed remediation path for provenance that can be reconstructed from retained review evidence. Record the operator, source evidence, before/after row identities and validation result as migration evidence, rerun the 0020 preflight, and only then continue through 0023. If historical maker-checker provenance cannot be proven, do not synthesize it; preserve the legacy database for audit and use a new reconciliation run only after the authority migrations have been installed in the target operational path.
+
+Migration `0024` distinguishes unresolved legacy evidence from already-authoritative legacy resolution. If no pre-0024 resolution command exists, pre-0024 exception/evidence rows are preserved with their original timestamps and receive `recording_time_authority_code = 'legacy_unverified'`; do not rewrite those timestamps or manually promote the marker. After 0024, newly inserted exception/review rows receive `database_clock` only from PostgreSQL together with a database-owned `recorded_at`, and a new exception-resolution command fails closed if either exact source row is `legacy_unverified`. When an unresolved historical exception requires a new authoritative decision, retain the old run for audit and create a new reconciliation run plus review evidence after 0024 rather than mutating the old row.
+
+If the 0024 preflight reports `reconciliation_resolution_legacy_recording_time_preflight`, stop before the migration and inventory the immutable resolution-command / terminal-status / outbox triplet plus its referenced exception and review evidence. Do not delete or rewrite those rows and do not assert that their historical source `recorded_at` was database-owned. Retain the prior operational stack or execute a separately reviewed audited remediation that can prove the original chronology and authority evidence. A new run does not remove the legacy command and therefore does not satisfy this preflight by itself. Backup/restore rehearsal must reproduce the preflight failure atomically and verify that neither `recording_time_authority_code` column nor the temporary visibility policy survives the aborted migration.
+
+Migration `0025` does not grandfather a pre-existing lifecycle transition. If its preflight reports `reconciliation_lifecycle_legacy_recording_time_preflight`, stop the upgrade and inventory the immutable transition/status/outbox triplet under an audited remediation plan; do not force the migration through and do not claim the historical `recorded_at` was database-owned. On a database with no pre-0025 transition rows, the migration installs the explicit `database_clock` authority marker and PostgreSQL-owned `recorded_at`; future-effective lifecycle commands fail atomically. Backup/restore rehearsal must preserve the marker and timestamp and must reproduce both the legacy-preflight rejection and the future-effective rollback behavior.
 
 ## Purpose-limited soft-close authorization
 
@@ -148,7 +192,7 @@ Health checks do not prove accounting readiness. A process can be healthy while 
 
 ## Outbox and audit
 
-Posting, reversal and close commands commit their outbox evidence in the same accounting transaction. Publishing an outbox row records publication state; it does not rewrite the accounting fact. Audit reads include published and unpublished evidence but do not publish rows themselves.
+Posting, reversal, close, reconciliation finalization, and reconciliation exception-resolution commands commit their outbox evidence in the same accounting transaction. For committed reconciliation finalization and exception-resolution commands, PostgreSQL must retain exactly one matching outbox event: deleting or re-keying the sole event, inserting a duplicate, or re-keying an unrelated event into the same authority identity fails closed. The reserved reconciliation authority event types also fail closed when no matching immutable command exists, so an outbox row cannot independently manufacture a resolved exception or reconciled run. Publishing an outbox row may update only publication metadata such as `published_at`; it does not rewrite the accounting fact or authority identity. Audit reads include published and unpublished evidence but do not publish rows themselves.
 
 Do not place raw card data, passwords, tokens, model prompts or unnecessary PII in outbox / audit payloads. PII necessary for authorized accounting work remains purpose-bound and access-logged.
 
@@ -188,11 +232,3 @@ Release only from one unchanged protected head after all applicable evidence pas
 ## Runtime database tenant provisioning
 
 Before routing accounting traffic to a new database login, an owner-controlled operator records that login's current PostgreSQL role OID, role name, and tenant in `accounting_core.runtime_tenant_binding`. The runtime login itself must have no direct privilege on the binding table. Recreating a role, restoring into a new cluster, or intentionally reassigning a tenant requires a fresh binding because the role OID is part of the identity. An unbound runtime or a requested tenant that disagrees with the binding fails closed; do not restore service by setting `app.tenant_account_id`.
-
-## Accounting-book close isolation
-
-Apply `0009_accounting_book_period_control.sql` after `0008_fiscal_period_open_command.sql` before granting runtime access. After migration, verify that closing one book leaves an open sibling book postable and that direct SQL into the closed book fails at `guard_period_insert`. If a book-period control row is missing, repair catalog/control state before retrying close; do not edit posted journals.
-
-## Soft-close command evidence recovery
-
-New soft-close transitions atomically retain the original idempotency key, source-journal count and canonical source hash. Replays must use the same key and return those stored facts even after authorized adjustments change the live ledger. If a legacy migrated `soft_closed` row has no command evidence, the service fails closed; restore the original evidence through an audited migration only if it can be proven. Never synthesize historical evidence from current journals.

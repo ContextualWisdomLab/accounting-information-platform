@@ -82,6 +82,7 @@ from .reconciliation_close_package import (
     render_reconciliation_close_package_json,
     verify_reconciliation_close_package,
 )
+from .reconciliation_exception_resolution import resolve_reconciliation_exception
 from .reconciliation_lifecycle import reconcile_reconciliation_run
 from .reconciliation_run import accept_reconciliation_run, lookup_reconciliation_run
 from .reconciliation_read_model import (
@@ -178,6 +179,7 @@ __all__ = [
     "render_reconciliation_close_package_json",
     "render_reconciliation_close_review_csv",
     "render_reconciliation_close_review_json",
+    "resolve_reconciliation_exception",
     "run_journal_proposal_server",
     "verify_reconciliation_close_package",
 ]

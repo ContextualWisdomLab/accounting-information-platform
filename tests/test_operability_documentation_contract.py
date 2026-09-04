@@ -36,6 +36,44 @@ class OperabilityDocumentationContractTests(unittest.TestCase):
             operability,
         )
 
+    def test_reconciliation_outbox_retention_migration_is_operationally_required(self) -> None:
+        """Operations must install 0022 and preserve exactly-one authority evidence."""
+        operability = (ROOT / "docs" / "OPERABILITY.md").read_text(encoding="utf-8")
+
+        self.assertIn(
+            "database/migrations/0022_reconciliation_authority_outbox_retention.sql",
+            operability,
+        )
+        self.assertIn(
+            "exactly one matching outbox event",
+            operability,
+        )
+        self.assertIn("published_at", operability)
+        self.assertIn("duplicate", operability)
+
+    def test_reconciliation_authority_event_orphan_guard_is_operationally_required(self) -> None:
+        """Reserved reconciliation authority events must be command-backed after 0023."""
+        operability = (ROOT / "docs" / "OPERABILITY.md").read_text(encoding="utf-8")
+
+        self.assertIn(
+            "database/migrations/0023_reconciliation_authority_outbox_orphan_guard.sql",
+            operability,
+        )
+        self.assertIn("reconciliation_authority_outbox_orphan", operability)
+        self.assertIn("no matching immutable command", operability)
+        self.assertIn("do not mint a command after the fact", operability)
+
+    def test_recording_time_upgrade_preserves_legacy_evidence_without_trusting_it(self) -> None:
+        """0024 guidance must keep old evidence and distinguish its time authority."""
+        operability = (ROOT / "docs" / "OPERABILITY.md").read_text(encoding="utf-8")
+
+        self.assertIn("legacy_unverified", operability)
+        self.assertIn("database_clock", operability)
+        self.assertIn("recording_time_authority_code", operability)
+        self.assertIn("preserve", operability.lower())
+        self.assertNotIn("reconciliation_recording_time_legacy_preflight", operability)
+        self.assertNotIn("fails closed with `reconciliation_recording_time_legacy_preflight`", operability)
+
 
 if __name__ == "__main__":
     unittest.main()

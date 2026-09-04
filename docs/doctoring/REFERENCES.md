@@ -30,6 +30,12 @@ IFRS Foundation. (2024). *IFRS 18 presentation and disclosure in financial state
 
 IFRS Foundation. (2024). *Post-implementation review of IFRS 15 revenue from contracts with customers: Project summary and feedback statement*. https://www.ifrs.org/projects/completed-projects/2024/pir-ifrs-15/
 
+IFRS Foundation. (2026). *Statement of cash flows and related matters*. https://www.ifrs.org/projects/work-plan/statement-of-cash-flows-and-related-matters/
+
+International Organization for Standardization. (2022). *ISO/IEC 27001:2022 information security, cybersecurity and privacy protection—Information security management systems—Requirements*. https://www.iso.org/standard/27001
+
+International Organization for Standardization. (2022). *ISO/IEC/IEEE 42010:2022 software, systems and enterprise—Architecture description*. https://www.iso.org/standard/74393.html
+
 International Organization for Standardization. (2026). *ISO 20022-1:2026 financial services—Universal financial industry message scheme—Part 1: Metamodel* (3rd ed.). https://www.iso.org/standard/20022-1
 
 International Organization for Standardization. (2026). *ISO 20022-4:2026 financial services—Universal financial industry message scheme—Part 4: XML Schema generation* (2nd ed.). https://www.iso.org/standard/20022-4
@@ -42,8 +48,6 @@ ISO 20022 Registration Authority. (n.d.). *Terms of use*. https://www.iso20022.o
 
 ISO 20022 Registration Authority. (n.d.). *Intellectual property rights*. https://www.iso20022.org/intellectual-property-rights
 
-International Organization for Standardization. (2022). *ISO/IEC/IEEE 42010:2022 software, systems and enterprise—Architecture description*. https://www.iso.org/standard/74393.html
-
 Internet Engineering Task Force. (2022). *HTTP/1.1* (RFC 9112). https://www.rfc-editor.org/rfc/rfc9112
 
 Internet Engineering Task Force. (2024). *Universally unique IDentifiers (UUIDs)* (RFC 9562). https://www.rfc-editor.org/rfc/rfc9562
@@ -53,6 +57,8 @@ Korea Legislation Research Institute. (2024b). *Income Tax Act* [Unofficial tran
 Korea Legislation Research Institute. (2024a). *Value-Added Tax Act* [Unofficial translation]. https://elaw.klri.re.kr/eng_service/lawView.do?hseq=53110&lang=ENG
 
 National Institute of Standards and Technology. (2015). *Secure Hash Standard (SHS)* (FIPS PUB 180-4). https://doi.org/10.6028/NIST.FIPS.180-4
+
+National Institute of Standards and Technology. (2020, updated 2025). *Security and privacy controls for information systems and organizations* (NIST SP 800-53 Rev. 5, Update 1), AC-5 Separation of Duties. https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final
 
 National Institute of Standards and Technology. (2023, March 7). *Decision to revise FIPS 180-4, Secure Hash Standard (SHS)*. https://csrc.nist.gov/news/2023/decision-to-revise-fips-180-4
 
@@ -81,6 +87,10 @@ PostgreSQL Global Development Group. (2026j). *PostgreSQL 18 documentation: Bina
 PostgreSQL Global Development Group. (2026k). *PostgreSQL 18 documentation: CREATE TRIGGER*. https://www.postgresql.org/docs/18/sql-createtrigger.html
 
 PostgreSQL Global Development Group. (2026l). *PostgreSQL 18 documentation: Transaction isolation*. https://www.postgresql.org/docs/18/transaction-iso.html
+
+PostgreSQL Global Development Group. (2026m). *PostgreSQL 18 documentation: SET TRANSACTION*. https://www.postgresql.org/docs/18/sql-set-transaction.html
+
+PostgreSQL Global Development Group. (2026n). *PostgreSQL 18 documentation: Row security policies*. https://www.postgresql.org/docs/18/ddl-rowsecurity.html
 
 SPDX Workgroup. (n.d.). *SPDX specifications*. https://spdx.dev/use/specifications/
 
