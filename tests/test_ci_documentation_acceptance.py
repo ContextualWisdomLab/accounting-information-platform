@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 _MAPPING_KEY_PATTERN = re.compile(
     r"""(?mx)
     (?:^[ \t]+(?:\?[ \t]+)?|[{,][ \t]*(?:\?[ \t]+)?)
+    (?:&[^ \t\r\n]+[ \t]+)?
     (?P<key>
         "(?:\\.|[^"\\])*"
         |
