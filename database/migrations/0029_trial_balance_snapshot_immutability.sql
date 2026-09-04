@@ -63,6 +63,18 @@ BEGIN
             USING ERRCODE = 'check_violation';
     END IF;
 
+    IF EXISTS (
+        SELECT 1
+          FROM accounting_reporting.trial_balance_snapshot
+         WHERE trial_balance_snapshot.tenant_account_id = NEW.tenant_account_id
+           AND trial_balance_snapshot.accounting_book_id = NEW.accounting_book_id
+           AND trial_balance_snapshot.fiscal_period_id = NEW.fiscal_period_id
+    ) THEN
+        RAISE EXCEPTION
+            'trial balance snapshot population already occupies this book-period (trial_balance_snapshot_population_conflict)'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
     RETURN NEW;
 END;
 $$;
