@@ -8,9 +8,13 @@
 
 An exact hard-close replay returns the existing snapshot and writes no second snapshot, closing journal, or close event. A `hard_closed` period cannot transition back to `soft_closed`. Soft-close replay remains snapshot-free.
 
+The retained hard-close population is one snapshot per tenant/accounting-book/fiscal-period authority scope. Migration `0029_trial_balance_snapshot_immutability.sql` serializes snapshot admission on the same `accounting_book_period_control` row used by close. Once a snapshot population occupies that scope, a second snapshot is rejected with `trial_balance_snapshot_population_conflict`. This is deliberately fail-closed: if raw or legacy SQL has inserted a snapshot before the canonical hard-close transaction, AIS does not silently adopt that row or create a later row and select whichever timestamp sorts last. The hard-close transaction fails and leaves the book-period non-hard-closed until the conflicting retained evidence is resolved through an audited repair.
+
 ## Consequences
 
 Controllers close books through the posting adapter instead of a raw status update. Ordinary posting is rejected for every non-open period. The database insert guard in `0005_closed_period_guard.sql` permits only purpose-limited AIS close/adjust/reversal writes while a period is `soft_closed`; every insert is rejected once the period is `hard_closed`. The caller-controlled `accounting_core.journal_write_role` GUC is classification metadata, not sufficient authorization by itself.
+
+Migration `0029_trial_balance_snapshot_immutability.sql` also rejects UPDATE or DELETE of retained snapshot headers and lines and rejects population extension after hard close. Header and line admission lock the exact tenant/book/period authority row before evaluating status. The single-population check is evaluated under that lock, so concurrent snapshot creation cannot race around the invariant. Pre-migration history is retained rather than rewritten and is not retroactively attested as canonical solely because the guard was installed.
 
 The former snapshot-on-soft-close and snapshot-reuse-on-upgrade wording in this ADR is superseded by ADR 0023. Operational and reporting code must therefore treat the hard-close snapshot as the only persisted post-close trial-balance population and must never infer that a soft-close created one.
 
