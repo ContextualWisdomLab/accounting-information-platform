@@ -163,6 +163,20 @@ class AccountingDocumentationCiAcceptanceTests(unittest.TestCase):
                     "Accounting Foundation CI acceptance",
                 )
 
+    def test_path_filter_detection_rejects_explicit_mapping_keys(self) -> None:
+        """Explicit YAML mapping-key syntax cannot hide path-filter keys."""
+        for trigger_block in (
+            "    ? paths\n    : ['src/**']\n",
+            "    ? 'paths-ignore'\n    : ['docs/**', '*.md']\n",
+            '    ? "pa\\u0074hs"\n    : ["src/**"]\n',
+        ):
+            with self.subTest(trigger_block=trigger_block):
+                self.assertIsNotNone(
+                    PATH_FILTER.search(trigger_block),
+                    "explicit YAML mapping keys would let documentation bypass Accounting "
+                    "Foundation CI acceptance",
+                )
+
     def test_accounting_ci_does_not_ignore_documentation_changes(self) -> None:
         """Docs and Markdown changes must not bypass repository accounting validation."""
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
