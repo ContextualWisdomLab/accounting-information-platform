@@ -30,7 +30,7 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
     for forward_migration_path in forward_migration_paths:
         if not forward_migration_path.is_file():
             raise AccountingValidationError(
-                "Required accounting authority migration is missing at "
+                "Required reconciliation authority migration is missing at "
                 f"{forward_migration_path}. Restore the checked-in migration chain, then retry."
             )
 
@@ -44,7 +44,7 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
                 connection.execute(forward_migration_path.read_text(encoding="utf-8"))
     except Exception as error:
         raise AccountingValidationError(
-            "Accounting authority migration failed. Inspect the PostgreSQL error, restore "
+            "Reconciliation authority migration failed. Inspect the PostgreSQL error, restore "
             "a clean database, then retry the complete foundation migration."
         ) from error
 
@@ -52,7 +52,7 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
 # A large integration-test and operator surface historically imports the loader
 # from persistence directly. Keep that compatibility path on the complete-chain
 # installer so no supported install can stop before the current database-owned
-# reconciliation and period-close authority boundaries.
+# reconciliation authority and exception-resolution boundaries.
 _persistence.apply_foundation_migration = apply_foundation_migration
 
 
