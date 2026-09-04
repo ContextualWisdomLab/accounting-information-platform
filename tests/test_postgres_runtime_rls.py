@@ -141,6 +141,29 @@ class PostgresRuntimeRlsTests(unittest.TestCase):
                     sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(role_name))
                 )
 
+    def test_restricted_runtime_cannot_invoke_lifecycle_lock_helpers(self) -> None:
+        """Schema usage alone never grants the SECURITY DEFINER lifecycle lock capability."""
+        role_name = f"accounting_runtime_{uuid.uuid4().hex[:10]}"
+        password = f"AisRuntime{uuid.uuid4().hex}"
+        self._create_runtime_role(role_name, password, self.case.tenant_id)
+        self.addCleanup(self._drop_runtime_role, role_name)
+        runtime_url = self._runtime_database_url(role_name, password)
+
+        for function_name in (
+            "acquire_reconciliation_lifecycle_session",
+            "release_reconciliation_lifecycle_session",
+        ):
+            with self.subTest(function=function_name):
+                with psycopg.connect(runtime_url) as connection:
+                    with self.assertRaises(psycopg.errors.InsufficientPrivilege):
+                        connection.execute(
+                            sql.SQL("SELECT accounting_core.{}(%s, %s)").format(
+                                sql.Identifier(function_name)
+                            ),
+                            (self.case.policy.tenant_reference, uuid.uuid4()),
+                        )
+                    connection.rollback()
+
     def test_restricted_runtime_login_posts_same_tenant_and_cannot_rebind_other_tenant(self) -> None:
         """A least-privilege runtime posts its tenant and cannot self-authorize another tenant."""
         other = posting.PostgresPostingTests("setUp")
