@@ -43,6 +43,8 @@ DECLARE
     tenant_id uuid;
     lifecycle_scope text;
     current_backend_start timestamptz;
+    existing_lease boolean;
+    existing_session_lock boolean;
 BEGIN
     SELECT tenant.tenant_account_id
     INTO tenant_id
@@ -63,24 +65,12 @@ BEGIN
     lifecycle_scope :=
         'reconciliation_run_lifecycle:' || reconciliation_run_id_input::text;
 
-    -- This call is the serialization point. It may wait, but the lease is only
-    -- recorded after the lock is granted. The caller must commit this
-    -- acquisition transaction before starting authority reads.
-    PERFORM pg_advisory_lock(
-        hashtext(tenant_reference_input),
-        hashtext(lifecycle_scope)
-    );
-
     SELECT activity.backend_start
     INTO current_backend_start
     FROM pg_catalog.pg_stat_activity AS activity
     WHERE activity.pid = pg_backend_pid();
 
     IF current_backend_start IS NULL THEN
-        PERFORM pg_advisory_unlock(
-            hashtext(tenant_reference_input),
-            hashtext(lifecycle_scope)
-        );
         RAISE EXCEPTION
             'reconciliation lifecycle backend identity is unavailable (reconciliation_lifecycle_session_lock_scope)'
             USING ERRCODE = '55000';
@@ -97,30 +87,76 @@ BEGIN
           AND activity.backend_start = lease.backend_start
     );
 
-    INSERT INTO accounting_core.reconciliation_lifecycle_session_lease (
-        backend_pid,
-        backend_start,
-        tenant_account_id,
-        reconciliation_run_id,
-        acquisition_transaction_id,
-        acquired_at
+    SELECT EXISTS (
+        SELECT 1
+        FROM accounting_core.reconciliation_lifecycle_session_lease AS lease
+        WHERE lease.backend_pid = pg_backend_pid()
+          AND lease.backend_start = current_backend_start
+          AND lease.tenant_account_id = tenant_id
+          AND lease.reconciliation_run_id = reconciliation_run_id_input
     )
-    VALUES (
-        pg_backend_pid(),
-        current_backend_start,
-        tenant_id,
-        reconciliation_run_id_input,
-        pg_current_xact_id(),
-        clock_timestamp()
+    INTO existing_lease;
+
+    -- Session advisory locks stack on repeated acquisition by the same backend.
+    -- Take the matching transaction lock first, then normalize this backend's
+    -- session hold to exactly one while the xact lock prevents any other backend
+    -- from entering the lifecycle key during the brief targeted unlock/relock.
+    -- If the backend still held a previously leased session lock, keep the older
+    -- committed lease so a retry cannot move the freshness boundary forward.
+    -- If the lock had been released (or no lease existed), record this transaction
+    -- as a new acquisition so a stale snapshot in this same transaction fails the
+    -- transition prerequisite.
+    PERFORM pg_advisory_xact_lock(
+        hashtext(tenant_reference_input),
+        hashtext(lifecycle_scope)
+    );
+
+    SELECT pg_advisory_unlock(
+        hashtext(tenant_reference_input),
+        hashtext(lifecycle_scope)
     )
-    ON CONFLICT (
-        backend_pid,
-        backend_start,
-        tenant_account_id,
-        reconciliation_run_id
-    ) DO UPDATE
-    SET acquisition_transaction_id = EXCLUDED.acquisition_transaction_id,
-        acquired_at = EXCLUDED.acquired_at;
+    INTO existing_session_lock;
+
+    IF existing_session_lock THEN
+        WHILE pg_advisory_unlock(
+            hashtext(tenant_reference_input),
+            hashtext(lifecycle_scope)
+        ) LOOP
+            NULL;
+        END LOOP;
+    END IF;
+
+    PERFORM pg_advisory_lock(
+        hashtext(tenant_reference_input),
+        hashtext(lifecycle_scope)
+    );
+
+    IF NOT (existing_lease AND existing_session_lock) THEN
+        INSERT INTO accounting_core.reconciliation_lifecycle_session_lease (
+            backend_pid,
+            backend_start,
+            tenant_account_id,
+            reconciliation_run_id,
+            acquisition_transaction_id,
+            acquired_at
+        )
+        VALUES (
+            pg_backend_pid(),
+            current_backend_start,
+            tenant_id,
+            reconciliation_run_id_input,
+            pg_current_xact_id(),
+            clock_timestamp()
+        )
+        ON CONFLICT (
+            backend_pid,
+            backend_start,
+            tenant_account_id,
+            reconciliation_run_id
+        ) DO UPDATE
+        SET acquisition_transaction_id = EXCLUDED.acquisition_transaction_id,
+            acquired_at = EXCLUDED.acquired_at;
+    END IF;
 END;
 $$;
 
