@@ -229,5 +229,125 @@ class TrialBalanceSnapshotImmutabilityPostgresTests(unittest.TestCase):
             connection.rollback()
 
 
+class TrialBalanceSnapshotPreCloseAuthorityPostgresTests(unittest.TestCase):
+    """Fail hard close when retained snapshot evidence already occupies the book-period."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        """Install the same production migration chain used by posting integration tests."""
+        posting.PostgresPostingTests.setUpClass()
+
+    def setUp(self) -> None:
+        """Leave one posted book-period soft-closed before the hard-close authority step."""
+        self.case = posting.PostgresPostingTests("setUp")
+        self.case.setUp()
+        self.addCleanup(self.case.doCleanups)
+        self.addCleanup(self.case.tearDown)
+        self.case.ledger.post(self.case._two_line_proposal(), self.case.policy)
+        self.case.ledger.close_fiscal_period(
+            self.case.policy.legal_entity_reference,
+            self.case.policy.accounting_book_reference,
+            "2026-08",
+            "KRW",
+            period_status_code="soft_closed",
+            idempotency_key=f"{self.case.policy.tenant_reference}:snapshot-preclose:soft",
+        )
+
+    def test_preexisting_future_snapshot_cannot_become_hard_close_authority(self) -> None:
+        """A forged pre-close row must make hard close fail closed instead of becoming latest evidence."""
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            scope = connection.execute(
+                """
+                SELECT legal_entity_record.legal_entity_id,
+                       accounting_book.accounting_book_id,
+                       fiscal_period.fiscal_period_id
+                FROM accounting_core.legal_entity_record
+                JOIN accounting_core.accounting_book
+                  ON accounting_book.tenant_account_id = legal_entity_record.tenant_account_id
+                 AND accounting_book.legal_entity_id = legal_entity_record.legal_entity_id
+                JOIN accounting_core.fiscal_period
+                  ON fiscal_period.tenant_account_id = legal_entity_record.tenant_account_id
+                WHERE legal_entity_record.tenant_account_id = %s
+                  AND legal_entity_record.legal_entity_code = %s
+                  AND accounting_book.book_name = %s
+                  AND fiscal_period.period_code = '2026-08'
+                """,
+                (
+                    self.case.tenant_id,
+                    self.case.policy.legal_entity_reference,
+                    self.case.policy.accounting_book_reference,
+                ),
+            ).fetchone()
+            self.assertIsNotNone(scope)
+            assert scope is not None
+            legal_entity_id, accounting_book_id, fiscal_period_id = scope
+            connection.execute(
+                """
+                INSERT INTO accounting_reporting.trial_balance_snapshot (
+                    tenant_account_id,
+                    legal_entity_id,
+                    accounting_book_id,
+                    fiscal_period_id,
+                    snapshot_currency_code,
+                    snapshot_generated_at,
+                    source_journal_count,
+                    source_payload_hash,
+                    close_idempotency_key
+                )
+                VALUES (%s, %s, %s, %s, 'KRW', '2099-01-01T00:00:00Z', 0, %s, %s)
+                """,
+                (
+                    self.case.tenant_id,
+                    legal_entity_id,
+                    accounting_book_id,
+                    fiscal_period_id,
+                    "sha256:" + "7" * 64,
+                    f"{self.case.policy.tenant_reference}:snapshot-preclose:forged",
+                ),
+            )
+            connection.commit()
+
+        with self.assertRaisesRegex(
+            psycopg.errors.CheckViolation,
+            "trial_balance_snapshot_population_conflict",
+        ):
+            self.case.ledger.close_fiscal_period(
+                self.case.policy.legal_entity_reference,
+                self.case.policy.accounting_book_reference,
+                "2026-08",
+                "KRW",
+                period_status_code="hard_closed",
+                idempotency_key=f"{self.case.policy.tenant_reference}:snapshot-preclose:hard",
+            )
+
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            period_state, snapshot_count = connection.execute(
+                """
+                SELECT accounting_book_period_control.period_status_code,
+                       (
+                           SELECT count(*)
+                           FROM accounting_reporting.trial_balance_snapshot
+                           WHERE trial_balance_snapshot.tenant_account_id = %s
+                             AND trial_balance_snapshot.accounting_book_id = %s
+                             AND trial_balance_snapshot.fiscal_period_id = %s
+                       )
+                FROM accounting_core.accounting_book_period_control
+                WHERE accounting_book_period_control.tenant_account_id = %s
+                  AND accounting_book_period_control.accounting_book_id = %s
+                  AND accounting_book_period_control.fiscal_period_id = %s
+                """,
+                (
+                    self.case.tenant_id,
+                    accounting_book_id,
+                    fiscal_period_id,
+                    self.case.tenant_id,
+                    accounting_book_id,
+                    fiscal_period_id,
+                ),
+            ).fetchone()
+        self.assertEqual(period_state, "soft_closed")
+        self.assertEqual(snapshot_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
