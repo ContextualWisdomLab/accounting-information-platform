@@ -50,6 +50,18 @@ class FinancialReportSourceRegistryContracts(unittest.TestCase):
             ),
         )
 
+    def test_report_run_overwrites_caller_authority_fields(self) -> None:
+        """Currency, period state, cutoff, and initial lifecycle come from AIS/database state."""
+        for assignment in (
+            "NEW.reporting_currency_code := book_currency_value",
+            "NEW.source_period_status_code := period_status_value",
+            "NEW.knowledge_cutoff_at := clock_timestamp()",
+            "NEW.run_status_code := 'collecting_sources'",
+        ):
+            with self.subTest(assignment=assignment):
+                self.assertIn(assignment, self.migration)
+        self.assertNotIn("'source_bound'", self.migration)
+
     def test_report_source_requires_an_existing_trial_balance_snapshot(self) -> None:
         """A source row must reference AIS snapshot evidence rather than a supplied digest alone."""
         self.assertIn(
@@ -102,6 +114,7 @@ class FinancialReportSourceRegistryContracts(unittest.TestCase):
                 self.assertIn(column_name, self.migration)
         self.assertIn("financial_report_source_scope_guard", self.migration)
         self.assertIn("source snapshot scope does not match financial report run", self.migration)
+        self.assertIn("source snapshot is newer than the report knowledge cutoff", self.migration)
 
     def test_registry_cannot_claim_validation_approval_or_publication(self) -> None:
         """This source-authority slice must not smuggle later workflow authority into the schema."""
