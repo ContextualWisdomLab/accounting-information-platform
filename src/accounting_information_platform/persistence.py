@@ -1663,7 +1663,7 @@ class PostgresPostingLedger:
             bucket = journals.setdefault(
                 str(journal_reference),
                 {
-                    "idempotency_key": str(bucket["idempotency_key"]) if False else str(idempotency_key),
+                    "idempotency_key": str(idempotency_key),
                     "debit_roles": set(),
                     "credit_roles": set(),
                     "unapplied_debit_amount": Decimal("0"),
