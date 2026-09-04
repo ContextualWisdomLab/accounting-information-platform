@@ -17,6 +17,7 @@ _FACT_PATTERN = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$")
 _CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 _XML_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9._-]*$")
 _HASH_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+_INVALID_PERCENT_ENCODING_PATTERN = re.compile(r"%(?![0-9A-Fa-f]{2})")
 _NUMERIC_MAX_INTEGRAL_DIGITS = 32
 _NUMERIC_MAX_FRACTIONAL_DIGITS = 6
 
@@ -76,7 +77,11 @@ def _xml_text(text_value: str, field_name: str) -> None:
 def _absolute_uri(raw_value: object, field_name: str) -> str:
     """Require an XML-safe absolute HTTP, HTTPS, or URN identifier."""
     uri_text = _required_text(raw_value, field_name)
-    if any(character.isspace() for character in uri_text):
+    if (
+        any(character.isspace() for character in uri_text)
+        or "\\" in uri_text
+        or _INVALID_PERCENT_ENCODING_PATTERN.search(uri_text) is not None
+    ):
         raise AccountingValidationError(f"{field_name} must be an absolute URI")
     try:
         parsed_uri = urlparse(uri_text)
