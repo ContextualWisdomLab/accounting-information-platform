@@ -26,6 +26,9 @@ _MAPPING_KEY_PATTERN = re.compile(
     )
     """
 )
+_EVENT_ALIAS_PATTERN = re.compile(
+    r"(?m)^[ \t]*\*(?P<alias>[A-Za-z0-9_-]+)(?=[ \t]*(?:#.*)?$)"
+)
 _SIMPLE_YAML_ESCAPES = {
     "0": "\0",
     "a": "\a",
@@ -92,11 +95,14 @@ def _decode_yaml_mapping_key(raw_key: str) -> str:
 
 
 class _PathFilterDetector:
-    """Find semantic paths/paths-ignore YAML keys without a YAML dependency."""
+    """Find path filters or event aliases that can hide them without a YAML dependency."""
 
     @staticmethod
     def search(trigger_block: str) -> re.Match[str] | None:
-        """Return the first mapping key that semantically names a path filter."""
+        """Return the first path-filter key or fail-closed event alias."""
+        alias_match = _EVENT_ALIAS_PATTERN.search(trigger_block)
+        if alias_match is not None:
+            return alias_match
         for match in _MAPPING_KEY_PATTERN.finditer(trigger_block):
             if _decode_yaml_mapping_key(match.group("key")) in {
                 "paths",
@@ -223,8 +229,8 @@ class AccountingDocumentationCiAcceptanceTests(unittest.TestCase):
             self.assertIsNone(
                 PATH_FILTER.search(trigger_block),
                 "Accounting Foundation CI pull_request/push triggers must not define "
-                "paths or paths-ignore filters; authority-bearing documentation must "
-                "receive the same exact-head acceptance as source changes.",
+                "paths or paths-ignore filters or opaque event aliases; authority-bearing "
+                "documentation must receive the same exact-head acceptance as source changes.",
             )
 
 
