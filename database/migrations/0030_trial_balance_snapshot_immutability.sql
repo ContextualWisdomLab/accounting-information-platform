@@ -50,6 +50,7 @@ AS $$
 DECLARE
     period_status_value text;
     journal_write_role_value text;
+    close_command_lock_held boolean;
 BEGIN
     SELECT accounting_book_period_control.period_status_code
       INTO period_status_value
@@ -76,9 +77,47 @@ BEGIN
         ''
     );
 
+    -- The hard-close command always acquires this tenant/book/period transaction
+    -- advisory lock before assembling close evidence. The lock remains present even
+    -- when zero net revenue/expense means no period-closing journal is emitted, so
+    -- snapshot admission must not depend on an optional journal INSERT side effect.
+    SELECT EXISTS (
+        SELECT 1
+          FROM pg_catalog.pg_locks AS held_lock
+          JOIN accounting_core.tenant_account
+            ON tenant_account.tenant_account_id = NEW.tenant_account_id
+          JOIN accounting_core.accounting_book
+            ON accounting_book.tenant_account_id = NEW.tenant_account_id
+           AND accounting_book.accounting_book_id = NEW.accounting_book_id
+          JOIN accounting_core.fiscal_period
+            ON fiscal_period.tenant_account_id = NEW.tenant_account_id
+           AND fiscal_period.fiscal_period_id = NEW.fiscal_period_id
+         WHERE held_lock.locktype = 'advisory'
+           AND held_lock.pid = pg_backend_pid()
+           AND held_lock.database = (
+                SELECT pg_database.oid
+                  FROM pg_catalog.pg_database
+                 WHERE pg_database.datname = current_database()
+           )
+           AND held_lock.mode = 'ExclusiveLock'
+           AND held_lock.granted
+           AND held_lock.objsubid = 2
+           AND held_lock.classid::bigint = (
+                hashtext(tenant_account.tenant_account_code)::bigint & 4294967295
+           )
+           AND held_lock.objid::bigint = (
+                hashtext(
+                    'period:' || accounting_book.book_name || ':' || fiscal_period.period_code
+                )::bigint & 4294967295
+           )
+    ) INTO close_command_lock_held;
+
     IF period_status_value <> 'soft_closed'
-       OR journal_write_role_value IS DISTINCT FROM 'period_closing'
        OR NOT pg_has_role(session_user, 'accounting_closing_writer', 'MEMBER')
+       OR (
+            journal_write_role_value IS DISTINCT FROM 'period_closing'
+            AND NOT close_command_lock_held
+       )
     THEN
         RAISE EXCEPTION
             'trial balance snapshot creation requires the purpose-limited hard-close writer (trial_balance_snapshot_authority_required)'
