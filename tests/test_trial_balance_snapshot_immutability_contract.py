@@ -1,4 +1,4 @@
-"""Static contracts for the hard-close trial-balance immutability migrations."""
+"""Static contracts for the hard-close trial-balance snapshot immutability migrations."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from accounting_information_platform import AccountingValidationError, apply_fou
 
 
 ROOT = Path(__file__).resolve().parents[1]
+PERSISTENCE = ROOT / "src/accounting_information_platform/persistence.py"
 INDEX_MIGRATION = (
     ROOT / "database/migrations/0029_trial_balance_snapshot_population_unique_index.sql"
 )
@@ -142,6 +143,21 @@ class TrialBalanceSnapshotImmutabilityContractTests(unittest.TestCase):
             migration,
         )
         self.assertIn("trial_balance_snapshot_authority_required", migration)
+
+    def test_close_command_and_snapshot_guard_share_resolved_book_lock_identity(self) -> None:
+        """The application must acquire the same resolved book-id lock inspected by PostgreSQL."""
+        source = PERSISTENCE.read_text(encoding="utf-8")
+        close_start = source.index("    def close_fiscal_period(")
+        close_end = source.index("    def open_fiscal_period(", close_start)
+        close_source = source[close_start:close_end]
+        book_resolution = "book_id, reporting_currency_code = self._require_book_for_close("
+        canonical_lock = 'connection, f"period:{book_id}:{period_code}"'
+        caller_lock = 'connection, f"period:{accounting_book_reference}:{period_code}"'
+
+        self.assertIn(book_resolution, close_source)
+        self.assertIn(canonical_lock, close_source)
+        self.assertNotIn(caller_lock, close_source)
+        self.assertLess(close_source.index(book_resolution), close_source.index(canonical_lock))
 
     def test_snapshot_header_system_time_is_database_owned(self) -> None:
         """Even an admitted closing writer cannot select retained snapshot chronology."""
