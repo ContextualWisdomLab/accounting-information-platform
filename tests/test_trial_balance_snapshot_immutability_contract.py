@@ -1,4 +1,4 @@
-"""Static contracts for the hard-close trial-balance immutability migration."""
+"""Static contracts for the hard-close trial-balance immutability migrations."""
 
 from __future__ import annotations
 
@@ -10,18 +10,21 @@ from accounting_information_platform import AccountingValidationError, apply_fou
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MIGRATION = ROOT / "database/migrations/0029_trial_balance_snapshot_immutability.sql"
+INDEX_MIGRATION = (
+    ROOT / "database/migrations/0029_trial_balance_snapshot_population_unique_index.sql"
+)
+IMMUTABILITY_MIGRATION = ROOT / "database/migrations/0030_trial_balance_snapshot_immutability.sql"
 
 
 class TrialBalanceSnapshotImmutabilityContractTests(unittest.TestCase):
-    """Keep the migration installed and its database-owned serialization boundary reviewable."""
+    """Keep the migration chain and database-owned serialization boundary reviewable."""
 
-    def test_canonical_installer_fails_closed_when_immutability_migration_is_missing(self) -> None:
-        """A supported install may not stop before immutable hard-close snapshot evidence."""
+    def test_canonical_installer_fails_closed_when_snapshot_migration_is_missing(self) -> None:
+        """A supported install may not stop before the complete hard-close snapshot boundary."""
         original_is_file = Path.is_file
 
         def is_file(path: Path) -> bool:
-            if path.name == MIGRATION.name:
+            if path.name in {INDEX_MIGRATION.name, IMMUTABILITY_MIGRATION.name}:
                 return False
             return original_is_file(path)
 
@@ -32,9 +35,35 @@ class TrialBalanceSnapshotImmutabilityContractTests(unittest.TestCase):
                     ROOT / "database/migrations/0001_accounting_foundation.sql",
                 )
 
+    def test_population_unique_index_is_built_without_blocking_writes(self) -> None:
+        """The large-table uniqueness proof must be built concurrently outside a transaction."""
+        index_migration = INDEX_MIGRATION.read_text(encoding="utf-8")
+        self.assertIn(
+            "CREATE UNIQUE INDEX CONCURRENTLY trial_balance_snapshot_one_population_per_book_period",
+            index_migration,
+        )
+        self.assertIn(
+            "ON accounting_reporting.trial_balance_snapshot "
+            "(tenant_account_id, accounting_book_id, fiscal_period_id)",
+            index_migration,
+        )
+        self.assertNotIn("BEGIN;", index_migration)
+        self.assertNotIn("COMMIT;", index_migration)
+
+        immutability_migration = IMMUTABILITY_MIGRATION.read_text(encoding="utf-8")
+        self.assertIn(
+            "ADD CONSTRAINT trial_balance_snapshot_one_population_per_book_period",
+            immutability_migration,
+        )
+        self.assertIn(
+            "UNIQUE USING INDEX trial_balance_snapshot_one_population_per_book_period",
+            immutability_migration,
+        )
+        self.assertNotIn("CREATE UNIQUE INDEX", immutability_migration)
+
     def test_population_guards_serialize_on_book_period_authority(self) -> None:
         """Snapshot and line admission must lock the book-period state they authorize."""
-        migration = MIGRATION.read_text(encoding="utf-8")
+        migration = IMMUTABILITY_MIGRATION.read_text(encoding="utf-8")
         self.assertIn("trial_balance_snapshot_population_guard", migration)
         self.assertIn("trial_balance_line_population_guard", migration)
         self.assertIn("FOR UPDATE;", migration)
@@ -57,7 +86,7 @@ class TrialBalanceSnapshotImmutabilityContractTests(unittest.TestCase):
 
     def test_book_period_accepts_at_most_one_snapshot_population(self) -> None:
         """Visible and stale snapshots must both be unable to create a second population."""
-        migration = MIGRATION.read_text(encoding="utf-8")
+        migration = IMMUTABILITY_MIGRATION.read_text(encoding="utf-8")
         self.assertIn("trial_balance_snapshot_population_conflict", migration)
         self.assertIn(
             "trial_balance_snapshot.accounting_book_id = NEW.accounting_book_id",
@@ -67,18 +96,10 @@ class TrialBalanceSnapshotImmutabilityContractTests(unittest.TestCase):
             "trial_balance_snapshot.fiscal_period_id = NEW.fiscal_period_id",
             migration,
         )
-        self.assertIn(
-            "ADD CONSTRAINT trial_balance_snapshot_one_population_per_book_period",
-            migration,
-        )
-        self.assertIn(
-            "UNIQUE (tenant_account_id, accounting_book_id, fiscal_period_id)",
-            migration,
-        )
 
     def test_header_and_line_mutations_are_rejected_at_the_table_boundary(self) -> None:
         """Both retained snapshot levels must reject UPDATE and DELETE before constraints drift."""
-        migration = MIGRATION.read_text(encoding="utf-8")
+        migration = IMMUTABILITY_MIGRATION.read_text(encoding="utf-8")
         self.assertIn("trial_balance_snapshot_immutable_guard", migration)
         self.assertIn("trial_balance_line_immutable_guard", migration)
         self.assertGreaterEqual(migration.count("BEFORE UPDATE OR DELETE"), 2)
