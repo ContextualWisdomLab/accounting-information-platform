@@ -38,7 +38,7 @@ CREATE OR REPLACE FUNCTION accounting_reporting.guard_trial_balance_line_insert(
 RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, accounting_reporting, accounting_core
+SET search_path = pg_catalog, accounting_reporting, accounting_core, pg_temp
 AS $$
 DECLARE
     period_status_value text;
