@@ -14,6 +14,9 @@ INDEX_MIGRATION = (
     ROOT / "database/migrations/0029_trial_balance_snapshot_population_unique_index.sql"
 )
 IMMUTABILITY_MIGRATION = ROOT / "database/migrations/0030_trial_balance_snapshot_immutability.sql"
+VALIDATION_MIGRATION = (
+    ROOT / "database/migrations/0031_trial_balance_line_conservation_validation.sql"
+)
 
 
 class TrialBalanceSnapshotImmutabilityContractTests(unittest.TestCase):
@@ -24,7 +27,11 @@ class TrialBalanceSnapshotImmutabilityContractTests(unittest.TestCase):
         original_is_file = Path.is_file
 
         def is_file(path: Path) -> bool:
-            if path.name in {INDEX_MIGRATION.name, IMMUTABILITY_MIGRATION.name}:
+            if path.name in {
+                INDEX_MIGRATION.name,
+                IMMUTABILITY_MIGRATION.name,
+                VALIDATION_MIGRATION.name,
+            }:
                 return False
             return original_is_file(path)
 
@@ -60,6 +67,32 @@ class TrialBalanceSnapshotImmutabilityContractTests(unittest.TestCase):
             immutability_migration,
         )
         self.assertNotIn("CREATE UNIQUE INDEX", immutability_migration)
+
+    def test_line_conservation_validation_uses_a_separate_autocommit_migration(self) -> None:
+        """Validation must not inherit the stronger ADD-CONSTRAINT lock until transaction commit."""
+        immutability_migration = IMMUTABILITY_MIGRATION.read_text(encoding="utf-8")
+        validation_migration = VALIDATION_MIGRATION.read_text(encoding="utf-8")
+
+        self.assertIn(
+            "ADD CONSTRAINT trial_balance_line_net_balance_conservation",
+            immutability_migration,
+        )
+        self.assertIn(
+            "CHECK (net_balance_amount = debit_total_amount - credit_total_amount)",
+            immutability_migration,
+        )
+        self.assertIn("NOT VALID", immutability_migration)
+        self.assertNotIn(
+            "VALIDATE CONSTRAINT trial_balance_line_net_balance_conservation",
+            immutability_migration,
+        )
+        self.assertEqual(
+            validation_migration.strip(),
+            "ALTER TABLE accounting_reporting.trial_balance_line\n"
+            "    VALIDATE CONSTRAINT trial_balance_line_net_balance_conservation;",
+        )
+        self.assertNotIn("BEGIN;", validation_migration)
+        self.assertNotIn("COMMIT;", validation_migration)
 
     def test_population_guards_serialize_on_book_period_authority(self) -> None:
         """Snapshot and line admission must lock the book-period state they authorize."""
