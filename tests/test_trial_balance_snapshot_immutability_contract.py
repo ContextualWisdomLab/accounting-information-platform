@@ -40,7 +40,11 @@ class TrialBalanceSnapshotImmutabilityContractTests(unittest.TestCase):
         self.assertIn("period_status_value = 'hard_closed'", migration)
         self.assertIn("trial_balance_snapshot_immutable", migration)
         self.assertIn("SECURITY DEFINER", migration)
-        self.assertIn("pg_temp", migration)
+        self.assertIn("SET search_path = pg_catalog, pg_temp", migration)
+        self.assertIn(
+            "REVOKE ALL ON FUNCTION accounting_reporting.guard_trial_balance_line_insert()",
+            migration,
+        )
 
     def test_header_and_line_mutations_are_rejected_at_the_table_boundary(self) -> None:
         """Both retained snapshot levels must reject UPDATE and DELETE before constraints drift."""
