@@ -265,8 +265,16 @@ class TrialBalanceSnapshotPreCloseAuthorityPostgresTests(unittest.TestCase):
                 JOIN accounting_core.accounting_book
                   ON accounting_book.tenant_account_id = legal_entity_record.tenant_account_id
                  AND accounting_book.legal_entity_id = legal_entity_record.legal_entity_id
+                JOIN accounting_core.accounting_book_period_control
+                  ON accounting_book_period_control.tenant_account_id
+                     = accounting_book.tenant_account_id
+                 AND accounting_book_period_control.accounting_book_id
+                     = accounting_book.accounting_book_id
                 JOIN accounting_core.fiscal_period
-                  ON fiscal_period.tenant_account_id = legal_entity_record.tenant_account_id
+                  ON fiscal_period.tenant_account_id
+                     = accounting_book_period_control.tenant_account_id
+                 AND fiscal_period.fiscal_period_id
+                     = accounting_book_period_control.fiscal_period_id
                 WHERE legal_entity_record.tenant_account_id = %s
                   AND legal_entity_record.legal_entity_code = %s
                   AND accounting_book.book_name = %s
