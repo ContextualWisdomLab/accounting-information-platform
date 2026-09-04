@@ -25,11 +25,12 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
         migration_path.parent / "0026_reconciliation_lifecycle_source_payload_identity.sql",
         migration_path.parent / "0027_reconciliation_lifecycle_session_lock_authority.sql",
         migration_path.parent / "0028_reconciliation_lifecycle_capability_privileges.sql",
+        migration_path.parent / "0029_trial_balance_snapshot_immutability.sql",
     )
     for forward_migration_path in forward_migration_paths:
         if not forward_migration_path.is_file():
             raise AccountingValidationError(
-                "Required reconciliation authority migration is missing at "
+                "Required accounting authority migration is missing at "
                 f"{forward_migration_path}. Restore the checked-in migration chain, then retry."
             )
 
@@ -43,7 +44,7 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
                 connection.execute(forward_migration_path.read_text(encoding="utf-8"))
     except Exception as error:
         raise AccountingValidationError(
-            "Reconciliation authority migration failed. Inspect the PostgreSQL error, restore "
+            "Accounting authority migration failed. Inspect the PostgreSQL error, restore "
             "a clean database, then retry the complete foundation migration."
         ) from error
 
@@ -51,7 +52,7 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
 # A large integration-test and operator surface historically imports the loader
 # from persistence directly. Keep that compatibility path on the complete-chain
 # installer so no supported install can stop before the current database-owned
-# reconciliation authority and exception-resolution boundaries.
+# reconciliation and period-close authority boundaries.
 _persistence.apply_foundation_migration = apply_foundation_migration
 
 
