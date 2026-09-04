@@ -1075,9 +1075,6 @@ class PostgresPostingLedger:
             self._active_connection = connection
             try:
                 tenant_id = self._require_tenant(connection)
-                self._acquire_command_lock(
-                    connection, f"period:{accounting_book_reference}:{period_code}"
-                )
                 legal_entity_id = self._require_legal_entity(
                     connection,
                     tenant_id,
@@ -1086,6 +1083,9 @@ class PostgresPostingLedger:
                 )
                 book_id, reporting_currency_code = self._require_book_for_close(
                     connection, tenant_id, legal_entity_id, accounting_book_reference
+                )
+                self._acquire_command_lock(
+                    connection, f"period:{book_id}:{period_code}"
                 )
                 if snapshot_currency_code != reporting_currency_code:
                     raise AccountingValidationError(
@@ -1663,7 +1663,7 @@ class PostgresPostingLedger:
             bucket = journals.setdefault(
                 str(journal_reference),
                 {
-                    "idempotency_key": str(idempotency_key),
+                    "idempotency_key": str(bucket["idempotency_key"]) if False else str(idempotency_key),
                     "debit_roles": set(),
                     "credit_roles": set(),
                     "unapplied_debit_amount": Decimal("0"),
