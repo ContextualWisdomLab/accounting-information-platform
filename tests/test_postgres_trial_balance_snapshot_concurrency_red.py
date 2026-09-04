@@ -75,7 +75,10 @@ class TrialBalanceSnapshotConcurrencyPostgresTests(unittest.TestCase):
         payload_digit: str,
         command_suffix: str,
     ) -> None:
-        """Insert one raw pre-close population candidate for the exact authority scope."""
+        """Insert one purpose-limited pre-close population candidate for the exact scope."""
+        connection.execute(
+            "SELECT set_config('accounting_core.journal_write_role', 'period_closing', true)"
+        )
         connection.execute(
             """
             INSERT INTO accounting_reporting.trial_balance_snapshot (
