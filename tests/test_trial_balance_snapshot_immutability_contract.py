@@ -56,7 +56,7 @@ class TrialBalanceSnapshotImmutabilityContractTests(unittest.TestCase):
         )
 
     def test_book_period_accepts_at_most_one_snapshot_population(self) -> None:
-        """A pre-close row must make canonical hard close fail rather than become later authority."""
+        """Visible and stale snapshots must both be unable to create a second population."""
         migration = MIGRATION.read_text(encoding="utf-8")
         self.assertIn("trial_balance_snapshot_population_conflict", migration)
         self.assertIn(
@@ -65,6 +65,14 @@ class TrialBalanceSnapshotImmutabilityContractTests(unittest.TestCase):
         )
         self.assertIn(
             "trial_balance_snapshot.fiscal_period_id = NEW.fiscal_period_id",
+            migration,
+        )
+        self.assertIn(
+            "ADD CONSTRAINT trial_balance_snapshot_one_population_per_book_period",
+            migration,
+        )
+        self.assertIn(
+            "UNIQUE (tenant_account_id, accounting_book_id, fiscal_period_id)",
             migration,
         )
 
