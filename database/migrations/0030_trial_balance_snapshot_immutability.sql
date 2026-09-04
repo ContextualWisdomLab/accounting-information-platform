@@ -8,15 +8,13 @@ ALTER TABLE accounting_reporting.trial_balance_snapshot
     UNIQUE USING INDEX trial_balance_snapshot_one_population_per_book_period;
 
 -- Retained trial-balance values are accounting evidence, not three independently
--- writable amounts. Add the arithmetic invariant without holding a long validation
--- scan under the initial ALTER TABLE lock, then validate all inherited rows before
--- this migration can commit.
+-- writable amounts. Add the row-local invariant without scanning inherited rows
+-- under this transaction's ADD-CONSTRAINT lock. Migration 0031 validates history
+-- in a separate autocommit statement after this transaction releases its locks.
 ALTER TABLE accounting_reporting.trial_balance_line
     ADD CONSTRAINT trial_balance_line_net_balance_conservation
     CHECK (net_balance_amount = debit_total_amount - credit_total_amount)
     NOT VALID;
-ALTER TABLE accounting_reporting.trial_balance_line
-    VALIDATE CONSTRAINT trial_balance_line_net_balance_conservation;
 
 CREATE OR REPLACE FUNCTION accounting_reporting.reject_trial_balance_snapshot_mutation()
 RETURNS trigger
