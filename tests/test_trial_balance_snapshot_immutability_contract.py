@@ -85,7 +85,7 @@ class TrialBalanceSnapshotImmutabilityContractTests(unittest.TestCase):
         )
 
     def test_snapshot_header_requires_purpose_limited_hard_close_authority(self) -> None:
-        """A caller-controlled GUC cannot by itself create retained close evidence."""
+        """Capability plus close-command context is required; a caller GUC is not authority."""
         migration = IMMUTABILITY_MIGRATION.read_text(encoding="utf-8")
         self.assertIn("period_status_value <> 'soft_closed'", migration)
         self.assertIn(
@@ -94,6 +94,14 @@ class TrialBalanceSnapshotImmutabilityContractTests(unittest.TestCase):
         )
         self.assertIn(
             "pg_has_role(session_user, 'accounting_closing_writer', 'MEMBER')",
+            migration,
+        )
+        self.assertIn("close_command_lock_held", migration)
+        self.assertIn("FROM pg_catalog.pg_locks AS held_lock", migration)
+        self.assertIn("held_lock.objsubid = 2", migration)
+        self.assertIn("held_lock.pid = pg_backend_pid()", migration)
+        self.assertIn(
+            "'period:' || accounting_book.book_name || ':' || fiscal_period.period_code",
             migration,
         )
         self.assertIn("trial_balance_snapshot_authority_required", migration)
