@@ -3,11 +3,11 @@ BEGIN;
 -- Database-owned source authority for financial-report construction.
 --
 -- This migration binds a report run to an AIS tenant, legal entity, accounting
--- book, fiscal period, knowledge cutoff, and one or more retained trial-balance
--- snapshots. It deliberately stops before independent XBRL validation,
--- maker-checker workflow, filing readiness, or regulator/customer receipts.
--- A caller-supplied report proposal or digest cannot satisfy these foreign-key,
--- tenant, period, and snapshot-scope controls.
+-- book, fiscal period, database observation cutoff, and one or more retained
+-- trial-balance snapshots. It deliberately stops before independent XBRL
+-- validation, maker-checker workflow, filing readiness, or regulator/customer
+-- receipts. A caller-supplied report proposal, digest, currency, period status,
+-- cutoff, or status label cannot satisfy these database-owned controls.
 
 CREATE TABLE accounting_reporting.financial_report_run (
     financial_report_run_id uuid PRIMARY KEY DEFAULT uuidv7(),
@@ -22,7 +22,7 @@ CREATE TABLE accounting_reporting.financial_report_run (
     knowledge_cutoff_at timestamptz NOT NULL,
     report_purpose_code text NOT NULL CHECK (btrim(report_purpose_code) <> ''),
     run_status_code text NOT NULL
-        CHECK (run_status_code IN ('collecting_sources', 'source_bound', 'superseded')),
+        CHECK (run_status_code IN ('collecting_sources', 'superseded')),
     recorded_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     FOREIGN KEY (tenant_account_id, legal_entity_id)
         REFERENCES accounting_core.legal_entity_record (
@@ -127,9 +127,12 @@ BEGIN
             USING ERRCODE = '23503';
     END IF;
 
-    -- These values are evidence derived from AIS-owned rows, never caller truth.
+    -- Currency, current period state, observation cutoff, and initial lifecycle
+    -- are database evidence. Caller-supplied values are overwritten before insert.
     NEW.reporting_currency_code := book_currency_value;
     NEW.source_period_status_code := period_status_value;
+    NEW.knowledge_cutoff_at := clock_timestamp();
+    NEW.run_status_code := 'collecting_sources';
     RETURN NEW;
 END;
 $$;
