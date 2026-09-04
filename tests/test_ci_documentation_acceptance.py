@@ -109,7 +109,7 @@ PATH_FILTER = _PathFilterDetector()
 
 
 class AccountingDocumentationCiAcceptanceTests(unittest.TestCase):
-    """Keep documentation changes inside exact-head and integrated-head acceptance.""
+    """Keep documentation changes inside exact-head and integrated-head acceptance."""
 
     def test_path_filter_detection_rejects_inline_yaml_values(self) -> None:
         """Inline path filters must be detected as strongly as block-style filters."""
@@ -178,6 +178,20 @@ class AccountingDocumentationCiAcceptanceTests(unittest.TestCase):
                 self.assertIsNotNone(
                     PATH_FILTER.search(trigger_block),
                     "explicit YAML mapping keys would let documentation bypass Accounting "
+                    "Foundation CI acceptance",
+                )
+
+    def test_path_filter_detection_rejects_anchored_mapping_keys(self) -> None:
+        """YAML node anchors cannot hide a semantic paths or paths-ignore key."""
+        for trigger_block in (
+            "    &path_filter paths: ['src/**']\n",
+            "    &path_filter 'paths-ignore': ['docs/**', '*.md']\n",
+            '    &path_filter "pa\\u0074hs": ["src/**"]\n',
+        ):
+            with self.subTest(trigger_block=trigger_block):
+                self.assertIsNotNone(
+                    PATH_FILTER.search(trigger_block),
+                    "anchored YAML path-filter keys would let documentation bypass Accounting "
                     "Foundation CI acceptance",
                 )
 
