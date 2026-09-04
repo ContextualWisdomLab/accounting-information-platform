@@ -107,7 +107,7 @@ BEGIN
            )
            AND held_lock.objid::bigint = (
                 hashtext(
-                    'period:' || accounting_book.book_name || ':' || fiscal_period.period_code
+                    'period:' || accounting_book.accounting_book_id::text || ':' || fiscal_period.period_code
                 )::bigint & 4294967295
            )
     ) INTO close_command_lock_held;
