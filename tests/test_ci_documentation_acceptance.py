@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 _MAPPING_KEY_PATTERN = re.compile(
     r"""(?mx)
-    (?:^[ \t]+|[{,][ \t]*)
+    (?:^[ \t]+(?:\?[ \t]+)?|[{,][ \t]*(?:\?[ \t]+)?)
     (?P<key>
         "(?:\\.|[^"\\])*"
         |
@@ -18,7 +18,11 @@ _MAPPING_KEY_PATTERN = re.compile(
         |
         [A-Za-z_][A-Za-z0-9_-]*
     )
-    [ \t]*:
+    (?:
+        [ \t]*:
+        |
+        [ \t]*\n[ \t]*:
+    )
     """
 )
 _SIMPLE_YAML_ESCAPES = {
@@ -105,7 +109,7 @@ PATH_FILTER = _PathFilterDetector()
 
 
 class AccountingDocumentationCiAcceptanceTests(unittest.TestCase):
-    """Keep documentation changes inside exact-head and integrated-head acceptance."""
+    """Keep documentation changes inside exact-head and integrated-head acceptance.""
 
     def test_path_filter_detection_rejects_inline_yaml_values(self) -> None:
         """Inline path filters must be detected as strongly as block-style filters."""
