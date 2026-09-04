@@ -124,6 +124,12 @@ BEGIN
 END;
 $$;
 
+-- SECURITY DEFINER functions receive PUBLIC EXECUTE by default. Revoke in the
+-- creation transaction so read-only/schema-usage roles cannot acquire a
+-- tenant/run authority lock as an unintended denial-of-service capability.
+REVOKE ALL ON FUNCTION accounting_core.acquire_reconciliation_lifecycle_session(text, uuid)
+    FROM PUBLIC;
+
 CREATE OR REPLACE FUNCTION accounting_core.release_reconciliation_lifecycle_session(
     tenant_reference_input text,
     reconciliation_run_id_input uuid
@@ -165,6 +171,9 @@ BEGIN
     );
 END;
 $$;
+
+REVOKE ALL ON FUNCTION accounting_core.release_reconciliation_lifecycle_session(text, uuid)
+    FROM PUBLIC;
 
 CREATE OR REPLACE FUNCTION accounting_core.require_reconciliation_lifecycle_session_lock()
 RETURNS trigger
