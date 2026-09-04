@@ -7,8 +7,8 @@ BEGIN;
 -- more retained trial-balance snapshots. It deliberately stops before
 -- independent XBRL validation, maker-checker workflow, filing readiness, or
 -- regulator/customer receipts. A caller-supplied report proposal, digest,
--- currency, period status, cutoff, or status label cannot satisfy these
--- database-owned controls.
+-- currency, period status, cutoff, recording time, or status label cannot
+-- satisfy these database-owned controls.
 
 CREATE TABLE accounting_reporting.financial_report_run (
     financial_report_run_id uuid PRIMARY KEY DEFAULT uuidv7(),
@@ -145,12 +145,13 @@ BEGIN
             USING ERRCODE = '23503';
     END IF;
 
-    -- Currency, current book-period state, observation cutoff, and initial
-    -- lifecycle are database evidence. Caller-supplied values are overwritten
-    -- before insert.
+    -- Currency, current book-period state, observation cutoff, system recording
+    -- time, and initial lifecycle are database evidence. Caller-supplied values
+    -- are overwritten before insert.
     NEW.reporting_currency_code := book_currency_value;
     NEW.source_period_status_code := period_status_value;
     NEW.knowledge_cutoff_at := clock_timestamp();
+    NEW.recorded_at := clock_timestamp();
     NEW.run_status_code := 'collecting_sources';
     RETURN NEW;
 END;
@@ -174,7 +175,8 @@ BEGIN
        OR NEW.reporting_currency_code IS DISTINCT FROM OLD.reporting_currency_code
        OR NEW.source_period_status_code IS DISTINCT FROM OLD.source_period_status_code
        OR NEW.knowledge_cutoff_at IS DISTINCT FROM OLD.knowledge_cutoff_at
-       OR NEW.report_purpose_code IS DISTINCT FROM OLD.report_purpose_code THEN
+       OR NEW.report_purpose_code IS DISTINCT FROM OLD.report_purpose_code
+       OR NEW.recorded_at IS DISTINCT FROM OLD.recorded_at THEN
         RAISE EXCEPTION
             'financial report source scope is immutable; create a new run instead (financial_report_scope_immutable)'
             USING ERRCODE = '23514';
@@ -193,7 +195,8 @@ CREATE TRIGGER financial_report_run_scope_guard
         reporting_currency_code,
         source_period_status_code,
         knowledge_cutoff_at,
-        report_purpose_code
+        report_purpose_code,
+        recorded_at
     ON accounting_reporting.financial_report_run
     FOR EACH ROW
     EXECUTE FUNCTION accounting_reporting.reject_financial_report_run_scope_mutation();
@@ -262,6 +265,8 @@ BEGIN
             USING ERRCODE = '23514';
     END IF;
 
+    -- The source-link recording timestamp is system time, not caller chronology.
+    NEW.recorded_at := clock_timestamp();
     RETURN NEW;
 END;
 $$;
