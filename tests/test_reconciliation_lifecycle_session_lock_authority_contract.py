@@ -58,6 +58,18 @@ class ReconciliationLifecycleSessionLockAuthorityContractTests(unittest.TestCase
             "PostgreSQL trigger-name ordering must run the lock prerequisite first",
         )
 
+    def test_session_lock_helpers_are_not_public_capabilities(self) -> None:
+        """Anonymous database principals cannot acquire or release lifecycle authority locks."""
+        sql = MIGRATION.read_text(encoding="utf-8")
+        self.assertIn(
+            "REVOKE ALL ON FUNCTION accounting_core.acquire_reconciliation_lifecycle_session(text, uuid) FROM PUBLIC;",
+            sql,
+        )
+        self.assertIn(
+            "REVOKE ALL ON FUNCTION accounting_core.release_reconciliation_lifecycle_session(text, uuid) FROM PUBLIC;",
+            sql,
+        )
+
     def test_canonical_installer_requires_session_lock_authority_migration(self) -> None:
         """Supported installs cannot stop before the fresh-transaction authority guard."""
         installer = INSTALLER.read_text(encoding="utf-8")
