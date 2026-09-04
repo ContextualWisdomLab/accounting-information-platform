@@ -85,7 +85,7 @@ class TrialBalanceSnapshotImmutabilityContractTests(unittest.TestCase):
         )
 
     def test_snapshot_header_requires_purpose_limited_hard_close_authority(self) -> None:
-        """Capability plus close-command context is required; a caller GUC is not authority."""
+        """Capability plus the exact application close-command lock is required."""
         migration = IMMUTABILITY_MIGRATION.read_text(encoding="utf-8")
         self.assertIn("period_status_value <> 'soft_closed'", migration)
         self.assertIn(
@@ -101,6 +101,10 @@ class TrialBalanceSnapshotImmutabilityContractTests(unittest.TestCase):
         self.assertIn("held_lock.objsubid = 2", migration)
         self.assertIn("held_lock.pid = pg_backend_pid()", migration)
         self.assertIn(
+            "'period:' || accounting_book.accounting_book_id::text || ':' || fiscal_period.period_code",
+            migration,
+        )
+        self.assertNotIn(
             "'period:' || accounting_book.book_name || ':' || fiscal_period.period_code",
             migration,
         )
