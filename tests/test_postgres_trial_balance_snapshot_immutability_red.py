@@ -109,6 +109,46 @@ class TrialBalanceSnapshotImmutabilityPostgresTests(unittest.TestCase):
                 )
             connection.rollback()
 
+    def test_hard_close_cannot_gain_a_new_snapshot_header(self) -> None:
+        """A later empty snapshot cannot become the newest retained close evidence."""
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            with self.assertRaisesRegex(
+                psycopg.errors.CheckViolation,
+                "trial_balance_snapshot_immutable",
+            ):
+                connection.execute(
+                    """
+                    INSERT INTO accounting_reporting.trial_balance_snapshot (
+                        tenant_account_id,
+                        legal_entity_id,
+                        accounting_book_id,
+                        fiscal_period_id,
+                        snapshot_currency_code,
+                        source_journal_count,
+                        source_payload_hash,
+                        close_idempotency_key
+                    )
+                    SELECT tenant_account_id,
+                           legal_entity_id,
+                           accounting_book_id,
+                           fiscal_period_id,
+                           snapshot_currency_code,
+                           source_journal_count,
+                           %s,
+                           %s
+                    FROM accounting_reporting.trial_balance_snapshot
+                    WHERE tenant_account_id = %s
+                      AND trial_balance_snapshot_id = %s
+                    """,
+                    (
+                        "sha256:" + "8" * 64,
+                        f"{self.case.policy.tenant_reference}:snapshot-freeze:forged",
+                        self.case.tenant_id,
+                        self.snapshot_id,
+                    ),
+                )
+            connection.rollback()
+
     def test_hard_close_snapshot_line_cannot_be_rewritten(self) -> None:
         """A retained account balance cannot be changed after hard close."""
         with psycopg.connect(posting.DATABASE_URL) as connection:
