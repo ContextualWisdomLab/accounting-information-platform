@@ -34,6 +34,13 @@ CREATE TRIGGER trial_balance_line_immutable_guard
     FOR EACH ROW
     EXECUTE FUNCTION accounting_reporting.reject_trial_balance_line_mutation();
 
+-- A row lock does not refresh a transaction's fixed REPEATABLE READ snapshot.
+-- Keep the visible-row diagnostic below, but make the invariant physical too so
+-- a stale transaction cannot admit a second population that its snapshot cannot see.
+ALTER TABLE accounting_reporting.trial_balance_snapshot
+    ADD CONSTRAINT trial_balance_snapshot_one_population_per_book_period
+    UNIQUE (tenant_account_id, accounting_book_id, fiscal_period_id);
+
 CREATE OR REPLACE FUNCTION accounting_reporting.guard_trial_balance_snapshot_insert()
 RETURNS trigger
 LANGUAGE plpgsql
