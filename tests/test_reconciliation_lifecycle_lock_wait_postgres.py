@@ -136,19 +136,30 @@ class ReconciliationLifecycleLockWaitPostgresTests(unittest.TestCase):
         )
 
     @staticmethod
-    def _waiting_advisory_lock_count(backend_pid: int) -> int:
-        """Return advisory waits only for the finalizer backend under test."""
+    def _waiting_lifecycle_lock_count(
+        tenant_reference: str, lifecycle_scope: str
+    ) -> int:
+        """Return ungranted advisory waits for the exact tenant/run lifecycle key."""
         with psycopg.connect(posting.DATABASE_URL) as monitor:
             return int(
                 monitor.execute(
                     """
                     SELECT count(*)
-                    FROM pg_locks
-                    WHERE pid = %s
-                      AND locktype = 'advisory'
-                      AND NOT granted
+                    FROM pg_catalog.pg_locks AS held_lock
+                    WHERE held_lock.locktype = 'advisory'
+                      AND NOT held_lock.granted
+                      AND held_lock.database = (
+                          SELECT database_row.oid
+                          FROM pg_catalog.pg_database AS database_row
+                          WHERE database_row.datname = current_database()
+                      )
+                      AND held_lock.objsubid = 2
+                      AND held_lock.classid::bigint =
+                          (hashtext(%s)::bigint & 4294967295::bigint)
+                      AND held_lock.objid::bigint =
+                          (hashtext(%s)::bigint & 4294967295::bigint)
                     """,
-                    (backend_pid,),
+                    (tenant_reference, lifecycle_scope),
                 ).fetchone()[0]
             )
 
@@ -159,8 +170,6 @@ class ReconciliationLifecycleLockWaitPostgresTests(unittest.TestCase):
         )
         writer_holds_lock = Event()
         release_writer = Event()
-        finalizer_attempted_lifecycle_lock = Event()
-        finalizer_backend_pid: list[int] = []
         outcomes: dict[str, dict[str, object]] = {}
         failures: list[BaseException] = []
         original_lock = PostgresPostingLedger._acquire_command_lock
@@ -168,11 +177,6 @@ class ReconciliationLifecycleLockWaitPostgresTests(unittest.TestCase):
         def gated_lock(
             ledger: PostgresPostingLedger, connection: object, scope: str
         ) -> None:
-            if scope == lifecycle_scope and current_thread().name == "lifecycle-finalizer":
-                # Reading psycopg connection metadata does not execute SQL, so it cannot establish
-                # the REPEATABLE READ snapshot before the lifecycle advisory lock is acquired.
-                finalizer_backend_pid.append(int(connection.info.backend_pid))
-                finalizer_attempted_lifecycle_lock.set()
             original_lock(ledger, connection, scope)
             if scope == lifecycle_scope and current_thread().name == "resolution-writer":
                 writer_holds_lock.set()
@@ -214,19 +218,21 @@ class ReconciliationLifecycleLockWaitPostgresTests(unittest.TestCase):
             self.assertTrue(writer_holds_lock.wait(timeout=10))
             finalizer.start()
             try:
-                self.assertTrue(finalizer_attempted_lifecycle_lock.wait(timeout=10))
                 waiting = False
                 deadline = time.monotonic() + 4
                 while time.monotonic() < deadline:
-                    waiting = self._waiting_advisory_lock_count(
-                        finalizer_backend_pid[0]
+                    waiting = self._waiting_lifecycle_lock_count(
+                        self.fixture.case.policy.tenant_reference,
+                        lifecycle_scope,
                     ) > 0
                     if waiting:
+                        break
+                    if not finalizer.is_alive():
                         break
                     time.sleep(0.05)
                 self.assertTrue(
                     waiting,
-                    "finalizer backend never waited for its run lifecycle advisory lock before opening its authority snapshot",
+                    "finalizer never waited for the exact run lifecycle session lock before opening its authority transaction",
                 )
             finally:
                 release_writer.set()
