@@ -233,6 +233,22 @@ class AccountingDocumentationCiAcceptanceTests(unittest.TestCase):
                 "documentation must receive the same exact-head acceptance as source changes.",
             )
 
+    def test_accounting_ci_only_cancels_superseded_pr_heads(self) -> None:
+        """PR runs share one scoped group while non-PR runs remain isolated."""
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            "group: ${{ github.workflow }}-${{ github.repository }}-"
+            "${{ github.event.pull_request.number || github.run_id }}",
+            workflow,
+        )
+        self.assertIn(
+            "cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+            workflow,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
