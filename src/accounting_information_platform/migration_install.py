@@ -24,6 +24,7 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
         migration_path.parent / "0025_reconciliation_lifecycle_recording_time_authority.sql",
         migration_path.parent / "0026_reconciliation_lifecycle_source_payload_identity.sql",
         migration_path.parent / "0027_reconciliation_lifecycle_session_lock_authority.sql",
+        migration_path.parent / "0028_reconciliation_lifecycle_capability_privileges.sql",
     )
     for forward_migration_path in forward_migration_paths:
         if not forward_migration_path.is_file():
