@@ -49,6 +49,7 @@ SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE
     period_status_value text;
+    book_legal_entity_id uuid;
     journal_write_role_value text;
     close_command_lock_held boolean;
 BEGIN
@@ -63,6 +64,19 @@ BEGIN
     IF period_status_value IS NULL THEN
         RAISE EXCEPTION
             'trial balance snapshot has no matching book-period authority (trial_balance_snapshot_scope_missing)'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    SELECT accounting_book.legal_entity_id
+      INTO book_legal_entity_id
+      FROM accounting_core.accounting_book
+     WHERE accounting_book.tenant_account_id = NEW.tenant_account_id
+       AND accounting_book.accounting_book_id = NEW.accounting_book_id;
+
+    IF book_legal_entity_id IS NOT NULL
+       AND book_legal_entity_id IS DISTINCT FROM NEW.legal_entity_id THEN
+        RAISE EXCEPTION
+            'trial balance snapshot legal entity must own the accounting book (trial_balance_snapshot_book_entity_mismatch)'
             USING ERRCODE = 'check_violation';
     END IF;
 
@@ -161,9 +175,12 @@ SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE
     period_status_value text;
+    snapshot_book_id uuid;
+    chart_account_book_id uuid;
 BEGIN
-    SELECT accounting_book_period_control.period_status_code
-      INTO period_status_value
+    SELECT accounting_book_period_control.period_status_code,
+           trial_balance_snapshot.accounting_book_id
+      INTO period_status_value, snapshot_book_id
       FROM accounting_reporting.trial_balance_snapshot
       JOIN accounting_core.accounting_book_period_control
         ON accounting_book_period_control.tenant_account_id
@@ -180,6 +197,19 @@ BEGIN
     IF period_status_value IS NULL THEN
         RAISE EXCEPTION
             'trial balance snapshot has no matching book-period authority (trial_balance_snapshot_scope_missing)'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    SELECT chart_account.accounting_book_id
+      INTO chart_account_book_id
+      FROM accounting_core.chart_account
+     WHERE chart_account.tenant_account_id = NEW.tenant_account_id
+       AND chart_account.chart_account_id = NEW.chart_account_id;
+
+    IF chart_account_book_id IS NOT NULL
+       AND snapshot_book_id IS DISTINCT FROM chart_account_book_id THEN
+        RAISE EXCEPTION
+            'trial balance line chart account must belong to the snapshot accounting book (trial_balance_line_book_scope_mismatch)'
             USING ERRCODE = 'check_violation';
     END IF;
 
