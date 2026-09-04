@@ -179,6 +179,7 @@ DECLARE
     tenant_id uuid;
     lifecycle_scope text;
     current_backend_start timestamptz;
+    released_session_lock boolean := false;
 BEGIN
     SELECT tenant.tenant_account_id
     INTO tenant_id
@@ -201,10 +202,20 @@ BEGIN
           AND lease.reconciliation_run_id = reconciliation_run_id_input;
     END IF;
 
-    RETURN pg_advisory_unlock(
+    -- PostgreSQL session advisory locks are reentrant and counted per backend.
+    -- A raw or legacy same-backend acquisition can therefore add holds after the
+    -- canonical helper normalized acquisition depth. Drain every session-level
+    -- hold for this exact tenant/run key so one canonical release cannot leave an
+    -- invisible residual blocker. The boolean retains pg_advisory_unlock's public
+    -- meaning: true when this backend held at least one matching session lock.
+    WHILE pg_advisory_unlock(
         hashtext(tenant_reference_input),
         hashtext(lifecycle_scope)
-    );
+    ) LOOP
+        released_session_lock := true;
+    END LOOP;
+
+    RETURN released_session_lock;
 END;
 $$;
 
