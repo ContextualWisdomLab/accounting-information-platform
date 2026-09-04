@@ -3,11 +3,12 @@ BEGIN;
 -- Database-owned source authority for financial-report construction.
 --
 -- This migration binds a report run to an AIS tenant, legal entity, accounting
--- book, fiscal period, database observation cutoff, and one or more retained
--- trial-balance snapshots. It deliberately stops before independent XBRL
--- validation, maker-checker workflow, filing readiness, or regulator/customer
--- receipts. A caller-supplied report proposal, digest, currency, period status,
--- cutoff, or status label cannot satisfy these database-owned controls.
+-- book, book-scoped fiscal period state, database observation cutoff, and one or
+-- more retained trial-balance snapshots. It deliberately stops before
+-- independent XBRL validation, maker-checker workflow, filing readiness, or
+-- regulator/customer receipts. A caller-supplied report proposal, digest,
+-- currency, period status, cutoff, or status label cannot satisfy these
+-- database-owned controls.
 
 CREATE TABLE accounting_reporting.financial_report_run (
     financial_report_run_id uuid PRIMARY KEY DEFAULT uuidv7(),
@@ -43,6 +44,22 @@ CREATE TABLE accounting_reporting.financial_report_run (
     FOREIGN KEY (tenant_account_id, comparison_fiscal_period_id)
         REFERENCES accounting_core.fiscal_period (
             tenant_account_id,
+            fiscal_period_id
+        ),
+    FOREIGN KEY (tenant_account_id, accounting_book_id, fiscal_period_id)
+        REFERENCES accounting_core.accounting_book_period_control (
+            tenant_account_id,
+            accounting_book_id,
+            fiscal_period_id
+        ),
+    FOREIGN KEY (
+        tenant_account_id,
+        accounting_book_id,
+        comparison_fiscal_period_id
+    )
+        REFERENCES accounting_core.accounting_book_period_control (
+            tenant_account_id,
+            accounting_book_id,
             fiscal_period_id
         ),
     UNIQUE (tenant_account_id, financial_report_run_id),
@@ -115,20 +132,22 @@ BEGIN
             USING ERRCODE = '23503';
     END IF;
 
-    SELECT period_record.period_status_code
+    SELECT period_control.period_status_code
       INTO period_status_value
-      FROM accounting_core.fiscal_period AS period_record
-     WHERE period_record.tenant_account_id = NEW.tenant_account_id
-       AND period_record.fiscal_period_id = NEW.fiscal_period_id;
+      FROM accounting_core.accounting_book_period_control AS period_control
+     WHERE period_control.tenant_account_id = NEW.tenant_account_id
+       AND period_control.accounting_book_id = NEW.accounting_book_id
+       AND period_control.fiscal_period_id = NEW.fiscal_period_id;
 
     IF NOT FOUND THEN
         RAISE EXCEPTION
-            'financial report fiscal period does not exist (financial_report_period_invalid)'
+            'financial report accounting-book fiscal period does not exist (financial_report_book_period_invalid)'
             USING ERRCODE = '23503';
     END IF;
 
-    -- Currency, current period state, observation cutoff, and initial lifecycle
-    -- are database evidence. Caller-supplied values are overwritten before insert.
+    -- Currency, current book-period state, observation cutoff, and initial
+    -- lifecycle are database evidence. Caller-supplied values are overwritten
+    -- before insert.
     NEW.reporting_currency_code := book_currency_value;
     NEW.source_period_status_code := period_status_value;
     NEW.knowledge_cutoff_at := clock_timestamp();
