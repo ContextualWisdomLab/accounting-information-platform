@@ -84,6 +84,25 @@ class TrialBalanceSnapshotImmutabilityContractTests(unittest.TestCase):
             migration,
         )
 
+    def test_snapshot_header_requires_purpose_limited_hard_close_authority(self) -> None:
+        """A caller-controlled GUC cannot by itself create retained close evidence."""
+        migration = IMMUTABILITY_MIGRATION.read_text(encoding="utf-8")
+        self.assertIn("period_status_value <> 'soft_closed'", migration)
+        self.assertIn(
+            "journal_write_role_value IS DISTINCT FROM 'period_closing'",
+            migration,
+        )
+        self.assertIn(
+            "pg_has_role(session_user, 'accounting_closing_writer', 'MEMBER')",
+            migration,
+        )
+        self.assertIn("trial_balance_snapshot_authority_required", migration)
+
+    def test_snapshot_header_system_time_is_database_owned(self) -> None:
+        """Even an admitted closing writer cannot select retained snapshot chronology."""
+        migration = IMMUTABILITY_MIGRATION.read_text(encoding="utf-8")
+        self.assertIn("NEW.snapshot_generated_at := clock_timestamp();", migration)
+
     def test_book_period_accepts_at_most_one_snapshot_population(self) -> None:
         """Visible and stale snapshots must both be unable to create a second population."""
         migration = IMMUTABILITY_MIGRATION.read_text(encoding="utf-8")
