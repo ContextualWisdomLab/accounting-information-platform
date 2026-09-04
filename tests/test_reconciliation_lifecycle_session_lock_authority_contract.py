@@ -64,16 +64,18 @@ class ReconciliationLifecycleSessionLockAuthorityContractTests(unittest.TestCase
 
     def test_session_lock_helpers_are_not_public_capabilities(self) -> None:
         """Ordinary schema users cannot acquire or release lifecycle authority locks."""
-        sql = CAPABILITY_MIGRATION.read_text(encoding="utf-8")
-        self.assertIn(
-            "REVOKE ALL ON FUNCTION accounting_core.acquire_reconciliation_lifecycle_session(text, uuid)",
-            sql,
-        )
-        self.assertIn(
-            "REVOKE ALL ON FUNCTION accounting_core.release_reconciliation_lifecycle_session(text, uuid)",
-            sql,
-        )
-        self.assertGreaterEqual(sql.count("FROM PUBLIC;"), 2)
+        clean_install_sql = MIGRATION.read_text(encoding="utf-8")
+        upgrade_sql = CAPABILITY_MIGRATION.read_text(encoding="utf-8")
+        for sql in (clean_install_sql, upgrade_sql):
+            self.assertIn(
+                "REVOKE ALL ON FUNCTION accounting_core.acquire_reconciliation_lifecycle_session(text, uuid)",
+                sql,
+            )
+            self.assertIn(
+                "REVOKE ALL ON FUNCTION accounting_core.release_reconciliation_lifecycle_session(text, uuid)",
+                sql,
+            )
+            self.assertGreaterEqual(sql.count("FROM PUBLIC;"), 2)
 
     def test_canonical_installer_requires_session_lock_authority_migration(self) -> None:
         """Supported installs cannot stop before the fresh-transaction authority guard."""
