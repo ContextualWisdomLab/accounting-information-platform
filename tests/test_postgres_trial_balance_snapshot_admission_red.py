@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unittest
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import psycopg
 
@@ -24,7 +24,9 @@ class TrialBalanceSnapshotAdmissionPostgresTests(unittest.TestCase):
         self.case.setUp()
         self.addCleanup(self.case.doCleanups)
         self.addCleanup(self.case.tearDown)
-        self.case.ledger.post(self.case._two_line_proposal(), self.case.policy)
+        self.posting_receipt = self.case.ledger.post(
+            self.case._two_line_proposal(), self.case.policy
+        )
         self.case.ledger.close_fiscal_period(
             self.case.policy.legal_entity_reference,
             self.case.policy.accounting_book_reference,
@@ -135,6 +137,38 @@ class TrialBalanceSnapshotAdmissionPostgresTests(unittest.TestCase):
             self.assertGreaterEqual(snapshot_generated_at, before_insert)
             self.assertLessEqual(snapshot_generated_at, after_insert)
             connection.rollback()
+
+    def test_hard_close_without_closing_journal_still_has_snapshot_authority(self) -> None:
+        """A zero-net-income period still hard-closes when no period-closing journal is needed."""
+        self.case.ledger.reverse(
+            self.posting_receipt.journal_reference,
+            date(2026, 8, 31),
+            "billing_correction",
+            self.case.policy,
+            reversal_idempotency_key=(
+                f"{self.case.policy.tenant_reference}:snapshot-admission:zero-income"
+            ),
+        )
+        receipt = self.case.ledger.close_fiscal_period(
+            self.case.policy.legal_entity_reference,
+            self.case.policy.accounting_book_reference,
+            "2026-08",
+            "KRW",
+            period_status_code="hard_closed",
+            idempotency_key=f"{self.case.policy.tenant_reference}:snapshot-admission:zero-hard",
+        )
+        self.assertEqual(receipt.period_status_code, "hard_closed")
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            closing_journal_count = connection.execute(
+                """
+                SELECT count(*)
+                FROM accounting_core.general_journal
+                WHERE tenant_account_id = %s
+                  AND journal_reference LIKE 'urn:cwl:accounting:general_journal:period_closing:%%'
+                """,
+                (self.case.tenant_id,),
+            ).fetchone()[0]
+            self.assertEqual(closing_journal_count, 0)
 
     def test_governed_hard_close_still_creates_one_snapshot(self) -> None:
         """The purpose-limited period-closing path remains the sole admitted writer."""
