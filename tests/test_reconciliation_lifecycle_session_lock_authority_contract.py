@@ -21,12 +21,28 @@ AUTHORITY_TRIGGER = "accounting_reconciliation_transition_database_authority_gua
 
 
 class ReconciliationLifecycleSessionLockAuthorityContractTests(unittest.TestCase):
-    """Keep raw transition authority behind the application's pre-statement lock protocol."""
+    """Keep direct transition authority behind a committed session-lock acquisition lease."""
 
     def test_session_lock_guard_runs_before_database_snapshot_authority(self) -> None:
-        """The raw transition trigger must reject unsafe DML before any authority read."""
+        """Unsafe DML must fail before any authority read or predecessor snapshot can be admitted."""
         sql = MIGRATION.read_text(encoding="utf-8")
         parent_sql = PARENT_MIGRATION.read_text(encoding="utf-8")
+        self.assertIn(
+            "CREATE TABLE accounting_core.reconciliation_lifecycle_session_lease",
+            sql,
+        )
+        self.assertIn("acquisition_transaction_id xid8 NOT NULL", sql)
+        self.assertIn(
+            "CREATE OR REPLACE FUNCTION accounting_core.acquire_reconciliation_lifecycle_session",
+            sql,
+        )
+        self.assertIn(
+            "CREATE OR REPLACE FUNCTION accounting_core.release_reconciliation_lifecycle_session",
+            sql,
+        )
+        self.assertIn("pg_current_xact_id()", sql)
+        self.assertIn("transaction_timestamp()", sql)
+        self.assertIn("reconciliation_lifecycle_fresh_transaction_required", sql)
         self.assertIn("reconciliation_lifecycle_session_lock_required", sql)
         self.assertIn("pg_advisory_unlock(hashtext(tenant_reference)", sql)
         self.assertIn("FROM pg_catalog.pg_locks AS held_lock", sql)
@@ -43,7 +59,7 @@ class ReconciliationLifecycleSessionLockAuthorityContractTests(unittest.TestCase
         )
 
     def test_canonical_installer_requires_session_lock_authority_migration(self) -> None:
-        """Supported installs cannot stop before the direct-DML freshness guard."""
+        """Supported installs cannot stop before the fresh-transaction authority guard."""
         installer = INSTALLER.read_text(encoding="utf-8")
         self.assertIn(
             "0027_reconciliation_lifecycle_session_lock_authority.sql",

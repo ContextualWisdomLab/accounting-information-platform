@@ -1,4 +1,4 @@
-# ADR 0066: Direct reconciliation lifecycle authority requires server lock proof
+# ADR 0066: Direct reconciliation lifecycle authority requires a committed session-lock lease
 
 - Status: Proposed
 - Date: 2026-09-03
@@ -8,51 +8,61 @@
 
 ## Problem
 
-The supported reconciliation lifecycle command acquires a tenant/run session advisory lock, commits that acquisition, starts a fresh PostgreSQL `REPEATABLE READ` transaction, and then acquires the matching transaction advisory lock. Before migration 0027, a privileged raw INSERT into `reconciliation_run_transition_command` could enter the database-owned snapshot trigger before the later transition-hash trigger acquired the transaction lock. A lock wait inside that later trigger cannot recreate a statement or transaction snapshot that already exists.
+The supported reconciliation lifecycle command acquires a tenant/run session advisory lock, commits that acquisition, starts a fresh PostgreSQL `REPEATABLE READ` transaction, and then acquires the matching transaction advisory lock. A direct table caller can hold the same two advisory-lock forms and still violate that ordering: it can establish a repeatable-read snapshot, wait for the session lock while another backend commits eligibility-changing evidence, acquire the session and transaction locks, then insert a transition from the predecessor snapshot.
 
-The result was a direct-database freshness gap: PostgreSQL could compute the transition snapshot itself yet compute it from a predecessor view of eligibility-changing reconciliation evidence.
+Migration 0027 originally checked only live session-lock ownership, matching transaction-lock ownership, and `REPEATABLE READ`. Those facts are necessary but do not prove that the authority transaction began after session-lock grant. PostgreSQL cannot refresh an already established repeatable-read snapshot inside the transition trigger.
 
 ## Constraints
 
-The fix must preserve the existing database-owned statement/book populations, exact Decimal book-to-bank equation, immutable reviewed evidence, maker-checker exception authority, transition idempotency, outbox pairing and the separation between reconciliation evidence and General Ledger/period-close authority. Direct foreign database access remains prohibited; this ADR governs only AIS's own database bypass boundary.
+The fix must preserve database-owned statement/book populations, exact Decimal book-to-bank arithmetic, immutable reviewed evidence, maker-checker exception authority, transition idempotency, outbox pairing, and the separation between reconciliation evidence and General Ledger/period-close authority. Direct foreign database access remains prohibited; this ADR governs only AIS's own database bypass boundary.
+
+The application and any intentional direct-database acceptance path must use one canonical ordering boundary. A caller flag or GUC is not sufficient. Broad break-glass database authority is not a product runtime contract and must not be represented as ordinary application capability.
 
 ## Decision
 
-Migration `0027_reconciliation_lifecycle_session_lock_authority.sql` adds a first-sorting `BEFORE INSERT` prerequisite trigger on `accounting_core.reconciliation_run_transition_command`. PostgreSQL trigger lexical ordering places it before `accounting_reconciliation_transition_database_authority_guard`, so unsafe DML is rejected before statement, journal, allocation, approval or exception populations are read for transition authority.
+Migration `0027_reconciliation_lifecycle_session_lock_authority.sql` owns session-lock acquisition evidence in PostgreSQL rather than inferring historical ordering from current lock state.
 
-The prerequisite verifies three facts on the current backend and exact tenant/run advisory key:
+`accounting_core.acquire_reconciliation_lifecycle_session(tenant_reference, run_id)` validates the tenant/run, acquires the exact two-key session advisory lock, then records an ephemeral `reconciliation_lifecycle_session_lease` for the current backend identity. The lease stores `backend_pid`, `backend_start`, tenant/run identity, the acquisition transaction ID, and database acquisition time. It is written only after the advisory lock has actually been granted. The supported caller commits that acquisition transaction while the session lock remains held.
 
-1. the backend owns a session-level advisory hold, proved with `pg_advisory_unlock(...)` rather than inferred from `pg_locks` alone;
-2. after decrementing that session hold, the same backend still owns the exact granted advisory key in `pg_locks`, proving a transaction-level hold keeps the serialization boundary closed while the session hold is immediately restored; and
-3. the authority transaction is `REPEATABLE READ`.
+The caller then opens a fresh `REPEATABLE READ` transaction and acquires the matching transaction advisory lock. The first-sorting `accounting_reconciliation_transition_000_session_lock_guard` still proves the exact session and transaction lock forms and isolation level before the database-authority trigger can read reconciliation populations. It additionally requires a lease for the same backend session, tenant and run whose acquisition transaction differs from the current authority transaction and whose acquisition time is not later than the current transaction start. A missing or same-transaction lease fails with `reconciliation_lifecycle_fresh_transaction_required`.
 
-The supported application sequence remains stronger than this live-state proof: session lock → commit → fresh `REPEATABLE READ` → transaction lock → authority reads/writes → commit/rollback → explicit session unlock. Positive direct PostgreSQL acceptance that intentionally exercises the table-level authority must follow that same sequence. A raw path with no session lock or only a transaction lock fails with `reconciliation_lifecycle_session_lock_required` before the database snapshot function runs.
+The backend identity uses both PID and `pg_stat_activity.backend_start`; PID reuse therefore cannot inherit a disconnected backend's lease. The acquisition function removes leases whose backend session no longer exists. `accounting_core.release_reconciliation_lifecycle_session(...)` deletes the current lease before releasing the session lock. The lease table is not accounting truth and carries no balances, decisions, identities of customers, or journal facts.
 
-`pg_advisory_unlock` is used as a lock-type probe because PostgreSQL session-level and transaction-level advisory locks use the same lock namespace and `pg_locks` does not identify the acquisition API. The transaction-level hold remains while the session hold is decremented and restored, preventing another backend from entering the exact key during the probe.
+The supported application sequence is therefore:
+
+`database-owned session lock + lease -> commit -> fresh REPEATABLE READ -> matching transaction lock -> authority derivation -> transition/status/outbox transaction -> release lease + session lock`.
+
+A raw caller that merely invokes `pg_advisory_lock` after establishing snapshot S0 has no database-owned acquisition lease and fails before statement, journal, allocation, approval, exception, or bridge authority is admitted. Invoking the acquisition function inside the same already-stale transaction also fails because the lease transaction ID equals the transition transaction ID.
 
 ## Alternatives
 
-**Keep the later transaction lock only.** Rejected because waiting later in a statement or repeatable-read transaction cannot refresh its already-established snapshot.
+**Keep live lock-state proof only.** Rejected because current session+xact ownership does not encode when a repeatable-read snapshot was established.
 
-**Inspect only `pg_locks`.** Rejected because the view shows the advisory key and backend but not whether the hold came from the session-level or transaction-level API.
+**Use `pg_locks.waitstart` or lock-manager timestamps.** Rejected because `waitstart` describes current waiting and is null once the lock is granted; it does not retain the historical grant boundary needed by the authority trigger.
 
-**Use a caller GUC to attest safe ordering.** Rejected because a direct SQL caller could forge the marker independently of lock-manager state.
+**Inspect only `pg_locks`.** Rejected because session and transaction advisory locks share the same key space and the view does not identify the acquisition API or historical order.
 
-**Use `READ COMMITTED` for finalization.** Rejected because the multiple authority queries could observe different statement snapshots.
+**Use a caller GUC to attest safe ordering.** Rejected because direct SQL can forge it independently of PostgreSQL-owned evidence.
 
-**Remove all database-side transition authority.** Not selected in this slice. The current architecture deliberately keeps PostgreSQL as an independent invariant boundary. The later least-privilege capability should nevertheless remove raw transition/status/outbox DML from application identities and expose only named commands.
+**Switch lifecycle authority to `READ COMMITTED`.** Rejected because sequential review, exception, statement, journal and bridge queries could observe different statement snapshots.
+
+**Rely on a transaction-controlling stored procedure alone.** Not selected because PostgreSQL transaction control has invocation and `SECURITY DEFINER` restrictions that do not fit the current authenticated application boundary. The existing Python application can commit the acquisition transaction explicitly while PostgreSQL owns the lease evidence.
+
+**Remove all database-side transition authority.** Deferred to the capability redesign in issue #44. PostgreSQL remains an independent invariant boundary in this slice, but ordinary runtime identities must eventually receive only the named command capability rather than raw transition/status/outbox DML.
 
 ## Risk and effect
 
-The trigger verifies live session-lock, transaction-lock and isolation state. PostgreSQL does not expose historical session-lock acquisition time, so the complete session-lock commit → fresh transaction order remains a protocol requirement enforced by the supported command and positive database acceptance tests. A broadly privileged principal could deliberately reproduce both lock forms in another order; such broad raw DML is therefore outside the intended runtime capability and must be removed by issue #44 rather than treated as an ordinary product API.
+The lease proves that the transition transaction is different from the transaction in which the current backend acquired and recorded the session lock. The trigger also verifies the live lock state, so deleting or fabricating a lease without the matching session/xact locks does not admit authority. A superuser or equally broad break-glass identity can still subvert database controls by design; that identity is outside the product runtime threat boundary and must remain separately governed and audited.
 
-This limitation is explicit rather than hidden as a compliance claim. Migration 0027 is defense in depth for accidental/raw bypasses while the named command remains the product authority path.
+The lease is ephemeral coordination evidence. If a backend disconnects before normal release, PostgreSQL releases its session advisory lock automatically; stale lease rows are ignored by backend-start identity and removed by a later acquisition. This does not rewrite reconciliation facts or make lease state part of financial reporting.
 
 ## Verification
 
-Exact-head acceptance must include real PostgreSQL tests that reject raw lifecycle transition under `READ COMMITTED`, reject raw `REPEATABLE READ` transition without the session lock, reject a transaction-lock-only substitute, and preserve the existing safe direct-database tests for caller-identity replacement, timezone-independent database hashing and untied bridge rejection after those tests enter the documented lock protocol. Repository contracts must also prove that the prerequisite trigger sorts before the database-authority trigger and that the canonical installer includes migration 0027.
+The real PostgreSQL RED `tests/test_reconciliation_lifecycle_prelock_snapshot_red.py` pins snapshot S0 before requesting the lifecycle session lock, lets another backend commit a new exception while holding the serialization boundary, then acquires the two lock forms and attempts raw transition authority. The repaired path must fail with `reconciliation_lifecycle_fresh_transaction_required`, leave the run non-reconciled, and persist neither transition command nor matching authority event.
 
-The complete candidate still requires exact 100% owned production statement/branch coverage, public docstrings, repository contracts, SAST/security/dependency review, reproducible package/SBOM/provenance, current-head review, migration/recovery evidence and live ruleset admission before integration.
+Positive direct-database tests must use `acquire_reconciliation_lifecycle_session`, commit, open fresh `REPEATABLE READ`, then acquire the transaction lock before inserting. Repository contracts require the acquisition lease, backend-session identity, distinct transaction IDs, trigger ordering, and canonical installer inclusion. The supported application path must exercise the same database-owned acquisition/release functions.
+
+The complete candidate still requires one unchanged exact head to pass real PostgreSQL behavior, exact 100% owned production statement/branch and edge-case coverage, public docstrings, repository contracts, SAST/security/dependency review, reproducible package/SBOM/provenance, current-head review, migration/recovery evidence and live ruleset admission before integration.
 
 ## References
 
@@ -64,4 +74,8 @@ PostgreSQL Global Development Group. (2026c). *PostgreSQL 18 documentation: The 
 
 PostgreSQL Global Development Group. (2026d). *PostgreSQL 18 documentation: Transaction isolation*. https://www.postgresql.org/docs/18/transaction-iso.html
 
-PostgreSQL Global Development Group. (2026e). *PostgreSQL 18 documentation: Overview of trigger behavior*. https://www.postgresql.org/docs/18/trigger-definition.html
+PostgreSQL Global Development Group. (2026e). *PostgreSQL 18 documentation: SET TRANSACTION*. https://www.postgresql.org/docs/18/sql-set-transaction.html
+
+PostgreSQL Global Development Group. (2026f). *PostgreSQL 18 documentation: The cumulative statistics system*. https://www.postgresql.org/docs/18/monitoring-stats.html
+
+PostgreSQL Global Development Group. (2026g). *PostgreSQL 18 documentation: Overview of trigger behavior*. https://www.postgresql.org/docs/18/trigger-definition.html

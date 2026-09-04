@@ -39,22 +39,24 @@ _TRANSITION_HASH_SENTINEL = "sha256:" + "0" * 64
 def _coherent_lifecycle_session(
     ledger: PostgresPostingLedger,
     tenant_reference: str,
-    lifecycle_scope: str,
+    run_id: UUID,
 ) -> Iterator[object]:
     """Yield one post-lock repeatable-read transaction for lifecycle authority.
 
-    A transaction-level advisory-lock call is a SQL statement and can therefore
-    establish a ``REPEATABLE READ`` snapshot before it waits. The session-level
-    form is acquired first and committed without releasing the lock. A fresh
-    repeatable-read transaction is then opened on the same PostgreSQL session,
-    so its first snapshot is necessarily later than the lock grant. The normal
-    transaction-level lock is reacquired reentrantly to keep database-trigger
-    lock discipline aligned with the application aggregate boundary.
+    PostgreSQL cannot retroactively refresh a ``REPEATABLE READ`` snapshot after
+    a lock wait. The database-owned acquisition function therefore obtains the
+    tenant/run session advisory lock and records the backend lease in one
+    transaction. That transaction is committed before a fresh repeatable-read
+    transaction is opened on the same session. The matching transaction lock is
+    then reacquired reentrantly before any authority read. Migration 0027 checks
+    the lease transaction identity at the transition table boundary, so a raw
+    caller that established its snapshot before lock grant fails closed.
     """
+    lifecycle_scope = f"reconciliation_run_lifecycle:{run_id}"
     with ledger._session() as connection:
         connection.execute(
-            "SELECT pg_advisory_lock(hashtext(%s), hashtext(%s))",
-            (tenant_reference, lifecycle_scope),
+            "SELECT accounting_core.acquire_reconciliation_lifecycle_session(%s, %s)",
+            (tenant_reference, run_id),
         )
         connection.commit()
         try:
@@ -67,8 +69,8 @@ def _coherent_lifecycle_session(
             raise
         finally:
             connection.execute(
-                "SELECT pg_advisory_unlock(hashtext(%s), hashtext(%s))",
-                (tenant_reference, lifecycle_scope),
+                "SELECT accounting_core.release_reconciliation_lifecycle_session(%s, %s)",
+                (tenant_reference, run_id),
             )
             connection.commit()
 
@@ -79,7 +81,7 @@ def reconcile_reconciliation_run(
 ) -> dict[str, object]:
     """Transition one run to ``reconciled`` from database-owned evidence.
 
-    A session advisory lock is acquired before opening the authority-bearing
+    A database-owned session lease is committed before opening the authority-bearing
     ``REPEATABLE READ`` transaction. A waiter therefore observes the preceding
     guarded writer's commit and then evaluates run, review, exception, statement,
     and book evidence from one coherent PostgreSQL snapshot. Exact retries replay
@@ -101,11 +103,10 @@ def reconcile_reconciliation_run(
     effective_at = _parse_timestamp(str(command.get("effective_at") or ""), "effective_at")
 
     ledger = PostgresPostingLedger(database_url, tenant_reference)
-    lifecycle_scope = f"reconciliation_run_lifecycle:{run_id}"
     with _coherent_lifecycle_session(
         ledger,
         tenant_reference,
-        lifecycle_scope,
+        run_id,
     ) as connection:
         tenant_id = ledger._require_tenant(connection)
         ledger._acquire_command_lock(

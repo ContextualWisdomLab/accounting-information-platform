@@ -54,7 +54,7 @@ class _FreshSnapshotLedger:
         yield type(self).connection
 
     def _acquire_command_lock(self, _connection: object, scope: str) -> None:
-        """Record the transaction advisory-lock scope selected after session lock."""
+        """Record the transaction advisory-lock scope selected after session lease."""
         type(self).locks.append(scope)
 
     def _require_tenant(self, _connection: object) -> object:
@@ -65,8 +65,8 @@ class _FreshSnapshotLedger:
 class ReconciliationLifecycleSnapshotFreshnessTests(unittest.TestCase):
     """Keep a waiting finalizer from pinning a pre-lock repeatable-read snapshot."""
 
-    def test_session_lock_precedes_fresh_repeatable_read_authority_transaction(self) -> None:
-        """The coherent snapshot must begin only after the blocking session lock is granted."""
+    def test_session_lease_precedes_fresh_repeatable_read_authority_transaction(self) -> None:
+        """The coherent snapshot must begin only after database-owned lock acquisition commits."""
         _FreshSnapshotLedger.connection = _RecordingConnection()
         _FreshSnapshotLedger.locks = []
         command = {
@@ -92,9 +92,9 @@ class ReconciliationLifecycleSnapshotFreshnessTests(unittest.TestCase):
         self.assertEqual(
             _FreshSnapshotLedger.connection.statements,
             [
-                "SELECT pg_advisory_lock(hashtext(%s), hashtext(%s))",
+                "SELECT accounting_core.acquire_reconciliation_lifecycle_session(%s, %s)",
                 "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ",
-                "SELECT pg_advisory_unlock(hashtext(%s), hashtext(%s))",
+                "SELECT accounting_core.release_reconciliation_lifecycle_session(%s, %s)",
             ],
         )
         self.assertEqual(_FreshSnapshotLedger.connection.commit_count, 2)

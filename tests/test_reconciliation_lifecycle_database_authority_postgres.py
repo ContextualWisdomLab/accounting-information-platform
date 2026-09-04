@@ -57,13 +57,16 @@ class ReconciliationLifecycleDatabaseAuthorityPostgresTests(unittest.TestCase):
         return row[0], row[1], row[2], str(row[3])
 
     def _begin_safe_raw_transition(self, connection: psycopg.Connection) -> None:
-        """Enter the same pre-statement session/fresh-snapshot protocol as production."""
+        """Enter the database-owned pre-statement lease/fresh-snapshot protocol."""
         lifecycle_scope = (
             "reconciliation_run_lifecycle:" + self.opened["reconciliation_run_id"]
         )
         connection.execute(
-            "SELECT pg_advisory_lock(hashtext(%s), hashtext(%s))",
-            (self.fixture.case.policy.tenant_reference, lifecycle_scope),
+            "SELECT accounting_core.acquire_reconciliation_lifecycle_session(%s, %s)",
+            (
+                self.fixture.case.policy.tenant_reference,
+                self.opened["reconciliation_run_id"],
+            ),
         )
         connection.commit()
         connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")

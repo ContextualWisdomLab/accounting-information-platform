@@ -1,15 +1,176 @@
 BEGIN;
 
--- The supported lifecycle command acquires the tenant/run session advisory lock,
--- commits that acquisition, opens a fresh REPEATABLE READ transaction, and then
--- reacquires the same key as a transaction advisory lock before any authority
--- reads. The direct table boundary must at least prove that the backend still
--- owns both lock forms and is in REPEATABLE READ before database-authority
--- population queries can run. A transaction lock by itself is not session-lock
--- evidence because session and transaction advisory locks share one key space.
+-- The supported lifecycle command must acquire the tenant/run session advisory
+-- lock in a transaction that ends before the authority-bearing REPEATABLE READ
+-- transaction begins. Live lock ownership alone cannot prove that ordering: a
+-- backend can establish a stale repeatable-read snapshot, wait for the session
+-- lock, and then hold both lock forms while still reading the predecessor
+-- snapshot. Persist a backend/session lease in the lock-acquisition transaction
+-- so the transition trigger can prove that its authority transaction is a
+-- different, later transaction.
+CREATE TABLE accounting_core.reconciliation_lifecycle_session_lease (
+    backend_pid integer NOT NULL,
+    backend_start timestamptz NOT NULL,
+    tenant_account_id uuid NOT NULL,
+    reconciliation_run_id uuid NOT NULL,
+    acquisition_transaction_id xid8 NOT NULL,
+    acquired_at timestamptz NOT NULL,
+    PRIMARY KEY (
+        backend_pid,
+        backend_start,
+        tenant_account_id,
+        reconciliation_run_id
+    ),
+    FOREIGN KEY (tenant_account_id, reconciliation_run_id)
+        REFERENCES accounting_core.reconciliation_run (
+            tenant_account_id,
+            reconciliation_run_id
+        )
+);
+
+REVOKE ALL ON accounting_core.reconciliation_lifecycle_session_lease FROM PUBLIC;
+
+CREATE OR REPLACE FUNCTION accounting_core.acquire_reconciliation_lifecycle_session(
+    tenant_reference_input text,
+    reconciliation_run_id_input uuid
+)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, accounting_core
+AS $$
+DECLARE
+    tenant_id uuid;
+    lifecycle_scope text;
+    current_backend_start timestamptz;
+BEGIN
+    SELECT tenant.tenant_account_id
+    INTO tenant_id
+    FROM accounting_core.tenant_account AS tenant
+    WHERE tenant.tenant_account_code = tenant_reference_input;
+
+    IF tenant_id IS NULL OR NOT EXISTS (
+        SELECT 1
+        FROM accounting_core.reconciliation_run AS run
+        WHERE run.tenant_account_id = tenant_id
+          AND run.reconciliation_run_id = reconciliation_run_id_input
+    ) THEN
+        RAISE EXCEPTION
+            'reconciliation lifecycle tenant/run is not recorded (reconciliation_lifecycle_session_lock_scope)'
+            USING ERRCODE = '23514';
+    END IF;
+
+    lifecycle_scope :=
+        'reconciliation_run_lifecycle:' || reconciliation_run_id_input::text;
+
+    -- This call is the serialization point. It may wait, but the lease is only
+    -- recorded after the lock is granted. The caller must commit this
+    -- acquisition transaction before starting authority reads.
+    PERFORM pg_advisory_lock(
+        hashtext(tenant_reference_input),
+        hashtext(lifecycle_scope)
+    );
+
+    SELECT activity.backend_start
+    INTO current_backend_start
+    FROM pg_catalog.pg_stat_activity AS activity
+    WHERE activity.pid = pg_backend_pid();
+
+    IF current_backend_start IS NULL THEN
+        PERFORM pg_advisory_unlock(
+            hashtext(tenant_reference_input),
+            hashtext(lifecycle_scope)
+        );
+        RAISE EXCEPTION
+            'reconciliation lifecycle backend identity is unavailable (reconciliation_lifecycle_session_lock_scope)'
+            USING ERRCODE = '55000';
+    END IF;
+
+    -- Clean leases left by disconnected backends. Session locks themselves are
+    -- released automatically at disconnect; backend_start prevents PID reuse
+    -- from inheriting stale lease authority before this cleanup runs.
+    DELETE FROM accounting_core.reconciliation_lifecycle_session_lease AS lease
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_stat_activity AS activity
+        WHERE activity.pid = lease.backend_pid
+          AND activity.backend_start = lease.backend_start
+    );
+
+    INSERT INTO accounting_core.reconciliation_lifecycle_session_lease (
+        backend_pid,
+        backend_start,
+        tenant_account_id,
+        reconciliation_run_id,
+        acquisition_transaction_id,
+        acquired_at
+    )
+    VALUES (
+        pg_backend_pid(),
+        current_backend_start,
+        tenant_id,
+        reconciliation_run_id_input,
+        pg_current_xact_id(),
+        clock_timestamp()
+    )
+    ON CONFLICT (
+        backend_pid,
+        backend_start,
+        tenant_account_id,
+        reconciliation_run_id
+    ) DO UPDATE
+    SET acquisition_transaction_id = EXCLUDED.acquisition_transaction_id,
+        acquired_at = EXCLUDED.acquired_at;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION accounting_core.release_reconciliation_lifecycle_session(
+    tenant_reference_input text,
+    reconciliation_run_id_input uuid
+)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, accounting_core
+AS $$
+DECLARE
+    tenant_id uuid;
+    lifecycle_scope text;
+    current_backend_start timestamptz;
+BEGIN
+    SELECT tenant.tenant_account_id
+    INTO tenant_id
+    FROM accounting_core.tenant_account AS tenant
+    WHERE tenant.tenant_account_code = tenant_reference_input;
+
+    lifecycle_scope :=
+        'reconciliation_run_lifecycle:' || reconciliation_run_id_input::text;
+
+    SELECT activity.backend_start
+    INTO current_backend_start
+    FROM pg_catalog.pg_stat_activity AS activity
+    WHERE activity.pid = pg_backend_pid();
+
+    IF tenant_id IS NOT NULL AND current_backend_start IS NOT NULL THEN
+        DELETE FROM accounting_core.reconciliation_lifecycle_session_lease AS lease
+        WHERE lease.backend_pid = pg_backend_pid()
+          AND lease.backend_start = current_backend_start
+          AND lease.tenant_account_id = tenant_id
+          AND lease.reconciliation_run_id = reconciliation_run_id_input;
+    END IF;
+
+    RETURN pg_advisory_unlock(
+        hashtext(tenant_reference_input),
+        hashtext(lifecycle_scope)
+    );
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION accounting_core.require_reconciliation_lifecycle_session_lock()
 RETURNS trigger
 LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, accounting_core
 AS $$
 DECLARE
     tenant_reference text;
@@ -18,6 +179,10 @@ DECLARE
     lifecycle_lock_key bigint;
     session_lock_owned boolean;
     transaction_lock_still_owned boolean;
+    current_backend_start timestamptz;
+    lease_transaction_id xid8;
+    lease_acquired_at timestamptz;
+    current_transaction_id xid8;
 BEGIN
     SELECT tenant.tenant_account_code
     INTO tenant_reference
@@ -77,14 +242,39 @@ BEGIN
             USING ERRCODE = '55000';
     END IF;
 
+    SELECT activity.backend_start
+    INTO current_backend_start
+    FROM pg_catalog.pg_stat_activity AS activity
+    WHERE activity.pid = pg_backend_pid();
+
+    SELECT lease.acquisition_transaction_id,
+           lease.acquired_at
+    INTO lease_transaction_id,
+         lease_acquired_at
+    FROM accounting_core.reconciliation_lifecycle_session_lease AS lease
+    WHERE lease.backend_pid = pg_backend_pid()
+      AND lease.backend_start = current_backend_start
+      AND lease.tenant_account_id = NEW.tenant_account_id
+      AND lease.reconciliation_run_id = NEW.reconciliation_run_id;
+
+    current_transaction_id := pg_current_xact_id();
+
+    IF lease_transaction_id IS NULL
+       OR lease_transaction_id = current_transaction_id
+       OR lease_acquired_at > transaction_timestamp() THEN
+        RAISE EXCEPTION
+            'reconciliation lifecycle authority requires session-lock acquisition to commit before a fresh REPEATABLE READ authority transaction begins (reconciliation_lifecycle_fresh_transaction_required)'
+            USING ERRCODE = '55000';
+    END IF;
+
     RETURN NEW;
 END;
 $$;
 
 -- PostgreSQL fires same-kind triggers in name order. This prerequisite sorts
 -- before the database snapshot authority guard so no statement/book/review query
--- can run until the backend proves the session lock plus the fresh authority
--- transaction's matching transaction lock.
+-- can run until the backend proves the session lock, the fresh transaction lease,
+-- and the matching transaction lock.
 CREATE TRIGGER accounting_reconciliation_transition_000_session_lock_guard
     BEFORE INSERT ON accounting_core.reconciliation_run_transition_command
     FOR EACH ROW
