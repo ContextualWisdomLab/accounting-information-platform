@@ -1,4 +1,4 @@
-"""Real PostgreSQL RED for immutable hard-close trial-balance evidence."""
+"""Real PostgreSQL RED/GREEN for immutable hard-close trial-balance evidence."""
 
 from __future__ import annotations
 
@@ -92,6 +92,23 @@ class TrialBalanceSnapshotImmutabilityPostgresTests(unittest.TestCase):
                 )
             connection.rollback()
 
+    def test_hard_close_snapshot_header_cannot_be_deleted(self) -> None:
+        """A committed close snapshot cannot be removed after it becomes evidence."""
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            with self.assertRaisesRegex(
+                psycopg.errors.CheckViolation,
+                "trial_balance_snapshot_immutable",
+            ):
+                connection.execute(
+                    """
+                    DELETE FROM accounting_reporting.trial_balance_snapshot
+                    WHERE tenant_account_id = %s
+                      AND trial_balance_snapshot_id = %s
+                    """,
+                    (self.case.tenant_id, self.snapshot_id),
+                )
+            connection.rollback()
+
     def test_hard_close_snapshot_line_cannot_be_rewritten(self) -> None:
         """A retained account balance cannot be changed after hard close."""
         with psycopg.connect(posting.DATABASE_URL) as connection:
@@ -103,6 +120,23 @@ class TrialBalanceSnapshotImmutabilityPostgresTests(unittest.TestCase):
                     """
                     UPDATE accounting_reporting.trial_balance_line
                     SET net_balance_amount = net_balance_amount + 1
+                    WHERE tenant_account_id = %s
+                      AND trial_balance_line_id = %s
+                    """,
+                    (self.case.tenant_id, self.line_id),
+                )
+            connection.rollback()
+
+    def test_hard_close_snapshot_line_cannot_be_deleted(self) -> None:
+        """A retained account balance cannot be removed after hard close."""
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            with self.assertRaisesRegex(
+                psycopg.errors.CheckViolation,
+                "trial_balance_snapshot_immutable",
+            ):
+                connection.execute(
+                    """
+                    DELETE FROM accounting_reporting.trial_balance_line
                     WHERE tenant_account_id = %s
                       AND trial_balance_line_id = %s
                     """,
