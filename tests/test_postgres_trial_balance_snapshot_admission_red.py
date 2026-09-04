@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timezone
 
 import psycopg
 
@@ -95,6 +96,44 @@ class TrialBalanceSnapshotAdmissionPostgresTests(unittest.TestCase):
                         f"{self.case.policy.tenant_reference}:snapshot-admission:forged",
                     ),
                 )
+            connection.rollback()
+
+    def test_authorized_snapshot_insert_cannot_choose_system_time(self) -> None:
+        """Even the closing capability cannot forge retained snapshot chronology."""
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            legal_entity_id, accounting_book_id, fiscal_period_id = self._scope(connection)
+            connection.execute(
+                "SELECT set_config('accounting_core.journal_write_role', 'period_closing', true)"
+            )
+            before_insert = datetime.now(timezone.utc)
+            snapshot_generated_at = connection.execute(
+                """
+                INSERT INTO accounting_reporting.trial_balance_snapshot (
+                    tenant_account_id,
+                    legal_entity_id,
+                    accounting_book_id,
+                    fiscal_period_id,
+                    snapshot_currency_code,
+                    snapshot_generated_at,
+                    source_journal_count,
+                    source_payload_hash,
+                    close_idempotency_key
+                )
+                VALUES (%s, %s, %s, %s, 'KRW', '2099-01-01T00:00:00Z', 0, %s, %s)
+                RETURNING snapshot_generated_at
+                """,
+                (
+                    self.case.tenant_id,
+                    legal_entity_id,
+                    accounting_book_id,
+                    fiscal_period_id,
+                    "sha256:" + "5" * 64,
+                    f"{self.case.policy.tenant_reference}:snapshot-admission:authorized-probe",
+                ),
+            ).fetchone()[0]
+            after_insert = datetime.now(timezone.utc)
+            self.assertGreaterEqual(snapshot_generated_at, before_insert)
+            self.assertLessEqual(snapshot_generated_at, after_insert)
             connection.rollback()
 
     def test_governed_hard_close_still_creates_one_snapshot(self) -> None:
