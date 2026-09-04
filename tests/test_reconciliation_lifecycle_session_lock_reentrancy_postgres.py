@@ -87,6 +87,57 @@ class ReconciliationLifecycleSessionLockReentrancyPostgresTests(unittest.TestCas
                 owner.execute("SELECT pg_advisory_unlock_all()")
                 owner.commit()
 
+    def test_release_drains_same_backend_raw_duplicate_hold(self) -> None:
+        """Canonical release must not leave a raw duplicate hold on the same key."""
+        tenant_reference = self.fixture.case.policy.tenant_reference
+        run_id = self.opened["reconciliation_run_id"]
+        lifecycle_scope = f"reconciliation_run_lifecycle:{run_id}"
+
+        with psycopg.connect(posting.DATABASE_URL) as owner:
+            try:
+                owner.execute(
+                    "SELECT accounting_core.acquire_reconciliation_lifecycle_session(%s, %s)",
+                    (tenant_reference, run_id),
+                )
+                owner.commit()
+
+                # PostgreSQL advisory locks are session-reentrant independently of
+                # the canonical helper. A direct duplicate acquisition on the same
+                # backend must not survive the owner-controlled release boundary.
+                owner.execute(
+                    "SELECT pg_advisory_lock(hashtext(%s), hashtext(%s))",
+                    (tenant_reference, lifecycle_scope),
+                )
+                owner.commit()
+
+                released = owner.execute(
+                    "SELECT accounting_core.release_reconciliation_lifecycle_session(%s, %s)",
+                    (tenant_reference, run_id),
+                ).fetchone()[0]
+                owner.commit()
+                self.assertTrue(released)
+
+                with psycopg.connect(posting.DATABASE_URL, autocommit=True) as contender:
+                    acquired = contender.execute(
+                        "SELECT pg_try_advisory_lock(hashtext(%s), hashtext(%s))",
+                        (tenant_reference, lifecycle_scope),
+                    ).fetchone()[0]
+                    try:
+                        self.assertTrue(
+                            acquired,
+                            "canonical release left a raw duplicate lifecycle session hold",
+                        )
+                    finally:
+                        if acquired:
+                            contender.execute(
+                                "SELECT pg_advisory_unlock(hashtext(%s), hashtext(%s))",
+                                (tenant_reference, lifecycle_scope),
+                            )
+            finally:
+                owner.rollback()
+                owner.execute("SELECT pg_advisory_unlock_all()")
+                owner.commit()
+
 
 if __name__ == "__main__":
     unittest.main()
