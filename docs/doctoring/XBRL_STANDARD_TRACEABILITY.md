@@ -1,6 +1,6 @@
 # XBRL and financial-reporting standards traceability
 
-**Observed:** 2026-09-03  
+**Observed:** 2026-09-04  
 **Implementation:** `accounting_information_platform.financial_reporting`  
 **Decision:** ADR 0067
 
@@ -22,6 +22,7 @@ The current implementation is a **proposal formatter and serializer**. It always
 | IFRS Accounting Taxonomy formula linkbase | Validation formulae distributed separately for the IFRS taxonomy | Retain formula processor identity and results as validation evidence when a statutory profile is introduced | planned validation registry | **Not implemented** |
 | DART/OpenDART XBRL financial-statement services | Korean filing taxonomy, validation, submission, and data-use context | Treat DART as a jurisdiction adapter and filing authority, not as the accounting ledger or generic taxonomy profile | planned DART profile, validation fixtures, and delivery receipts | **Not implemented. No DART acceptance claim** |
 | XML 1.0 and Namespaces in XML | Well-formed XML and namespace-qualified elements | Construct XML with the standard library; validate profile URI, XML prefix, and concept local name before serialization | `contracts.py`, `xbrl.py`, URI/prefix/concept tests | **Implemented for generated proposal syntax.** No external entity or DTD processing exists |
+| RFC 3986 URI generic syntax | Percent-encoded octets use `%` followed by exactly two hexadecimal digits; URI syntax does not admit a raw backslash as a generic URI character | Fail closed on malformed percent escapes or raw backslashes before a taxonomy namespace, schema reference, or entity identifier is serialized | `financial_reporting/primitives.py`; `test_financial_reporting_uri_rfc3986_red.py` | **Implemented at the proposal input boundary.** Valid percent-encoded data is preserved; this is syntax validation, not URI dereferencing or taxonomy trust |
 | ISO 4217 representation used by XBRL | Currency unit QName | Require a three-letter uppercase caller-supplied reporting currency and emit `iso4217:{code}` | `FinancialReportContext`; unit tests | **Implemented syntax only.** Currency authority must come from the future AIS owner command |
 | FIPS PUB 180-4 SHA-256 | Content identity | Bind supplied statement package, report proposal, taxonomy package, and generated instance to namespaced SHA-256 digests | `primitives.py`, artifact/export tests | **Implemented.** Hash identity is neither a digital signature nor proof of AIS origin |
 
@@ -94,6 +95,8 @@ A statutory profile cannot move from `proposed` to `released` until all of the f
 A released taxonomy profile is still not sufficient for authoritative report publication; the AIS owner command and report-source/approval evidence are separately required.
 
 ## References
+
+Berners-Lee, T., Fielding, R., & Masinter, L. (2005). *Uniform Resource Identifier (URI): Generic syntax* (RFC 3986). RFC Editor. https://www.rfc-editor.org/rfc/rfc3986
 
 IFRS Foundation. (2025). *IFRS Accounting Taxonomy 2025*. https://www.ifrs.org/issued-standards/ifrs-taxonomy/ifrs-accounting-taxonomy-2025/
 

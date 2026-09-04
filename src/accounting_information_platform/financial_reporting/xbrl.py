@@ -200,37 +200,58 @@ def _verified_artifact(
 
 
 def _context(raw_context: object) -> FinancialReportContext:
-    """Rehydrate a validated report context from a JSON-compatible mapping."""
+    """Rehydrate a validated report context without coercing JSON value types."""
     if not isinstance(raw_context, Mapping):
         raise AccountingValidationError("report_context must be a mapping")
     try:
+        entity_identifier_scheme = raw_context["entity_identifier_scheme"]
+        entity_identifier_value = raw_context["entity_identifier_value"]
+        reporting_currency_code = raw_context["reporting_currency_code"]
+        current_period_start_date = raw_context["current_period_start_date"]
+        current_period_end_date = raw_context["current_period_end_date"]
+        decimal_precision = raw_context["decimal_precision"]
+        required_text_values = (
+            entity_identifier_scheme,
+            entity_identifier_value,
+            reporting_currency_code,
+            current_period_start_date,
+            current_period_end_date,
+        )
+        if any(not isinstance(value, str) for value in required_text_values):
+            raise TypeError("report context text values must remain JSON strings")
+        if isinstance(decimal_precision, bool) or not isinstance(decimal_precision, int):
+            raise TypeError("decimal_precision must remain a JSON integer")
+
+        comparison_period_start_date = raw_context.get(
+            "comparison_period_start_date"
+        )
+        comparison_period_end_date = raw_context.get("comparison_period_end_date")
+        if comparison_period_start_date is not None and not isinstance(
+            comparison_period_start_date, str
+        ):
+            raise TypeError("comparison period start date must remain a JSON string")
+        if comparison_period_end_date is not None and not isinstance(
+            comparison_period_end_date, str
+        ):
+            raise TypeError("comparison period end date must remain a JSON string")
+
         return FinancialReportContext(
-            entity_identifier_scheme=str(
-                raw_context["entity_identifier_scheme"]
-            ),
-            entity_identifier_value=str(raw_context["entity_identifier_value"]),
-            reporting_currency_code=str(raw_context["reporting_currency_code"]),
-            current_period_start_date=date.fromisoformat(
-                str(raw_context["current_period_start_date"])
-            ),
-            current_period_end_date=date.fromisoformat(
-                str(raw_context["current_period_end_date"])
-            ),
+            entity_identifier_scheme=entity_identifier_scheme,
+            entity_identifier_value=entity_identifier_value,
+            reporting_currency_code=reporting_currency_code,
+            current_period_start_date=date.fromisoformat(current_period_start_date),
+            current_period_end_date=date.fromisoformat(current_period_end_date),
             comparison_period_start_date=(
-                date.fromisoformat(
-                    str(raw_context["comparison_period_start_date"])
-                )
-                if "comparison_period_start_date" in raw_context
+                date.fromisoformat(comparison_period_start_date)
+                if comparison_period_start_date is not None
                 else None
             ),
             comparison_period_end_date=(
-                date.fromisoformat(
-                    str(raw_context["comparison_period_end_date"])
-                )
-                if "comparison_period_end_date" in raw_context
+                date.fromisoformat(comparison_period_end_date)
+                if comparison_period_end_date is not None
                 else None
             ),
-            decimal_precision=int(raw_context["decimal_precision"]),
+            decimal_precision=decimal_precision,
         )
     except (KeyError, TypeError, ValueError) as error:
         raise AccountingValidationError(

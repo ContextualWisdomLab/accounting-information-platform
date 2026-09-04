@@ -348,6 +348,8 @@ def _period_values(
             raise AccountingValidationError("account_class_code is invalid")
         if not isinstance(chart_code, str) or chart_code.strip() != chart_code:
             raise AccountingValidationError("chart_account_code is invalid")
+        if statement_type in {"income_statement", "balance_sheet"} and not chart_code:
+            raise AccountingValidationError("chart_account_code is invalid")
         debit_amount = _amount(raw_line.get("debit_amount"), "debit_amount")
         credit_amount = _amount(raw_line.get("credit_amount"), "credit_amount")
         if debit_amount < 0 or credit_amount < 0:

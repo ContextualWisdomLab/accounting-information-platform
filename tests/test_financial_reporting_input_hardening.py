@@ -95,6 +95,33 @@ class FinancialReportingInputHardeningTests(unittest.TestCase):
                         _report_context(),
                     )
 
+    def test_absolute_uri_rejects_unescaped_whitespace(self) -> None:
+        """Do not accept whitespace that makes XBRL URI attributes non-canonical."""
+        for raw_value in (
+            "https://example.com/taxonomy schema.xsd",
+            "urn:cwl:taxonomy: profile",
+            "https://example.com/taxonomy\tschema.xsd",
+        ):
+            with self.subTest(raw_value=raw_value):
+                with self.assertRaisesRegex(
+                    AccountingValidationError,
+                    "absolute URI",
+                ):
+                    primitives._absolute_uri(raw_value, "taxonomy_uri")
+
+    def test_absolute_uri_normalizes_parser_failures_to_domain_validation(self) -> None:
+        """Malformed URI syntax must not leak urllib ValueError from a public value object."""
+        for raw_value in (
+            "https://[broken",
+            "http://[::1",
+        ):
+            with self.subTest(raw_value=raw_value):
+                with self.assertRaisesRegex(
+                    AccountingValidationError,
+                    "absolute URI",
+                ):
+                    primitives._absolute_uri(raw_value, "taxonomy_uri")
+
     def test_invalid_unicode_never_escapes_as_an_encoding_error(self) -> None:
         """Convert invalid Unicode input into the domain validation error contract."""
         with self.assertRaises(AccountingValidationError):
