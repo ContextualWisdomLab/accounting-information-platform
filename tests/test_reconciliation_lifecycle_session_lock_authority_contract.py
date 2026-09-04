@@ -15,6 +15,10 @@ MIGRATION = (
     ROOT
     / "database/migrations/0027_reconciliation_lifecycle_session_lock_authority.sql"
 )
+CAPABILITY_MIGRATION = (
+    ROOT
+    / "database/migrations/0028_reconciliation_lifecycle_capability_privileges.sql"
+)
 INSTALLER = ROOT / "src/accounting_information_platform/migration_install.py"
 SESSION_TRIGGER = "accounting_reconciliation_transition_000_session_lock_guard"
 AUTHORITY_TRIGGER = "accounting_reconciliation_transition_database_authority_guard"
@@ -59,22 +63,27 @@ class ReconciliationLifecycleSessionLockAuthorityContractTests(unittest.TestCase
         )
 
     def test_session_lock_helpers_are_not_public_capabilities(self) -> None:
-        """Anonymous database principals cannot acquire or release lifecycle authority locks."""
-        sql = MIGRATION.read_text(encoding="utf-8")
+        """Ordinary schema users cannot acquire or release lifecycle authority locks."""
+        sql = CAPABILITY_MIGRATION.read_text(encoding="utf-8")
         self.assertIn(
-            "REVOKE ALL ON FUNCTION accounting_core.acquire_reconciliation_lifecycle_session(text, uuid) FROM PUBLIC;",
+            "REVOKE ALL ON FUNCTION accounting_core.acquire_reconciliation_lifecycle_session(text, uuid)",
             sql,
         )
         self.assertIn(
-            "REVOKE ALL ON FUNCTION accounting_core.release_reconciliation_lifecycle_session(text, uuid) FROM PUBLIC;",
+            "REVOKE ALL ON FUNCTION accounting_core.release_reconciliation_lifecycle_session(text, uuid)",
             sql,
         )
+        self.assertGreaterEqual(sql.count("FROM PUBLIC;"), 2)
 
     def test_canonical_installer_requires_session_lock_authority_migration(self) -> None:
         """Supported installs cannot stop before the fresh-transaction authority guard."""
         installer = INSTALLER.read_text(encoding="utf-8")
         self.assertIn(
             "0027_reconciliation_lifecycle_session_lock_authority.sql",
+            installer,
+        )
+        self.assertIn(
+            "0028_reconciliation_lifecycle_capability_privileges.sql",
             installer,
         )
 
