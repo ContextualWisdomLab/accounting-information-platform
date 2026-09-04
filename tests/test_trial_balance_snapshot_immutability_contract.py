@@ -32,15 +32,24 @@ class TrialBalanceSnapshotImmutabilityContractTests(unittest.TestCase):
                     ROOT / "database/migrations/0001_accounting_foundation.sql",
                 )
 
-    def test_population_guard_serializes_on_book_period_authority(self) -> None:
-        """Line admission must lock the same book-period row whose hard-close state it checks."""
+    def test_population_guards_serialize_on_book_period_authority(self) -> None:
+        """Snapshot and line admission must lock the book-period state they authorize."""
         migration = MIGRATION.read_text(encoding="utf-8")
+        self.assertIn("trial_balance_snapshot_population_guard", migration)
         self.assertIn("trial_balance_line_population_guard", migration)
+        self.assertIn("FOR UPDATE;", migration)
         self.assertIn("FOR UPDATE OF accounting_book_period_control", migration)
-        self.assertIn("period_status_value = 'hard_closed'", migration)
+        self.assertGreaterEqual(migration.count("period_status_value = 'hard_closed'"), 2)
         self.assertIn("trial_balance_snapshot_immutable", migration)
-        self.assertIn("SECURITY DEFINER", migration)
-        self.assertIn("SET search_path = pg_catalog, pg_temp", migration)
+        self.assertGreaterEqual(migration.count("SECURITY DEFINER"), 2)
+        self.assertGreaterEqual(
+            migration.count("SET search_path = pg_catalog, pg_temp"),
+            2,
+        )
+        self.assertIn(
+            "REVOKE ALL ON FUNCTION accounting_reporting.guard_trial_balance_snapshot_insert()",
+            migration,
+        )
         self.assertIn(
             "REVOKE ALL ON FUNCTION accounting_reporting.guard_trial_balance_line_insert()",
             migration,
