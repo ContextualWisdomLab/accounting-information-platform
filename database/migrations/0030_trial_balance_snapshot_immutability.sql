@@ -59,6 +59,7 @@ AS $$
 DECLARE
     period_status_value text;
     book_legal_entity_id uuid;
+    book_reporting_currency_code text;
     journal_write_role_value text;
     close_command_lock_held boolean;
 BEGIN
@@ -76,8 +77,10 @@ BEGIN
             USING ERRCODE = 'check_violation';
     END IF;
 
-    SELECT accounting_book.legal_entity_id
-      INTO book_legal_entity_id
+    SELECT accounting_book.legal_entity_id,
+           accounting_book.reporting_currency_code
+      INTO book_legal_entity_id,
+           book_reporting_currency_code
       FROM accounting_core.accounting_book
      WHERE accounting_book.tenant_account_id = NEW.tenant_account_id
        AND accounting_book.accounting_book_id = NEW.accounting_book_id;
@@ -86,6 +89,13 @@ BEGIN
        AND book_legal_entity_id IS DISTINCT FROM NEW.legal_entity_id THEN
         RAISE EXCEPTION
             'trial balance snapshot legal entity must own the accounting book (trial_balance_snapshot_book_entity_mismatch)'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    IF book_reporting_currency_code IS NOT NULL
+       AND book_reporting_currency_code IS DISTINCT FROM NEW.snapshot_currency_code THEN
+        RAISE EXCEPTION
+            'trial balance snapshot currency must match the accounting book reporting currency (trial_balance_snapshot_currency_mismatch)'
             USING ERRCODE = 'check_violation';
     END IF;
 
