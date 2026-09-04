@@ -85,6 +85,10 @@ BEGIN
             USING ERRCODE = 'check_violation';
     END IF;
 
+    -- Snapshot chronology is an AIS system-time fact. A purpose-limited closing
+    -- writer may supply accounting evidence but cannot select the recording clock.
+    NEW.snapshot_generated_at := clock_timestamp();
+
     IF EXISTS (
         SELECT 1
           FROM accounting_reporting.trial_balance_snapshot
