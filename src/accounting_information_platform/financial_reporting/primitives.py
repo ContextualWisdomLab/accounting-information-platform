@@ -76,6 +76,8 @@ def _xml_text(text_value: str, field_name: str) -> None:
 def _absolute_uri(raw_value: object, field_name: str) -> str:
     """Require an XML-safe absolute HTTP, HTTPS, or URN identifier."""
     uri_text = _required_text(raw_value, field_name)
+    if any(character.isspace() for character in uri_text):
+        raise AccountingValidationError(f"{field_name} must be an absolute URI")
     parsed_uri = urlparse(uri_text)
     if parsed_uri.scheme.lower() not in _URI_SCHEMES:
         raise AccountingValidationError(f"{field_name} must be an absolute URI")
