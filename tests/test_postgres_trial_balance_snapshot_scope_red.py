@@ -206,6 +206,66 @@ class TrialBalanceSnapshotScopePostgresTests(unittest.TestCase):
                     (self.case.tenant_id, snapshot_id, other_chart_account_id),
                 )
 
+    def test_snapshot_line_rejects_nonconserving_net_balance(self) -> None:
+        """Retained debit, credit, and net values must conserve exact trial-balance arithmetic."""
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            legal_entity_id, accounting_book_id, fiscal_period_id = self._scope(connection)
+            chart_account_id = connection.execute(
+                """
+                SELECT chart_account.chart_account_id
+                FROM accounting_core.chart_account
+                WHERE chart_account.tenant_account_id = %s
+                  AND chart_account.accounting_book_id = %s
+                ORDER BY chart_account.chart_account_code
+                LIMIT 1
+                """,
+                (self.case.tenant_id, accounting_book_id),
+            ).fetchone()[0]
+            self._enable_period_closing_classification(connection)
+            snapshot_id = connection.execute(
+                """
+                INSERT INTO accounting_reporting.trial_balance_snapshot (
+                    tenant_account_id,
+                    legal_entity_id,
+                    accounting_book_id,
+                    fiscal_period_id,
+                    snapshot_currency_code,
+                    source_journal_count,
+                    source_payload_hash,
+                    close_idempotency_key
+                )
+                VALUES (%s, %s, %s, %s, 'KRW', 0, %s, %s)
+                RETURNING trial_balance_snapshot_id
+                """,
+                (
+                    self.case.tenant_id,
+                    legal_entity_id,
+                    accounting_book_id,
+                    fiscal_period_id,
+                    "sha256:" + "9" * 64,
+                    f"{self.case.policy.tenant_reference}:snapshot-scope:arithmetic",
+                ),
+            ).fetchone()[0]
+
+            with self.assertRaisesRegex(
+                psycopg.errors.CheckViolation,
+                "trial_balance_line_net_balance_conservation",
+            ):
+                connection.execute(
+                    """
+                    INSERT INTO accounting_reporting.trial_balance_line (
+                        tenant_account_id,
+                        trial_balance_snapshot_id,
+                        chart_account_id,
+                        debit_total_amount,
+                        credit_total_amount,
+                        net_balance_amount
+                    )
+                    VALUES (%s, %s, %s, 10.250000, 3.125000, 999.000000)
+                    """,
+                    (self.case.tenant_id, snapshot_id, chart_account_id),
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
