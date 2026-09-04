@@ -78,7 +78,10 @@ def _absolute_uri(raw_value: object, field_name: str) -> str:
     uri_text = _required_text(raw_value, field_name)
     if any(character.isspace() for character in uri_text):
         raise AccountingValidationError(f"{field_name} must be an absolute URI")
-    parsed_uri = urlparse(uri_text)
+    try:
+        parsed_uri = urlparse(uri_text)
+    except ValueError as error:
+        raise AccountingValidationError(f"{field_name} must be an absolute URI") from error
     if parsed_uri.scheme.lower() not in _URI_SCHEMES:
         raise AccountingValidationError(f"{field_name} must be an absolute URI")
     if parsed_uri.scheme.lower() in {"http", "https"} and not parsed_uri.netloc:
