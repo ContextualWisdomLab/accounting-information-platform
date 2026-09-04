@@ -253,8 +253,8 @@ class TrialBalanceSnapshotPreCloseAuthorityPostgresTests(unittest.TestCase):
             idempotency_key=f"{self.case.policy.tenant_reference}:snapshot-preclose:soft",
         )
 
-    def test_preexisting_future_snapshot_cannot_become_hard_close_authority(self) -> None:
-        """A forged pre-close row must make hard close fail closed instead of becoming latest evidence."""
+    def test_preexisting_snapshot_from_closing_capability_cannot_become_hard_close_authority(self) -> None:
+        """A purpose-limited pre-close row must make hard close fail closed, not become authority."""
         with psycopg.connect(posting.DATABASE_URL) as connection:
             scope = connection.execute(
                 """
@@ -289,6 +289,9 @@ class TrialBalanceSnapshotPreCloseAuthorityPostgresTests(unittest.TestCase):
             self.assertIsNotNone(scope)
             assert scope is not None
             legal_entity_id, accounting_book_id, fiscal_period_id = scope
+            connection.execute(
+                "SELECT set_config('accounting_core.journal_write_role', 'period_closing', true)"
+            )
             connection.execute(
                 """
                 INSERT INTO accounting_reporting.trial_balance_snapshot (
