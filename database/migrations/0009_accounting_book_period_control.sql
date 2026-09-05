@@ -22,13 +22,10 @@ CREATE INDEX accounting_book_period_scope_index
         tenant_account_id, accounting_book_id, fiscal_period_id, period_status_code
     );
 
-ALTER TABLE accounting_core.accounting_book_period_control ENABLE ROW LEVEL SECURITY;
-ALTER TABLE accounting_core.accounting_book_period_control FORCE ROW LEVEL SECURITY;
-CREATE POLICY accounting_book_period_isolation
-    ON accounting_core.accounting_book_period_control
-    USING (tenant_account_id = accounting_core.current_tenant_account_id())
-    WITH CHECK (tenant_account_id = accounting_core.current_tenant_account_id());
-
+-- The migration owner can be an unbound NOSUPERUSER/NOBYPASSRLS role. Seed
+-- existing tenant/book/period authority before FORCE RLS makes the table owner
+-- subject to the runtime tenant policy. Runtime access is still never granted
+-- before the migration transaction commits.
 INSERT INTO accounting_core.accounting_book_period_control (
     tenant_account_id, accounting_book_id, fiscal_period_id,
     period_status_code, period_closed_at
@@ -43,6 +40,13 @@ JOIN accounting_core.fiscal_period
   ON fiscal_period.tenant_account_id = accounting_book.tenant_account_id
 WHERE accounting_book.valid_to IS NULL
 ON CONFLICT (tenant_account_id, accounting_book_id, fiscal_period_id) DO NOTHING;
+
+ALTER TABLE accounting_core.accounting_book_period_control ENABLE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.accounting_book_period_control FORCE ROW LEVEL SECURITY;
+CREATE POLICY accounting_book_period_isolation
+    ON accounting_core.accounting_book_period_control
+    USING (tenant_account_id = accounting_core.current_tenant_account_id())
+    WITH CHECK (tenant_account_id = accounting_core.current_tenant_account_id());
 
 CREATE OR REPLACE FUNCTION accounting_core.guard_period_insert()
 RETURNS trigger
