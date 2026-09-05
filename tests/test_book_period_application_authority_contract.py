@@ -47,6 +47,21 @@ class BookPeriodApplicationAuthorityContractTests(unittest.TestCase):
         self.assertIn("JOIN accounting_core.accounting_book_period_control", source)
         self.assertIn("accounting_book_period_control.period_status_code", source)
 
+    def test_trial_balance_read_uses_book_scoped_close_authority(self) -> None:
+        """A hard-closed book must not inherit an open sibling's calendar projection."""
+        source = inspect.getsource(PostgresPostingLedger.load_period_trial_balance)
+
+        self.assertIn(
+            "_load_book_period_state(",
+            source,
+            "trial balance must select live versus retained evidence from book-period authority",
+        )
+        self.assertNotIn(
+            "_require_fiscal_period(",
+            source,
+            "trial balance must not infer one book's close state from fiscal_period",
+        )
+
     def test_authority_cleanup_preserves_unrelated_persistence_surfaces(self) -> None:
         """A focused period-authority edit must not erase unrelated accounting reads."""
         required_methods = (
