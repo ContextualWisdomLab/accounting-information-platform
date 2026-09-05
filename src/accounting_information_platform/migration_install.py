@@ -33,6 +33,7 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
         migration_path.parent / "0034_book_period_control_seed.sql",
         migration_path.parent / "0035_trial_balance_snapshot_hard_close_pair.sql",
         migration_path.parent / "0036_hard_close_trial_balance_snapshot_pair.sql",
+        migration_path.parent / "0037_soft_close_command_evidence_pair.sql",
     )
     for forward_migration_path in forward_migration_paths:
         if not forward_migration_path.is_file():
