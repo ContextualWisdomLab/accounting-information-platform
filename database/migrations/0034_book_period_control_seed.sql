@@ -6,6 +6,15 @@ BEGIN;
 -- later fiscal periods or accounting books could otherwise reach the journal
 -- guard without a materialized book-period authority.
 --
+-- fiscal_period.period_status_code is only the tenant/calendar compatibility
+-- projection after book-scoped close control exists. A newly created book or a
+-- newly inserted non-open period has no retained per-book close evidence from
+-- which soft_closed/hard_closed could be derived. Automatic seeding therefore
+-- creates controls only for periods that are actually open and always starts
+-- the new book-period authority as open. Missing controls for non-open periods
+-- fail closed until an explicit book-period lifecycle can establish authority;
+-- the compatibility projection is never copied into authoritative close state.
+--
 -- The two AFTER INSERT triggers also form one cross-product invariant. Without
 -- a pre-existing common version witness, concurrent transactions can each
 -- insert one side, scan before the other side commits, and leave the new
@@ -25,6 +34,10 @@ SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
 AS $$
 BEGIN
+    IF NEW.period_status_code IS DISTINCT FROM 'open' THEN
+        RETURN NEW;
+    END IF;
+
     UPDATE accounting_core.tenant_account AS tenant
     SET created_at = tenant.created_at
     WHERE tenant.tenant_account_id = NEW.tenant_account_id;
@@ -39,8 +52,8 @@ BEGIN
     SELECT NEW.tenant_account_id,
            accounting_book.accounting_book_id,
            NEW.fiscal_period_id,
-           NEW.period_status_code,
-           NEW.period_closed_at
+           'open',
+           NULL
     FROM accounting_core.accounting_book
     WHERE accounting_book.tenant_account_id = NEW.tenant_account_id
       AND accounting_book.valid_to IS NULL
@@ -88,10 +101,11 @@ BEGIN
     SELECT NEW.tenant_account_id,
            NEW.accounting_book_id,
            fiscal_period.fiscal_period_id,
-           fiscal_period.period_status_code,
-           fiscal_period.period_closed_at
+           'open',
+           NULL
     FROM accounting_core.fiscal_period
     WHERE fiscal_period.tenant_account_id = NEW.tenant_account_id
+      AND fiscal_period.period_status_code = 'open'
     ON CONFLICT (
         tenant_account_id,
         accounting_book_id,
@@ -119,6 +133,10 @@ CREATE TRIGGER book_period_control_seed_for_book
 -- RLS remains enabled for non-owner roles. The same transaction restores FORCE
 -- on every source/target table before commit. ALTER TABLE's locking also keeps
 -- concurrent runtime traffic from observing a partially changed owner policy.
+--
+-- This repair fills only missing open controls. A missing non-open book-period
+-- pair cannot be reconstructed from fiscal_period's compatibility projection,
+-- because that projection is not retained per-book close evidence.
 ALTER TABLE accounting_core.accounting_book NO FORCE ROW LEVEL SECURITY;
 ALTER TABLE accounting_core.fiscal_period NO FORCE ROW LEVEL SECURITY;
 ALTER TABLE accounting_core.accounting_book_period_control NO FORCE ROW LEVEL SECURITY;
@@ -134,12 +152,13 @@ INSERT INTO accounting_core.accounting_book_period_control (
 SELECT accounting_book.tenant_account_id,
        accounting_book.accounting_book_id,
        fiscal_period.fiscal_period_id,
-       fiscal_period.period_status_code,
-       fiscal_period.period_closed_at
+       'open',
+       NULL
 FROM accounting_core.accounting_book
 JOIN accounting_core.fiscal_period
   ON fiscal_period.tenant_account_id = accounting_book.tenant_account_id
 WHERE accounting_book.valid_to IS NULL
+  AND fiscal_period.period_status_code = 'open'
 ON CONFLICT (
     tenant_account_id,
     accounting_book_id,
