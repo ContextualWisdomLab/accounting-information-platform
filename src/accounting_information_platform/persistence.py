@@ -5328,7 +5328,7 @@ class PostgresPostingLedger:
         income_rows = connection.execute(
             """
             SELECT chart_account.chart_account_code,
-                   account_role_mapping.account_role_code,
+                   journal_entry_line.account_role_code,
                    SUM(journal_entry_line.debit_amount),
                    SUM(journal_entry_line.credit_amount)
             FROM accounting_core.journal_entry_line
@@ -5338,18 +5338,15 @@ class PostgresPostingLedger:
             JOIN accounting_core.chart_account
               ON chart_account.tenant_account_id = journal_entry_line.tenant_account_id
              AND chart_account.chart_account_id = journal_entry_line.chart_account_id
-            JOIN accounting_core.account_role_mapping
-              ON account_role_mapping.tenant_account_id = chart_account.tenant_account_id
-             AND account_role_mapping.chart_account_id = chart_account.chart_account_id
-             AND account_role_mapping.valid_to IS NULL
             WHERE general_journal.tenant_account_id = %s
               AND general_journal.legal_entity_id = %s
               AND general_journal.accounting_book_id = %s
               AND general_journal.accounting_date <= %s
-              AND account_role_mapping.account_role_code IN (
+              AND journal_entry_line.account_role_code IN (
                     'usage_revenue', 'write_off_expense'
                   )
-            GROUP BY chart_account.chart_account_code, account_role_mapping.account_role_code
+            GROUP BY chart_account.chart_account_code,
+                     journal_entry_line.account_role_code
             ORDER BY chart_account.chart_account_code
             """,
             (tenant_id, legal_entity_id, book_id, period_end_date),
