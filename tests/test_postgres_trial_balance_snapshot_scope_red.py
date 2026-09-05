@@ -64,10 +64,18 @@ class TrialBalanceSnapshotScopePostgresTests(unittest.TestCase):
         assert row is not None
         return row
 
-    @staticmethod
-    def _enable_period_closing_classification(connection: psycopg.Connection[object]) -> None:
+    def _acquire_period_close_authority(
+        self,
+        connection: psycopg.Connection[object],
+        accounting_book_id: object,
+    ) -> None:
+        """Acquire the exact transaction-scoped close lock required by snapshot admission."""
         connection.execute(
-            "SELECT set_config('accounting_core.journal_write_role', 'period_closing', true)"
+            "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+            (
+                self.case.policy.tenant_reference,
+                f"period:{accounting_book_id}:2026-08",
+            ),
         )
 
     def test_snapshot_header_rejects_legal_entity_from_another_book_scope(self) -> None:
@@ -92,7 +100,7 @@ class TrialBalanceSnapshotScopePostgresTests(unittest.TestCase):
                     posting.VALID_FROM,
                 ),
             ).fetchone()[0]
-            self._enable_period_closing_classification(connection)
+            self._acquire_period_close_authority(connection, accounting_book_id)
 
             with self.assertRaisesRegex(
                 psycopg.errors.CheckViolation,
@@ -161,7 +169,7 @@ class TrialBalanceSnapshotScopePostgresTests(unittest.TestCase):
                 """,
                 (self.case.tenant_id, other_book_id, posting.VALID_FROM),
             ).fetchone()[0]
-            self._enable_period_closing_classification(connection)
+            self._acquire_period_close_authority(connection, accounting_book_id)
             snapshot_id = connection.execute(
                 """
                 INSERT INTO accounting_reporting.trial_balance_snapshot (
@@ -221,7 +229,7 @@ class TrialBalanceSnapshotScopePostgresTests(unittest.TestCase):
                 """,
                 (self.case.tenant_id, accounting_book_id),
             ).fetchone()[0]
-            self._enable_period_closing_classification(connection)
+            self._acquire_period_close_authority(connection, accounting_book_id)
             snapshot_id = connection.execute(
                 """
                 INSERT INTO accounting_reporting.trial_balance_snapshot (
