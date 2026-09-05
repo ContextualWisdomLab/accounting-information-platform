@@ -67,8 +67,8 @@ class OpenPeriodFenceInstallerContractTests(unittest.TestCase):
             seeder.index("INSERT INTO accounting_core.period_journal_population_fence"),
         )
 
-    def test_runtime_binding_guard_preserves_database_roles_that_bypass_rls(self) -> None:
-        """The explicit guard must not be stricter than PostgreSQL's own RLS bypass semantics."""
+    def test_runtime_binding_guard_preserves_effective_roles_that_bypass_rls(self) -> None:
+        """The explicit guard must not be stricter than PostgreSQL's effective-role RLS rules."""
         migration = OPEN_PERIOD_FENCE_MIGRATION.read_text(encoding="utf-8")
         start = migration.index(
             "CREATE OR REPLACE FUNCTION accounting_core.seed_period_journal_population_fence()"
@@ -81,7 +81,7 @@ class OpenPeriodFenceInstallerContractTests(unittest.TestCase):
         self.assertIn("pg_catalog.pg_roles", seeder)
         self.assertIn("rolsuper", seeder)
         self.assertIn("rolbypassrls", seeder)
-        self.assertIn("session_user", seeder)
+        self.assertIn("current_user", seeder)
         self.assertLess(
             seeder.index("rolbypassrls"),
             seeder.index("accounting_core.current_tenant_account_id()"),
