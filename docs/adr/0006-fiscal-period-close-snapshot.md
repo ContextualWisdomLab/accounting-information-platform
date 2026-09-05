@@ -57,6 +57,14 @@ The 64-slot count is an engineering hypothesis, not accounting policy and not an
 
 A serialization failure is not accounting evidence. The entire transaction rolls back and the command retries from the beginning with the same immutable source-payload identity and idempotency key. No failed close may leave a retained snapshot, period-closing journal, close event, or authoritative period transition.
 
+### Master-data seeding under forced tenant RLS
+
+Migration `0034_book_period_control_seed.sql` makes the book-period authority lifecycle complete after installation: inserting either a new fiscal period or a new active accounting book materializes the missing `accounting_book_period_control` pairs and synchronously seeds all 64 freshness rows. Its upgrade backfill is intentionally cross-tenant because it repairs every pre-existing active book-period pair.
+
+PostgreSQL normally lets a table owner bypass row security, but `FORCE ROW LEVEL SECURITY` makes that owner subject to the policy; `SUPERUSER` and `BYPASSRLS` remain separate exceptional capabilities. A production migration owner is not required to hold either capability or a runtime tenant binding. Migration 0009 therefore performs its one-time cross-tenant control backfill before FORCE RLS is enabled. Migration 0034 keeps RLS enabled but temporarily applies `NO FORCE ROW LEVEL SECURITY` to both the control table and the 64-stripe fence table for the owner-only repair window, then restores FORCE on both before the migration transaction commits. This is not a runtime gate weakening: non-owner roles remain subject to RLS throughout, and the committed schema remains FORCE RLS protected.
+
+The migration must run as the owner of those tables; it must not solve installation by granting `BYPASSRLS`, impersonating a tenant, disabling row security, or copying tenant truth into an installer-side cache. `tests/test_book_period_control_seed_contract.py` pins the ordering and requires that the repair never uses `DISABLE ROW LEVEL SECURITY`.
+
 ### Remaining application advisory-lock hotspot
 
 The striped database fence is not yet an end-to-end posting-concurrency GREEN. `PostgresPostingLedger._require_open_book_period_bounds()` still acquires the same exclusive tenant/resolved-book/period advisory lock used by `close_fiscal_period()` for every ordinary Billing proposal. That makes unrelated ordinary postings for one open book-period queue before either reaches the striped database boundary.
@@ -85,15 +93,17 @@ Using only a trigger-side existence query for retained snapshots was rejected be
 
 Allowing caller-provided close timestamps, currencies, aggregate identifiers, or retained arithmetic was rejected because those values are accounting evidence and must be derived or verified at the authoritative database boundary.
 
+Granting the migration role `BYPASSRLS`, disabling RLS for the backfill, or binding an infrastructure role to a fabricated runtime tenant was rejected. Those approaches turn an installation concern into standing or misleading runtime authority. Owner-only `NO FORCE` inside the uncommitted migration preserves the tenant policy for runtime roles and restores FORCE before any new schema state commits.
+
 ## Consequences and operational evidence
 
 At the database boundary, open-period posting performs a shared control-row lock plus one striped revision UPDATE rather than one exclusive UPDATE on the common book-period row. This removes the deliberate database single-row hotspot. The current application advisory mutex still serializes ordinary proposals and is a release-blocking repair finding for the stated hot-path goal.
 
 After that source repair, PostgreSQL row locking and same-slot collisions still have measurable cost. Release evidence must use realistic concurrent posting and transition workloads and report advisory-lock waits, row-lock waits, stripe distribution, failures, retry rates, WAL/write cost, and tail latency without sample reduction, excluded failures, or artificial cache warm-up.
 
-Migration 0033 creates a new tenant-scoped table under RLS/FORCE RLS. The cross-tenant migration backfill occurs before FORCE RLS is enabled so a non-superuser schema owner can seed every existing book-period without impersonating one runtime tenant. Future rows are seeded from the book-period-control INSERT transaction and stay in that tenant scope. Guard functions are `SECURITY DEFINER`, use `search_path = pg_catalog, pg_temp`, and revoke PUBLIC execute.
+Migration 0033 creates a new tenant-scoped table under RLS/FORCE RLS. Its initial cross-tenant fence backfill occurs before FORCE RLS is enabled so a non-superuser schema owner can seed every existing book-period without impersonating one runtime tenant. Migration 0034 later repairs missing book-period controls under an owner-only `NO FORCE` window on both forced-RLS target tables and restores FORCE before commit. Future rows are seeded from the book-period-control INSERT transaction and stay in that tenant scope. Guard functions are `SECURITY DEFINER`, use `search_path = pg_catalog, pg_temp`, and revoke PUBLIC execute.
 
-The migration chain has distinct recovery states. A failed 0029 concurrent index build can leave an invalid index that operators must remove or rebuild before retry. A failed 0031 validation leaves the constraint enforced for subsequent writes but inherited rows uncertified. A failed 0033 migration transaction rolls back its table, trigger, function, policy, and seed population together. A runtime SQLSTATE `40001` leaves no authoritative close result and requires a whole-command retry. Recovery must never normalize or rewrite posted journals, reconciliation evidence, or retained close facts.
+The migration chain has distinct recovery states. A failed 0029 concurrent index build can leave an invalid index that operators must remove or rebuild before retry. A failed 0031 validation leaves the constraint enforced for subsequent writes but inherited rows uncertified. Failed 0033 or 0034 migration transactions roll back their tables/triggers/functions/policies or owner-force toggles and seed population together. A runtime SQLSTATE `40001` leaves no authoritative close result and requires a whole-command retry. Recovery must never normalize or rewrite posted journals, reconciliation evidence, or retained close facts.
 
 Future reopen/correction is not implemented here. Any later reopen policy must preserve the prior hard-close population through explicit successor lineage and a replacement population identity/version invariant rather than mutating retained evidence or weakening uniqueness.
 
@@ -120,3 +130,5 @@ PostgreSQL Global Development Group. (2026f). *PostgreSQL 18 documentation: Uniq
 PostgreSQL Global Development Group. (2026g). *PostgreSQL 18 documentation: pg_locks*. https://www.postgresql.org/docs/18/view-pg-locks.html
 
 PostgreSQL Global Development Group. (2026h). *PostgreSQL 18 documentation: Advisory lock functions*. https://www.postgresql.org/docs/18/functions-admin.html#FUNCTIONS-ADVISORY-LOCKS
+
+PostgreSQL Global Development Group. (2026i). *PostgreSQL 18 documentation: Row security policies*. https://www.postgresql.org/docs/18/ddl-rowsecurity.html
