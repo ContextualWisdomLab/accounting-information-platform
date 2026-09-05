@@ -11,9 +11,9 @@ PERSISTENCE = ROOT / "src/accounting_information_platform/persistence.py"
 
 
 class OpenPeriodApplicationLockContractTests(unittest.TestCase):
-    """Keep ordinary posting from collapsing onto the close-command advisory mutex."""
+    """Keep ordinary posting from collapsing onto close-command advisory mutexes."""
 
-    def test_open_period_lookup_does_not_take_exclusive_close_command_lock(self) -> None:
+    def test_open_period_lookup_does_not_take_close_command_lock(self) -> None:
         """Database admission owns journal/transition ordering; ordinary posts need no close mutex."""
         source = PERSISTENCE.read_text(encoding="utf-8")
         helper_start = source.index("    def _require_open_book_period_bounds(")
@@ -21,14 +21,14 @@ class OpenPeriodApplicationLockContractTests(unittest.TestCase):
         helper_source = source[helper_start:helper_end]
 
         self.assertNotIn(
-            'self._acquire_command_lock(connection, f"period:{book_id}:{period_code}")',
+            "self._acquire_command_lock(",
             helper_source,
-            "ordinary open-period posting still serializes on the exclusive period-close advisory lock",
+            "ordinary open-period lookup must not acquire a command-level advisory mutex",
         )
-        self.assertGreaterEqual(
-            helper_source.count("period_status_code"),
-            2,
-            "removing the advisory mutex must retain the before/after open-state verification",
+        self.assertIn(
+            'if row[2] != "open":',
+            helper_source,
+            "removing the advisory mutex must retain fail-closed application validation for a non-open period",
         )
 
 
