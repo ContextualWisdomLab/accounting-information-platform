@@ -29,6 +29,29 @@ class BookPeriodControlSeedContractTests(unittest.TestCase):
         )
         self.assertGreaterEqual(source.count("ON CONFLICT"), 3)
 
+    def test_opposite_side_seeders_share_tenant_serialization_row(self) -> None:
+        """Concurrent book/period creation must not let both trigger scans miss uncommitted peers."""
+        source = MIGRATION.read_text(encoding="utf-8")
+        period_function = source[
+            source.index("CREATE OR REPLACE FUNCTION accounting_core.seed_book_period_control_for_period()") :
+            source.index("CREATE TRIGGER book_period_control_seed_for_period")
+        ]
+        book_function = source[
+            source.index("CREATE OR REPLACE FUNCTION accounting_core.seed_book_period_control_for_book()") :
+            source.index("CREATE TRIGGER book_period_control_seed_for_book")
+        ]
+
+        for function_source in (period_function, book_function):
+            tenant_lock = function_source.index("FROM accounting_core.tenant_account AS tenant")
+            no_key_update = function_source.index("FOR NO KEY UPDATE;", tenant_lock)
+            control_insert = function_source.index(
+                "INSERT INTO accounting_core.accounting_book_period_control ("
+            )
+            self.assertLess(tenant_lock, no_key_update)
+            self.assertLess(no_key_update, control_insert)
+
+        self.assertEqual(source.count("FOR NO KEY UPDATE;"), 2)
+
     def test_trigger_functions_use_hardened_execution_context(self) -> None:
         """Master-data triggers must not inherit caller-controlled object resolution."""
         source = MIGRATION.read_text(encoding="utf-8")
