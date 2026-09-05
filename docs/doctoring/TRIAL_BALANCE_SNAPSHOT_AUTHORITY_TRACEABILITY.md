@@ -62,14 +62,24 @@ Snapshot admission and snapshot selection are separate authority boundaries. A r
 
 Static RED `3ff7ac365bf2e8d15c44f6a47a5f6b568906874b` therefore requires `PostgresPostingLedger.load_period_trial_balance()` to consume `_load_book_period_state()` and rejects `_require_fiscal_period()` as the source of close-state selection. Real-PostgreSQL RED `a26e35a7a5782ba1d3401f274e61f8ac168da0d6` hard-closes one statutory book while an active sibling remains open, then requires the default statutory read to report `period_status_code=hard_closed`, `balance_source_code=snapshot`, and the exact retained `snapshot_record_id`.
 
-The minimal production repair is deliberately narrow: resolve the requested book first, load its exact `accounting_book_period_control` state, fail closed when that control is absent, and use that selected-book status to choose retained snapshot versus live aggregation. Do not change aggregate calendar semantics, synthesize missing control rows, add a Reporting-owned close-state copy, or weaken explicit `unadjusted`/`adjusted` worksheet semantics.
+Production repair `9af6fe8aa534195ca040cfc3f1b5d7c85612650a` resolves the requested book first, loads its exact `accounting_book_period_control` state, fails closed when that control is absent, and uses that selected-book status to choose retained snapshot versus live aggregation. It does not change aggregate calendar semantics, synthesize missing control rows, add a Reporting-owned close-state copy, or weaken explicit `unadjusted`/`adjusted` worksheet semantics.
 
-The two RED commits are not production GREEN or release evidence. Their exact-head PostgreSQL/Accounting Foundation execution and the production helper repair are still required before this read boundary is complete.
+## Commit-time snapshot/status pairing
+
+Insert-time snapshot admission and commit-time Period Close authority are different checks. The canonical hard-close transaction inserts the retained snapshot while the selected `accounting_book_period_control` is still `soft_closed`, writes the retained lines, and only then advances that exact control to `hard_closed`. Consequently an immediate insert trigger cannot require `hard_closed` without breaking the valid command, but the previous database contract also allowed a purpose-limited closing session holding the exact close lock to insert a snapshot and commit while leaving the book-period `soft_closed`.
+
+Real-PostgreSQL RED `1c1360ebf9d0ab0ece0237b820567ff834999abe` reproduces that boundary: it acquires the exact tenant/book/period close lock, inserts a valid retained snapshot into a soft-closed book-period, and requires transaction commit to fail rather than retain unpaired close evidence. Migration `0035_trial_balance_snapshot_hard_close_pair.sql` in repair `9c810ea3f96fe0a79c94128a8569e0c7472be665` adds an `AFTER INSERT` constraint trigger declared `DEFERRABLE INITIALLY DEFERRED`. At deferred execution it resolves the exact tenant/book/period control and raises `trial_balance_snapshot_hard_close_pair_required` unless the final status is `hard_closed`. Installer commit `1a9f28c56102f1eda617a49e9880d31025f3caca` makes 0035 part of every supported foundation install, and static ratchet `9c17dab313870e851c484a4f214d7609364e6c30` pins the deferred timing, hardened function boundary, diagnostic, and installer membership.
+
+PostgreSQL 18 explicitly permits constraint triggers to run at the end of the containing transaction and requires them to be `AFTER ROW` triggers; `DEFERRABLE INITIALLY DEFERRED` therefore matches the transaction shape rather than inventing an application-side second authority. If the deferred check fails, PostgreSQL aborts the transaction, so the snapshot, its lines, the later status change, and close outbox work do not become a partially committed accounting fact. Recovery is a whole-command retry after the defect is corrected; operators must not relabel the book-period or manually insert/delete retained evidence to satisfy the guard.
+
+This commit-pair invariant is an AIP DDD/database consistency decision. IFRS does not prescribe PostgreSQL constraint-trigger timing. ADR 0006 already defines hard close as one snapshot-and-status transaction; migration 0035 makes that existing decision enforceable at the commit boundary.
 
 ## References
 
-PostgreSQL Global Development Group. (2026). *PostgreSQL 18 documentation: System administration functions*. https://www.postgresql.org/docs/18/functions-admin.html
+PostgreSQL Global Development Group. (2026a). *PostgreSQL 18 documentation: System administration functions*. https://www.postgresql.org/docs/18/functions-admin.html
 
-PostgreSQL Global Development Group. (2026). *PostgreSQL 18 documentation: pg_locks*. https://www.postgresql.org/docs/18/view-pg-locks.html
+PostgreSQL Global Development Group. (2026b). *PostgreSQL 18 documentation: pg_locks*. https://www.postgresql.org/docs/18/view-pg-locks.html
 
-PostgreSQL Global Development Group. (2026). *PostgreSQL 18 documentation: Setting parameters*. https://www.postgresql.org/docs/18/config-setting.html
+PostgreSQL Global Development Group. (2026c). *PostgreSQL 18 documentation: Setting parameters*. https://www.postgresql.org/docs/18/config-setting.html
+
+PostgreSQL Global Development Group. (2026d). *PostgreSQL 18 documentation: CREATE TRIGGER*. https://www.postgresql.org/docs/18/sql-createtrigger.html
