@@ -12,7 +12,7 @@ The closing journal zeros catalog `usage_revenue` 410100 and `write_off_expense`
 
 `GET /financial-statements?statement_type_code=income_statement` excludes AIS closing journals (`journal_reference` prefix `urn:cwl:accounting:general_journal:period_closing:`) so period earnings match the pre-close profit or loss. `GET /financial-statements?statement_type_code=balance_sheet` after hard-close includes `310100` and returns `net_income_amount` `0` because those earnings now sit in equity. `GET /trial-balances` after hard-close is the snapshot that includes the closing journal.
 
-IAS 1 requires a statement of financial position that presents equity separately from profit or loss for the period (IFRS Foundation, 2022). The closing process transfers that period result into equity so the next period’s sheet does not carry a floating earnings plug.
+IAS 1 requires a statement of financial position and a statement presenting profit or loss and other comprehensive income as part of a complete set of financial statements. IFRS 18, issued in April 2024, replaces IAS 1 for annual reporting periods beginning on or after 1 January 2027, with earlier application permitted. The repository must therefore treat IAS 1 versus early/mandatory IFRS 18 presentation as a versioned reporting-standard profile rather than making this database close mechanism depend on an IAS 1-only assumption. The closing process here transfers period result into equity; neither IAS 1 nor IFRS 18 prescribes the PostgreSQL mechanism used to do so.
 
 ## Proposed amendment on PR #53: posted temporal authority
 
@@ -26,7 +26,7 @@ The close command must also keep its authority boundary distinct from buyer-faci
 
 The posted-role executable acceptance is `tests/test_postgres_period_close_posted_role_stability_red.py` plus `tests/test_period_close_posted_role_source_contract.py`. Posted-account acceptance adds `tests/test_postgres_period_close_posted_account_identity_red.py` and `tests/test_period_close_posted_account_identity_source_contract.py`. Detailed RED/candidate lineage, alternatives, scope-preservation evidence and rollback boundaries are maintained in `docs/doctoring/PERIOD_CLOSE_POSTED_ROLE_TRACEABILITY.md` and `docs/doctoring/PERIOD_CLOSE_POSTED_ACCOUNT_IDENTITY_TRACEABILITY.md`.
 
-This temporal-authority split is an AIP DDD/audit-evidence control. IAS 1 does not prescribe PostgreSQL identifiers, joins, triggers, effective-dated implementation, or the separation between the close command and buyer-report projection.
+This temporal-authority split is an AIP DDD/audit-evidence control. IAS 1 and IFRS 18 do not prescribe PostgreSQL identifiers, joins, triggers, effective-dated implementation, or the separation between the close command and buyer-report projection.
 
 ## Consequences
 
