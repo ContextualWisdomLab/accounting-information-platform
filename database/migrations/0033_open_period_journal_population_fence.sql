@@ -237,8 +237,10 @@ CREATE TRIGGER period_state_transition_population_fence
     EXECUTE FUNCTION accounting_core.guard_period_state_transition_freshness();
 
 -- Preserve the purpose-limited snapshot writer while restoring the supported
--- direct open-to-hard-close command. An open-period snapshot requires the exact
--- tenant/book/period close advisory lock; a bare role/GUC cannot pre-populate it.
+-- direct open-to-hard-close command. Both open and soft-closed snapshots require
+-- the exact tenant/book/period close advisory lock. The caller-controlled
+-- journal_write_role GUC remains journal-admission context only and cannot mint
+-- retained close evidence by itself.
 CREATE OR REPLACE FUNCTION accounting_reporting.guard_trial_balance_snapshot_insert()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -249,7 +251,6 @@ DECLARE
     period_status_value text;
     book_legal_entity_id uuid;
     book_reporting_currency_code text;
-    journal_write_role_value text;
     close_command_lock_held boolean;
 BEGIN
     SELECT accounting_book_period_control.period_status_code
@@ -294,11 +295,6 @@ BEGIN
             USING ERRCODE = 'check_violation';
     END IF;
 
-    journal_write_role_value := nullif(
-        current_setting('accounting_core.journal_write_role', true),
-        ''
-    );
-
     SELECT EXISTS (
         SELECT 1
           FROM pg_catalog.pg_locks AS held_lock
@@ -330,17 +326,9 @@ BEGIN
            )
     ) INTO close_command_lock_held;
 
-    IF NOT pg_has_role(session_user, 'accounting_closing_writer', 'MEMBER')
-       OR (
-            period_status_value = 'open'
-            AND NOT close_command_lock_held
-       )
-       OR (
-            period_status_value = 'soft_closed'
-            AND journal_write_role_value IS DISTINCT FROM 'period_closing'
-            AND NOT close_command_lock_held
-       )
-       OR period_status_value NOT IN ('open', 'soft_closed')
+    IF period_status_value NOT IN ('open', 'soft_closed')
+       OR NOT pg_has_role(session_user, 'accounting_closing_writer', 'MEMBER')
+       OR NOT close_command_lock_held
     THEN
         RAISE EXCEPTION
             'trial balance snapshot creation requires the purpose-limited hard-close writer (trial_balance_snapshot_authority_required)'
