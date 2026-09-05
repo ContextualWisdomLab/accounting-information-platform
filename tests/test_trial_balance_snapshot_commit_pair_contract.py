@@ -50,6 +50,19 @@ def test_hard_close_pair_guard_is_deferred_and_fail_closed() -> None:
     )
 
 
+def test_pair_upgrade_refuses_preexisting_one_sided_authority() -> None:
+    """Migration 0036 certifies existing pair state before installing future guards."""
+    sql = CLOSE_TO_SNAPSHOT_MIGRATION.read_text(encoding="utf-8")
+
+    assert "hard_close_snapshot_pair_control_upgrade_visibility" in sql
+    assert "hard_close_snapshot_pair_snapshot_upgrade_visibility" in sql
+    assert "hard_close_snapshot_pair_legacy_preflight" in sql
+    assert "trial_balance_snapshot_hard_close_pair_legacy_preflight" in sql
+    assert "DROP POLICY hard_close_snapshot_pair_snapshot_upgrade_visibility" in sql
+    assert "DROP POLICY hard_close_snapshot_pair_control_upgrade_visibility" in sql
+    assert "DISABLE ROW LEVEL SECURITY" not in sql
+
+
 def test_canonical_installer_cannot_stop_before_bidirectional_pair_guards() -> None:
     """Every supported foundation install reaches both commit-pair migrations."""
     installer = INSTALLER_PATH.read_text(encoding="utf-8")
