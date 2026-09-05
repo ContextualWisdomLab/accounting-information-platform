@@ -188,43 +188,52 @@ class TrialBalanceSnapshotImmutabilityContractTests(unittest.TestCase):
         self.assertGreaterEqual(migration.count("SET search_path = pg_catalog, pg_temp"), 3)
 
     def test_direct_open_hard_close_requires_exact_close_lock(self) -> None:
-        """A governed direct hard close is admitted; a bare open-period role/GUC is not."""
+        """A governed direct hard close is admitted; caller-set role context is not authority."""
         migration = OPEN_PERIOD_FENCE_MIGRATION.read_text(encoding="utf-8")
-        self.assertIn("period_status_value = 'open'", migration)
-        self.assertIn("AND NOT close_command_lock_held", migration)
-        self.assertIn("period_status_value = 'soft_closed'", migration)
-        self.assertIn("journal_write_role_value IS DISTINCT FROM 'period_closing'", migration)
+        snapshot_start = migration.index(
+            "CREATE OR REPLACE FUNCTION accounting_reporting.guard_trial_balance_snapshot_insert()"
+        )
+        snapshot_guard = migration[snapshot_start:]
+        self.assertIn("period_status_value NOT IN ('open', 'soft_closed')", snapshot_guard)
+        self.assertIn("OR NOT close_command_lock_held", snapshot_guard)
+        self.assertNotIn("journal_write_role_value", snapshot_guard)
         self.assertIn(
             "pg_has_role(session_user, 'accounting_closing_writer', 'MEMBER')",
-            migration,
+            snapshot_guard,
         )
-        self.assertIn("trial_balance_snapshot_authority_required", migration)
+        self.assertIn("trial_balance_snapshot_authority_required", snapshot_guard)
 
     def test_snapshot_header_requires_purpose_limited_hard_close_authority(self) -> None:
-        """Capability plus the exact application close-command lock is required."""
+        """Capability plus the exact close-command lock is required during migration 0030 too."""
         migration = IMMUTABILITY_MIGRATION.read_text(encoding="utf-8")
-        self.assertIn("period_status_value <> 'soft_closed'", migration)
-        self.assertIn(
-            "journal_write_role_value IS DISTINCT FROM 'period_closing'",
-            migration,
+        snapshot_start = migration.index(
+            "CREATE OR REPLACE FUNCTION accounting_reporting.guard_trial_balance_snapshot_insert()"
         )
+        snapshot_end = migration.index(
+            "CREATE TRIGGER trial_balance_snapshot_population_guard",
+            snapshot_start,
+        )
+        snapshot_guard = migration[snapshot_start:snapshot_end]
+        self.assertIn("period_status_value <> 'soft_closed'", snapshot_guard)
+        self.assertIn("OR NOT close_command_lock_held", snapshot_guard)
+        self.assertNotIn("journal_write_role_value", snapshot_guard)
         self.assertIn(
             "pg_has_role(session_user, 'accounting_closing_writer', 'MEMBER')",
-            migration,
+            snapshot_guard,
         )
-        self.assertIn("close_command_lock_held", migration)
-        self.assertIn("FROM pg_catalog.pg_locks AS held_lock", migration)
-        self.assertIn("held_lock.objsubid = 2", migration)
-        self.assertIn("held_lock.pid = pg_backend_pid()", migration)
+        self.assertIn("close_command_lock_held", snapshot_guard)
+        self.assertIn("FROM pg_catalog.pg_locks AS held_lock", snapshot_guard)
+        self.assertIn("held_lock.objsubid = 2", snapshot_guard)
+        self.assertIn("held_lock.pid = pg_backend_pid()", snapshot_guard)
         self.assertIn(
             "'period:' || accounting_book.accounting_book_id::text || ':' || fiscal_period.period_code",
-            migration,
+            snapshot_guard,
         )
         self.assertNotIn(
             "'period:' || accounting_book.book_name || ':' || fiscal_period.period_code",
-            migration,
+            snapshot_guard,
         )
-        self.assertIn("trial_balance_snapshot_authority_required", migration)
+        self.assertIn("trial_balance_snapshot_authority_required", snapshot_guard)
 
     def test_close_command_and_snapshot_guard_share_resolved_book_lock_identity(self) -> None:
         """The application must acquire the same resolved book-id lock inspected by PostgreSQL."""
