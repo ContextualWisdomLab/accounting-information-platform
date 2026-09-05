@@ -29,6 +29,24 @@ class BookPeriodControlSeedContractTests(unittest.TestCase):
         )
         self.assertGreaterEqual(source.count("ON CONFLICT"), 3)
 
+    def test_book_activation_seeds_existing_open_periods(self) -> None:
+        """Changing an inactive book to active must invoke the same open-only seeder."""
+        source = MIGRATION.read_text(encoding="utf-8")
+
+        activation_trigger = source[
+            source.index("CREATE TRIGGER book_period_control_seed_for_book_activation") :
+        ]
+        self.assertIn("AFTER UPDATE OF valid_to", activation_trigger)
+        self.assertIn("ON accounting_core.accounting_book", activation_trigger)
+        self.assertIn(
+            "WHEN (OLD.valid_to IS NOT NULL AND NEW.valid_to IS NULL)",
+            activation_trigger,
+        )
+        self.assertIn(
+            "EXECUTE FUNCTION accounting_core.seed_book_period_control_for_book();",
+            activation_trigger,
+        )
+
     def test_non_open_projection_never_synthesizes_book_close_authority(self) -> None:
         """Only an actually opened period may create a new book-period control automatically."""
         source = MIGRATION.read_text(encoding="utf-8")
@@ -135,14 +153,18 @@ class BookPeriodControlSeedContractTests(unittest.TestCase):
         """Master-data triggers must not inherit caller-controlled object resolution."""
         source = MIGRATION.read_text(encoding="utf-8")
 
-        self.assertEqual(source.count("SECURITY DEFINER"), 2)
-        self.assertEqual(source.count("SET search_path = pg_catalog, pg_temp"), 2)
+        self.assertEqual(source.count("SECURITY DEFINER"), 3)
+        self.assertEqual(source.count("SET search_path = pg_catalog, pg_temp"), 3)
         self.assertIn(
             "REVOKE ALL ON FUNCTION accounting_core.seed_book_period_control_for_period()",
             source,
         )
         self.assertIn(
             "REVOKE ALL ON FUNCTION accounting_core.seed_book_period_control_for_book()",
+            source,
+        )
+        self.assertIn(
+            "REVOKE ALL ON FUNCTION accounting_core.guard_book_period_control_insert_authority()",
             source,
         )
 
