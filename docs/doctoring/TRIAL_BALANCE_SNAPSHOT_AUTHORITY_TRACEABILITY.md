@@ -54,6 +54,18 @@ The governed hard-close regressions must still prove that:
 
 If lock-identity logic changes, update the application lock acquisition, both migration guards, PostgreSQL acceptance tests, ADR 0006, and this trace together. Do not recover by manually inserting or relabeling retained snapshots.
 
+## Buyer read authority follow-up
+
+Snapshot admission and snapshot selection are separate authority boundaries. A retained snapshot can be correctly created and immutable while a buyer-facing read still bypasses it.
+
+`accounting_book_period_control` is the authoritative tenant/book/period close state. `fiscal_period.period_status_code` is only the aggregate compatibility projection across active books. When a statutory book is hard-closed while a management sibling remains open, the aggregate calendar projection is intentionally still `open`. A default read for the hard-closed statutory book must nevertheless return its retained snapshot; otherwise a closed-book financial report can be rebuilt from mutable live journals.
+
+Static RED `3ff7ac365bf2e8d15c44f6a47a5f6b568906874b` therefore requires `PostgresPostingLedger.load_period_trial_balance()` to consume `_load_book_period_state()` and rejects `_require_fiscal_period()` as the source of close-state selection. Real-PostgreSQL RED `a26e35a7a5782ba1d3401f274e61f8ac168da0d6` hard-closes one statutory book while an active sibling remains open, then requires the default statutory read to report `period_status_code=hard_closed`, `balance_source_code=snapshot`, and the exact retained `snapshot_record_id`.
+
+The minimal production repair is deliberately narrow: resolve the requested book first, load its exact `accounting_book_period_control` state, fail closed when that control is absent, and use that selected-book status to choose retained snapshot versus live aggregation. Do not change aggregate calendar semantics, synthesize missing control rows, add a Reporting-owned close-state copy, or weaken explicit `unadjusted`/`adjusted` worksheet semantics.
+
+The two RED commits are not production GREEN or release evidence. Their exact-head PostgreSQL/Accounting Foundation execution and the production helper repair are still required before this read boundary is complete.
+
 ## References
 
 PostgreSQL Global Development Group. (2026). *PostgreSQL 18 documentation: System administration functions*. https://www.postgresql.org/docs/18/functions-admin.html
