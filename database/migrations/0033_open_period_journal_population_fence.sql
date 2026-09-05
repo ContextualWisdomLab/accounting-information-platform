@@ -230,7 +230,9 @@ AS $$
 DECLARE
     locked_fence_rows integer;
 BEGIN
-    IF current_setting('transaction_isolation') = 'read committed' THEN
+    IF current_setting('transaction_isolation')
+       NOT IN ('repeatable read', 'serializable')
+    THEN
         RAISE EXCEPTION
             'period state transition requires repeatable read or serializable isolation (period_close_isolation_required)'
             USING ERRCODE = 'check_violation';
