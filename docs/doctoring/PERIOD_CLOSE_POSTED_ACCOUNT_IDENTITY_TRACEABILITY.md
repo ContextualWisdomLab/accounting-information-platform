@@ -33,7 +33,9 @@ Test-first real PostgreSQL RED `6faea7dc50cb2421604daf7c10f7ad3aeadfd4cb` posts 
 
 Static RED `a612539a92bfd171b7037273858c7263e4eabc9e` simultaneously preserves the opposite boundary: ordinary `_insert_journal()` must continue requiring `valid_to IS NULL`, while `_post_closing_journal()` must carry and group the exact posted `journal_entry_line.chart_account_id` instead of reconstructing source identity from a current code lookup.
 
-On the current RED head these requirements are not satisfied by production source. Exact-head CI must execute before the RED is called runner-observed. A later candidate must prove both the realistic PostgreSQL scenario and the static separation contract on one unchanged head.
+Static authority-separation RED `0d3caba036c370f93deacc0e8208314cd9df9731` adds the second causal boundary exposed by the same PostgreSQL scenario: `close_fiscal_period()` must not require `_assemble_period_close_package()` before the authoritative hard-close write. The supported close still has to reach `_persist_period_close()` and preserve ledger/trial-balance invariants; buyer Reporting-Export projection completeness is not close authorization.
+
+On the current RED head these requirements are not satisfied by production source. Exact-head CI must execute before the RED is called runner-observed. A later candidate must prove both the realistic PostgreSQL scenario and the static separation contracts on one unchanged head.
 
 ## Standards boundary
 
