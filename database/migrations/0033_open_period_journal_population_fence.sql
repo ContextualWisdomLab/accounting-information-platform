@@ -207,6 +207,12 @@ AS $$
 DECLARE
     locked_fence_rows integer;
 BEGIN
+    IF current_setting('transaction_isolation') = 'read committed' THEN
+        RAISE EXCEPTION
+            'period state transition requires repeatable read or serializable isolation (period_close_isolation_required)'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
     PERFORM period_fence.fence_slot
       FROM accounting_core.period_journal_population_fence AS period_fence
      WHERE period_fence.tenant_account_id = NEW.tenant_account_id
