@@ -77,7 +77,11 @@ class TrialBalanceSnapshotConcurrencyPostgresTests(unittest.TestCase):
     ) -> None:
         """Insert one purpose-limited pre-close population candidate for the exact scope."""
         connection.execute(
-            "SELECT set_config('accounting_core.journal_write_role', 'period_closing', true)"
+            "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+            (
+                self.case.policy.tenant_reference,
+                f"period:{self.accounting_book_id}:2026-08",
+            ),
         )
         connection.execute(
             """
