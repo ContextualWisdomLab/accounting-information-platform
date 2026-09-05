@@ -139,6 +139,12 @@ class TrialBalanceSnapshotImmutabilityContractTests(unittest.TestCase):
             "pg_has_role(session_user, 'accounting_closing_writer', 'MEMBER')",
             migration,
         )
+        self.assertIn("SECURITY DEFINER", migration)
+        self.assertIn("SET search_path = pg_catalog, pg_temp", migration)
+        self.assertIn(
+            "REVOKE ALL ON FUNCTION accounting_core.guard_period_insert() FROM PUBLIC",
+            migration,
+        )
 
     def test_snapshot_header_requires_purpose_limited_hard_close_authority(self) -> None:
         """Capability plus the exact application close-command lock is required."""
