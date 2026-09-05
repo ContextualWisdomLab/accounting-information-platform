@@ -18,6 +18,9 @@ IMMUTABILITY_MIGRATION = ROOT / "database/migrations/0030_trial_balance_snapshot
 VALIDATION_MIGRATION = (
     ROOT / "database/migrations/0031_trial_balance_line_conservation_validation.sql"
 )
+JOURNAL_FENCE_MIGRATION = (
+    ROOT / "database/migrations/0032_period_close_journal_population_fence.sql"
+)
 
 
 class TrialBalanceSnapshotImmutabilityContractTests(unittest.TestCase):
@@ -32,6 +35,7 @@ class TrialBalanceSnapshotImmutabilityContractTests(unittest.TestCase):
                 INDEX_MIGRATION.name,
                 IMMUTABILITY_MIGRATION.name,
                 VALIDATION_MIGRATION.name,
+                JOURNAL_FENCE_MIGRATION.name,
             }:
                 return False
             return original_is_file(path)
@@ -115,6 +119,24 @@ class TrialBalanceSnapshotImmutabilityContractTests(unittest.TestCase):
         )
         self.assertIn(
             "REVOKE ALL ON FUNCTION accounting_reporting.guard_trial_balance_line_insert()",
+            migration,
+        )
+
+    def test_journal_population_fence_invalidates_a_stale_close_snapshot(self) -> None:
+        """Every admitted journal must version the same row hard close later locks."""
+        migration = JOURNAL_FENCE_MIGRATION.read_text(encoding="utf-8")
+        self.assertIn("journal_population_revision bigint NOT NULL DEFAULT 0", migration)
+        self.assertIn("CREATE OR REPLACE FUNCTION accounting_core.guard_period_insert()", migration)
+        self.assertIn(
+            "SET journal_population_revision = journal_population_revision + 1",
+            migration,
+        )
+        self.assertIn("accounting_book_id = NEW.accounting_book_id", migration)
+        self.assertIn("fiscal_period_id = NEW.fiscal_period_id", migration)
+        self.assertIn("RETURNING period_status_code", migration)
+        self.assertIn("period_control_missing", migration)
+        self.assertIn(
+            "pg_has_role(session_user, 'accounting_closing_writer', 'MEMBER')",
             migration,
         )
 
