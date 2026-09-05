@@ -31,6 +31,113 @@ class OpenPeriodCloseSerializationPostgresTests(unittest.TestCase):
         self.addCleanup(self.case.tearDown)
         self.case.ledger.post(self.case._two_line_proposal(), self.case.policy)
 
+    def _scope(self, connection: object) -> tuple[object, object, object]:
+        row = connection.execute(
+            """
+            SELECT legal_entity_record.legal_entity_id,
+                   accounting_book.accounting_book_id,
+                   fiscal_period.fiscal_period_id
+            FROM accounting_core.legal_entity_record
+            JOIN accounting_core.accounting_book
+              ON accounting_book.tenant_account_id = legal_entity_record.tenant_account_id
+             AND accounting_book.legal_entity_id = legal_entity_record.legal_entity_id
+            JOIN accounting_core.accounting_book_period_control
+              ON accounting_book_period_control.tenant_account_id = accounting_book.tenant_account_id
+             AND accounting_book_period_control.accounting_book_id = accounting_book.accounting_book_id
+            JOIN accounting_core.fiscal_period
+              ON fiscal_period.tenant_account_id = accounting_book_period_control.tenant_account_id
+             AND fiscal_period.fiscal_period_id = accounting_book_period_control.fiscal_period_id
+            WHERE legal_entity_record.tenant_account_id = %s
+              AND legal_entity_record.legal_entity_code = %s
+              AND accounting_book.book_name = %s
+              AND fiscal_period.period_code = '2026-08'
+            """,
+            (
+                self.case.tenant_id,
+                self.case.policy.legal_entity_reference,
+                self.case.policy.accounting_book_reference,
+            ),
+        ).fetchone()
+        self.assertIsNotNone(row)
+        assert row is not None
+        return row
+
+    def test_open_period_role_context_without_close_lock_cannot_prepopulate_snapshot(self) -> None:
+        """Closing capability plus a GUC is not enough to forge open-period retained evidence."""
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            legal_entity_id, accounting_book_id, fiscal_period_id = self._scope(connection)
+            connection.execute(
+                "SELECT set_config('accounting_core.journal_write_role', 'period_closing', true)"
+            )
+            with self.assertRaisesRegex(
+                psycopg.errors.CheckViolation,
+                "trial_balance_snapshot_authority_required",
+            ):
+                connection.execute(
+                    """
+                    INSERT INTO accounting_reporting.trial_balance_snapshot (
+                        tenant_account_id,
+                        legal_entity_id,
+                        accounting_book_id,
+                        fiscal_period_id,
+                        snapshot_currency_code,
+                        source_journal_count,
+                        source_payload_hash,
+                        close_idempotency_key
+                    )
+                    VALUES (%s, %s, %s, %s, 'KRW', 1, %s, %s)
+                    """,
+                    (
+                        self.case.tenant_id,
+                        legal_entity_id,
+                        accounting_book_id,
+                        fiscal_period_id,
+                        "sha256:" + "c" * 64,
+                        f"{self.case.policy.tenant_reference}:open-close-race:forged",
+                    ),
+                )
+
+    def test_incomplete_preseeded_fence_population_blocks_period_transition(self) -> None:
+        """A missing stripe cannot degrade freshness validation into best-effort close."""
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            _legal_entity_id, accounting_book_id, fiscal_period_id = self._scope(connection)
+            fence_count = connection.execute(
+                """
+                SELECT count(*)
+                FROM accounting_core.period_journal_population_fence
+                WHERE tenant_account_id = %s
+                  AND accounting_book_id = %s
+                  AND fiscal_period_id = %s
+                """,
+                (self.case.tenant_id, accounting_book_id, fiscal_period_id),
+            ).fetchone()[0]
+            self.assertEqual(fence_count, 64)
+            connection.execute(
+                """
+                DELETE FROM accounting_core.period_journal_population_fence
+                WHERE tenant_account_id = %s
+                  AND accounting_book_id = %s
+                  AND fiscal_period_id = %s
+                  AND fence_slot = 63
+                """,
+                (self.case.tenant_id, accounting_book_id, fiscal_period_id),
+            )
+            with self.assertRaisesRegex(
+                psycopg.errors.CheckViolation,
+                "period_journal_population_fence_missing",
+            ):
+                connection.execute(
+                    """
+                    UPDATE accounting_core.accounting_book_period_control
+                    SET period_status_code = 'soft_closed'
+                    WHERE tenant_account_id = %s
+                      AND accounting_book_id = %s
+                      AND fiscal_period_id = %s
+                    """,
+                    (self.case.tenant_id, accounting_book_id, fiscal_period_id),
+                )
+            connection.rollback()
+
     def test_open_period_journal_committed_after_close_snapshot_invalidates_stale_close(self) -> None:
         """A stale direct hard close fails, then exact-key retry retains the admitted journal."""
         close_ledger = PostgresPostingLedger(
