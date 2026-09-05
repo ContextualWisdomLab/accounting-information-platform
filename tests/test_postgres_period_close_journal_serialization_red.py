@@ -1,4 +1,4 @@
-"""Real PostgreSQL RED for journal admission racing a hard-close snapshot."""
+"""Real PostgreSQL regression for journal admission racing a hard-close snapshot."""
 
 from __future__ import annotations
 
@@ -40,13 +40,14 @@ class PeriodCloseJournalSerializationPostgresTests(unittest.TestCase):
         )
 
     def test_hard_close_cannot_freeze_a_snapshot_before_an_admitted_adjustment_commits(self) -> None:
-        """A late soft-close adjustment is either in the snapshot or rejected before hard-close."""
+        """A stale close fails closed, then its exact idempotent retry snapshots the admitted journal."""
         close_ledger = PostgresPostingLedger(
             posting.DATABASE_URL, self.case.policy.tenant_reference
         )
         adjustment_ledger = PostgresPostingLedger(
             posting.DATABASE_URL, self.case.policy.tenant_reference
         )
+        close_idempotency_key = f"{self.case.policy.tenant_reference}:close-race:hard"
         pre_lock_snapshot_reached = threading.Event()
         adjustment_committed = threading.Event()
         close_result: list[object] = []
@@ -69,9 +70,7 @@ class PeriodCloseJournalSerializationPostgresTests(unittest.TestCase):
                         "2026-08",
                         "KRW",
                         period_status_code="hard_closed",
-                        idempotency_key=(
-                            f"{self.case.policy.tenant_reference}:close-race:hard"
-                        ),
+                        idempotency_key=close_idempotency_key,
                     )
                 )
             except BaseException as error:  # noqa: BLE001 - thread transports exact failure
@@ -116,8 +115,57 @@ class PeriodCloseJournalSerializationPostgresTests(unittest.TestCase):
             closer.join(timeout=20)
 
         self.assertFalse(closer.is_alive(), "hard-close remained blocked after adjustment commit")
-        if close_errors:
-            raise close_errors[0]
+        self.assertEqual(close_result, [])
+        self.assertEqual(len(close_errors), 1)
+        self.assertIsInstance(close_errors[0], psycopg.errors.SerializationFailure)
+
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            status_code, snapshot_count = connection.execute(
+                """
+                SELECT accounting_book_period_control.period_status_code,
+                       (
+                           SELECT COUNT(*)
+                           FROM accounting_reporting.trial_balance_snapshot
+                           WHERE trial_balance_snapshot.tenant_account_id = %s
+                             AND trial_balance_snapshot.accounting_book_id
+                                 = accounting_book_period_control.accounting_book_id
+                             AND trial_balance_snapshot.fiscal_period_id
+                                 = accounting_book_period_control.fiscal_period_id
+                       )
+                FROM accounting_core.accounting_book_period_control
+                JOIN accounting_core.accounting_book
+                  ON accounting_book.tenant_account_id
+                     = accounting_book_period_control.tenant_account_id
+                 AND accounting_book.accounting_book_id
+                     = accounting_book_period_control.accounting_book_id
+                JOIN accounting_core.fiscal_period
+                  ON fiscal_period.tenant_account_id
+                     = accounting_book_period_control.tenant_account_id
+                 AND fiscal_period.fiscal_period_id
+                     = accounting_book_period_control.fiscal_period_id
+                WHERE accounting_book_period_control.tenant_account_id = %s
+                  AND accounting_book.book_name = %s
+                  AND fiscal_period.period_code = '2026-08'
+                """,
+                (
+                    self.case.tenant_id,
+                    self.case.tenant_id,
+                    self.case.policy.accounting_book_reference,
+                ),
+            ).fetchone()
+        self.assertEqual(status_code, "soft_closed")
+        self.assertEqual(snapshot_count, 0)
+
+        close_result.append(
+            close_ledger.close_fiscal_period(
+                self.case.policy.legal_entity_reference,
+                self.case.policy.accounting_book_reference,
+                "2026-08",
+                "KRW",
+                period_status_code="hard_closed",
+                idempotency_key=close_idempotency_key,
+            )
+        )
         self.assertEqual(len(close_result), 1)
 
         with psycopg.connect(posting.DATABASE_URL) as connection:
