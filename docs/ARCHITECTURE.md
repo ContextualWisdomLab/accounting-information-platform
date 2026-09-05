@@ -67,12 +67,23 @@ The PostgreSQL 18 foundation is installed in order:
 24. `database/migrations/0023_reconciliation_authority_outbox_orphan_guard.sql` — reserves reconciliation exception-resolution and run-reconciled event types for immutable command-backed authority, rejects orphan authority-shaped events at commit, and refuses installation over pre-existing orphan events after a migration-only forced-RLS visibility preflight.
 25. `database/migrations/0024_reconciliation_control_recording_time_authority.sql` — makes reconciliation exception and retained review-evidence `recorded_at` database-owned at insertion while preserving their separate valid/business `effective_at`, so caller-shaped system time cannot manufacture temporal provenance used by maker-checker admission.
 26. `database/migrations/0025_reconciliation_lifecycle_recording_time_authority.sql` — makes lifecycle-transition `recorded_at` database-owned at insertion and rejects a transition whose business-valid `effective_at` is later than PostgreSQL's recording time, preventing a future-effective decision from becoming current reconciliation authority.
+27. `database/migrations/0026_reconciliation_lifecycle_source_payload_identity.sql` — binds reconciliation lifecycle authority to immutable source-payload identity rather than caller-shaped mutable transition evidence.
+28. `database/migrations/0027_reconciliation_lifecycle_session_lock_authority.sql` — proves lifecycle snapshot freshness through the canonical session-lock lease and fresh authority transaction boundary.
+29. `database/migrations/0028_reconciliation_lifecycle_capability_privileges.sql` — revokes generic PUBLIC execution of lifecycle session-lock helpers so later runtime grants can remain purpose-limited.
+30. `database/migrations/0029_trial_balance_snapshot_population_unique_index.sql` — establishes one retained trial-balance snapshot population per tenant, accounting book, and fiscal period without rewriting retained evidence.
+31. `database/migrations/0030_trial_balance_snapshot_immutability.sql` — freezes retained snapshot headers and lines, owns snapshot system time, and enforces book/entity/currency/account scope and hard-close admission at PostgreSQL.
+32. `database/migrations/0031_trial_balance_line_conservation_validation.sql` — validates exact retained debit/credit/net conservation separately from the stronger installation lock phase.
+33. `database/migrations/0032_period_close_journal_population_fence.sql` — invalidates stale `REPEATABLE READ` close attempts when purpose-limited soft-close journal population changes.
+34. `database/migrations/0033_open_period_journal_population_fence.sql` — places ordinary open-period journals on a 64-stripe PostgreSQL freshness fence and makes period transitions lock the complete ordered fence set instead of serializing every post on one close-control row.
+35. `database/migrations/0034_book_period_control_seed.sql` — materializes missing book-period controls and all 64 freshness rows for newly admitted active books or fiscal periods while restoring FORCE RLS before commit.
 
 `0005_closed_period_guard.sql` makes `accounting_closing_writer` a `NOLOGIN` capability role. A soft-closed insert is admitted only when the session login is a member of that role **and** the transaction-local journal classification is `period_closing`, `adjusting`, or `reversal`. The GUC alone is not authority. Hard-closed periods reject every later journal insert.
 
 Deferred constraint triggers recompute persisted journal lines at commit. A durable journal must have at least one line and exact debit and credit totals must match. Application validation is defense in depth, not the only balance control.
 
 `0020_reconciliation_exception_resolution_command.sql` keeps exception review inside the reconciliation aggregate. A direct `open -> resolved/superseded` row update is rejected unless a matching immutable command exists in the same transaction; the command and terminal status must commit as a pair, and terminal exception evidence freezes afterward. `0021_reconciliation_exception_resolution_outbox_pair.sql` extends that pair to the matching accounting outbox event and adds only the child resolution-evidence overlay. `0022_reconciliation_authority_outbox_retention.sql` then protects the committed authority/event relationship from later detachment or ambiguity: the sole matching event cannot be deleted or re-keyed away, a duplicate exact event cannot be inserted, and an unrelated event cannot be re-keyed into the same authority identity. `0023_reconciliation_authority_outbox_orphan_guard.sql` closes the inverse admission gap: the reserved `reconciliation_exception_resolved`, `reconciliation_exception_superseded`, and `reconciliation_run_reconciled` event types cannot exist without the exact immutable command whose tenant, aggregate reference, payload reference and command hash they claim to publish. Its upgrade preflight uses temporary current-user SELECT policies only to inspect forced-RLS history and removes them before the durable runtime guard is installed. `0024_reconciliation_control_recording_time_authority.sql` closes the temporal provenance gap on the maker and retained review artifact themselves: `recorded_at` is overwritten by PostgreSQL at INSERT while `effective_at` remains the business-valid-time fact. `0025_reconciliation_lifecycle_recording_time_authority.sql` applies the same database-clock boundary to the run-finalization command and fails closed when its valid time lies after the recording instant; caller-supplied lifecycle system time is not authority. Publication may still update `published_at`. The parent `accounting_reconciliation_transition_database_authority_guard` derives the bridge and all three transition identities first; child `accounting_reconciliation_transition_evidence_snapshot_guard` composes immutable resolution commands second; `accounting_reconciliation_transition_hash_guard` binds the final snapshot and population identities; the later recording-time trigger assigns only database system time and validates temporal causality. Final reconciliation accepts a terminal exception only when its target status agrees with the retained command. Exception resolution does not post a journal: any correcting journal remains a separate General Ledger command.
+
+Migrations 0029–0034 keep Period Close evidence inside the `close_control` / `trial_balance` boundary. A retained snapshot cannot be relabelled across legal entity, accounting book, reporting currency, period, or chart-account scope, and its exact monetary population cannot be mutated after hard close. Journal-population freshness is a PostgreSQL concurrency control, not an alternate accounting authority: a stale close fails closed and the complete command must retry from a fresh transaction with the same immutable source identity/idempotency key.
 
 ## Runtime identity boundary
 
@@ -82,19 +93,22 @@ The HTTP surface currently binds tenant identity through the configured AIS tena
 
 ## Posting transaction
 
-A proposal follows one authoritative transaction boundary:
+An ordinary proposal follows one authoritative transaction boundary:
 
 ```text
 validate published proposal
  -> bind tenant / entity / book / open period
  -> resolve semantic roles to chart accounts
- -> acquire tenant/command transaction lock and shared fiscal-period advisory lock
+ -> acquire tenant/proposal/idempotency command locks
  -> persist immutable proposal evidence
+ -> admit journal through PostgreSQL book-period guard and 64-stripe freshness fence
  -> persist balanced journal header and lines
  -> persist authoritative posting receipt
  -> persist transactional outbox evidence
  -> COMMIT
 ```
+
+Ordinary open-period posting does **not** acquire the canonical period-close advisory mutex. PostgreSQL owns journal-versus-period-transition ordering: open-period journal admission uses the book-period guard plus a deterministic stripe, while a period transition locks the complete ordered fence population. The close command retains its canonical tenant/resolved-book-id/period advisory authority. This avoids turning an open book-period into one application-level posting mutex without weakening fail-closed close semantics.
 
 Exact replay returns the original receipt. Reuse of an idempotency key with changed immutable evidence fails closed. Posted journal facts are append-only; corrections use reversal and, when required, a separately posted replacement.
 
@@ -108,7 +122,7 @@ A reversal accounting date may not precede the original accounting date. Soft-cl
 
 Soft-close changes the fiscal-period state but writes no hard-close snapshot. Ordinary posting is blocked; purpose-limited adjusting / closing / reversal paths may remain available under database authorization.
 
-Hard-close loads one repeatable-read close package, posts the AIS-owned period-closing journal when required, stores the hard-close trial-balance snapshot and locks the period. Later ordinary or reversal inserts into that period are rejected. Close replay is idempotent and does not create a second snapshot or closing journal.
+Hard-close loads one repeatable-read close package, posts the AIS-owned period-closing journal when required, stores the hard-close trial-balance snapshot and locks the period. A journal population change that races a stale close must invalidate that close rather than allow retained evidence to omit an admitted journal. Later ordinary or reversal inserts into the hard-closed period are rejected. Close replay is idempotent and does not create a second snapshot or closing journal.
 
 ## Read models
 
