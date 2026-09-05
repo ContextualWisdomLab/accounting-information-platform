@@ -62,6 +62,29 @@ SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
 AS $$
 BEGIN
+    -- Runtime seeding runs while the fence table is FORCE RLS protected and
+    -- therefore needs the same authenticated tenant identity as the control row.
+    -- Migration 0034 temporarily removes FORCE RLS only for its owner backfill;
+    -- keep that repair path distinct instead of minting a synthetic binding.
+    IF COALESCE(
+        (
+            SELECT relation.relforcerowsecurity
+            FROM pg_catalog.pg_class AS relation
+            JOIN pg_catalog.pg_namespace AS namespace
+              ON namespace.oid = relation.relnamespace
+            WHERE namespace.nspname = 'accounting_core'
+              AND relation.relname = 'period_journal_population_fence'
+        ),
+        TRUE
+    )
+       AND accounting_core.current_tenant_account_id()
+           IS DISTINCT FROM NEW.tenant_account_id
+    THEN
+        RAISE EXCEPTION
+            'runtime tenant binding must match journal-population fence seed scope (period_journal_population_fence_tenant_binding_required)'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
     INSERT INTO accounting_core.period_journal_population_fence (
         tenant_account_id,
         accounting_book_id,
