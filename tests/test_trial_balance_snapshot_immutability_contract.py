@@ -21,6 +21,9 @@ VALIDATION_MIGRATION = (
 JOURNAL_FENCE_MIGRATION = (
     ROOT / "database/migrations/0032_period_close_journal_population_fence.sql"
 )
+OPEN_PERIOD_FENCE_MIGRATION = (
+    ROOT / "database/migrations/0033_open_period_journal_population_fence.sql"
+)
 
 
 class TrialBalanceSnapshotImmutabilityContractTests(unittest.TestCase):
@@ -36,6 +39,7 @@ class TrialBalanceSnapshotImmutabilityContractTests(unittest.TestCase):
                 IMMUTABILITY_MIGRATION.name,
                 VALIDATION_MIGRATION.name,
                 JOURNAL_FENCE_MIGRATION.name,
+                OPEN_PERIOD_FENCE_MIGRATION.name,
             }:
                 return False
             return original_is_file(path)
@@ -157,6 +161,44 @@ class TrialBalanceSnapshotImmutabilityContractTests(unittest.TestCase):
             "REVOKE ALL ON FUNCTION accounting_core.guard_period_insert() FROM PUBLIC",
             migration,
         )
+
+    def test_open_period_freshness_uses_stripes_not_one_exclusive_revision_row(self) -> None:
+        """Open journals version one stripe while a period transition validates all stripes."""
+        migration = OPEN_PERIOD_FENCE_MIGRATION.read_text(encoding="utf-8")
+        self.assertIn("CREATE TABLE accounting_core.period_journal_population_fence", migration)
+        self.assertIn("fence_slot >= 0 AND fence_slot < 64", migration)
+        self.assertIn("CROSS JOIN generate_series(0, 63)", migration)
+        self.assertIn("period_journal_population_fence_seed", migration)
+        self.assertIn("get_byte(uuid_send(NEW.general_journal_id), 15) % 64", migration)
+        self.assertIn("SET journal_population_revision = journal_population_revision + 1", migration)
+        self.assertIn("period_state_transition_population_fence", migration)
+        self.assertIn("ORDER BY period_fence.fence_slot", migration)
+        self.assertIn("FOR UPDATE;", migration)
+        self.assertIn("locked_fence_rows <> 64", migration)
+        self.assertIn("period_journal_population_fence_missing", migration)
+        self.assertIn("FOR SHARE;", migration)
+        self.assertNotIn(
+            "IF period_status_value = 'open' THEN\n        UPDATE accounting_core.accounting_book_period_control",
+            migration,
+        )
+        self.assertIn("ENABLE ROW LEVEL SECURITY", migration)
+        self.assertIn("FORCE ROW LEVEL SECURITY", migration)
+        self.assertIn("period_journal_population_fence_isolation", migration)
+        self.assertGreaterEqual(migration.count("SECURITY DEFINER"), 3)
+        self.assertGreaterEqual(migration.count("SET search_path = pg_catalog, pg_temp"), 3)
+
+    def test_direct_open_hard_close_requires_exact_close_lock(self) -> None:
+        """A governed direct hard close is admitted; a bare open-period role/GUC is not."""
+        migration = OPEN_PERIOD_FENCE_MIGRATION.read_text(encoding="utf-8")
+        self.assertIn("period_status_value = 'open'", migration)
+        self.assertIn("AND NOT close_command_lock_held", migration)
+        self.assertIn("period_status_value = 'soft_closed'", migration)
+        self.assertIn("journal_write_role_value IS DISTINCT FROM 'period_closing'", migration)
+        self.assertIn(
+            "pg_has_role(session_user, 'accounting_closing_writer', 'MEMBER')",
+            migration,
+        )
+        self.assertIn("trial_balance_snapshot_authority_required", migration)
 
     def test_snapshot_header_requires_purpose_limited_hard_close_authority(self) -> None:
         """Capability plus the exact application close-command lock is required."""
