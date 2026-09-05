@@ -29,6 +29,23 @@ class BookPeriodControlSeedContractTests(unittest.TestCase):
         )
         self.assertGreaterEqual(source.count("ON CONFLICT"), 3)
 
+    def test_new_book_seed_does_not_project_tenant_period_status_as_book_close_authority(self) -> None:
+        """A shared calendar projection must not become a new book's authoritative close state."""
+        source = MIGRATION.read_text(encoding="utf-8")
+        book_function = source[
+            source.index("CREATE OR REPLACE FUNCTION accounting_core.seed_book_period_control_for_book()") :
+            source.index("CREATE TRIGGER book_period_control_seed_for_book")
+        ]
+        select_start = book_function.index("SELECT NEW.tenant_account_id")
+        period_source = book_function.index(
+            "FROM accounting_core.fiscal_period",
+            select_start,
+        )
+        projected_control_values = book_function[select_start:period_source]
+
+        self.assertNotIn("fiscal_period.period_status_code", projected_control_values)
+        self.assertNotIn("fiscal_period.period_closed_at", projected_control_values)
+
     def test_opposite_side_seeders_version_one_tenant_serialization_row(self) -> None:
         """Peer scans need a common row version so fixed snapshots fail closed instead of missing data."""
         source = MIGRATION.read_text(encoding="utf-8")
