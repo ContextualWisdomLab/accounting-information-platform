@@ -5,6 +5,14 @@ BEGIN;
 -- evaluation. 0009 backfilled only rows that existed at migration time, so
 -- later fiscal periods or accounting books could otherwise reach the journal
 -- guard without a materialized book-period authority.
+--
+-- The two AFTER INSERT triggers also form one cross-product invariant. Without
+-- a pre-existing common lock, concurrent transactions can each insert one side,
+-- scan before the other side commits, and leave the new book-period pair absent.
+-- Serialize only this low-frequency tenant master-data boundary on the existing
+-- tenant row. FOR NO KEY UPDATE is self-conflicting between seeders while still
+-- remaining compatible with the FOR KEY SHARE lock used by unrelated child-row
+-- foreign-key checks.
 CREATE OR REPLACE FUNCTION accounting_core.seed_book_period_control_for_period()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -12,6 +20,11 @@ SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
 AS $$
 BEGIN
+    PERFORM 1
+    FROM accounting_core.tenant_account AS tenant
+    WHERE tenant.tenant_account_id = NEW.tenant_account_id
+    FOR NO KEY UPDATE;
+
     INSERT INTO accounting_core.accounting_book_period_control (
         tenant_account_id,
         accounting_book_id,
@@ -56,6 +69,11 @@ BEGIN
     IF NEW.valid_to IS NOT NULL THEN
         RETURN NEW;
     END IF;
+
+    PERFORM 1
+    FROM accounting_core.tenant_account AS tenant
+    WHERE tenant.tenant_account_id = NEW.tenant_account_id
+    FOR NO KEY UPDATE;
 
     INSERT INTO accounting_core.accounting_book_period_control (
         tenant_account_id,
