@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 import unittest
 
 import psycopg
 
 from tests import test_postgres_posting as posting
+
+
+ROOT = Path(__file__).resolve().parents[1]
+PAIR_MIGRATION = ROOT / "database/migrations/0036_hard_close_trial_balance_snapshot_pair.sql"
 
 
 class HardCloseSnapshotPairPostgresTests(unittest.TestCase):
@@ -106,6 +111,72 @@ class HardCloseSnapshotPairPostgresTests(unittest.TestCase):
 
         self.assertEqual(period_status, "soft_closed")
         self.assertEqual(snapshot_count, 0)
+
+    def test_upgrade_refuses_preexisting_hard_close_without_snapshot(self) -> None:
+        """Migration 0036 may not silently grandfather a one-sided hard-close fact."""
+        migration_sql = PAIR_MIGRATION.read_text(encoding="utf-8")
+
+        with psycopg.connect(
+            posting.DATABASE_URL,
+            autocommit=True,
+            cursor_factory=psycopg.ClientCursor,
+        ) as connection:
+            accounting_book_id, fiscal_period_id = self._scope(connection)
+            connection.execute(
+                """
+                DROP TRIGGER hard_close_trial_balance_snapshot_pair_guard
+                ON accounting_core.accounting_book_period_control
+                """
+            )
+            connection.execute("BEGIN")
+            connection.execute(
+                """
+                UPDATE accounting_core.accounting_book_period_control
+                   SET period_status_code = 'hard_closed',
+                       period_closed_at = clock_timestamp()
+                 WHERE tenant_account_id = %s
+                   AND accounting_book_id = %s
+                   AND fiscal_period_id = %s
+                """,
+                (self.case.tenant_id, accounting_book_id, fiscal_period_id),
+            )
+            connection.execute("COMMIT")
+
+        try:
+            with psycopg.connect(
+                posting.DATABASE_URL,
+                autocommit=True,
+                cursor_factory=psycopg.ClientCursor,
+            ) as connection:
+                with self.assertRaisesRegex(
+                    psycopg.errors.CheckViolation,
+                    "hard_close_snapshot_pair_legacy_preflight",
+                ):
+                    connection.execute(migration_sql)
+                connection.execute("ROLLBACK")
+        finally:
+            with psycopg.connect(
+                posting.DATABASE_URL,
+                autocommit=True,
+                cursor_factory=psycopg.ClientCursor,
+            ) as connection:
+                connection.execute(
+                    """
+                    DROP TRIGGER IF EXISTS hard_close_trial_balance_snapshot_pair_guard
+                    ON accounting_core.accounting_book_period_control
+                    """
+                )
+                connection.execute(
+                    """
+                    UPDATE accounting_core.accounting_book_period_control
+                       SET period_status_code = 'soft_closed'
+                     WHERE tenant_account_id = %s
+                       AND accounting_book_id = %s
+                       AND fiscal_period_id = %s
+                    """,
+                    (self.case.tenant_id, accounting_book_id, fiscal_period_id),
+                )
+                connection.execute(migration_sql)
 
 
 if __name__ == "__main__":
