@@ -170,4 +170,41 @@ ALTER TABLE accounting_core.accounting_book_period_control FORCE ROW LEVEL SECUR
 ALTER TABLE accounting_core.fiscal_period FORCE ROW LEVEL SECURITY;
 ALTER TABLE accounting_core.accounting_book FORCE ROW LEVEL SECURITY;
 
+-- After the one-time repair above, new book-period authority may be created only
+-- by the two canonical master-data seed triggers. A direct application or SQL
+-- INSERT must not reconstruct authority from fiscal_period compatibility state.
+-- pg_trigger_depth() is structural rather than a caller-controlled custom GUC:
+-- the control-table trigger runs at depth 2 when invoked by either canonical
+-- AFTER INSERT seeder and at depth 1 for a direct control-table INSERT. Returning
+-- NULL leaves an unsupported direct write unapplied; the close path then reads
+-- the still-missing control and fails with its domain validation error. This
+-- keeps the database single-writer boundary intact without granting a mutable
+-- session flag that another writer could spoof.
+CREATE OR REPLACE FUNCTION accounting_core.guard_book_period_control_insert_authority()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $$
+BEGIN
+    IF pg_trigger_depth() < 2
+       OR NEW.period_status_code IS DISTINCT FROM 'open'
+       OR NEW.period_closed_at IS NOT NULL
+    THEN
+        RETURN NULL;
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION accounting_core.guard_book_period_control_insert_authority()
+    FROM PUBLIC;
+
+CREATE TRIGGER book_period_control_insert_authority_guard
+    BEFORE INSERT
+    ON accounting_core.accounting_book_period_control
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.guard_book_period_control_insert_authority();
+
 COMMIT;
