@@ -33,54 +33,88 @@ class BookPeriodControlSeedContractTests(unittest.TestCase):
         """Only an actually opened period may create a new book-period control automatically."""
         source = MIGRATION.read_text(encoding="utf-8")
         period_function = source[
-            source.index("CREATE OR REPLACE FUNCTION accounting_core.seed_book_period_control_for_period()") :
-            source.index("CREATE TRIGGER book_period_control_seed_for_period")
+            source.index(
+                "CREATE OR REPLACE FUNCTION "
+                "accounting_core.seed_book_period_control_for_period()"
+            ) : source.index("CREATE TRIGGER book_period_control_seed_for_period")
         ]
         book_function = source[
-            source.index("CREATE OR REPLACE FUNCTION accounting_core.seed_book_period_control_for_book()") :
-            source.index("CREATE TRIGGER book_period_control_seed_for_book")
+            source.index(
+                "CREATE OR REPLACE FUNCTION "
+                "accounting_core.seed_book_period_control_for_book()"
+            ) : source.index("CREATE TRIGGER book_period_control_seed_for_book")
         ]
         book_select_start = book_function.index("SELECT NEW.tenant_account_id")
         book_period_source = book_function.index(
             "FROM accounting_core.fiscal_period",
             book_select_start,
         )
-        projected_book_control_values = book_function[book_select_start:book_period_source]
-        repair_backfill = source[source.rindex("INSERT INTO accounting_core.accounting_book_period_control (") :]
-        repair_select_start = repair_backfill.index("SELECT accounting_book.tenant_account_id")
+        projected_book_control_values = book_function[
+            book_select_start:book_period_source
+        ]
+        repair_backfill = source[
+            source.rindex(
+                "INSERT INTO accounting_core.accounting_book_period_control ("
+            ) :
+        ]
+        repair_select_start = repair_backfill.index(
+            "SELECT accounting_book.tenant_account_id"
+        )
         repair_period_source = repair_backfill.index(
             "FROM accounting_core.accounting_book",
             repair_select_start,
         )
-        projected_repair_values = repair_backfill[repair_select_start:repair_period_source]
+        projected_repair_values = repair_backfill[
+            repair_select_start:repair_period_source
+        ]
 
         self.assertIn(
-            "IF NEW.period_status_code IS DISTINCT FROM 'open' THEN\n        RETURN NEW;\n    END IF;",
+            "IF NEW.period_status_code IS DISTINCT FROM 'open' THEN\n"
+            "        RETURN NEW;\n"
+            "    END IF;",
             period_function,
         )
-        self.assertNotIn("NEW.period_status_code", period_function[period_function.index("SELECT NEW.tenant_account_id") :])
-        self.assertNotIn("NEW.period_closed_at", period_function[period_function.index("SELECT NEW.tenant_account_id") :])
-        self.assertNotIn("fiscal_period.period_status_code", projected_book_control_values)
-        self.assertNotIn("fiscal_period.period_closed_at", projected_book_control_values)
+        period_projection_start = period_function.index(
+            "SELECT NEW.tenant_account_id"
+        )
+        period_projection = period_function[period_projection_start:]
+        self.assertNotIn("NEW.period_status_code", period_projection)
+        self.assertNotIn("NEW.period_closed_at", period_projection)
+        self.assertNotIn(
+            "fiscal_period.period_status_code", projected_book_control_values
+        )
+        self.assertNotIn(
+            "fiscal_period.period_closed_at", projected_book_control_values
+        )
         self.assertIn("AND fiscal_period.period_status_code = 'open'", book_function)
         self.assertNotIn("fiscal_period.period_status_code", projected_repair_values)
         self.assertNotIn("fiscal_period.period_closed_at", projected_repair_values)
-        self.assertIn("WHERE accounting_book.valid_to IS NULL\n  AND fiscal_period.period_status_code = 'open'", repair_backfill)
+        self.assertIn(
+            "WHERE accounting_book.valid_to IS NULL\n"
+            "  AND fiscal_period.period_status_code = 'open'",
+            repair_backfill,
+        )
 
     def test_opposite_side_seeders_version_one_tenant_serialization_row(self) -> None:
         """Peer scans need a common row version so fixed snapshots fail closed instead of missing data."""
         source = MIGRATION.read_text(encoding="utf-8")
         period_function = source[
-            source.index("CREATE OR REPLACE FUNCTION accounting_core.seed_book_period_control_for_period()") :
-            source.index("CREATE TRIGGER book_period_control_seed_for_period")
+            source.index(
+                "CREATE OR REPLACE FUNCTION "
+                "accounting_core.seed_book_period_control_for_period()"
+            ) : source.index("CREATE TRIGGER book_period_control_seed_for_period")
         ]
         book_function = source[
-            source.index("CREATE OR REPLACE FUNCTION accounting_core.seed_book_period_control_for_book()") :
-            source.index("CREATE TRIGGER book_period_control_seed_for_book")
+            source.index(
+                "CREATE OR REPLACE FUNCTION "
+                "accounting_core.seed_book_period_control_for_book()"
+            ) : source.index("CREATE TRIGGER book_period_control_seed_for_book")
         ]
 
         for function_source in (period_function, book_function):
-            tenant_update = function_source.index("UPDATE accounting_core.tenant_account AS tenant")
+            tenant_update = function_source.index(
+                "UPDATE accounting_core.tenant_account AS tenant"
+            )
             retained_value = function_source.index(
                 "SET created_at = tenant.created_at",
                 tenant_update,
@@ -119,7 +153,8 @@ class BookPeriodControlSeedContractTests(unittest.TestCase):
             "INSERT INTO accounting_core.accounting_book_period_control ("
         )
         initial_control_force = initial_source.index(
-            "ALTER TABLE accounting_core.accounting_book_period_control FORCE ROW LEVEL SECURITY;"
+            "ALTER TABLE accounting_core.accounting_book_period_control "
+            "FORCE ROW LEVEL SECURITY;"
         )
         initial_book_no_force = initial_source.index(
             "ALTER TABLE accounting_core.accounting_book NO FORCE ROW LEVEL SECURITY;"
