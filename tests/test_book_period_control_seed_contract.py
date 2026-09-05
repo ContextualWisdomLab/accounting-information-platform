@@ -29,22 +29,43 @@ class BookPeriodControlSeedContractTests(unittest.TestCase):
         )
         self.assertGreaterEqual(source.count("ON CONFLICT"), 3)
 
-    def test_new_book_seed_does_not_project_tenant_period_status_as_book_close_authority(self) -> None:
-        """A shared calendar projection must not become a new book's authoritative close state."""
+    def test_non_open_projection_never_synthesizes_book_close_authority(self) -> None:
+        """Only an actually opened period may create a new book-period control automatically."""
         source = MIGRATION.read_text(encoding="utf-8")
+        period_function = source[
+            source.index("CREATE OR REPLACE FUNCTION accounting_core.seed_book_period_control_for_period()") :
+            source.index("CREATE TRIGGER book_period_control_seed_for_period")
+        ]
         book_function = source[
             source.index("CREATE OR REPLACE FUNCTION accounting_core.seed_book_period_control_for_book()") :
             source.index("CREATE TRIGGER book_period_control_seed_for_book")
         ]
-        select_start = book_function.index("SELECT NEW.tenant_account_id")
-        period_source = book_function.index(
+        book_select_start = book_function.index("SELECT NEW.tenant_account_id")
+        book_period_source = book_function.index(
             "FROM accounting_core.fiscal_period",
-            select_start,
+            book_select_start,
         )
-        projected_control_values = book_function[select_start:period_source]
+        projected_book_control_values = book_function[book_select_start:book_period_source]
+        repair_backfill = source[source.rindex("INSERT INTO accounting_core.accounting_book_period_control (") :]
+        repair_select_start = repair_backfill.index("SELECT accounting_book.tenant_account_id")
+        repair_period_source = repair_backfill.index(
+            "FROM accounting_core.accounting_book",
+            repair_select_start,
+        )
+        projected_repair_values = repair_backfill[repair_select_start:repair_period_source]
 
-        self.assertNotIn("fiscal_period.period_status_code", projected_control_values)
-        self.assertNotIn("fiscal_period.period_closed_at", projected_control_values)
+        self.assertIn(
+            "IF NEW.period_status_code IS DISTINCT FROM 'open' THEN\n        RETURN NEW;\n    END IF;",
+            period_function,
+        )
+        self.assertNotIn("NEW.period_status_code", period_function[period_function.index("SELECT NEW.tenant_account_id") :])
+        self.assertNotIn("NEW.period_closed_at", period_function[period_function.index("SELECT NEW.tenant_account_id") :])
+        self.assertNotIn("fiscal_period.period_status_code", projected_book_control_values)
+        self.assertNotIn("fiscal_period.period_closed_at", projected_book_control_values)
+        self.assertIn("AND fiscal_period.period_status_code = 'open'", book_function)
+        self.assertNotIn("fiscal_period.period_status_code", projected_repair_values)
+        self.assertNotIn("fiscal_period.period_closed_at", projected_repair_values)
+        self.assertIn("WHERE accounting_book.valid_to IS NULL\n  AND fiscal_period.period_status_code = 'open'", repair_backfill)
 
     def test_opposite_side_seeders_version_one_tenant_serialization_row(self) -> None:
         """Peer scans need a common row version so fixed snapshots fail closed instead of missing data."""
