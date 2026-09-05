@@ -6,18 +6,20 @@
 
 That path could synthesize `soft_closed` or `hard_closed` authority for a later-created book without that book's close command, maker-checker evidence, retained trial-balance snapshot, close event, or chronology. It also selected every active book for the tenant rather than only the requested book. The resulting state contradicted migration 0034's open-only master-data lifecycle and the domain model's single-writer boundary.
 
+The same authority leak remained on the read side: `_load_book_period_state()` and `_require_open_book_period_bounds()` used an outer join plus `COALESCE` to inherit the shared `fiscal_period.period_status_code` whenever the book-owned control was absent. Database containment therefore prevented a bad control write but did not make the application authority model conceptually correct.
+
 This is a DDD/data-authority defect, not an IFRS interpretation. IFRS does not prescribe PostgreSQL trigger nesting or book-period control rows.
 
 ## Selected control
 
-Migration `0034_book_period_control_seed.sql` now makes the database relation itself reject direct post-install control creation. The one-time migration repair runs first. After that repair, `book_period_control_insert_authority_guard` is installed as a row-level `BEFORE INSERT` trigger on `accounting_book_period_control`.
+Migration `0034_book_period_control_seed.sql` makes the database relation itself reject direct post-install control creation. The one-time migration repair runs first. After that repair, `book_period_control_insert_authority_guard` is installed as a row-level `BEFORE INSERT` trigger on `accounting_book_period_control`.
 
 The guard admits a new row only when both conditions hold:
 
 - the control INSERT is nested under one of migration 0034's canonical master-data seed triggers (`pg_trigger_depth() >= 2`); and
 - the new control is literal `open` with `period_closed_at IS NULL`.
 
-A direct runtime/application INSERT therefore returns no row. `_lock_book_period()` immediately performs its authoritative control lookup; when the requested pair is legitimately absent, the existing domain validation path reports that the accounting book has no control row and requires control-data repair. No shared `fiscal_period` status becomes book close authority.
+A direct runtime/application INSERT therefore returns no row. The application now matches that database single-writer boundary instead of relying on the guard as a compensating control. `_lock_book_period()` performs a diagnostic fiscal-period existence lookup, then reads and locks only the requested `accounting_book_period_control` row with `FOR UPDATE OF accounting_book_period_control`; it no longer creates controls. `_load_book_period_state()` and `_require_open_book_period_bounds()` use an inner join to the same book-owned control and read its `period_status_code` directly. A missing control therefore fails closed instead of inheriting the shared calendar projection.
 
 A caller-controlled custom GUC was rejected as an authority marker because an arbitrary session setting would itself become a spoofable mutable capability. PostgreSQL's trigger-depth signal is structural: PostgreSQL 18.6 documents `pg_trigger_depth()` as the current trigger nesting level, returning zero outside trigger execution. PostgreSQL also documents that a row-level `BEFORE` trigger can skip the current row operation, which is the fail-closed mechanism used here.
 
@@ -29,23 +31,25 @@ Real-PostgreSQL RED `614d1164f3abf1f7bab3fe77d520e5b7108e4c69` creates a tenant 
 
 Production candidate `610d77082eb01c80d2e9e74521e48a3b06e1375a` installs the post-repair direct-insert guard in migration 0034. Static ratchet `ee233b5c40c942008c7ec034917fd49f1fcf9976` pins the structural nesting check, open/NULL-only invariant, `BEFORE INSERT` placement, and migration-repair ordering.
 
-Application-source RED `tests/test_book_period_application_authority_contract.py` separately requires the persistence adapter to remove the stale `INSERT ... SELECT` writer, replace both shared-state `LEFT JOIN`/`COALESCE` fallbacks with an exact `accounting_book_period_control` join, and lock the authoritative control row with `FOR UPDATE OF accounting_book_period_control`. Real-PostgreSQL `tests/test_postgres_book_period_control_no_projection_red.py` supplies the buyer-relevant missing-non-open-control case. Database containment is therefore not treated as permission to leave the application authority model permanently divergent.
+Application-source RED `tests/test_book_period_application_authority_contract.py` separately requires the persistence adapter to remove the stale `INSERT ... SELECT` writer, replace both shared-state `LEFT JOIN`/`COALESCE` fallbacks with an exact `accounting_book_period_control` join, lock the authoritative control row with `FOR UPDATE OF accounting_book_period_control`, and preserve unrelated reporting/integration surfaces in the large adapter. Real-PostgreSQL `tests/test_postgres_book_period_control_no_projection_red.py` supplies the buyer-relevant missing-non-open-control case.
 
-These SHAs are development lineage, not release evidence. The RED was authored before the causal repair, but it was not observed failing on a GitHub runner in this run. Exact-head real-PostgreSQL execution, security/SAST/dependency evidence, independent review, protected-stack prerequisites, migration/recovery evidence, and immutable release evidence remain separate gates.
+Production source repair `048671fe7243b6bf8c730c349b46d4f3bfc79dde` is a normal descendant of `9086422c2cd801c3be76069114ee0e6753c47f92`. Exact commit comparison reports one modified path, `src/accounting_information_platform/persistence.py`, with 9 additions and 40 deletions. The patch is limited to the three authority helpers: removing the runtime control INSERT, replacing the two shared-state fallbacks with inner book-control joins, and updating helper documentation. It does not delete or rewrite the unrelated reporting, reconciliation, HomeTax, VAT, or ledger surfaces that the preservation contract protects.
+
+These SHAs are development lineage, not release evidence. The REDs were authored before the causal repair, but they were not observed failing on a GitHub runner in this run. Exact-head real-PostgreSQL execution, security/SAST/dependency evidence, independent review, protected-stack prerequisites, migration/recovery evidence, and immutable release evidence remain separate gates.
 
 ## Scope-preservation repair
 
 A source-cleanup candidate at `952bb1b2a014db823f8ee452ebdfb9bc3980e733` attempted to replace the three stale helper paths together. Exact-blob verification immediately found that the replacement did not preserve unrelated methods in the large persistence adapter, so that candidate is invalid development evidence and must not be used as a GREEN or release input.
 
-Normal descendant `a8c5abe7520cb0a50708127726bcf0dfb420dc60` restores `src/accounting_information_platform/persistence.py` byte-for-byte to prior complete blob `1d27c2399b0adca1aead3a2f3a141a8eb6a95435`. No force-push, reset, destructive rebase, or selective loss of concurrent delta was used. The application-source REDs therefore remain intentionally RED until a scope-preserving causal edit changes only the three authority helpers on a freshly read exact head.
+Normal descendant `a8c5abe7520cb0a50708127726bcf0dfb420dc60` restored `src/accounting_information_platform/persistence.py` byte-for-byte to prior complete blob `1d27c2399b0adca1aead3a2f3a141a8eb6a95435`. No force-push, reset, destructive rebase, or selective loss of concurrent delta was used. Scope-preservation ratchet `9086422c2cd801c3be76069114ee0e6753c47f92` then fixed the acceptance before another production edit was attempted.
 
-This recovery is part of the verification record: changing an authority boundary is not acceptable if the patch silently deletes unrelated reporting, reconciliation, integration, or audit behavior. The next implementation must prove both the authority assertions and preservation of the rest of the persistence module before it can be called GREEN.
+The successful source repair at `048671fe7243b6bf8c730c349b46d4f3bfc79dde` was applied against that exact restored blob. A post-write compare against `9086422c2cd801c3be76069114ee0e6753c47f92` shows `ahead_by=1`, `behind_by=0`, a single modified file, and 49 changed lines. This scope check is part of the verification record: changing an authority boundary is not acceptable if the patch silently deletes unrelated accounting behavior.
 
 ## Recovery and follow-up
 
 A rejected direct control INSERT writes no authoritative row and therefore seeds no 64-row journal-population fence. The surrounding close transaction remains free to roll back normally. Operators must not repair a missing non-open pair by copying `fiscal_period` status or by manual SQL. If a later-created book must become applicable to an already non-open period, that requires an explicit book-period lifecycle/adoption/reopen command with authenticated capability, idempotency, maker-checker policy where applicable, and retained chronology.
 
-The stale application-side `INSERT ... SELECT` is now behaviorally contained by the database single-writer boundary, but its source expression remains a cleanup finding: it should be removed from `_lock_book_period()` on a current exact head, leaving the helper as read/lock/fail-closed only. `_require_open_book_period_bounds()` and `_load_book_period_state()` must likewise read book-owned status only from `accounting_book_period_control`; a missing control must fail closed rather than inherit the shared calendar projection. Until those REDs are satisfied, the database guard is authoritative and the branch must not claim the application source is conceptually clean.
+With `048671fe7243b6bf8c730c349b46d4f3bfc79dde`, the application and database now share the same writer model: master-data seed triggers may create literal-open controls, while posting/adjusting/close helpers only consume existing book-period authority. The source cleanup is not considered execution-GREEN until an unchanged exact head runs the static authority contract and real-PostgreSQL regressions successfully. Missing-control diagnostic wording for an adjusting journal remains a possible buyer-facing refinement, but it must not reintroduce authority synthesis.
 
 ## References
 
