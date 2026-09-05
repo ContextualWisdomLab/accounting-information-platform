@@ -130,6 +130,7 @@ class OpenPeriodJournalFencePostgresTests(unittest.TestCase):
         )
         first_period_admission_reached = threading.Event()
         release_first_post = threading.Event()
+        self.addCleanup(release_first_post.set)
         second_post_finished = threading.Event()
         first_errors: list[BaseException] = []
         second_errors: list[BaseException] = []
