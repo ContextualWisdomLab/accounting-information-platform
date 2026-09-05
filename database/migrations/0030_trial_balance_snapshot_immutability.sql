@@ -60,7 +60,6 @@ DECLARE
     period_status_value text;
     book_legal_entity_id uuid;
     book_reporting_currency_code text;
-    journal_write_role_value text;
     close_command_lock_held boolean;
 BEGIN
     SELECT accounting_book_period_control.period_status_code
@@ -105,15 +104,10 @@ BEGIN
             USING ERRCODE = 'check_violation';
     END IF;
 
-    journal_write_role_value := nullif(
-        current_setting('accounting_core.journal_write_role', true),
-        ''
-    );
-
-    -- The hard-close command always acquires this tenant/book/period transaction
-    -- advisory lock before assembling close evidence. The lock remains present even
-    -- when zero net revenue/expense means no period-closing journal is emitted, so
-    -- snapshot admission must not depend on an optional journal INSERT side effect.
+    -- The hard-close command always acquires this tenant/book/period advisory
+    -- lock before assembling close evidence. The lock remains present even when
+    -- zero net revenue/expense means no period-closing journal is emitted. A
+    -- caller-set journal_write_role GUC is therefore never snapshot authority.
     SELECT EXISTS (
         SELECT 1
           FROM pg_catalog.pg_locks AS held_lock
@@ -147,10 +141,7 @@ BEGIN
 
     IF period_status_value <> 'soft_closed'
        OR NOT pg_has_role(session_user, 'accounting_closing_writer', 'MEMBER')
-       OR (
-            journal_write_role_value IS DISTINCT FROM 'period_closing'
-            AND NOT close_command_lock_held
-       )
+       OR NOT close_command_lock_held
     THEN
         RAISE EXCEPTION
             'trial balance snapshot creation requires the purpose-limited hard-close writer (trial_balance_snapshot_authority_required)'
