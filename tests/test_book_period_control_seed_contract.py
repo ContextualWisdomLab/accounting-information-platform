@@ -45,40 +45,52 @@ class BookPeriodControlSeedContractTests(unittest.TestCase):
         )
 
     def test_cross_tenant_backfills_are_owner_safe_without_disabling_rls(self) -> None:
-        """Unbound non-superuser migration owners need an owner-only window before FORCE RLS."""
+        """Unbound migration owners need owner-only visibility on source and target tables."""
         initial_source = BOOK_PERIOD_MIGRATION.read_text(encoding="utf-8")
         initial_backfill = initial_source.index(
             "INSERT INTO accounting_core.accounting_book_period_control ("
         )
-        initial_force = initial_source.index(
+        initial_control_force = initial_source.index(
             "ALTER TABLE accounting_core.accounting_book_period_control FORCE ROW LEVEL SECURITY;"
         )
-        self.assertLess(
-            initial_backfill,
-            initial_force,
-            "0009 forces its table owner through tenant RLS before the all-tenant upgrade backfill",
+        initial_book_no_force = initial_source.index(
+            "ALTER TABLE accounting_core.accounting_book NO FORCE ROW LEVEL SECURITY;"
         )
+        initial_period_no_force = initial_source.index(
+            "ALTER TABLE accounting_core.fiscal_period NO FORCE ROW LEVEL SECURITY;"
+        )
+        initial_book_force = initial_source.rindex(
+            "ALTER TABLE accounting_core.accounting_book FORCE ROW LEVEL SECURITY;"
+        )
+        initial_period_force = initial_source.rindex(
+            "ALTER TABLE accounting_core.fiscal_period FORCE ROW LEVEL SECURITY;"
+        )
+        self.assertLess(initial_book_no_force, initial_backfill)
+        self.assertLess(initial_period_no_force, initial_backfill)
+        self.assertLess(initial_backfill, initial_book_force)
+        self.assertLess(initial_backfill, initial_period_force)
+        self.assertLess(initial_backfill, initial_control_force)
 
         repair_source = MIGRATION.read_text(encoding="utf-8")
         repair_backfill = repair_source.rindex(
             "INSERT INTO accounting_core.accounting_book_period_control ("
         )
-        control_no_force = repair_source.index(
-            "ALTER TABLE accounting_core.accounting_book_period_control NO FORCE ROW LEVEL SECURITY;"
-        )
-        fence_no_force = repair_source.index(
-            "ALTER TABLE accounting_core.period_journal_population_fence NO FORCE ROW LEVEL SECURITY;"
-        )
-        fence_force = repair_source.rindex(
-            "ALTER TABLE accounting_core.period_journal_population_fence FORCE ROW LEVEL SECURITY;"
-        )
-        control_force = repair_source.rindex(
-            "ALTER TABLE accounting_core.accounting_book_period_control FORCE ROW LEVEL SECURITY;"
-        )
-        self.assertLess(control_no_force, repair_backfill)
-        self.assertLess(fence_no_force, repair_backfill)
-        self.assertLess(repair_backfill, fence_force)
-        self.assertLess(repair_backfill, control_force)
+        for table_name in (
+            "accounting_book",
+            "fiscal_period",
+            "accounting_book_period_control",
+            "period_journal_population_fence",
+        ):
+            no_force = repair_source.index(
+                f"ALTER TABLE accounting_core.{table_name} NO FORCE ROW LEVEL SECURITY;"
+            )
+            force = repair_source.rindex(
+                f"ALTER TABLE accounting_core.{table_name} FORCE ROW LEVEL SECURITY;"
+            )
+            self.assertLess(no_force, repair_backfill)
+            self.assertLess(repair_backfill, force)
+
+        self.assertNotIn("DISABLE ROW LEVEL SECURITY", initial_source)
         self.assertNotIn("DISABLE ROW LEVEL SECURITY", repair_source)
 
     def test_canonical_installer_includes_seed_migration(self) -> None:
