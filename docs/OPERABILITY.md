@@ -2,7 +2,7 @@
 
 ## Deployment preconditions
 
-Use PostgreSQL 18 and keep the migration owner, application runtime login and administrative / break-glass identities separate. Apply migrations in the checked-in authority order through `0025_reconciliation_lifecycle_recording_time_authority.sql` before starting the service. Do not run the application with a table-owner, superuser or `BYPASSRLS` login.
+Use PostgreSQL 18 and keep the migration owner, application runtime login and administrative / break-glass identities separate. Apply the complete checked-in authority chain through `0036_hard_close_trial_balance_snapshot_pair.sql` before starting the service. Do not run the application with a table-owner, superuser or `BYPASSRLS` login.
 
 Required environment values are deployment-specific. At minimum, configure the accounting database URL and bind this AIS process to exactly one tenant reference. Secrets belong in an approved secret store; do not place database passwords, NTS credentials, bearer tokens or provider secrets in journal payloads, logs or outbox events.
 
@@ -39,6 +39,17 @@ database/migrations/0022_reconciliation_authority_outbox_retention.sql
 database/migrations/0023_reconciliation_authority_outbox_orphan_guard.sql
 database/migrations/0024_reconciliation_control_recording_time_authority.sql
 database/migrations/0025_reconciliation_lifecycle_recording_time_authority.sql
+database/migrations/0026_reconciliation_lifecycle_source_payload_identity.sql
+database/migrations/0027_reconciliation_lifecycle_session_lock_authority.sql
+database/migrations/0028_reconciliation_lifecycle_capability_privileges.sql
+database/migrations/0029_trial_balance_snapshot_population_unique_index.sql
+database/migrations/0030_trial_balance_snapshot_immutability.sql
+database/migrations/0031_trial_balance_line_conservation_validation.sql
+database/migrations/0032_period_close_journal_population_fence.sql
+database/migrations/0033_open_period_journal_population_fence.sql
+database/migrations/0034_book_period_control_seed.sql
+database/migrations/0035_trial_balance_snapshot_hard_close_pair.sql
+database/migrations/0036_hard_close_trial_balance_snapshot_pair.sql
 ```
 
 Migration `0015_reconciliation_multi_match_conservation.sql` replaces the run-wide single-approved-match shortcut from `0014` with tenant/run-scoped match identity plus exact statement/journal allocation conservation. It permits multiple independently approved matches, including split and aggregate allocation populations, only when no authoritative source amount is over-consumed and grants no journal-posting authority.
@@ -51,7 +62,7 @@ Migration `0018_bank_statement_balance_evidence.sql` preserves the exact numeric
 
 Migration `0019_reconciliation_run_command_evidence.sql` records the immutable command identity that opens a reconciliation run from one persisted bank statement and active bank-account assignment, then adds the evidence-derived run-finalization command and shared reconciliation command-identity namespace. The tenant-scoped idempotency key, command hash, source hash, and object-store reference are forced-RLS evidence; new runs exclude source facts recorded after `knowledge_cutoff_at`, and a deferred database guard requires one command per run with statement-to-assignment bank-account provenance. The public run API opens only `evaluating` scope and cannot post journals or close periods.
 
-The unreleased lifecycle-parent overlay `0019_reconciliation_run_database_snapshot_authority.sql` must run after the base 0019 migration and before migrations 0020/0021/0022/0023/0024/0025. It defines `accounting_core.reconciliation_run_database_snapshot_authority`, independently reconstructs the exact bank-statement and assigned cash-book populations and bridge, and replaces caller-selected transition snapshot, statement-population, and book-population identities. The supported installer treats this overlay as part of the complete chain even though its filename shares the base numeric prefix; do not sort migrations by filename alone and accidentally omit it.
+The unreleased lifecycle-parent overlay `0019_reconciliation_run_database_snapshot_authority.sql` must run after the base 0019 migration and before migrations 0020 through 0036. It defines `accounting_core.reconciliation_run_database_snapshot_authority`, independently reconstructs the exact bank-statement and assigned cash-book populations and bridge, and replaces caller-selected transition snapshot, statement-population, and book-population identities. The supported installer treats this overlay as part of the complete chain even though its filename shares the base numeric prefix; do not sort migrations by filename alone and accidentally omit it.
 
 Migration `0020_reconciliation_exception_resolution_command.sql` makes exception resolution a named maker-checker command rather than a mutable status shortcut. The database requires an active reviewable run, one open tenant/run/exception, a reviewer distinct from the exception owner, retained evidence reference/hash, temporal causality, the shared reconciliation idempotency namespace, and a database-derived command hash. A raw terminal status update is rejected unless its matching command already exists in the transaction; a deferred pair guard requires command and terminal status to commit together, then terminal exception evidence is immutable. Run finalization accepts an exception only when its terminal status and retained resolution command agree. This command does not post a journal; any correcting journal is a separate authorized General Ledger command.
 
@@ -65,9 +76,21 @@ Migration `0024_reconciliation_control_recording_time_authority.sql` makes `reco
 
 Migration `0025_reconciliation_lifecycle_recording_time_authority.sql` has a stricter upgrade contract because a lifecycle transition already makes a run `reconciled` and can support close evidence. Migration 0019 allowed privileged callers to supply transition `recorded_at`, so a pre-0025 transition timestamp cannot be proven retroactively. Before any durable 0025 schema change, a temporary `FOR SELECT TO current_user USING (true)` policy exposes the forced-RLS transition history to the migration owner; if any transition row exists, the migration aborts with `reconciliation_lifecycle_legacy_recording_time_preflight`. Do not delete, rewrite, relabel, or invent system-time provenance to make this pass. Keep the prior release or execute a separately reviewed audited remediation backed by the original transition/status/outbox evidence. Creating a new run alone does not remove the old immutable transition and cannot satisfy the preflight. On databases that pass, new transition rows carry explicit `recording_time_authority_code = 'database_clock'`; PostgreSQL overwrites any caller-shaped `recorded_at` with `clock_timestamp()` and rejects `effective_at > recorded_at` using `reconciliation_lifecycle_future_time`. A rejected future-effective transition leaves command, run status, and outbox authority rolled back together. This migration does not post/reverse journals, close fiscal periods, or alter accounting policy.
 
+Migrations `0026_reconciliation_lifecycle_source_payload_identity.sql` through `0028_reconciliation_lifecycle_capability_privileges.sql` finish the reconciliation lifecycle authority boundary. Source-payload identity is immutable and database-bound, lifecycle snapshot freshness is established through the canonical session-lock lease plus a fresh authority transaction, and generic PUBLIC execution of the lifecycle session-lock helpers is revoked. A consumer must use these installed controls rather than reconstruct reconciliation authority from caller payloads or mutable application state.
+
+Migrations `0029_trial_balance_snapshot_population_unique_index.sql` through `0031_trial_balance_line_conservation_validation.sql` establish one retained trial-balance population per tenant/book/period, freeze retained headers and lines, derive system time and aggregate scope at PostgreSQL, and validate exact `numeric(38,6)` debit/credit/net conservation. Migration 0029 uses a concurrent unique-index build and therefore has a distinct failed-install recovery state: an invalid concurrent index may remain and must be inspected/dropped or rebuilt before retrying the supported chain; do not rewrite retained evidence to make the index succeed.
+
+Migrations `0032_period_close_journal_population_fence.sql` and `0033_open_period_journal_population_fence.sql` protect hard-close freshness under `REPEATABLE READ`. Purpose-limited soft-close journals invalidate a stale close through the exact book-period control row. Ordinary open-period journals update one of 64 pre-existing fence rows, while a period transition locks all 64 in deterministic order. SQLSTATE `40001` is coordination failure: the whole command must roll back and retry from a fresh transaction with the same immutable command identity. Do not retry only the failed statement or retain a partial close artifact.
+
+Migration `0034_book_period_control_seed.sql` owns post-install book-period authority materialization. New open periods, new active books, and inactive-to-active book transitions seed only literal `open` controls with `period_closed_at = NULL` plus the complete 64-row fence. A later-created book does not inherit `soft_closed` or `hard_closed` from the shared fiscal-period compatibility projection. The migration temporarily uses owner-only `NO FORCE ROW LEVEL SECURITY` on its participating relations while RLS remains enabled, then restores FORCE before commit. A missing non-open book-period control is a fail-closed lifecycle gap, not permission to synthesize authority manually.
+
+Migrations `0035_trial_balance_snapshot_hard_close_pair.sql` and `0036_hard_close_trial_balance_snapshot_pair.sql` make the retained snapshot and exact book-period `hard_closed` state a bidirectional commit pair. Migration 0035 rejects retained snapshot evidence unless the exact control ends hard-closed. Migration 0036 rejects a transition to hard-closed unless the exact retained snapshot exists. Both future-write guards are deferred so the supported snapshot-first/status-second hard-close transaction remains valid.
+
+Migration 0036 also certifies pre-existing pair state before installing its future-write guard. It creates transaction-scoped `FOR SELECT TO current_user USING (true)` policies on the two FORCE-RLS pair relations, rejects a pre-existing hard-closed control without an exact snapshot using `hard_close_snapshot_pair_legacy_preflight`, and rejects a retained snapshot without an exact hard-closed control using `trial_balance_snapshot_hard_close_pair_legacy_preflight`. It drops both temporary policies before installing the durable trigger. If either marker appears, stop the upgrade; do not manufacture the missing status or snapshot. Retain the prior release or execute a separately reviewed audited remediation that can prove the original close command, journal population, scope/currency and retained numerical evidence.
+
 Migration `0007_runtime_tenant_binding.sql` replaces caller-selected tenant authority with owner-controlled runtime-login binding. Migration `0008_fiscal_period_open_command.sql` adds forced-RLS, append-only command evidence so fiscal-period-open retries are bound to the original tenant key and source hash. Both must be installed before runtime database privileges are treated as production-ready.
 
-After installation, prove with the actual runtime login that supported reads and writes work for its tenant, another tenant is inaccessible, the login is not a migration owner / superuser / `BYPASSRLS`, and direct SQL cannot bypass journal immutability, period controls, reconciliation lifecycle controls, exception-resolution authority, reconciliation authority-event admission, or reconciliation recording-time provenance.
+After installation, prove with the actual runtime login that supported reads and writes work for its tenant, another tenant is inaccessible, the login is not a migration owner / superuser / `BYPASSRLS`, and direct SQL cannot bypass journal immutability, period controls, reconciliation lifecycle controls, exception-resolution authority, reconciliation authority-event admission, reconciliation recording-time provenance, or hard-close/snapshot pairing.
 
 ## Concurrency and hot-write operations
 
@@ -157,7 +180,11 @@ Soft-close changes the period to `soft_closed`, writes no hard-close trial-balan
 
 ### Hard-close
 
-Hard-close loads the close binder in one repeatable-read view, posts the AIS period-closing journal when required, stores the hard-close snapshot and changes the period to `hard_closed`. Hard-close is irreversible in this foundation. Open a later period for subsequent activity.
+Hard-close loads the close binder in one repeatable-read view, posts the AIS period-closing journal when required, stores the hard-close snapshot and changes the exact book-period control to `hard_closed`. Hard-close is irreversible in this foundation. Open a later period for subsequent activity.
+
+The retained snapshot and exact `hard_closed` control are a commit-time pair. `trial_balance_snapshot_hard_close_pair_required` means a snapshot tried to commit without matching hard-close authority. `hard_close_snapshot_pair_required` means hard-close authority tried to commit without the matching retained snapshot. Either error aborts the complete transaction; retry the supported close command from a fresh transaction with the same immutable idempotency/source identity. Do not patch either side manually.
+
+During upgrade, `hard_close_snapshot_pair_legacy_preflight` or `trial_balance_snapshot_hard_close_pair_legacy_preflight` means pre-existing evidence cannot be certified as a complete pair. Stop before migration 0036, preserve the database, inventory the exact control/snapshot/line and original close evidence, and use only a separately reviewed audited remediation if the missing provenance can actually be proven. Do not insert a synthetic snapshot or flip a status to satisfy the preflight.
 
 If close fails, inspect the first causal missing catalog / mapping / balance / period error. Do not invent a snapshot or mark a period closed manually.
 
@@ -213,7 +240,7 @@ Do not transfer a success from a predecessor SHA or synthetic merge ref to the c
 
 ## Backup, restore and recovery
 
-Before release, rehearse clean install, forward migration, rollback strategy, backup restore and point-in-time recovery with production-like data volumes and the non-owner runtime identity. Restoration must preserve immutable journal / receipt / outbox lineage and tenant isolation.
+Before release, rehearse clean install, forward migration, rollback strategy, backup restore and point-in-time recovery with production-like data volumes and the non-owner runtime identity. Restoration must preserve immutable journal / receipt / outbox lineage, retained trial-balance evidence, hard-close/snapshot pairing, and tenant isolation. Forward-upgrade rehearsal must include the 0036 one-sided-pair preflight and prove that an aborted preflight leaves neither temporary migration policy nor partial durable trigger state.
 
 Recovery from an accounting error is not database row editing. Restore infrastructure only for infrastructure loss; correct economic facts with reversal / reposting according to accounting policy.
 
