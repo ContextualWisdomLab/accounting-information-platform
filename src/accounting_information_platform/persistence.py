@@ -4426,14 +4426,11 @@ class PostgresPostingLedger:
             """
             SELECT fiscal_period.fiscal_period_id,
                    fiscal_period.period_code,
-                   COALESCE(
-                       accounting_book_period_control.period_status_code,
-                       fiscal_period.period_status_code
-                   ),
+                   accounting_book_period_control.period_status_code,
                    fiscal_period.period_start_date,
                    fiscal_period.period_end_date
             FROM accounting_core.fiscal_period
-            LEFT JOIN accounting_core.accounting_book_period_control
+            JOIN accounting_core.accounting_book_period_control
               ON accounting_book_period_control.tenant_account_id
                  = fiscal_period.tenant_account_id
              AND accounting_book_period_control.fiscal_period_id
@@ -4455,14 +4452,11 @@ class PostgresPostingLedger:
             """
             SELECT fiscal_period.fiscal_period_id,
                    fiscal_period.period_code,
-                   COALESCE(
-                       accounting_book_period_control.period_status_code,
-                       fiscal_period.period_status_code
-                   ),
+                   accounting_book_period_control.period_status_code,
                    fiscal_period.period_start_date,
                    fiscal_period.period_end_date
             FROM accounting_core.fiscal_period
-            LEFT JOIN accounting_core.accounting_book_period_control
+            JOIN accounting_core.accounting_book_period_control
               ON accounting_book_period_control.tenant_account_id
                  = fiscal_period.tenant_account_id
              AND accounting_book_period_control.fiscal_period_id
@@ -4734,10 +4728,10 @@ class PostgresPostingLedger:
         book_id: UUID,
         period_code: str,
     ) -> tuple[UUID, str, date]:
-        """Materialize and lock close state independently for one accounting book."""
+        """Lock the authoritative close state for one accounting book, failing closed if absent."""
         period_row = connection.execute(
             """
-            SELECT fiscal_period_id, period_status_code, period_closed_at
+            SELECT fiscal_period_id
             FROM accounting_core.fiscal_period
             WHERE tenant_account_id = %s AND period_code = %s
             """,
@@ -4749,28 +4743,6 @@ class PostgresPostingLedger:
                 "Create the fiscal_period row, then retry the close."
             )
         period_id = period_row[0]
-        connection.execute(
-            """
-            INSERT INTO accounting_core.accounting_book_period_control (
-                tenant_account_id, accounting_book_id, fiscal_period_id,
-                period_status_code, period_closed_at
-            )
-            SELECT accounting_book.tenant_account_id,
-                   accounting_book.accounting_book_id,
-                   fiscal_period.fiscal_period_id,
-                   fiscal_period.period_status_code,
-                   fiscal_period.period_closed_at
-            FROM accounting_core.accounting_book
-            JOIN accounting_core.fiscal_period
-              ON fiscal_period.tenant_account_id = accounting_book.tenant_account_id
-            WHERE accounting_book.tenant_account_id = %s
-              AND accounting_book.valid_to IS NULL
-              AND fiscal_period.fiscal_period_id = %s
-            ON CONFLICT (tenant_account_id, accounting_book_id, fiscal_period_id)
-            DO NOTHING
-            """,
-            (tenant_id, period_id),
-        )
         row = connection.execute(
             """
             SELECT fiscal_period.fiscal_period_id,
@@ -4803,18 +4775,15 @@ class PostgresPostingLedger:
         book_id: UUID,
         period_code: str,
     ) -> tuple[UUID, str, date, date] | None:
-        """Return the selected book's period state, falling back to legacy calendar state."""
+        """Return the selected book's authoritative period-control state when recorded."""
         row = connection.execute(
             """
             SELECT fiscal_period.fiscal_period_id,
-                   COALESCE(
-                       accounting_book_period_control.period_status_code,
-                       fiscal_period.period_status_code
-                   ),
+                   accounting_book_period_control.period_status_code,
                    fiscal_period.period_start_date,
                    fiscal_period.period_end_date
             FROM accounting_core.fiscal_period
-            LEFT JOIN accounting_core.accounting_book_period_control
+            JOIN accounting_core.accounting_book_period_control
               ON accounting_book_period_control.tenant_account_id
                  = fiscal_period.tenant_account_id
              AND accounting_book_period_control.fiscal_period_id
