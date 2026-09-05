@@ -47,6 +47,28 @@ class BookPeriodApplicationAuthorityContractTests(unittest.TestCase):
         self.assertIn("JOIN accounting_core.accounting_book_period_control", source)
         self.assertIn("accounting_book_period_control.period_status_code", source)
 
+    def test_authority_cleanup_preserves_unrelated_persistence_surfaces(self) -> None:
+        """A focused period-authority edit must not erase unrelated accounting reads."""
+        required_methods = (
+            "load_trial_balance",
+            "load_account_ledger",
+            "load_financial_statement",
+            "load_financial_statement_package",
+            "load_vat_period_register",
+            "load_home_tax_submissions",
+        )
+
+        missing = [
+            method_name
+            for method_name in required_methods
+            if not hasattr(PostgresPostingLedger, method_name)
+        ]
+        self.assertEqual(
+            missing,
+            [],
+            f"period-authority cleanup removed unrelated persistence methods: {missing}",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
