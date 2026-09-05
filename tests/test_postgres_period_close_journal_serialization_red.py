@@ -50,6 +50,7 @@ class PeriodCloseJournalSerializationPostgresTests(unittest.TestCase):
         close_idempotency_key = f"{self.case.policy.tenant_reference}:close-race:hard"
         pre_lock_snapshot_reached = threading.Event()
         adjustment_committed = threading.Event()
+        self.addCleanup(adjustment_committed.set)
         close_result: list[object] = []
         close_errors: list[BaseException] = []
         original_acquire = close_ledger._acquire_command_lock
