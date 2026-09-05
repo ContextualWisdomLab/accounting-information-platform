@@ -50,6 +50,36 @@ class BookPeriodControlSeedTests(unittest.TestCase):
         self.assertEqual(control_count, 1)
         self.assertEqual(fence_count, 64)
 
+    def test_seed_sources_and_targets_finish_with_forced_rls(self) -> None:
+        """Owner-only migration visibility must never leak into the committed runtime schema."""
+        expected_relations = {
+            "accounting_book",
+            "fiscal_period",
+            "accounting_book_period_control",
+            "period_journal_population_fence",
+        }
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            rows = connection.execute(
+                """
+                SELECT pg_class.relname,
+                       pg_class.relrowsecurity,
+                       pg_class.relforcerowsecurity
+                FROM pg_catalog.pg_class
+                JOIN pg_catalog.pg_namespace
+                  ON pg_namespace.oid = pg_class.relnamespace
+                WHERE pg_namespace.nspname = 'accounting_core'
+                  AND pg_class.relname = ANY(%s)
+                """,
+                (list(expected_relations),),
+            ).fetchall()
+
+        actual = {
+            str(name): (bool(rls_enabled), bool(rls_forced))
+            for name, rls_enabled, rls_forced in rows
+        }
+        self.assertEqual(set(actual), expected_relations)
+        self.assertEqual(actual, {name: (True, True) for name in expected_relations})
+
     def _control_and_fence_counts(self, period_code: str) -> tuple[int, int]:
         """Return retained control and stripe cardinality for this fixture's primary book-period."""
         with psycopg.connect(posting.DATABASE_URL) as connection:
