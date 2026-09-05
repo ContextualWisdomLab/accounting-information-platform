@@ -14,6 +14,18 @@ The closing journal zeros catalog `usage_revenue` 410100 and `write_off_expense`
 
 IAS 1 requires a statement of financial position that presents equity separately from profit or loss for the period (IFRS Foundation, 2022). The closing process transfers that period result into equity so the next period’s sheet does not carry a floating earnings plug.
 
+## Proposed amendment on PR #53: posted-role temporal authority
+
+The accepted retained-earnings design does not authorize a later Accounting Policy catalog change to rewrite an already-posted journal fact. For historical P&L source classification at hard close, `journal_entry_line.account_role_code` is the authority because it was persisted with the immutable posted line. `account_role_mapping` remains the effective-dated policy authority while a new proposal is resolved, and the current `retained_earnings` mapping remains the close-time authority for the destination of the newly created AIS closing journal.
+
+Accordingly, `_post_closing_journal()` must select, filter, and group historical `usage_revenue` / `write_off_expense` from the persisted journal-line role and must not join the current effective mapping merely to reconstruct that historical classification. Expiring or superseding a mapping after posting must neither suppress the posted P&L population nor reclassify it at hard close. This amendment is Proposed until PR #53 reaches its protected integration gates; it does not change this ADR's previously accepted retained-earnings ownership or the posting-time policy resolver.
+
+The executable acceptance is `tests/test_postgres_period_close_posted_role_stability_red.py` plus `tests/test_period_close_posted_role_source_contract.py`. The detailed RED→candidate lineage, alternatives, scope-preservation evidence, and rollback boundary are maintained in `docs/doctoring/PERIOD_CLOSE_POSTED_ROLE_TRACEABILITY.md`.
+
+This temporal-authority split is an AIP DDD/audit-evidence control. IAS 1 does not prescribe the PostgreSQL column, join shape, or effective-dated implementation used to enforce it.
+
 ## Consequences
 
 Controllers can hard-close once and read a balance sheet that ties without `net_income_amount` as a plug. Income-statement inquiry still shows the period’s revenue and expense activity. Soft-close remains the adjusting window from ADR 0023 and does not park earnings.
+
+For the Proposed PR #53 amendment, controllers can also change future account-role policy without changing the close semantics of immutable historical journal lines. Reporting projections that still infer historical semantics only from current mappings remain a separate Reporting-Export repair and must not create a second Period Close authority.
