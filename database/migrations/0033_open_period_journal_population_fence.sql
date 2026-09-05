@@ -30,15 +30,11 @@ CREATE TABLE accounting_core.period_journal_population_fence (
 );
 
 REVOKE ALL ON accounting_core.period_journal_population_fence FROM PUBLIC;
-ALTER TABLE accounting_core.period_journal_population_fence ENABLE ROW LEVEL SECURITY;
-ALTER TABLE accounting_core.period_journal_population_fence FORCE ROW LEVEL SECURITY;
-CREATE POLICY period_journal_population_fence_isolation
-    ON accounting_core.period_journal_population_fence
-    USING (tenant_account_id = accounting_core.current_tenant_account_id())
-    WITH CHECK (tenant_account_id = accounting_core.current_tenant_account_id());
 
 -- Fence rows must pre-date any REPEATABLE READ close snapshot. Creating a fence
 -- lazily after a stale snapshot would let the close miss the new row entirely.
+-- Seed the migration-owned backfill before FORCE RLS so a non-superuser schema
+-- owner can initialize every tenant without borrowing one runtime tenant scope.
 INSERT INTO accounting_core.period_journal_population_fence (
     tenant_account_id,
     accounting_book_id,
@@ -51,6 +47,13 @@ SELECT period_control.tenant_account_id,
        generated_slot.fence_slot::smallint
 FROM accounting_core.accounting_book_period_control AS period_control
 CROSS JOIN generate_series(0, 63) AS generated_slot(fence_slot);
+
+ALTER TABLE accounting_core.period_journal_population_fence ENABLE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.period_journal_population_fence FORCE ROW LEVEL SECURITY;
+CREATE POLICY period_journal_population_fence_isolation
+    ON accounting_core.period_journal_population_fence
+    USING (tenant_account_id = accounting_core.current_tenant_account_id())
+    WITH CHECK (tenant_account_id = accounting_core.current_tenant_account_id());
 
 CREATE OR REPLACE FUNCTION accounting_core.seed_period_journal_population_fence()
 RETURNS trigger
