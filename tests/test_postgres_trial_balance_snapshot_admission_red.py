@@ -104,6 +104,10 @@ class TrialBalanceSnapshotAdmissionPostgresTests(unittest.TestCase):
         """Caller-set write-role state cannot substitute for the canonical close lock."""
         with psycopg.connect(posting.DATABASE_URL) as connection:
             legal_entity_id, accounting_book_id, fiscal_period_id = self._scope(connection)
+            has_closing_capability = connection.execute(
+                "SELECT pg_has_role(session_user, 'accounting_closing_writer', 'MEMBER')"
+            ).fetchone()[0]
+            self.assertTrue(has_closing_capability)
             connection.execute(
                 "SELECT set_config('accounting_core.journal_write_role', 'period_closing', true)"
             )
