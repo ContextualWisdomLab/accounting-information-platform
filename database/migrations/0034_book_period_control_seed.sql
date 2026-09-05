@@ -15,18 +15,22 @@ BEGIN;
 -- fail closed until an explicit book-period lifecycle can establish authority;
 -- the compatibility projection is never copied into authoritative close state.
 --
--- The two AFTER INSERT triggers also form one cross-product invariant. Without
--- a pre-existing common version witness, concurrent transactions can each
--- insert one side, scan before the other side commits, and leave the new
--- book-period pair absent. Both seeders therefore perform a non-key UPDATE of
--- the existing tenant row before scanning the peer population. Under READ
--- COMMITTED, the later seeder waits and its following statement sees the peer
--- commit. Under REPEATABLE READ/SERIALIZABLE, a transaction whose snapshot
--- predates the competing tenant-row version fails closed with serialization
--- failure and must retry from a fresh transaction. Updating only created_at to
--- its retained value changes no tenant business fact. PostgreSQL acquires the
--- weaker FOR NO KEY UPDATE row lock for this non-key update, so unrelated child
--- foreign-key checks using FOR KEY SHARE remain compatible.
+-- The two seed directions also form one cross-product invariant. Without a
+-- pre-existing common version witness, concurrent transactions can each insert
+-- one side, scan before the other side commits, and leave the new book-period
+-- pair absent. Both seeders therefore perform a non-key UPDATE of the existing
+-- tenant row before scanning the peer population. The same book-side seeder is
+-- also invoked when an already-recorded inactive book becomes active, because
+-- activation into an existing open period creates the same admissible
+-- book-period intersection as active-book creation.
+--
+-- Under READ COMMITTED, the later seeder waits and its following statement sees
+-- the peer commit. Under REPEATABLE READ/SERIALIZABLE, a transaction whose
+-- snapshot predates the competing tenant-row version fails closed with
+-- serialization failure and must retry from a fresh transaction. Updating only
+-- created_at to its retained value changes no tenant business fact. PostgreSQL
+-- acquires the weaker FOR NO KEY UPDATE row lock for this non-key update, so
+-- unrelated child foreign-key checks using FOR KEY SHARE remain compatible.
 CREATE OR REPLACE FUNCTION accounting_core.seed_book_period_control_for_period()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -125,6 +129,17 @@ CREATE TRIGGER book_period_control_seed_for_book
     FOR EACH ROW
     EXECUTE FUNCTION accounting_core.seed_book_period_control_for_book();
 
+-- An inactive book can become admissible after its original INSERT. Reuse the
+-- same database-owned open-only seeder on that lifecycle edge; do not require a
+-- later application write to manufacture a control row. The WHEN clause avoids
+-- versioning the tenant witness for ordinary edits and for deactivation.
+CREATE TRIGGER book_period_control_seed_for_book_activation
+    AFTER UPDATE OF valid_to
+    ON accounting_core.accounting_book
+    FOR EACH ROW
+    WHEN (OLD.valid_to IS NOT NULL AND NEW.valid_to IS NULL)
+    EXECUTE FUNCTION accounting_core.seed_book_period_control_for_book();
+
 -- Repair databases that installed 0009 before later master-data rows existed.
 -- accounting_book/fiscal_period as well as the control/fence targets are
 -- already FORCE RLS protected at this point. An unbound NOSUPERUSER /
@@ -171,15 +186,15 @@ ALTER TABLE accounting_core.fiscal_period FORCE ROW LEVEL SECURITY;
 ALTER TABLE accounting_core.accounting_book FORCE ROW LEVEL SECURITY;
 
 -- After the one-time repair above, new book-period authority may be created only
--- by the two canonical master-data seed triggers. A direct application or SQL
+-- by the canonical master-data seed triggers. A direct application or SQL
 -- INSERT must not reconstruct authority from fiscal_period compatibility state.
 -- pg_trigger_depth() is structural rather than a caller-controlled custom GUC:
--- the control-table trigger runs at depth 2 when invoked by either canonical
--- AFTER INSERT seeder and at depth 1 for a direct control-table INSERT. Returning
--- NULL leaves an unsupported direct write unapplied; the close path then reads
--- the still-missing control and fails with its domain validation error. This
--- keeps the database single-writer boundary intact without granting a mutable
--- session flag that another writer could spoof.
+-- the control-table trigger runs at depth 2 when invoked by a canonical seeder
+-- and at depth 1 for a direct control-table INSERT. Returning NULL leaves an
+-- unsupported direct write unapplied; the close path then reads the still-
+-- missing control and fails with its domain validation error. This keeps the
+-- database single-writer boundary intact without granting a mutable session
+-- flag that another writer could spoof.
 CREATE OR REPLACE FUNCTION accounting_core.guard_book_period_control_insert_authority()
 RETURNS trigger
 LANGUAGE plpgsql
