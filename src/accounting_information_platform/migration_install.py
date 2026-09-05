@@ -30,6 +30,7 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
         migration_path.parent / "0031_trial_balance_line_conservation_validation.sql",
         migration_path.parent / "0032_period_close_journal_population_fence.sql",
         migration_path.parent / "0033_open_period_journal_population_fence.sql",
+        migration_path.parent / "0034_book_period_control_seed.sql",
     )
     for forward_migration_path in forward_migration_paths:
         if not forward_migration_path.is_file():
