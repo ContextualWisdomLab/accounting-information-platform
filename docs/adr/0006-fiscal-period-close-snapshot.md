@@ -34,40 +34,50 @@ The canonical hard-close advisory key is `hashtext(tenant_reference)` plus `hash
 
 Migration `0033_open_period_journal_population_fence.sql` preserves the purpose-limited snapshot writer while restoring the supported direct `open` → `hard_closed` path. A snapshot created while the book-period is still `open` requires `accounting_closing_writer` capability **and** the exact tenant/resolved-book/period close advisory lock; a bare role plus `accounting_core.journal_write_role` cannot pre-populate open-period retained evidence. While `soft_closed`, the existing purpose-limited `period_closing` command context or the canonical close lock remains sufficient together with role membership.
 
-### Journal-population freshness without a single-row posting hotspot
+### Journal-population freshness without a single database-row hotspot
 
 `close_fiscal_period` uses `REPEATABLE READ`. A close transaction can therefore hold an MVCC snapshot that predates a journal committed while close is waiting on period authority. Waiting for a lock does not refresh that snapshot.
 
-Migration `0032_period_close_journal_population_fence.sql` first split the control profile:
+Migration `0032_period_close_journal_population_fence.sql` first split the database control profile:
 
 - an `open` journal takes `SELECT ... FOR SHARE` on the exact book-period control row so a state transition cannot overtake a journal already admitted as open;
 - a purpose-limited `soft_closed` period-closing/adjusting/reversal journal increments `journal_population_revision` on that control row, so a stale hard close that later locks the row fails with SQLSTATE `40001`.
 
-Review then exposed a remaining direct-open race. The open journal changed no row visible to a stale close. After waiting for the shared control-row lock, the close could acquire the unchanged row and continue from its older MVCC snapshot.
+Review then exposed a direct-open race for journal commands that do not share the close advisory mutex. The direct-open regression uses the AIS adjusting-journal path: it has its own idempotency mutex and may legitimately write while the book-period is `open`, but it does not acquire the ordinary Billing proposal's tenant/book/period advisory lock. A close can therefore establish an older repeatable-read snapshot before that journal commits.
 
-Migration `0033_open_period_journal_population_fence.sql` adds a bounded row-version witness without restoring one global write hotspot:
+Migration `0033_open_period_journal_population_fence.sql` adds a bounded row-version witness:
 
 - every book-period owns exactly 64 pre-existing `period_journal_population_fence` rows; migration backfill creates them before FORCE RLS is enabled, and an AFTER INSERT trigger seeds future book-period controls;
-- after confirming `open` under `FOR SHARE`, each journal increments exactly one fence row selected from its database journal UUID; two journals contend only when they choose the same slot;
+- after confirming `open` under `FOR SHARE`, each journal increments exactly one fence row selected from its database journal UUID;
 - before `period_status_code` changes, a transition trigger locks all 64 rows in deterministic slot order with `FOR UPDATE` and requires the complete population;
 - if any fence row was committed after the close transaction's repeatable-read snapshot, PostgreSQL raises serialization failure instead of allowing the stale transition to commit;
-- if close owns the control row first, a later open journal waits and then cannot retain stale open-state admission after the transition.
+- if the transition owns the control row first, a later journal cannot retain stale open-state admission after waiting.
 
-The 64-slot count is a measured-performance hypothesis, not accounting policy and not an IFRS requirement. It bounds the low-frequency transition fan-out while reducing expected ordinary-post collisions relative to one shared row. Exact-head load tests must still measure slot collisions, lock waits, WAL/write cost, retry rate, and buyer-path p95. A future slot-count change requires measured evidence and a migration-compatible design.
+The 64-slot count is an engineering hypothesis, not accounting policy and not an IFRS requirement. Exact-head load tests must measure slot collisions, row-lock waits, WAL/write cost, retry rate, and buyer-path p95. A future slot-count change requires measured evidence and a migration-compatible design.
 
 A serialization failure is not accounting evidence. The entire transaction rolls back and the command retries from the beginning with the same immutable source-payload identity and idempotency key. No failed close may leave a retained snapshot, period-closing journal, close event, or authoritative period transition.
 
-`tests/test_postgres_period_close_journal_serialization_red.py` exercises a `soft_closed` adjustment racing hard close. `tests/test_postgres_open_period_close_serialization_red.py` exercises a journal committed after a direct close snapshot but before the close acquires the period row, then requires exact-key retry to retain the live population. `tests/test_postgres_open_period_journal_fence.py` protects ordinary open-path concurrency, and `tests/test_trial_balance_snapshot_immutability_contract.py` ratchets the migration/security shape.
+### Remaining application advisory-lock hotspot
+
+The striped database fence is not yet an end-to-end posting-concurrency GREEN. `PostgresPostingLedger._require_open_book_period_bounds()` still acquires the same exclusive tenant/resolved-book/period advisory lock used by `close_fiscal_period()` for every ordinary Billing proposal. That makes unrelated ordinary postings for one open book-period queue before either reaches the striped database boundary.
+
+This application mutex is no longer selected as ordinary journal-versus-transition authority. The intended causal repair is to remove the `period:{book_id}:{period_code}` advisory acquisition from `_require_open_book_period_bounds()` while retaining its before/after open-state verification. Proposal idempotency locks remain. Close commands retain the canonical period advisory lock. PostgreSQL `FOR SHARE` plus the pre-existing striped witness remains the authoritative journal-versus-state-transition fence.
+
+`tests/test_postgres_open_period_journal_fence.py::test_open_period_postings_do_not_serialize_on_application_period_lock` is a real-PostgreSQL RED for this hotspot: it pauses one ordinary proposal after period admission but before journal persistence and requires another ordinary proposal to complete before the first resumes. `tests/test_open_period_application_lock_contract.py` pins the exact source boundary. Until production source changes and both tests are exact-head GREEN, the branch must not claim end-to-end open-post concurrency or the p95 target.
+
+`tests/test_postgres_period_close_journal_serialization_red.py` exercises a `soft_closed` adjustment racing hard close. `tests/test_postgres_open_period_close_serialization_red.py` exercises an open-period adjusting journal committed after a direct-close snapshot, then requires stale-close rollback and exact-key retry to retain the live population. The latter remains a valid correctness case because the adjusting command does not take the ordinary proposal's book-period advisory mutex.
 
 ## Alternatives considered
 
-Updating one `journal_population_revision` for every admitted journal was rejected because it makes one book-period row the exclusive write point for all ordinary posting. It preserves freshness but violates the platform's hot-partition/lock and latency goals.
+Updating one `journal_population_revision` for every admitted journal was rejected because it makes one book-period row the exclusive write point for all ordinary posting.
 
-Using only the control-row `FOR SHARE`/`FOR UPDATE` protocol was rejected after the direct-open race review. It orders transaction completion around the state change but supplies no row version proving that an open journal committed after a pre-existing repeatable-read snapshot.
+Using only the control-row `FOR SHARE`/`FOR UPDATE` protocol was rejected because it orders transaction completion around the state change but supplies no row version proving that a journal committed after a pre-existing repeatable-read snapshot.
 
-Relying only on the period advisory lock was rejected because a waiting repeatable-read close can retain the snapshot established before lock grant. Advisory-lock ownership and MVCC freshness are separate facts.
+Using the canonical close advisory mutex for every ordinary proposal is now rejected as a throughput strategy. It serializes independent postings at application scope and duplicates ordering already owned by the database admission/transition fence. The mutex remains appropriate for close-command serialization and close-snapshot authority.
 
-A session-lock-before-snapshot protocol was considered because reconciliation lifecycle already uses a committed session-lease pattern. It was not selected here because the required journal admission coordination can remain a database-owned book-period invariant without extending application-session lock lifetime across transaction boundaries. The striped witness also keeps correctness at the SQL boundary for purpose-limited writers. This decision can be revisited if measured stripe contention or transition fan-out is unacceptable.
+Relying only on advisory-lock wait for freshness was rejected because a waiting repeatable-read transaction retains the snapshot established before lock grant. Advisory-lock ownership and MVCC freshness are separate facts.
+
+A session-lock-before-snapshot protocol was considered because reconciliation lifecycle already uses a committed session-lease pattern. It was not selected here because journal admission coordination can remain a database-owned book-period invariant without extending application-session lock lifetime across transaction boundaries. This can be revisited if measured stripe contention or transition fan-out is unacceptable.
 
 Lazy creation of a fence row during journal admission was rejected because a repeatable-read close whose snapshot predates that INSERT can fail to see the new row. The complete fence population must exist before any journal/close race.
 
@@ -77,7 +87,9 @@ Allowing caller-provided close timestamps, currencies, aggregate identifiers, or
 
 ## Consequences and operational evidence
 
-Open-period posting now performs a shared control-row lock plus one striped revision UPDATE rather than one exclusive UPDATE on the common book-period row. This removes the deliberate single-row hotspot but does not prove the p95 ≤ 20 ms buyer target. PostgreSQL row locking can itself cause writes, and same-slot journals can still queue. Release evidence must therefore use realistic concurrent posting and transition workloads and report failures, retry rates, lock waits, stripe distribution, and tail latency without sample reduction or excluded errors.
+At the database boundary, open-period posting performs a shared control-row lock plus one striped revision UPDATE rather than one exclusive UPDATE on the common book-period row. This removes the deliberate database single-row hotspot. The current application advisory mutex still serializes ordinary proposals and is a release-blocking repair finding for the stated hot-path goal.
+
+After that source repair, PostgreSQL row locking and same-slot collisions still have measurable cost. Release evidence must use realistic concurrent posting and transition workloads and report advisory-lock waits, row-lock waits, stripe distribution, failures, retry rates, WAL/write cost, and tail latency without sample reduction, excluded failures, or artificial cache warm-up.
 
 Migration 0033 creates a new tenant-scoped table under RLS/FORCE RLS. The cross-tenant migration backfill occurs before FORCE RLS is enabled so a non-superuser schema owner can seed every existing book-period without impersonating one runtime tenant. Future rows are seeded from the book-period-control INSERT transaction and stay in that tenant scope. Guard functions are `SECURITY DEFINER`, use `search_path = pg_catalog, pg_temp`, and revoke PUBLIC execute.
 
