@@ -6,11 +6,11 @@
 
 Hard close certifies a retained trial-balance population as Accounting Information Platform evidence. That population must not be caller-shaped, mutable after close, cross an accounting-book aggregate boundary, drift arithmetically, or omit a journal that was validly admitted before close authority won.
 
-The implementation also has to preserve posting throughput. `accounting_book_period_control` is one row per tenant/accounting-book/fiscal-period. Updating that row for every ordinary open-period journal would turn a correctness fence into a hot exclusive-write point and serialize otherwise independent postings in the busiest lifecycle state.
+The implementation also has to preserve posting throughput. `accounting_book_period_control` is one row per tenant/accounting-book/fiscal-period. Updating that row for every ordinary open-period journal would turn a correctness fence into a hot exclusive-write point and serialize otherwise independent postings in the busiest lifecycle state. A shared lock on that row alone is also insufficient: it prevents a period transition from overtaking a still-running journal, but it does not prove that a journal committed after a close transaction established its `REPEATABLE READ` snapshot.
 
 ## Decision
 
-`PostgresPostingLedger.close_fiscal_period` remains the first-class close command. ADR 0023 owns the two-step lifecycle: `soft_closed` changes period state only; it creates no `trial_balance_snapshot`, `trial_balance_line`, or mandatory closing journal. A later `hard_closed` command acquires the tenant/book/period command authority, writes a period-closing journal when required, derives the live trial balance from AIS-owned PostgreSQL facts through the period end, persists one retained snapshot population, and hard-closes the period in the governed transaction. Posted journals are never rewritten.
+`PostgresPostingLedger.close_fiscal_period` remains the first-class close command. ADR 0023 owns the lifecycle: `soft_closed` changes period state only and creates no retained trial-balance population. `hard_closed` acquires tenant/resolved-book/period command authority, writes a period-closing journal when required, derives the live trial balance from AIS-owned PostgreSQL facts through the period end, persists one retained snapshot population, and hard-closes the period in one governed transaction. Direct `open` → `hard_closed` remains supported; `open` → `soft_closed` → `hard_closed` is also supported. Posted journals are never rewritten.
 
 An exact hard-close replay returns the retained result and creates no second snapshot, journal, or close event. `hard_closed` cannot transition back to `soft_closed`. Soft-close replay remains snapshot-free.
 
@@ -30,30 +30,46 @@ Migration 0030 adds `trial_balance_line_net_balance_conservation` as `NOT VALID`
 
 A retained snapshot header must use the legal entity that owns the selected accounting book, and `snapshot_currency_code` must equal that book's `reporting_currency_code`. Every retained `trial_balance_line.chart_account_id` must belong to the same accounting book. Tenant-scoped identifiers that are independently valid cannot be recombined across those aggregate boundaries.
 
-Snapshot creation is not an ordinary soft-close write. PostgreSQL admits a new snapshot only while the exact book-period is `soft_closed`, `session_user` belongs to `accounting_closing_writer`, and the transaction carries hard-close command context. That context is either transaction-local `accounting_core.journal_write_role=period_closing` after a required closing-journal write or the canonical tenant/resolved-accounting-book-id/period advisory lock held by `close_fiscal_period`. The GUC and lock classify the command; role membership remains the capability boundary.
+The canonical hard-close advisory key is `hashtext(tenant_reference)` plus `hashtext('period:' || accounting_book_id::text || ':' || period_code)`. PostgreSQL reconstructs the resolved accounting-book identity rather than trusting caller-facing `book_name`. `snapshot_generated_at` is database-owned system time and is replaced with `clock_timestamp()` even for an otherwise authorized closing writer.
 
-The canonical advisory key is `hashtext(tenant_reference)` plus `hashtext('period:' || accounting_book_id::text || ':' || period_code)`. The trigger reconstructs the resolved accounting-book identity, not the caller-facing `book_name`. `snapshot_generated_at` is database-owned system time and is replaced with `clock_timestamp()` even for an otherwise authorized closing writer.
+Migration `0033_open_period_journal_population_fence.sql` preserves the purpose-limited snapshot writer while restoring the supported direct `open` → `hard_closed` path. A snapshot created while the book-period is still `open` requires `accounting_closing_writer` capability **and** the exact tenant/resolved-book/period close advisory lock; a bare role plus `accounting_core.journal_write_role` cannot pre-populate open-period retained evidence. While `soft_closed`, the existing purpose-limited `period_closing` command context or the canonical close lock remains sufficient together with role membership.
 
-### Journal-population freshness without an open-period write hotspot
+### Journal-population freshness without a single-row posting hotspot
 
-A different race exists between an admitted journal and hard close. `close_fiscal_period` uses `REPEATABLE READ`; a close transaction can therefore hold an MVCC snapshot that predates a journal committed while close is waiting on its period authority. Waiting alone does not refresh the repeatable-read snapshot.
+`close_fiscal_period` uses `REPEATABLE READ`. A close transaction can therefore hold an MVCC snapshot that predates a journal committed while close is waiting on period authority. Waiting for a lock does not refresh that snapshot.
 
-Migration `0032_period_close_journal_population_fence.sql` uses the book-period control row as a lifecycle fence, but it does **not** update that row for every journal:
+Migration `0032_period_close_journal_population_fence.sql` first split the control profile:
 
-- when the period is `open`, journal admission takes `SELECT ... FOR SHARE` on the exact control row and returns without changing `journal_population_revision`; many open-period journals can hold this shared row lock concurrently, while a period-state UPDATE must wait for them to finish;
-- if the period changes while an open-path journal is waiting for that shared lock, admission fails with SQLSTATE `40001` (`serialization_failure`) and the journal command must retry from a fresh transaction rather than inherit stale open-period authority;
-- when the period is `soft_closed`, only purpose-limited `period_closing`, `adjusting`, or `reversal` journals from `accounting_closing_writer` are admitted, and those close-window journals increment `journal_population_revision` on the exact control row in the same transaction as the journal header;
-- hard close later locks that same row. If a soft-close journal committed after the close transaction's repeatable-read snapshot, PostgreSQL rejects the stale close with serialization failure rather than freezing an older population. If hard close owns the row first, the later journal cannot remain admissible after the committed `hard_closed` state.
+- an `open` journal takes `SELECT ... FOR SHARE` on the exact book-period control row so a state transition cannot overtake a journal already admitted as open;
+- a purpose-limited `soft_closed` period-closing/adjusting/reversal journal increments `journal_population_revision` on that control row, so a stale hard close that later locks the row fails with SQLSTATE `40001`.
 
-This split is intentional. Updating the control row for every ordinary journal would create a per-book-period exclusive UPDATE hotspot. `FOR SHARE` blocks status-changing UPDATEs while allowing other `FOR SHARE` holders, so the high-volume open-period path remains concurrent while the lower-volume close window receives the stronger row-version fence required to invalidate stale close snapshots.
+Review then exposed a remaining direct-open race. The open journal changed no row visible to a stale close. After waiting for the shared control-row lock, the close could acquire the unchanged row and continue from its older MVCC snapshot.
 
-A serialization failure is not accounting evidence. The whole failed transaction is rolled back and the identical idempotency key is retried from the beginning. `tests/test_postgres_period_close_journal_serialization_red.py` exercises stale hard-close rollback and exact-key retry against retained/live amounts. `tests/test_postgres_open_period_journal_fence.py` requires ordinary open-period posting to leave `journal_population_revision` unchanged. `tests/test_trial_balance_snapshot_immutability_contract.py` ratchets the migration shape, including the open-path shared lock and soft-close-only revision update.
+Migration `0033_open_period_journal_population_fence.sql` adds a bounded row-version witness without restoring one global write hotspot:
+
+- every book-period owns exactly 64 pre-existing `period_journal_population_fence` rows; migration backfill creates them before FORCE RLS is enabled, and an AFTER INSERT trigger seeds future book-period controls;
+- after confirming `open` under `FOR SHARE`, each journal increments exactly one fence row selected from its database journal UUID; two journals contend only when they choose the same slot;
+- before `period_status_code` changes, a transition trigger locks all 64 rows in deterministic slot order with `FOR UPDATE` and requires the complete population;
+- if any fence row was committed after the close transaction's repeatable-read snapshot, PostgreSQL raises serialization failure instead of allowing the stale transition to commit;
+- if close owns the control row first, a later open journal waits and then cannot retain stale open-state admission after the transition.
+
+The 64-slot count is a measured-performance hypothesis, not accounting policy and not an IFRS requirement. It bounds the low-frequency transition fan-out while reducing expected ordinary-post collisions relative to one shared row. Exact-head load tests must still measure slot collisions, lock waits, WAL/write cost, retry rate, and buyer-path p95. A future slot-count change requires measured evidence and a migration-compatible design.
+
+A serialization failure is not accounting evidence. The entire transaction rolls back and the command retries from the beginning with the same immutable source-payload identity and idempotency key. No failed close may leave a retained snapshot, period-closing journal, close event, or authoritative period transition.
+
+`tests/test_postgres_period_close_journal_serialization_red.py` exercises a `soft_closed` adjustment racing hard close. `tests/test_postgres_open_period_close_serialization_red.py` exercises a journal committed after a direct close snapshot but before the close acquires the period row, then requires exact-key retry to retain the live population. `tests/test_postgres_open_period_journal_fence.py` protects ordinary open-path concurrency, and `tests/test_trial_balance_snapshot_immutability_contract.py` ratchets the migration/security shape.
 
 ## Alternatives considered
 
-Updating `journal_population_revision` for every admitted journal was rejected after review because it makes one control row the exclusive write point for all ordinary posting in a book-period. It preserves freshness but violates the platform's hot-partition/lock and latency requirements.
+Updating one `journal_population_revision` for every admitted journal was rejected because it makes one book-period row the exclusive write point for all ordinary posting. It preserves freshness but violates the platform's hot-partition/lock and latency goals.
 
-Relying only on the period advisory lock was rejected because a waiting `REPEATABLE READ` close can retain the snapshot established before lock grant. Lock acquisition and snapshot freshness are separate concerns.
+Using only the control-row `FOR SHARE`/`FOR UPDATE` protocol was rejected after the direct-open race review. It orders transaction completion around the state change but supplies no row version proving that an open journal committed after a pre-existing repeatable-read snapshot.
+
+Relying only on the period advisory lock was rejected because a waiting repeatable-read close can retain the snapshot established before lock grant. Advisory-lock ownership and MVCC freshness are separate facts.
+
+A session-lock-before-snapshot protocol was considered because reconciliation lifecycle already uses a committed session-lease pattern. It was not selected here because the required journal admission coordination can remain a database-owned book-period invariant without extending application-session lock lifetime across transaction boundaries. The striped witness also keeps correctness at the SQL boundary for purpose-limited writers. This decision can be revisited if measured stripe contention or transition fan-out is unacceptable.
+
+Lazy creation of a fence row during journal admission was rejected because a repeatable-read close whose snapshot predates that INSERT can fail to see the new row. The complete fence population must exist before any journal/close race.
 
 Using only a trigger-side existence query for retained snapshots was rejected because a fixed MVCC snapshot cannot observe a competing population committed after that snapshot. Physical unique population identity remains required.
 
@@ -61,13 +77,13 @@ Allowing caller-provided close timestamps, currencies, aggregate identifiers, or
 
 ## Consequences and operational evidence
 
-Ordinary open-period posting now participates in period-transition coordination without incrementing a shared revision row on every journal. Period transition can wait on concurrent open journal transactions; this is deliberate because a journal admitted under `open` must commit before the transition can certify a different period state. Close-window journals remain serialized on the control-row revision because they are exceptional writes whose population must invalidate a stale hard-close snapshot.
+Open-period posting now performs a shared control-row lock plus one striped revision UPDATE rather than one exclusive UPDATE on the common book-period row. This removes the deliberate single-row hotspot but does not prove the p95 ≤ 20 ms buyer target. PostgreSQL row locking can itself cause writes, and same-slot journals can still queue. Release evidence must therefore use realistic concurrent posting and transition workloads and report failures, retry rates, lock waits, stripe distribution, and tail latency without sample reduction or excluded errors.
 
-Migration 0032 replaces `accounting_core.guard_period_insert()` as a `SECURITY DEFINER` function with `search_path = pg_catalog, pg_temp` and PUBLIC EXECUTE revoked. Unauthorized or rejected journals do not retain a revision change because the statement/transaction is rolled back.
+Migration 0033 creates a new tenant-scoped table under RLS/FORCE RLS. The cross-tenant migration backfill occurs before FORCE RLS is enabled so a non-superuser schema owner can seed every existing book-period without impersonating one runtime tenant. Future rows are seeded from the book-period-control INSERT transaction and stay in that tenant scope. Guard functions are `SECURITY DEFINER`, use `search_path = pg_catalog, pg_temp`, and revoke PUBLIC execute.
 
-The migration chain has distinct recovery states. A failed 0029 concurrent index build can leave an invalid index that operators must remove or rebuild before retry. A failed 0031 validation leaves the constraint enforced for subsequent writes but inherited rows uncertified. A 0032 serialization conflict leaves no hard-close evidence from the failed transaction and requires a whole-command retry. Release evidence must distinguish these states; recovery must never normalize or rewrite posted journals, reconciliation evidence, or retained close facts.
+The migration chain has distinct recovery states. A failed 0029 concurrent index build can leave an invalid index that operators must remove or rebuild before retry. A failed 0031 validation leaves the constraint enforced for subsequent writes but inherited rows uncertified. A failed 0033 migration transaction rolls back its table, trigger, function, policy, and seed population together. A runtime SQLSTATE `40001` leaves no authoritative close result and requires a whole-command retry. Recovery must never normalize or rewrite posted journals, reconciliation evidence, or retained close facts.
 
-Future reopen/correction is not implemented here. Any later reopen policy must preserve the prior hard-close population through explicit successor lineage and a replacement population identity/version invariant rather than mutating the retained population or silently weakening uniqueness.
+Future reopen/correction is not implemented here. Any later reopen policy must preserve the prior hard-close population through explicit successor lineage and a replacement population identity/version invariant rather than mutating retained evidence or weakening uniqueness.
 
 ## Exact soft-close replay
 
@@ -77,7 +93,7 @@ Migration `0010_soft_close_command_evidence.sql` stores the original tenant-scop
 
 ## References
 
-PostgreSQL Global Development Group. (2026a). *PostgreSQL 18 documentation: SET TRANSACTION*. https://www.postgresql.org/docs/18/sql-set-transaction.html
+PostgreSQL Global Development Group. (2026a). *PostgreSQL 18 documentation: Transaction isolation*. https://www.postgresql.org/docs/18/transaction-iso.html
 
 PostgreSQL Global Development Group. (2026b). *PostgreSQL 18 documentation: Explicit locking*. https://www.postgresql.org/docs/18/explicit-locking.html
 
@@ -91,4 +107,4 @@ PostgreSQL Global Development Group. (2026f). *PostgreSQL 18 documentation: Uniq
 
 PostgreSQL Global Development Group. (2026g). *PostgreSQL 18 documentation: pg_locks*. https://www.postgresql.org/docs/18/view-pg-locks.html
 
-PostgreSQL Global Development Group. (2026h). *PostgreSQL 18 documentation: System administration functions—Advisory lock functions*. https://www.postgresql.org/docs/18/functions-admin.html#FUNCTIONS-ADVISORY-LOCKS
+PostgreSQL Global Development Group. (2026h). *PostgreSQL 18 documentation: Advisory lock functions*. https://www.postgresql.org/docs/18/functions-admin.html#FUNCTIONS-ADVISORY-LOCKS
