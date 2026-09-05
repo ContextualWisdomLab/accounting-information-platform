@@ -290,7 +290,11 @@ class TrialBalanceSnapshotPreCloseAuthorityPostgresTests(unittest.TestCase):
             assert scope is not None
             legal_entity_id, accounting_book_id, fiscal_period_id = scope
             connection.execute(
-                "SELECT set_config('accounting_core.journal_write_role', 'period_closing', true)"
+                "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+                (
+                    self.case.policy.tenant_reference,
+                    f"period:{accounting_book_id}:2026-08",
+                ),
             )
             connection.execute(
                 """
