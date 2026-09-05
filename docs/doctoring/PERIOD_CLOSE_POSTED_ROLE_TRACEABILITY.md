@@ -1,18 +1,18 @@
 # Period Close Posted-Role Traceability
 
-Status: RED / Proposed production repair
+Status: production candidate / exact-head execution pending
 
 ## Problem
 
-`journal_entry_line.account_role_code` is persisted with every posted journal line and is part of the immutable posted accounting fact. `PostgresPostingLedger._post_closing_journal()` currently ignores that historical role when selecting revenue and expense lines for the AIS-owned closing journal. Instead, it joins `account_role_mapping` and requires the mapping to be current (`valid_to IS NULL`).
+`journal_entry_line.account_role_code` is persisted with every posted journal line and is part of the immutable posted accounting fact. Before this repair, `PostgresPostingLedger._post_closing_journal()` ignored that historical role when selecting revenue and expense lines for the AIS-owned closing journal. Instead, it joined `account_role_mapping` and required the mapping to be current (`valid_to IS NULL`).
 
-A role mapping may legitimately expire or be superseded after a journal was posted and before the fiscal period is hard-closed. In that state the posted journal still contains the original role, but the hard-close query can omit or reclassify the historical P&L population. That can suppress the closing journal and retained-earnings transfer even though the journal and its role evidence are unchanged.
+A role mapping may legitimately expire or be superseded after a journal was posted and before the fiscal period is hard-closed. In that state the posted journal still contains the original role, but the hard-close query could omit or reclassify the historical P&L population. That could suppress the closing journal and retained-earnings transfer even though the journal and its role evidence were unchanged.
 
 ## Authority and invariant
 
 The historical classification of an already-posted journal line is `accounting_core.journal_entry_line.account_role_code`. The effective-dated `account_role_mapping` is an Accounting Policy catalog used when a proposal is resolved for posting. It is not an authority for retrospectively reclassifying immutable posted facts.
 
-Period Close must therefore classify historical source P&L directly from the persisted journal-line role. The close-time lookup of the destination `retained_earnings` account remains a separate current-policy decision and is not changed by this repair.
+Period Close therefore classifies historical source P&L directly from the persisted journal-line role. The close-time lookup of the destination `retained_earnings` account remains a separate current-policy decision and is not changed by this repair.
 
 This is an AIP DDD, temporal-data, and audit-evidence control. It is not a claim that IFRS prescribes a PostgreSQL column, join shape, or implementation mechanism.
 
@@ -22,7 +22,9 @@ Real PostgreSQL RED `ba6be58c3ce4f2dfbe3e6b27f2f3418cd0f71548` posts a `usage_re
 
 Static RED `8dabaee5b43c24810f54479d5180df54220abb0d` pins the causal source boundary: `_post_closing_journal()` must select/filter/group by `journal_entry_line.account_role_code` and must not join `account_role_mapping` for historical P&L classification.
 
-Neither RED is GREEN evidence. Exact-head PostgreSQL/Accounting Foundation execution is required after the production source repair.
+Production candidate `2851c6aed7941363c3b7a570c7d2a2b4683c61a7` implements only that source-query repair. Relative to its exact parent `3dd278e2f8cbd1987062a9b337ac7ef944772d26`, the commit changes only `src/accounting_information_platform/persistence.py` with four additions and seven deletions. This scope check is necessary because the adapter contains unrelated Posting, Reporting-Export, VAT, HomeTax, reconciliation, and read-model behavior that must not be damaged by a focused close repair.
+
+The candidate is not GREEN evidence by itself. Exact-head PostgreSQL/Accounting Foundation execution is required, and predecessor runs do not transfer.
 
 ## Selected repair
 
