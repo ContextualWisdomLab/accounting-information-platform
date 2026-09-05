@@ -61,11 +61,23 @@ LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
 AS $$
+DECLARE
+    effective_role_bypasses_rls boolean;
 BEGIN
+    -- SECURITY DEFINER changes current_user to the function owner. RLS bypass is
+    -- evaluated for that effective role, while current_tenant_account_id() uses
+    -- the original session_user binding. Do not make this explicit guard stricter
+    -- than PostgreSQL itself for superuser/BYPASSRLS migration operators.
+    SELECT role.rolsuper OR role.rolbypassrls
+      INTO effective_role_bypasses_rls
+      FROM pg_catalog.pg_roles AS role
+     WHERE role.rolname = current_user;
+
     -- Runtime seeding runs while the fence table is FORCE RLS protected and
-    -- therefore needs the same authenticated tenant identity as the control row.
-    -- Migration 0034 temporarily removes FORCE RLS only for its owner backfill;
-    -- keep that repair path distinct instead of minting a synthetic binding.
+    -- therefore needs the same authenticated tenant identity as the control row
+    -- whenever the effective function owner cannot bypass RLS. Migration 0034
+    -- temporarily removes FORCE RLS for its owner backfill; keep that repair path
+    -- distinct instead of minting a synthetic runtime tenant binding.
     IF COALESCE(
         (
             SELECT relation.relforcerowsecurity
@@ -77,6 +89,7 @@ BEGIN
         ),
         TRUE
     )
+       AND NOT COALESCE(effective_role_bypasses_rls, FALSE)
        AND accounting_core.current_tenant_account_id()
            IS DISTINCT FROM NEW.tenant_account_id
     THEN
