@@ -29,8 +29,8 @@ class BookPeriodControlSeedContractTests(unittest.TestCase):
         )
         self.assertGreaterEqual(source.count("ON CONFLICT"), 3)
 
-    def test_opposite_side_seeders_share_tenant_serialization_row(self) -> None:
-        """Concurrent book/period creation must not let both trigger scans miss uncommitted peers."""
+    def test_opposite_side_seeders_version_one_tenant_serialization_row(self) -> None:
+        """Peer scans need a common row version so fixed snapshots fail closed instead of missing data."""
         source = MIGRATION.read_text(encoding="utf-8")
         period_function = source[
             source.index("CREATE OR REPLACE FUNCTION accounting_core.seed_book_period_control_for_period()") :
@@ -42,15 +42,22 @@ class BookPeriodControlSeedContractTests(unittest.TestCase):
         ]
 
         for function_source in (period_function, book_function):
-            tenant_lock = function_source.index("FROM accounting_core.tenant_account AS tenant")
-            no_key_update = function_source.index("FOR NO KEY UPDATE;", tenant_lock)
+            tenant_update = function_source.index("UPDATE accounting_core.tenant_account AS tenant")
+            retained_value = function_source.index(
+                "SET created_at = tenant.created_at",
+                tenant_update,
+            )
             control_insert = function_source.index(
                 "INSERT INTO accounting_core.accounting_book_period_control ("
             )
-            self.assertLess(tenant_lock, no_key_update)
-            self.assertLess(no_key_update, control_insert)
+            self.assertLess(tenant_update, retained_value)
+            self.assertLess(retained_value, control_insert)
 
-        self.assertEqual(source.count("FOR NO KEY UPDATE;"), 2)
+        self.assertEqual(
+            source.count("UPDATE accounting_core.tenant_account AS tenant"),
+            2,
+        )
+        self.assertNotIn("SET created_at = clock_timestamp()", source)
 
     def test_trigger_functions_use_hardened_execution_context(self) -> None:
         """Master-data triggers must not inherit caller-controlled object resolution."""
