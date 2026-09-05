@@ -31,11 +31,15 @@ The closeability check should depend on authoritative ledger/trial-balance facts
 
 Test-first real PostgreSQL RED `6faea7dc50cb2421604daf7c10f7ad3aeadfd4cb` posts `usage_revenue`, records its immutable source `chart_account_id`, expires that chart account, and requires hard close to finish with the source-side closing line bound to the same account identity and the retained snapshot zeroed on that identity.
 
+The exact RED head `06342053f2937e94748b40ed9182b20cfbf0ef74` subsequently reached a real hosted runner. Accounting Foundation run `33979966465`, job `101343324928`, completed `failure` in the behavior/repository-test step while its exact-head dependency-diff, SAST, and security sibling jobs completed successfully. Raw step logs are not available through the current repository connector, so this note does not attribute that failure to one assertion beyond the checked-in RED contracts. It is nevertheless runner-observed failure evidence for the unchanged RED head, not a queued or synthetic result.
+
+Successor RED `c5266ce29c181474331e8a4b035f6d57d185ed2d` strengthens the temporal Entity boundary with an actual code-reuse transition. It posts revenue to one `chart_account_id`, ends that account and its role mapping, creates a successor account that legally reuses `410100` with a later `valid_from`, installs the successor mapping, and then requires hard close to put the historical contra on the original account rather than the successor. This separates code equality from Entity identity and prevents a repair that merely makes the current code lookup succeed again.
+
 Static RED `a612539a92bfd171b7037273858c7263e4eabc9e` simultaneously preserves the opposite boundary: ordinary `_insert_journal()` must continue requiring `valid_to IS NULL`, while `_post_closing_journal()` must carry and group the exact posted `journal_entry_line.chart_account_id` instead of reconstructing source identity from a current code lookup.
 
 Static authority-separation RED `0d3caba036c370f93deacc0e8208314cd9df9731` adds the second causal boundary exposed by the same PostgreSQL scenario: `close_fiscal_period()` must not require `_assemble_period_close_package()` before the authoritative hard-close write. The supported close still has to reach `_persist_period_close()` and preserve ledger/trial-balance invariants; buyer Reporting-Export projection completeness is not close authorization.
 
-On the current RED head these requirements are not satisfied by production source. Exact-head CI must execute before the RED is called runner-observed. A later candidate must prove both the realistic PostgreSQL scenario and the static separation contracts on one unchanged head.
+The successor test head is intentionally RED until a production candidate satisfies both realistic PostgreSQL scenarios and the static separation contracts on one unchanged exact head. Predecessor runner evidence does not transfer to that successor head.
 
 ## Standards boundary
 
@@ -49,6 +53,6 @@ Rollback of a future candidate is safe only before it produces new hard-close ev
 
 ## Downstream handoff
 
-PR #37 owns the canonical CHANGELOG, standards table, and `docs/product-technical-gap-baseline.md`. At integration time it should reconstruct the durable invariant: effective-dated chart-account or role changes cannot retrospectively change or strand the immutable account identity used by Period Close.
+PR #37 owns the canonical CHANGELOG, standards table, and `docs/product-technical-gap-baseline.md`. At integration time it should reconstruct the durable invariant: effective-dated chart-account or role changes cannot retrospectively change, strand, or redirect the immutable account identity used by Period Close.
 
 PR #52 / Reporting-Export must consume retained account identity from integrated AIP evidence. It must not infer historical account identity solely from the current chart-account or role catalog, and reporting catalog incompleteness must not manufacture a second Period Close authority.
