@@ -2,40 +2,42 @@
 
 ## Scope
 
-This note records an installation and upgrade control for the authoritative `accounting_book_period_control` and `period_journal_population_fence` relations. It does not grant a runtime tenant, change accounting policy, weaken posted-journal immutability, or transfer accounting authority to Billing or another source system.
+This note records an installation and upgrade control for the authoritative `accounting_book_period_control` and `period_journal_population_fence` relations and their `accounting_book` / `fiscal_period` seed sources. It does not grant a runtime tenant, change accounting policy, weaken posted-journal immutability, or transfer accounting authority to Billing or another source system.
 
 ## Finding
 
 `accounting_core.current_tenant_account_id()` resolves a runtime tenant from `session_user`. A production schema/migration owner is not required to have such a runtime binding and should remain `NOSUPERUSER` / `NOBYPASSRLS`.
 
-PostgreSQL 18 documents three distinct facts that matter here: ordinary table owners normally bypass row-level security; `FORCE ROW LEVEL SECURITY` makes the table owner subject to its policies; and `SUPERUSER` / `BYPASSRLS` are exceptional capabilities that bypass those policies. Therefore an all-tenant migration backfill cannot assume that the forced-RLS table owner can insert rows selected across tenants when the policy is `tenant_account_id = accounting_core.current_tenant_account_id()` and the migration login has no runtime tenant binding.
+PostgreSQL 18 documents three distinct facts that matter here: ordinary table owners normally bypass row-level security; `FORCE ROW LEVEL SECURITY` makes the table owner subject to its policies; and `SUPERUSER` / `BYPASSRLS` are exceptional capabilities that bypass those policies. Therefore an all-tenant migration backfill cannot assume that the forced-RLS table owner can either read seed rows or write target rows when the policy derives a runtime tenant from an unbound `session_user`.
 
-The defect existed in two development-only paths. Migration 0009 enabled and forced tenant RLS before its upgrade backfill of existing accounting books × fiscal periods. Migration 0034 also attempted a cross-tenant repair after both `accounting_book_period_control` and the 64-stripe `period_journal_population_fence` were already FORCE RLS protected. Migration 0033 had already encoded the correct principle for its initial fence population by seeding before FORCE RLS.
+The first repair pass covered only target visibility. Fresh review then found the deeper source-side defect: migration 0005 had already forced `accounting_book` and `fiscal_period` through tenant RLS. Moving migration 0009's target backfill before FORCE on the newly created control table was still insufficient because the same unbound table owner could see no source books or periods. Likewise, migration 0034's owner-only window on the control/fence targets could not repair rows that its all-tenant `SELECT` could not see. Migration 0033's initial fence seed had already encoded the correct target-side principle by seeding before FORCE RLS, but it did not solve later source visibility.
 
-There are no GitHub tags or releases for this repository at this repair point, so migration 0009 is not an immutable released artifact. The branch therefore repairs the unreleased migration order rather than adding an ineffective later migration that a failing 0009 upgrade could never reach.
+There are no GitHub tags or releases for this repository at this repair point, so migration 0009 is not an immutable released artifact. The branch therefore repairs the unreleased migration order rather than adding a later migration that could not rescue an upgrade already failing at 0009.
 
 ## Selected control
 
-Migration 0009 now performs its existing all-tenant control-row backfill before enabling and forcing RLS. Runtime access is not granted inside that migration transaction, so there is no committed runtime interval without the intended forced-RLS policy.
+Migration 0009 temporarily applies `NO FORCE ROW LEVEL SECURITY` to the already forced `accounting_book` and `fiscal_period` source tables, performs the existing all-tenant control-row seed while the new target table is not yet exposed through runtime policy, restores FORCE on both sources, and only then enables/forces RLS on `accounting_book_period_control`.
 
-Migration 0034 keeps RLS **enabled** on both target tables. For its owner-only repair phase it executes `NO FORCE ROW LEVEL SECURITY` on `accounting_book_period_control` and `period_journal_population_fence`, performs the cross-tenant backfill, then restores `FORCE ROW LEVEL SECURITY` on both tables before `COMMIT`. `NO FORCE` restores the normal table-owner bypass; it does not disable RLS for non-owner runtime roles. The fence table must participate in the same owner window because every inserted control synchronously invokes migration 0033's `SECURITY DEFINER` 64-stripe seeder.
+Migration 0034 keeps RLS **enabled** everywhere. For its owner-only repair phase it applies `NO FORCE ROW LEVEL SECURITY` to all four participating relations: `accounting_book`, `fiscal_period`, `accounting_book_period_control`, and `period_journal_population_fence`. It performs the cross-tenant backfill, then restores `FORCE ROW LEVEL SECURITY` on every source and target before `COMMIT`. `NO FORCE` restores normal table-owner bypass; it does not disable RLS for non-owner runtime roles. The fence table participates because every inserted control synchronously invokes migration 0033's `SECURITY DEFINER` 64-stripe seeder.
 
-The migration role must own these tables. Installation must not be made to work by granting `BYPASSRLS`, using a superuser as the normal deployment identity, assigning a fabricated runtime tenant to the migration role, setting `row_security=off` as a bypass, or executing `DISABLE ROW LEVEL SECURITY`.
+These `ALTER TABLE` operations take PostgreSQL table locks inside the same migration transaction. Runtime traffic is not allowed to observe a committed half-state in which one of these relations permanently loses FORCE. The migration role must own all participating relations. Installation must not be made to work by granting `BYPASSRLS`, using a superuser as the normal deployment identity, assigning a fabricated runtime tenant to the migration role, treating `row_security=off` as a bypass, or executing `DISABLE ROW LEVEL SECURITY`.
 
 ## TDD and exact implementation evidence
 
-- Test-first static RED: `800716a2b44370e41b0a5e65d86d4e30d1008765`, `tests/test_book_period_control_seed_contract.py`. It requires the 0009 backfill to precede FORCE RLS, requires 0034's owner-only `NO FORCE` window to surround its repair backfill on both forced-RLS tables, and forbids `DISABLE ROW LEVEL SECURITY`.
-- Initial migration-order repair: `92789123dca0a119e17df3f4b1d994c780f80264`, `database/migrations/0009_accounting_book_period_control.sql`.
-- Post-install repair: `a19be19b059834e04e965463230d56b3fa9c8aa7`, `database/migrations/0034_book_period_control_seed.sql`.
-- ADR alignment: `dc06c5cbe6c9d3dba03b8fb07901838611e673fa`, `docs/adr/0006-fiscal-period-close-snapshot.md`.
+- First static RED `800716a2b44370e41b0a5e65d86d4e30d1008765` required owner-safe target backfill without RLS disablement.
+- Initial target-side repair: 0009 `92789123dca0a119e17df3f4b1d994c780f80264`; 0034 `a19be19b059834e04e965463230d56b3fa9c8aa7`.
+- Fresh source-visibility RED `29808a77426e403d2c0277264ef6d2217f0e52d1` extends `tests/test_book_period_control_seed_contract.py` to require the owner-only window on `accounting_book` and `fiscal_period` as well as the control/fence targets.
+- 0009 source-side repair `f5a28af32f70de66be5d702c5cf404b735546699` restores owner visibility on the forced-RLS seed sources and restores FORCE before target policy activation.
+- 0034 full source/target repair `027fae479a7ae52b1db3119acd6549f50aa6dba2` surrounds the repair backfill with owner-only visibility on all four participating tables and restores FORCE on all four before commit.
+- ADR alignment began with `dc06c5cbe6c9d3dba03b8fb07901838611e673fa`; runtime-identity clarification `e040f3447700abfa5291237fa094c88019068e9f` makes an ordinary unbound `NOSUPERUSER`/`NOBYPASSRLS` migration owner distinct from runtime tenant and break-glass identities.
 
-These commits are development evidence only. The RED commit was created before the SQL repair, but no claim of runner-observed RED or exact-head GREEN is valid until GitHub Actions executes the corresponding heads. The final release candidate still requires the real PostgreSQL migration chain, tenant isolation, security/SAST/dependency checks, migration/recovery evidence, independent review, and protected integration gates.
+These commits are development evidence only. Both static RED commits preceded their corresponding SQL repairs, but no runner-observed RED or exact-head GREEN claim is valid until GitHub Actions executes the corresponding heads. The final release candidate still requires the real PostgreSQL migration chain with a production-like unbound non-bypass owner, tenant-isolation acceptance, security/SAST/dependency checks, migration/recovery evidence, independent review, and protected integration gates.
 
 ## Recovery and security effect
 
-Both SQL repairs are transactional. A failed migration must roll back the owner-force toggle and all inserted control/fence rows together. Operators must retry the complete migration after correcting the root cause; they must not fabricate book-period controls, delete posted journals, rewrite retained trial-balance evidence, or weaken tenant policies to make the migration appear successful.
+Both SQL repairs are transactional. A failed migration must roll back every owner-force toggle and all inserted control/fence rows together. Operators must retry the complete migration after correcting the root cause; they must not fabricate book-period controls, delete posted journals, rewrite retained trial-balance evidence, or weaken tenant policies to make the migration appear successful.
 
-The committed runtime state remains `ENABLE ROW LEVEL SECURITY` + `FORCE ROW LEVEL SECURITY` for both authority relations. This repair changes migration-owner behavior only and does not alter the runtime single-writer boundary, tenant policy expression, close authority, maker-checker rules, or financial values.
+The committed runtime state remains `ENABLE ROW LEVEL SECURITY` + `FORCE ROW LEVEL SECURITY` on the tenant-scoped source and authority relations. This repair changes migration-owner visibility only and does not alter the runtime single-writer boundary, tenant policy expression, close authority, maker-checker rules, or financial values.
 
 ## References
 
