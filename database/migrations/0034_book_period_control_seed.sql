@@ -91,12 +91,15 @@ CREATE TRIGGER book_period_control_seed_for_book
     EXECUTE FUNCTION accounting_core.seed_book_period_control_for_book();
 
 -- Repair databases that installed 0009 before later master-data rows existed.
--- FORCE RLS intentionally remains enabled for runtime, but it would also make
--- an unbound non-superuser table owner fail its cross-tenant upgrade backfill.
--- NO FORCE restores only the table-owner bypass; RLS stays enabled for every
--- non-owner role. The migration transaction restores FORCE before commit.
--- Fence seeding is included because the SECURITY DEFINER trigger runs as the
--- migration owner and must be able to populate the same cross-tenant repair.
+-- accounting_book/fiscal_period as well as the control/fence targets are
+-- already FORCE RLS protected at this point. An unbound NOSUPERUSER /
+-- NOBYPASSRLS migration owner would otherwise see no source rows and could not
+-- populate the targets. NO FORCE restores only ordinary table-owner bypass;
+-- RLS remains enabled for non-owner roles. The same transaction restores FORCE
+-- on every source/target table before commit. ALTER TABLE's locking also keeps
+-- concurrent runtime traffic from observing a partially changed owner policy.
+ALTER TABLE accounting_core.accounting_book NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.fiscal_period NO FORCE ROW LEVEL SECURITY;
 ALTER TABLE accounting_core.accounting_book_period_control NO FORCE ROW LEVEL SECURITY;
 ALTER TABLE accounting_core.period_journal_population_fence NO FORCE ROW LEVEL SECURITY;
 
@@ -124,5 +127,7 @@ ON CONFLICT (
 
 ALTER TABLE accounting_core.period_journal_population_fence FORCE ROW LEVEL SECURITY;
 ALTER TABLE accounting_core.accounting_book_period_control FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.fiscal_period FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.accounting_book FORCE ROW LEVEL SECURITY;
 
 COMMIT;
