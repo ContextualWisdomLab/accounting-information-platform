@@ -35,6 +35,15 @@ class PeriodClosePostedAccountIdentitySourceContractTests(unittest.TestCase):
         self.assertIn("journal_entry_line.chart_account_id", method)
         self.assertIn("GROUP BY journal_entry_line.chart_account_id", method)
 
+    def test_hard_close_does_not_require_buyer_reporting_projection(self) -> None:
+        """Reporting catalog completeness must not become a second hard-close authority."""
+        method = self.source.split("    def close_fiscal_period(", 1)[1].split(
+            "    def open_fiscal_period(", 1
+        )[0]
+
+        self.assertNotIn("_assemble_period_close_package(", method)
+        self.assertIn("_persist_period_close(", method)
+
 
 if __name__ == "__main__":
     unittest.main()
