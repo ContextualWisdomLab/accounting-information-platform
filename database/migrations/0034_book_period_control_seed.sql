@@ -7,12 +7,17 @@ BEGIN;
 -- guard without a materialized book-period authority.
 --
 -- The two AFTER INSERT triggers also form one cross-product invariant. Without
--- a pre-existing common lock, concurrent transactions can each insert one side,
--- scan before the other side commits, and leave the new book-period pair absent.
--- Serialize only this low-frequency tenant master-data boundary on the existing
--- tenant row. FOR NO KEY UPDATE is self-conflicting between seeders while still
--- remaining compatible with the FOR KEY SHARE lock used by unrelated child-row
--- foreign-key checks.
+-- a pre-existing common version witness, concurrent transactions can each
+-- insert one side, scan before the other side commits, and leave the new
+-- book-period pair absent. Both seeders therefore perform a non-key UPDATE of
+-- the existing tenant row before scanning the peer population. Under READ
+-- COMMITTED, the later seeder waits and its following statement sees the peer
+-- commit. Under REPEATABLE READ/SERIALIZABLE, a transaction whose snapshot
+-- predates the competing tenant-row version fails closed with serialization
+-- failure and must retry from a fresh transaction. Updating only created_at to
+-- its retained value changes no tenant business fact. PostgreSQL acquires the
+-- weaker FOR NO KEY UPDATE row lock for this non-key update, so unrelated child
+-- foreign-key checks using FOR KEY SHARE remain compatible.
 CREATE OR REPLACE FUNCTION accounting_core.seed_book_period_control_for_period()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -20,10 +25,9 @@ SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
 AS $$
 BEGIN
-    PERFORM 1
-    FROM accounting_core.tenant_account AS tenant
-    WHERE tenant.tenant_account_id = NEW.tenant_account_id
-    FOR NO KEY UPDATE;
+    UPDATE accounting_core.tenant_account AS tenant
+    SET created_at = tenant.created_at
+    WHERE tenant.tenant_account_id = NEW.tenant_account_id;
 
     INSERT INTO accounting_core.accounting_book_period_control (
         tenant_account_id,
@@ -70,10 +74,9 @@ BEGIN
         RETURN NEW;
     END IF;
 
-    PERFORM 1
-    FROM accounting_core.tenant_account AS tenant
-    WHERE tenant.tenant_account_id = NEW.tenant_account_id
-    FOR NO KEY UPDATE;
+    UPDATE accounting_core.tenant_account AS tenant
+    SET created_at = tenant.created_at
+    WHERE tenant.tenant_account_id = NEW.tenant_account_id;
 
     INSERT INTO accounting_core.accounting_book_period_control (
         tenant_account_id,
