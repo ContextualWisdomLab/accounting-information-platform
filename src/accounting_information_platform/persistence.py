@@ -3225,12 +3225,15 @@ class PostgresPostingLedger:
                 accounting_book_reference,
                 next_action="the trial-balance read",
             )
-            period_id, period_status_code, period_end_date = self._require_fiscal_period(
-                connection,
-                tenant_id,
-                period_code,
-                next_action="the trial-balance read",
+            period_state = self._load_book_period_state(
+                connection, tenant_id, book_id, period_code
             )
+            if period_state is None:
+                raise AccountingValidationError(
+                    f"Fiscal period {period_code} has no control row for this accounting book. "
+                    "Repair the fiscal-period control data for this book, then retry the trial-balance read."
+                )
+            period_id, period_status_code, _period_start_date, period_end_date = period_state
             snapshot_record_id = None
             if balance_basis_code == "post_close":
                 snapshot = self._latest_close_snapshot(
