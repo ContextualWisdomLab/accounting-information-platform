@@ -22,12 +22,13 @@ CREATE INDEX accounting_book_period_scope_index
         tenant_account_id, accounting_book_id, fiscal_period_id, period_status_code
     );
 
-ALTER TABLE accounting_core.accounting_book_period_control ENABLE ROW LEVEL SECURITY;
-ALTER TABLE accounting_core.accounting_book_period_control FORCE ROW LEVEL SECURITY;
-CREATE POLICY accounting_book_period_isolation
-    ON accounting_core.accounting_book_period_control
-    USING (tenant_account_id = accounting_core.current_tenant_account_id())
-    WITH CHECK (tenant_account_id = accounting_core.current_tenant_account_id());
+-- Migrations 0005+ force the table owner through tenant RLS on both source
+-- relations. An unbound NOSUPERUSER/NOBYPASSRLS migration owner therefore
+-- needs its normal owner visibility restored on the sources before this
+-- all-tenant backfill. RLS stays enabled for non-owner roles, and FORCE is
+-- restored before the migration transaction commits.
+ALTER TABLE accounting_core.accounting_book NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.fiscal_period NO FORCE ROW LEVEL SECURITY;
 
 INSERT INTO accounting_core.accounting_book_period_control (
     tenant_account_id, accounting_book_id, fiscal_period_id,
@@ -43,6 +44,16 @@ JOIN accounting_core.fiscal_period
   ON fiscal_period.tenant_account_id = accounting_book.tenant_account_id
 WHERE accounting_book.valid_to IS NULL
 ON CONFLICT (tenant_account_id, accounting_book_id, fiscal_period_id) DO NOTHING;
+
+ALTER TABLE accounting_core.fiscal_period FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.accounting_book FORCE ROW LEVEL SECURITY;
+
+ALTER TABLE accounting_core.accounting_book_period_control ENABLE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.accounting_book_period_control FORCE ROW LEVEL SECURITY;
+CREATE POLICY accounting_book_period_isolation
+    ON accounting_core.accounting_book_period_control
+    USING (tenant_account_id = accounting_core.current_tenant_account_id())
+    WITH CHECK (tenant_account_id = accounting_core.current_tenant_account_id());
 
 CREATE OR REPLACE FUNCTION accounting_core.guard_period_insert()
 RETURNS trigger

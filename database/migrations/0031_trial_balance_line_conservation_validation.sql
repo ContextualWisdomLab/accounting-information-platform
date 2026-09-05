@@ -1,0 +1,2 @@
+ALTER TABLE accounting_reporting.trial_balance_line
+    VALIDATE CONSTRAINT trial_balance_line_net_balance_conservation;

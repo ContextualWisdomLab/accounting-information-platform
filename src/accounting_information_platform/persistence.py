@@ -1075,9 +1075,6 @@ class PostgresPostingLedger:
             self._active_connection = connection
             try:
                 tenant_id = self._require_tenant(connection)
-                self._acquire_command_lock(
-                    connection, f"period:{accounting_book_reference}:{period_code}"
-                )
                 legal_entity_id = self._require_legal_entity(
                     connection,
                     tenant_id,
@@ -1086,6 +1083,9 @@ class PostgresPostingLedger:
                 )
                 book_id, reporting_currency_code = self._require_book_for_close(
                     connection, tenant_id, legal_entity_id, accounting_book_reference
+                )
+                self._acquire_command_lock(
+                    connection, f"period:{book_id}:{period_code}"
                 )
                 if snapshot_currency_code != reporting_currency_code:
                     raise AccountingValidationError(
@@ -3225,12 +3225,15 @@ class PostgresPostingLedger:
                 accounting_book_reference,
                 next_action="the trial-balance read",
             )
-            period_id, period_status_code, period_end_date = self._require_fiscal_period(
-                connection,
-                tenant_id,
-                period_code,
-                next_action="the trial-balance read",
+            period_state = self._load_book_period_state(
+                connection, tenant_id, book_id, period_code
             )
+            if period_state is None:
+                raise AccountingValidationError(
+                    f"Fiscal period {period_code} has no control row for this accounting book. "
+                    "Repair the fiscal-period control data for this book, then retry the trial-balance read."
+                )
+            period_id, period_status_code, _period_start_date, period_end_date = period_state
             snapshot_record_id = None
             if balance_basis_code == "post_close":
                 snapshot = self._latest_close_snapshot(
@@ -4426,14 +4429,11 @@ class PostgresPostingLedger:
             """
             SELECT fiscal_period.fiscal_period_id,
                    fiscal_period.period_code,
-                   COALESCE(
-                       accounting_book_period_control.period_status_code,
-                       fiscal_period.period_status_code
-                   ),
+                   accounting_book_period_control.period_status_code,
                    fiscal_period.period_start_date,
                    fiscal_period.period_end_date
             FROM accounting_core.fiscal_period
-            LEFT JOIN accounting_core.accounting_book_period_control
+            JOIN accounting_core.accounting_book_period_control
               ON accounting_book_period_control.tenant_account_id
                  = fiscal_period.tenant_account_id
              AND accounting_book_period_control.fiscal_period_id
@@ -4451,19 +4451,15 @@ class PostgresPostingLedger:
                 "Create an open fiscal period on the tenant calendar, then retry posting."
             )
         period_id, period_code = row[0], row[1]
-        self._acquire_command_lock(connection, f"period:{book_id}:{period_code}")
         row = connection.execute(
             """
             SELECT fiscal_period.fiscal_period_id,
                    fiscal_period.period_code,
-                   COALESCE(
-                       accounting_book_period_control.period_status_code,
-                       fiscal_period.period_status_code
-                   ),
+                   accounting_book_period_control.period_status_code,
                    fiscal_period.period_start_date,
                    fiscal_period.period_end_date
             FROM accounting_core.fiscal_period
-            LEFT JOIN accounting_core.accounting_book_period_control
+            JOIN accounting_core.accounting_book_period_control
               ON accounting_book_period_control.tenant_account_id
                  = fiscal_period.tenant_account_id
              AND accounting_book_period_control.fiscal_period_id
@@ -4735,10 +4731,10 @@ class PostgresPostingLedger:
         book_id: UUID,
         period_code: str,
     ) -> tuple[UUID, str, date]:
-        """Materialize and lock close state independently for one accounting book."""
+        """Lock the authoritative close state for one accounting book, failing closed if absent."""
         period_row = connection.execute(
             """
-            SELECT fiscal_period_id, period_status_code, period_closed_at
+            SELECT fiscal_period_id
             FROM accounting_core.fiscal_period
             WHERE tenant_account_id = %s AND period_code = %s
             """,
@@ -4750,28 +4746,6 @@ class PostgresPostingLedger:
                 "Create the fiscal_period row, then retry the close."
             )
         period_id = period_row[0]
-        connection.execute(
-            """
-            INSERT INTO accounting_core.accounting_book_period_control (
-                tenant_account_id, accounting_book_id, fiscal_period_id,
-                period_status_code, period_closed_at
-            )
-            SELECT accounting_book.tenant_account_id,
-                   accounting_book.accounting_book_id,
-                   fiscal_period.fiscal_period_id,
-                   fiscal_period.period_status_code,
-                   fiscal_period.period_closed_at
-            FROM accounting_core.accounting_book
-            JOIN accounting_core.fiscal_period
-              ON fiscal_period.tenant_account_id = accounting_book.tenant_account_id
-            WHERE accounting_book.tenant_account_id = %s
-              AND accounting_book.valid_to IS NULL
-              AND fiscal_period.fiscal_period_id = %s
-            ON CONFLICT (tenant_account_id, accounting_book_id, fiscal_period_id)
-            DO NOTHING
-            """,
-            (tenant_id, period_id),
-        )
         row = connection.execute(
             """
             SELECT fiscal_period.fiscal_period_id,
@@ -4804,18 +4778,15 @@ class PostgresPostingLedger:
         book_id: UUID,
         period_code: str,
     ) -> tuple[UUID, str, date, date] | None:
-        """Return the selected book's period state, falling back to legacy calendar state."""
+        """Return the selected book's authoritative period-control state when recorded."""
         row = connection.execute(
             """
             SELECT fiscal_period.fiscal_period_id,
-                   COALESCE(
-                       accounting_book_period_control.period_status_code,
-                       fiscal_period.period_status_code
-                   ),
+                   accounting_book_period_control.period_status_code,
                    fiscal_period.period_start_date,
                    fiscal_period.period_end_date
             FROM accounting_core.fiscal_period
-            LEFT JOIN accounting_core.accounting_book_period_control
+            JOIN accounting_core.accounting_book_period_control
               ON accounting_book_period_control.tenant_account_id
                  = fiscal_period.tenant_account_id
              AND accounting_book_period_control.fiscal_period_id
@@ -5357,7 +5328,7 @@ class PostgresPostingLedger:
         income_rows = connection.execute(
             """
             SELECT chart_account.chart_account_code,
-                   account_role_mapping.account_role_code,
+                   journal_entry_line.account_role_code,
                    SUM(journal_entry_line.debit_amount),
                    SUM(journal_entry_line.credit_amount)
             FROM accounting_core.journal_entry_line
@@ -5367,18 +5338,15 @@ class PostgresPostingLedger:
             JOIN accounting_core.chart_account
               ON chart_account.tenant_account_id = journal_entry_line.tenant_account_id
              AND chart_account.chart_account_id = journal_entry_line.chart_account_id
-            JOIN accounting_core.account_role_mapping
-              ON account_role_mapping.tenant_account_id = chart_account.tenant_account_id
-             AND account_role_mapping.chart_account_id = chart_account.chart_account_id
-             AND account_role_mapping.valid_to IS NULL
             WHERE general_journal.tenant_account_id = %s
               AND general_journal.legal_entity_id = %s
               AND general_journal.accounting_book_id = %s
               AND general_journal.accounting_date <= %s
-              AND account_role_mapping.account_role_code IN (
+              AND journal_entry_line.account_role_code IN (
                     'usage_revenue', 'write_off_expense'
                   )
-            GROUP BY chart_account.chart_account_code, account_role_mapping.account_role_code
+            GROUP BY chart_account.chart_account_code,
+                     journal_entry_line.account_role_code
             ORDER BY chart_account.chart_account_code
             """,
             (tenant_id, legal_entity_id, book_id, period_end_date),

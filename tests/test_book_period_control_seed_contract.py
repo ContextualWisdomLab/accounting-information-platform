@@ -1,0 +1,229 @@
+"""Static contracts for post-install book-period authority seeding."""
+
+from __future__ import annotations
+
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+MIGRATION = ROOT / "database/migrations/0034_book_period_control_seed.sql"
+BOOK_PERIOD_MIGRATION = ROOT / "database/migrations/0009_accounting_book_period_control.sql"
+INSTALLER = ROOT / "src/accounting_information_platform/migration_install.py"
+
+
+class BookPeriodControlSeedContractTests(unittest.TestCase):
+    """Keep future master data on the same database-owned period authority boundary."""
+
+    def test_period_and_book_creation_both_seed_controls(self) -> None:
+        """Either master-data creation order must materialize the book-period pair."""
+        source = MIGRATION.read_text(encoding="utf-8")
+
+        self.assertIn("seed_book_period_control_for_period", source)
+        self.assertIn("AFTER INSERT\n    ON accounting_core.fiscal_period", source)
+        self.assertIn("seed_book_period_control_for_book", source)
+        self.assertIn("AFTER INSERT\n    ON accounting_core.accounting_book", source)
+        self.assertGreaterEqual(
+            source.count("INSERT INTO accounting_core.accounting_book_period_control"),
+            3,
+        )
+        self.assertGreaterEqual(source.count("ON CONFLICT"), 3)
+
+    def test_book_activation_seeds_existing_open_periods(self) -> None:
+        """Changing an inactive book to active must invoke the same open-only seeder."""
+        source = MIGRATION.read_text(encoding="utf-8")
+
+        activation_trigger = source[
+            source.index("CREATE TRIGGER book_period_control_seed_for_book_activation") :
+        ]
+        self.assertIn("AFTER UPDATE OF valid_to", activation_trigger)
+        self.assertIn("ON accounting_core.accounting_book", activation_trigger)
+        self.assertIn(
+            "WHEN (OLD.valid_to IS NOT NULL AND NEW.valid_to IS NULL)",
+            activation_trigger,
+        )
+        self.assertIn(
+            "EXECUTE FUNCTION accounting_core.seed_book_period_control_for_book();",
+            activation_trigger,
+        )
+
+    def test_non_open_projection_never_synthesizes_book_close_authority(self) -> None:
+        """Only an actually opened period may create a new book-period control automatically."""
+        source = MIGRATION.read_text(encoding="utf-8")
+        period_function = source[
+            source.index(
+                "CREATE OR REPLACE FUNCTION "
+                "accounting_core.seed_book_period_control_for_period()"
+            ) : source.index("CREATE TRIGGER book_period_control_seed_for_period")
+        ]
+        book_function = source[
+            source.index(
+                "CREATE OR REPLACE FUNCTION "
+                "accounting_core.seed_book_period_control_for_book()"
+            ) : source.index("CREATE TRIGGER book_period_control_seed_for_book")
+        ]
+        book_select_start = book_function.index("SELECT NEW.tenant_account_id")
+        book_period_source = book_function.index(
+            "FROM accounting_core.fiscal_period",
+            book_select_start,
+        )
+        projected_book_control_values = book_function[
+            book_select_start:book_period_source
+        ]
+        repair_backfill = source[
+            source.rindex(
+                "INSERT INTO accounting_core.accounting_book_period_control ("
+            ) :
+        ]
+        repair_select_start = repair_backfill.index(
+            "SELECT accounting_book.tenant_account_id"
+        )
+        repair_period_source = repair_backfill.index(
+            "FROM accounting_core.accounting_book",
+            repair_select_start,
+        )
+        projected_repair_values = repair_backfill[
+            repair_select_start:repair_period_source
+        ]
+
+        self.assertIn(
+            "IF NEW.period_status_code IS DISTINCT FROM 'open' THEN\n"
+            "        RETURN NEW;\n"
+            "    END IF;",
+            period_function,
+        )
+        period_projection_start = period_function.index(
+            "SELECT NEW.tenant_account_id"
+        )
+        period_projection = period_function[period_projection_start:]
+        self.assertNotIn("NEW.period_status_code", period_projection)
+        self.assertNotIn("NEW.period_closed_at", period_projection)
+        self.assertNotIn(
+            "fiscal_period.period_status_code", projected_book_control_values
+        )
+        self.assertNotIn(
+            "fiscal_period.period_closed_at", projected_book_control_values
+        )
+        self.assertIn("AND fiscal_period.period_status_code = 'open'", book_function)
+        self.assertNotIn("fiscal_period.period_status_code", projected_repair_values)
+        self.assertNotIn("fiscal_period.period_closed_at", projected_repair_values)
+        self.assertIn(
+            "WHERE accounting_book.valid_to IS NULL\n"
+            "  AND fiscal_period.period_status_code = 'open'",
+            repair_backfill,
+        )
+
+    def test_opposite_side_seeders_version_one_tenant_serialization_row(self) -> None:
+        """Peer scans need a common row version so fixed snapshots fail closed instead of missing data."""
+        source = MIGRATION.read_text(encoding="utf-8")
+        period_function = source[
+            source.index(
+                "CREATE OR REPLACE FUNCTION "
+                "accounting_core.seed_book_period_control_for_period()"
+            ) : source.index("CREATE TRIGGER book_period_control_seed_for_period")
+        ]
+        book_function = source[
+            source.index(
+                "CREATE OR REPLACE FUNCTION "
+                "accounting_core.seed_book_period_control_for_book()"
+            ) : source.index("CREATE TRIGGER book_period_control_seed_for_book")
+        ]
+
+        for function_source in (period_function, book_function):
+            tenant_update = function_source.index(
+                "UPDATE accounting_core.tenant_account AS tenant"
+            )
+            retained_value = function_source.index(
+                "SET created_at = tenant.created_at",
+                tenant_update,
+            )
+            control_insert = function_source.index(
+                "INSERT INTO accounting_core.accounting_book_period_control ("
+            )
+            self.assertLess(tenant_update, retained_value)
+            self.assertLess(retained_value, control_insert)
+
+        self.assertEqual(
+            source.count("UPDATE accounting_core.tenant_account AS tenant"),
+            2,
+        )
+        self.assertNotIn("SET created_at = clock_timestamp()", source)
+
+    def test_trigger_functions_use_hardened_execution_context(self) -> None:
+        """Master-data triggers must not inherit caller-controlled object resolution."""
+        source = MIGRATION.read_text(encoding="utf-8")
+
+        self.assertEqual(source.count("SECURITY DEFINER"), 3)
+        self.assertEqual(source.count("SET search_path = pg_catalog, pg_temp"), 3)
+        self.assertIn(
+            "REVOKE ALL ON FUNCTION accounting_core.seed_book_period_control_for_period()",
+            source,
+        )
+        self.assertIn(
+            "REVOKE ALL ON FUNCTION accounting_core.seed_book_period_control_for_book()",
+            source,
+        )
+        self.assertIn(
+            "REVOKE ALL ON FUNCTION accounting_core.guard_book_period_control_insert_authority()",
+            source,
+        )
+
+    def test_cross_tenant_backfills_are_owner_safe_without_disabling_rls(self) -> None:
+        """Unbound migration owners need owner-only visibility on source and target tables."""
+        initial_source = BOOK_PERIOD_MIGRATION.read_text(encoding="utf-8")
+        initial_backfill = initial_source.index(
+            "INSERT INTO accounting_core.accounting_book_period_control ("
+        )
+        initial_control_force = initial_source.index(
+            "ALTER TABLE accounting_core.accounting_book_period_control "
+            "FORCE ROW LEVEL SECURITY;"
+        )
+        initial_book_no_force = initial_source.index(
+            "ALTER TABLE accounting_core.accounting_book NO FORCE ROW LEVEL SECURITY;"
+        )
+        initial_period_no_force = initial_source.index(
+            "ALTER TABLE accounting_core.fiscal_period NO FORCE ROW LEVEL SECURITY;"
+        )
+        initial_book_force = initial_source.rindex(
+            "ALTER TABLE accounting_core.accounting_book FORCE ROW LEVEL SECURITY;"
+        )
+        initial_period_force = initial_source.rindex(
+            "ALTER TABLE accounting_core.fiscal_period FORCE ROW LEVEL SECURITY;"
+        )
+        self.assertLess(initial_book_no_force, initial_backfill)
+        self.assertLess(initial_period_no_force, initial_backfill)
+        self.assertLess(initial_backfill, initial_book_force)
+        self.assertLess(initial_backfill, initial_period_force)
+        self.assertLess(initial_backfill, initial_control_force)
+
+        repair_source = MIGRATION.read_text(encoding="utf-8")
+        repair_backfill = repair_source.rindex(
+            "INSERT INTO accounting_core.accounting_book_period_control ("
+        )
+        for table_name in (
+            "accounting_book",
+            "fiscal_period",
+            "accounting_book_period_control",
+            "period_journal_population_fence",
+        ):
+            no_force = repair_source.index(
+                f"ALTER TABLE accounting_core.{table_name} NO FORCE ROW LEVEL SECURITY;"
+            )
+            force = repair_source.rindex(
+                f"ALTER TABLE accounting_core.{table_name} FORCE ROW LEVEL SECURITY;"
+            )
+            self.assertLess(no_force, repair_backfill)
+            self.assertLess(repair_backfill, force)
+
+        self.assertNotIn("DISABLE ROW LEVEL SECURITY", initial_source)
+        self.assertNotIn("DISABLE ROW LEVEL SECURITY", repair_source)
+
+    def test_canonical_installer_includes_seed_migration(self) -> None:
+        """Supported foundation installs cannot stop before future-pair seeding exists."""
+        source = INSTALLER.read_text(encoding="utf-8")
+
+        self.assertIn('"0034_book_period_control_seed.sql"', source)
+
+
+if __name__ == "__main__":
+    unittest.main()
