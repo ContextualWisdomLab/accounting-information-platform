@@ -4451,7 +4451,6 @@ class PostgresPostingLedger:
                 "Create an open fiscal period on the tenant calendar, then retry posting."
             )
         period_id, period_code = row[0], row[1]
-        self._acquire_command_lock(connection, f"period:{book_id}:{period_code}")
         row = connection.execute(
             """
             SELECT fiscal_period.fiscal_period_id,
