@@ -122,15 +122,27 @@ class TrialBalanceSnapshotImmutabilityContractTests(unittest.TestCase):
             migration,
         )
 
-    def test_journal_population_fence_invalidates_a_stale_close_snapshot(self) -> None:
-        """Every admitted journal must version the same row hard close later locks."""
+    def test_journal_population_fence_preserves_open_period_concurrency(self) -> None:
+        """Open-period posting shares a lock; only close-window journals version the close row."""
         migration = JOURNAL_FENCE_MIGRATION.read_text(encoding="utf-8")
         self.assertIn("journal_population_revision bigint NOT NULL DEFAULT 0", migration)
         self.assertIn("CREATE OR REPLACE FUNCTION accounting_core.guard_period_insert()", migration)
+        self.assertIn("IF period_status_value = 'open' THEN", migration)
+        self.assertIn("FOR SHARE;", migration)
+        self.assertIn(
+            "IF locked_period_status_value = 'open' THEN\n            RETURN NEW;",
+            migration,
+        )
         self.assertIn(
             "SET journal_population_revision = journal_population_revision + 1",
             migration,
         )
+        self.assertIn("AND period_status_code = 'soft_closed'", migration)
+        self.assertLess(
+            migration.index("FOR SHARE;"),
+            migration.index("SET journal_population_revision = journal_population_revision + 1"),
+        )
+        self.assertIn("period_state_changed_retry", migration)
         self.assertIn("accounting_book_id = NEW.accounting_book_id", migration)
         self.assertIn("fiscal_period_id = NEW.fiscal_period_id", migration)
         self.assertIn("RETURNING period_status_code", migration)
