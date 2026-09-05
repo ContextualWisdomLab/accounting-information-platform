@@ -67,13 +67,17 @@ Migration 0009 therefore restores normal owner visibility with `NO FORCE ROW LEV
 
 The migration must run as owner of the participating relations; it must not solve installation by granting `BYPASSRLS`, impersonating a tenant, disabling row security, or copying tenant truth into an installer-side cache. `tests/test_book_period_control_seed_contract.py` pins source and target ordering and requires that the repair never uses `DISABLE ROW LEVEL SECURITY`. Exact release acceptance still needs a real PostgreSQL migration run with a production-like unbound `NOSUPERUSER`/`NOBYPASSRLS` owner; static ordering evidence alone is not execution GREEN.
 
-### Remaining application advisory-lock hotspot
+### Application advisory-lock repair
 
-The striped database fence is not yet an end-to-end posting-concurrency GREEN. `PostgresPostingLedger._require_open_book_period_bounds()` still acquires the same exclusive tenant/resolved-book/period advisory lock used by `close_fiscal_period()` for every ordinary Billing proposal. That makes unrelated ordinary postings for one open book-period queue before either reaches the striped database boundary.
+The striped database fence initially was not an end-to-end posting-concurrency repair. `PostgresPostingLedger._require_open_book_period_bounds()` acquired the same exclusive tenant/resolved-book/period advisory lock used by `close_fiscal_period()` for every ordinary Billing proposal. That made unrelated ordinary postings for one open book-period queue before either reached the striped database boundary.
 
-This application mutex is no longer selected as ordinary journal-versus-transition authority. The intended causal repair is to remove the `period:{book_id}:{period_code}` advisory acquisition from `_require_open_book_period_bounds()` while retaining its before/after open-state verification. Proposal idempotency locks remain. Close commands retain the canonical period advisory lock. PostgreSQL `FOR SHARE` plus the pre-existing striped witness remains the authoritative journal-versus-state-transition fence.
+This application mutex is rejected as ordinary journal-versus-transition authority. Real-PostgreSQL RED `1683fd5f8e21e907a187bea7c239e3d30f8d0bdb` pauses one ordinary proposal after period admission but before journal persistence and requires another ordinary proposal to complete before the first resumes. Static causal RED `839e930a4f24eda1083742578894479a8ed968bf` pinned removal of the close-command advisory acquisition from `_require_open_book_period_bounds()`.
 
-`tests/test_postgres_open_period_journal_fence.py::test_open_period_postings_do_not_serialize_on_application_period_lock` is a real-PostgreSQL RED for this hotspot: it pauses one ordinary proposal after period admission but before journal persistence and requires another ordinary proposal to complete before the first resumes. `tests/test_open_period_application_lock_contract.py` pins the exact source boundary. Until production source changes and both tests are exact-head GREEN, the branch must not claim end-to-end open-post concurrency or the p95 target.
+Production repair `430f4dde6757c8bf09243a00787dabcfa97ab49c` removes only the `period:{book_id}:{period_code}` advisory acquisition from the ordinary helper. Proposal/idempotency locks remain. The helper retains explicit fail-closed application validation when the resolved book-period is not `open`. Close commands retain the canonical period advisory lock. PostgreSQL `FOR SHARE` plus the pre-existing striped witness remains the authoritative journal-versus-state-transition fence.
+
+Successor `70c07aba7c51391b9ee965fe3948b23c9546642d` strengthens `tests/test_open_period_application_lock_contract.py`: any command-lock acquisition inside the ordinary helper now fails the source ratchet, and the test requires the explicit non-open-period validation to remain. It deliberately removes an earlier `period_status_code` token-count assertion that overstated a before/after application check not present in the implementation.
+
+The causal source defect is repaired, but exact-head execution evidence is still required before the branch claims end-to-end GREEN or the p95 target. `tests/test_postgres_open_period_journal_fence.py::test_open_period_postings_do_not_serialize_on_application_period_lock` is the real PostgreSQL overlap acceptance, and the same unchanged exact head must also pass the complete Accounting Foundation/security/SAST/dependency/release evidence chain.
 
 `tests/test_postgres_period_close_journal_serialization_red.py` exercises a `soft_closed` adjustment racing hard close. `tests/test_postgres_open_period_close_serialization_red.py` exercises an open-period adjusting journal committed after a direct-close snapshot, then requires stale-close rollback and exact-key retry to retain the live population. The latter remains a valid correctness case because the adjusting command does not take the ordinary proposal's book-period advisory mutex.
 
@@ -83,7 +87,7 @@ Updating one `journal_population_revision` for every admitted journal was reject
 
 Using only the control-row `FOR SHARE`/`FOR UPDATE` protocol was rejected because it orders transaction completion around the state change but supplies no row version proving that a journal committed after a pre-existing repeatable-read snapshot.
 
-Using the canonical close advisory mutex for every ordinary proposal is now rejected as a throughput strategy. It serializes independent postings at application scope and duplicates ordering already owned by the database admission/transition fence. The mutex remains appropriate for close-command serialization and close-snapshot authority.
+Using the canonical close advisory mutex for every ordinary proposal is rejected as a throughput strategy. It serializes independent postings at application scope and duplicates ordering already owned by the database admission/transition fence. The mutex remains appropriate for close-command serialization and close-snapshot authority.
 
 Relying only on advisory-lock wait for freshness was rejected because a waiting repeatable-read transaction retains the snapshot established before lock grant. Advisory-lock ownership and MVCC freshness are separate facts.
 
@@ -99,9 +103,9 @@ Granting the migration role `BYPASSRLS`, disabling RLS for the backfill, or bind
 
 ## Consequences and operational evidence
 
-At the database boundary, open-period posting performs a shared control-row lock plus one striped revision UPDATE rather than one exclusive UPDATE on the common book-period row. This removes the deliberate database single-row hotspot. The current application advisory mutex still serializes ordinary proposals and is a release-blocking repair finding for the stated hot-path goal.
+At the database boundary, open-period posting performs a shared control-row lock plus one striped revision UPDATE rather than one exclusive UPDATE on the common book-period row. The application no longer adds the close-command period advisory mutex to ordinary proposals. This removes the two deliberate common serialization points identified by the RED lineage, but it is not itself a latency result.
 
-After that source repair, PostgreSQL row locking and same-slot collisions still have measurable cost. Release evidence must use realistic concurrent posting and transition workloads and report advisory-lock waits, row-lock waits, stripe distribution, failures, retry rates, WAL/write cost, and tail latency without sample reduction, excluded failures, or artificial cache warm-up.
+PostgreSQL row locking and same-slot collisions still have measurable cost. Release evidence must use realistic concurrent posting and transition workloads and report advisory-lock waits, row-lock waits, stripe distribution, failures, retry rates, WAL/write cost, and tail latency without sample reduction, excluded failures, or artificial cache warm-up.
 
 Migration 0033 creates a new tenant-scoped table under RLS/FORCE RLS. Its initial cross-tenant fence backfill occurs before FORCE RLS is enabled. Migrations 0009/0034 now also account for the already forced source tables: the migration owner gets only a transactional owner-bypass window on the exact participating relations, while RLS remains enabled for non-owner roles and FORCE is restored before commit. Future rows are seeded from the book-period-control INSERT transaction and stay in that tenant scope. Guard functions are `SECURITY DEFINER`, use `search_path = pg_catalog, pg_temp`, and revoke PUBLIC execute.
 
