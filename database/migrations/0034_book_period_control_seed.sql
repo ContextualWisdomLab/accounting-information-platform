@@ -91,8 +91,15 @@ CREATE TRIGGER book_period_control_seed_for_book
     EXECUTE FUNCTION accounting_core.seed_book_period_control_for_book();
 
 -- Repair databases that installed 0009 before later master-data rows existed.
--- Each inserted control row synchronously fires migration 0033's fence seeder,
--- so no post-migration active book-period pair can lack its pre-existing stripes.
+-- FORCE RLS intentionally remains enabled for runtime, but it would also make
+-- an unbound non-superuser table owner fail its cross-tenant upgrade backfill.
+-- NO FORCE restores only the table-owner bypass; RLS stays enabled for every
+-- non-owner role. The migration transaction restores FORCE before commit.
+-- Fence seeding is included because the SECURITY DEFINER trigger runs as the
+-- migration owner and must be able to populate the same cross-tenant repair.
+ALTER TABLE accounting_core.accounting_book_period_control NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.period_journal_population_fence NO FORCE ROW LEVEL SECURITY;
+
 INSERT INTO accounting_core.accounting_book_period_control (
     tenant_account_id,
     accounting_book_id,
@@ -114,5 +121,8 @@ ON CONFLICT (
     accounting_book_id,
     fiscal_period_id
 ) DO NOTHING;
+
+ALTER TABLE accounting_core.period_journal_population_fence FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.accounting_book_period_control FORCE ROW LEVEL SECURITY;
 
 COMMIT;
