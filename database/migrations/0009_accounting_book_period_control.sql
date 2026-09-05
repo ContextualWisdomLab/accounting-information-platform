@@ -22,10 +22,14 @@ CREATE INDEX accounting_book_period_scope_index
         tenant_account_id, accounting_book_id, fiscal_period_id, period_status_code
     );
 
--- The migration owner can be an unbound NOSUPERUSER/NOBYPASSRLS role. Seed
--- existing tenant/book/period authority before FORCE RLS makes the table owner
--- subject to the runtime tenant policy. Runtime access is still never granted
--- before the migration transaction commits.
+-- Migrations 0005+ force the table owner through tenant RLS on both source
+-- relations. An unbound NOSUPERUSER/NOBYPASSRLS migration owner therefore
+-- needs its normal owner visibility restored on the sources before this
+-- all-tenant backfill. RLS stays enabled for non-owner roles, and FORCE is
+-- restored before the migration transaction commits.
+ALTER TABLE accounting_core.accounting_book NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.fiscal_period NO FORCE ROW LEVEL SECURITY;
+
 INSERT INTO accounting_core.accounting_book_period_control (
     tenant_account_id, accounting_book_id, fiscal_period_id,
     period_status_code, period_closed_at
@@ -40,6 +44,9 @@ JOIN accounting_core.fiscal_period
   ON fiscal_period.tenant_account_id = accounting_book.tenant_account_id
 WHERE accounting_book.valid_to IS NULL
 ON CONFLICT (tenant_account_id, accounting_book_id, fiscal_period_id) DO NOTHING;
+
+ALTER TABLE accounting_core.fiscal_period FORCE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.accounting_book FORCE ROW LEVEL SECURITY;
 
 ALTER TABLE accounting_core.accounting_book_period_control ENABLE ROW LEVEL SECURITY;
 ALTER TABLE accounting_core.accounting_book_period_control FORCE ROW LEVEL SECURITY;
