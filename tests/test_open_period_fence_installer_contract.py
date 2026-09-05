@@ -48,6 +48,25 @@ class OpenPeriodFenceInstallerContractTests(unittest.TestCase):
         self.assertIn("CROSS JOIN generate_series(0, 63)", migration)
         self.assertIn("period_journal_population_fence_seed", migration)
 
+    def test_runtime_fence_seeder_requires_bound_tenant_while_force_rls_is_active(self) -> None:
+        """Runtime seeding must reject an unbound tenant before FORCE-RLS target DML."""
+        migration = OPEN_PERIOD_FENCE_MIGRATION.read_text(encoding="utf-8")
+        start = migration.index(
+            "CREATE OR REPLACE FUNCTION accounting_core.seed_period_journal_population_fence()"
+        )
+        end = migration.index(
+            "REVOKE ALL ON FUNCTION accounting_core.seed_period_journal_population_fence()",
+            start,
+        )
+        seeder = migration[start:end]
+        self.assertIn("relforcerowsecurity", seeder)
+        self.assertIn("accounting_core.current_tenant_account_id()", seeder)
+        self.assertIn("period_journal_population_fence_tenant_binding_required", seeder)
+        self.assertLess(
+            seeder.index("period_journal_population_fence_tenant_binding_required"),
+            seeder.index("INSERT INTO accounting_core.period_journal_population_fence"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
