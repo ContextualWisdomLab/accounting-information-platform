@@ -12,7 +12,7 @@ CREATE OR REPLACE FUNCTION accounting_core.guard_period_insert()
 RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, accounting_core
+SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE
     period_status_value text;
@@ -54,5 +54,7 @@ BEGIN
         USING ERRCODE = 'check_violation';
 END;
 $$;
+
+REVOKE ALL ON FUNCTION accounting_core.guard_period_insert() FROM PUBLIC;
 
 COMMIT;
