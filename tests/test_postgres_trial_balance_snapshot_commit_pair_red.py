@@ -6,7 +6,6 @@ import unittest
 
 import psycopg
 
-from accounting_information_platform.persistence import apply_foundation_migration
 from tests import test_postgres_posting as posting
 
 
