@@ -29,13 +29,23 @@ Real-PostgreSQL RED `614d1164f3abf1f7bab3fe77d520e5b7108e4c69` creates a tenant 
 
 Production candidate `610d77082eb01c80d2e9e74521e48a3b06e1375a` installs the post-repair direct-insert guard in migration 0034. Static ratchet `ee233b5c40c942008c7ec034917fd49f1fcf9976` pins the structural nesting check, open/NULL-only invariant, `BEFORE INSERT` placement, and migration-repair ordering.
 
+Application-source RED `tests/test_book_period_application_authority_contract.py` separately requires the persistence adapter to remove the stale `INSERT ... SELECT` writer, replace both shared-state `LEFT JOIN`/`COALESCE` fallbacks with an exact `accounting_book_period_control` join, and lock the authoritative control row with `FOR UPDATE OF accounting_book_period_control`. Real-PostgreSQL `tests/test_postgres_book_period_control_no_projection_red.py` supplies the buyer-relevant missing-non-open-control case. Database containment is therefore not treated as permission to leave the application authority model permanently divergent.
+
 These SHAs are development lineage, not release evidence. The RED was authored before the causal repair, but it was not observed failing on a GitHub runner in this run. Exact-head real-PostgreSQL execution, security/SAST/dependency evidence, independent review, protected-stack prerequisites, migration/recovery evidence, and immutable release evidence remain separate gates.
+
+## Scope-preservation repair
+
+A source-cleanup candidate at `952bb1b2a014db823f8ee452ebdfb9bc3980e733` attempted to replace the three stale helper paths together. Exact-blob verification immediately found that the replacement did not preserve unrelated methods in the large persistence adapter, so that candidate is invalid development evidence and must not be used as a GREEN or release input.
+
+Normal descendant `a8c5abe7520cb0a50708127726bcf0dfb420dc60` restores `src/accounting_information_platform/persistence.py` byte-for-byte to prior complete blob `1d27c2399b0adca1aead3a2f3a141a8eb6a95435`. No force-push, reset, destructive rebase, or selective loss of concurrent delta was used. The application-source REDs therefore remain intentionally RED until a scope-preserving causal edit changes only the three authority helpers on a freshly read exact head.
+
+This recovery is part of the verification record: changing an authority boundary is not acceptable if the patch silently deletes unrelated reporting, reconciliation, integration, or audit behavior. The next implementation must prove both the authority assertions and preservation of the rest of the persistence module before it can be called GREEN.
 
 ## Recovery and follow-up
 
 A rejected direct control INSERT writes no authoritative row and therefore seeds no 64-row journal-population fence. The surrounding close transaction remains free to roll back normally. Operators must not repair a missing non-open pair by copying `fiscal_period` status or by manual SQL. If a later-created book must become applicable to an already non-open period, that requires an explicit book-period lifecycle/adoption/reopen command with authenticated capability, idempotency, maker-checker policy where applicable, and retained chronology.
 
-The stale application-side `INSERT ... SELECT` is now behaviorally contained by the database single-writer boundary, but its source expression remains a cleanup finding: it should be removed from `_lock_book_period()` when that large persistence module is edited on a current exact head, leaving the helper as read/lock/fail-closed only. Until then, the database guard is authoritative and the branch must not claim the application source is conceptually clean.
+The stale application-side `INSERT ... SELECT` is now behaviorally contained by the database single-writer boundary, but its source expression remains a cleanup finding: it should be removed from `_lock_book_period()` on a current exact head, leaving the helper as read/lock/fail-closed only. `_require_open_book_period_bounds()` and `_load_book_period_state()` must likewise read book-owned status only from `accounting_book_period_control`; a missing control must fail closed rather than inherit the shared calendar projection. Until those REDs are satisfied, the database guard is authoritative and the branch must not claim the application source is conceptually clean.
 
 ## References
 
