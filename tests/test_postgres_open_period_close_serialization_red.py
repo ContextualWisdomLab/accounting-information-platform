@@ -149,6 +149,7 @@ class OpenPeriodCloseSerializationPostgresTests(unittest.TestCase):
         close_idempotency_key = f"{self.case.policy.tenant_reference}:open-close-race:hard"
         pre_period_row_lock_reached = threading.Event()
         concurrent_post_committed = threading.Event()
+        self.addCleanup(concurrent_post_committed.set)
         close_result: list[object] = []
         close_errors: list[BaseException] = []
         original_lock_book_period = close_ledger._lock_book_period
