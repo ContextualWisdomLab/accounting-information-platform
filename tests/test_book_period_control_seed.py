@@ -34,6 +34,55 @@ class BookPeriodControlSeedTests(unittest.TestCase):
         self.assertEqual(control_count, 1)
         self.assertEqual(fence_count, 64)
 
+    def test_new_book_does_not_inherit_shared_closed_period_projection(self) -> None:
+        """A new book must not receive close authority copied from the tenant-wide compatibility status."""
+        new_book_id = uuid.uuid4()
+        legal_entity_id, _fiscal_calendar_id = self._seed_scope_ids()
+
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            period_id = connection.execute(
+                """
+                UPDATE accounting_core.fiscal_period
+                   SET period_status_code = 'soft_closed',
+                       period_closed_at = clock_timestamp()
+                 WHERE tenant_account_id = %s
+                   AND period_code = '2026-08'
+                RETURNING fiscal_period_id
+                """,
+                (self.case.tenant_id,),
+            ).fetchone()[0]
+            self._insert_book(
+                connection,
+                new_book_id=new_book_id,
+                legal_entity_id=legal_entity_id,
+            )
+            connection.commit()
+
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            control_row = connection.execute(
+                """
+                SELECT period_status_code, period_closed_at
+                FROM accounting_core.accounting_book_period_control
+                WHERE tenant_account_id = %s
+                  AND accounting_book_id = %s
+                  AND fiscal_period_id = %s
+                """,
+                (self.case.tenant_id, new_book_id, period_id),
+            ).fetchone()
+            fence_count = connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM accounting_core.period_journal_population_fence
+                WHERE tenant_account_id = %s
+                  AND accounting_book_id = %s
+                  AND fiscal_period_id = %s
+                """,
+                (self.case.tenant_id, new_book_id, period_id),
+            ).fetchone()[0]
+
+        self.assertIsNone(control_row)
+        self.assertEqual(fence_count, 0)
+
     def test_period_open_seeds_control_and_all_fences_for_existing_book(self) -> None:
         """Opening a later period must materialize control and freshness rows for active books."""
         period_code = "2026-09"
