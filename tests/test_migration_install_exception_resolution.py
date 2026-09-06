@@ -81,7 +81,9 @@ class ReconciliationExceptionResolutionInstallTests(unittest.TestCase):
                 _lifecycle_time,
             ) = self._paths(Path(directory))
             base_loader = Mock()
-            with patch.object(migration_install, "_apply_foundation_migration", base_loader):
+            with patch.object(
+                migration_install, "_base_foundation_chain_is_complete", return_value=True
+            ), patch.object(migration_install, "_apply_foundation_migration", base_loader):
                 with self.assertRaisesRegex(AccountingValidationError, "0020"):
                     migration_install.apply_foundation_migration(
                         "postgresql://unused", base
@@ -121,6 +123,8 @@ class ReconciliationExceptionResolutionInstallTests(unittest.TestCase):
 
             ordered_connection = _OrderedConnection()
             with patch.object(
+                migration_install, "_base_foundation_chain_is_complete", return_value=True
+            ), patch.object(
                 migration_install, "_apply_foundation_migration", base_loader
             ), patch.object(
                 migration_install,
@@ -164,6 +168,8 @@ class ReconciliationExceptionResolutionInstallTests(unittest.TestCase):
             control_time.write_text("SELECT 'control recording time';", encoding="utf-8")
             lifecycle_time.write_text("SELECT 'lifecycle recording time';", encoding="utf-8")
             with patch.object(
+                migration_install, "_base_foundation_chain_is_complete", return_value=True
+            ), patch.object(
                 migration_install, "_apply_foundation_migration", return_value=None
             ), patch.object(
                 migration_install,

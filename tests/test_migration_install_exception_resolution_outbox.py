@@ -59,7 +59,9 @@ class ReconciliationExceptionResolutionOutboxInstallTests(unittest.TestCase):
                 Path(directory)
             )
             base_loader = Mock()
-            with patch.object(migration_install, "_apply_foundation_migration", base_loader):
+            with patch.object(
+                migration_install, "_base_foundation_chain_is_complete", return_value=True
+            ), patch.object(migration_install, "_apply_foundation_migration", base_loader):
                 with self.assertRaisesRegex(AccountingValidationError, "0021"):
                     migration_install.apply_foundation_migration(
                         "postgresql://unused", base
@@ -74,7 +76,9 @@ class ReconciliationExceptionResolutionOutboxInstallTests(unittest.TestCase):
             )
             outbox.write_text("SELECT 'outbox authority';", encoding="utf-8")
             base_loader = Mock()
-            with patch.object(migration_install, "_apply_foundation_migration", base_loader):
+            with patch.object(
+                migration_install, "_base_foundation_chain_is_complete", return_value=True
+            ), patch.object(migration_install, "_apply_foundation_migration", base_loader):
                 with self.assertRaisesRegex(AccountingValidationError, "0022"):
                     migration_install.apply_foundation_migration(
                         "postgresql://unused", base
@@ -90,7 +94,9 @@ class ReconciliationExceptionResolutionOutboxInstallTests(unittest.TestCase):
             outbox.write_text("SELECT 'outbox authority';", encoding="utf-8")
             retention.write_text("SELECT 'outbox retention';", encoding="utf-8")
             base_loader = Mock()
-            with patch.object(migration_install, "_apply_foundation_migration", base_loader):
+            with patch.object(
+                migration_install, "_base_foundation_chain_is_complete", return_value=True
+            ), patch.object(migration_install, "_apply_foundation_migration", base_loader):
                 with self.assertRaisesRegex(AccountingValidationError, "0023"):
                     migration_install.apply_foundation_migration(
                         "postgresql://unused", base
@@ -108,6 +114,8 @@ class ReconciliationExceptionResolutionOutboxInstallTests(unittest.TestCase):
             orphan_guard.write_text("SELECT 'outbox orphan guard';", encoding="utf-8")
             connection = _Connection()
             with patch.object(
+                migration_install, "_base_foundation_chain_is_complete", return_value=True
+            ), patch.object(
                 migration_install, "_apply_foundation_migration", return_value=None
             ), patch.object(
                 migration_install,
