@@ -52,7 +52,7 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
         )
 
     authority_migration_path = (
-        migration_path.parent / "0019_reconciliation_run_database_snapshot_authority.sql"
+        migration_path.parent / "0020_reconciliation_run_database_snapshot_authority.sql"
     )
     if not authority_migration_path.is_file():
         raise AccountingValidationError(
