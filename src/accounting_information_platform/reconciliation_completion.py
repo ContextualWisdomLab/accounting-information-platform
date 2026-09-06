@@ -113,7 +113,7 @@ def accept_reconciliation_run_completion(
             WHERE match.tenant_account_id = %s
               AND match.reconciliation_run_id = %s
             ORDER BY match.reconciliation_match_id
-            FOR SHARE OF match, approval
+            FOR SHARE OF match
             """,
             (tenant_id, run_id),
         ).fetchall()
