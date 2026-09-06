@@ -263,6 +263,28 @@ class PostgresBookPeriodIsolationTests(unittest.TestCase):
             self.mgmt_book_reference,
         )
 
+    def test_hard_closed_book_default_trial_balance_uses_retained_snapshot(self) -> None:
+        """An open sibling must not make a hard-closed book read mutable live totals."""
+        close_receipt = self.ledger.close_fiscal_period(
+            self.legal_entity_reference,
+            self.stat_book_reference,
+            "2026-08",
+            "KRW",
+            period_status_code="hard_closed",
+            idempotency_key=f"{self.tenant_reference}:statutory:2026-08:hard-close",
+        )
+
+        trial_balance = self.ledger.load_period_trial_balance(
+            self.legal_entity_reference,
+            self.stat_book_reference,
+            "2026-08",
+        )
+
+        self.assertEqual(close_receipt.period_status_code, "hard_closed")
+        self.assertEqual(trial_balance["period_status_code"], "hard_closed")
+        self.assertEqual(trial_balance["balance_source_code"], "snapshot")
+        self.assertEqual(trial_balance["snapshot_record_id"], close_receipt.snapshot_record_id)
+
     def test_soft_close_replay_rejects_a_different_command_key(self) -> None:
         """A soft-close replay is exact and cannot accept a different command identity."""
         original_key = f"{self.tenant_reference}:statutory:2026-08:soft-close"
