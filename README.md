@@ -217,3 +217,7 @@ How those authorities map to current product decisions is in
 - [Test strategy](docs/TEST_STRATEGY.md)
 - [Architecture decisions](docs/adr/0001-accounting-authority.md)
 - [Contributor and agent operations](docs/CONTRIBUTING.md)
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
