@@ -44,7 +44,9 @@ Static RED `a612539a92bfd171b7037273858c7263e4eabc9e` simultaneously preserves t
 
 Static authority-separation RED `0d3caba036c370f93deacc0e8208314cd9df9731` adds the second causal boundary exposed by the same PostgreSQL scenario: `close_fiscal_period()` must not require `_assemble_period_close_package()` before the authoritative hard-close write. The supported close still has to reach `_persist_period_close()` and preserve ledger/trial-balance invariants; buyer Reporting-Export projection completeness is not close authorization.
 
-The current successor head is intentionally RED until a production candidate satisfies both realistic PostgreSQL scenarios, the account-identity-sensitive snapshot hash, and the static separation contracts on one unchanged exact head. Predecessor runner evidence does not transfer to that successor head.
+Production candidate `3832cf72110ebc39d3978135400e0fb9378c34ac` applies the selected boundary in the canonical writer file. `_post_closing_journal()` now selects and groups the immutable posted `journal_entry_line.chart_account_id`, carries a line-number-to-Entity mapping, and gives that mapping only to the system closing-journal insertion. `_insert_journal()` retains its `valid_to IS NULL` lookup for every ordinary line and validates a supplied historical identity against the same tenant, book, and code without requiring the source Entity to remain active. The retained-earnings line has no historical override and therefore still resolves current close-time policy. `close_fiscal_period()` now checks balance directly from the locked ledger population instead of assembling mutable buyer-report projections, and `_canonical_snapshot_hash()` serializes the exact account UUID.
+
+This is a production candidate, not GREEN or protected integration. The current successor must independently pass the realistic expiry and code-reuse PostgreSQL cases, snapshot-hash identity test, static separation contracts, complete Foundation/security/SAST/CodeQL/package evidence, and current-head review on one unchanged exact head. Predecessor runner evidence does not transfer.
 
 ## Standards boundary
 
