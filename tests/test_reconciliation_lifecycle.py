@@ -558,12 +558,12 @@ class ReconciliationLifecycleMigrationContractTests(unittest.TestCase):
         self.assertIn("FORCE ROW LEVEL SECURITY", migration)
 
     def test_exception_resolution_migration_requires_named_maker_checker_command(self) -> None:
-        """Migration 0020 replaces mutable exception status with durable command authority."""
+        """Migration 0021 replaces mutable exception status with durable command authority."""
         from pathlib import Path
 
         root = Path(__file__).resolve().parents[1]
         migration = (
-            root / "database/migrations/0020_reconciliation_exception_resolution_command.sql"
+            root / "database/migrations/0021_reconciliation_exception_resolution_command.sql"
         ).read_text(encoding="utf-8")
         self.assertIn(
             "CREATE TABLE accounting_core.reconciliation_exception_resolution_command",
@@ -575,12 +575,12 @@ class ReconciliationLifecycleMigrationContractTests(unittest.TestCase):
         self.assertIn("FORCE ROW LEVEL SECURITY", migration)
 
     def test_lifecycle_source_payload_identity_is_forward_only_and_database_bound(self) -> None:
-        """Migration 0026 persists strict source identity without inventing legacy hashes."""
+        """Migration 0027 persists strict source identity without inventing legacy hashes."""
         from pathlib import Path
 
         root = Path(__file__).resolve().parents[1]
         migration = (
-            root / "database/migrations/0026_reconciliation_lifecycle_source_payload_identity.sql"
+            root / "database/migrations/0027_reconciliation_lifecycle_source_payload_identity.sql"
         ).read_text(encoding="utf-8")
         self.assertIn("ADD COLUMN source_payload_hash text NOT NULL", migration)
         self.assertIn("reconciliation_lifecycle_source_payload_preflight", migration)
