@@ -33,9 +33,9 @@ class ReconciliationRecordingTimeLegacyCommandPostgresTests(unittest.TestCase):
         role_name, database_name, _password, migration_url, admin_url = (
             helper._create_isolated_database()
         )
-        migration_0024 = (
+        migration_0025 = (
             posting.MIGRATION_PATH.parent
-            / "0024_reconciliation_control_recording_time_authority.sql"
+            / "0025_reconciliation_control_recording_time_authority.sql"
         ).read_text(encoding="utf-8")
         fixture: ReconciliationRunApiTests | None = None
 
@@ -122,7 +122,7 @@ class ReconciliationRecordingTimeLegacyCommandPostgresTests(unittest.TestCase):
                 autocommit=True,
                 cursor_factory=psycopg.ClientCursor,
             ) as migration_connection:
-                migration_connection.execute(migration_0024)
+                migration_connection.execute(migration_0025)
 
             resolution_command = {
                 "tenant_reference": fixture.case.policy.tenant_reference,
