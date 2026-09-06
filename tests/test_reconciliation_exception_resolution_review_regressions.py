@@ -22,7 +22,7 @@ from tests.test_reconciliation_exception_resolution import (
 )
 
 _ROOT = Path(__file__).resolve().parents[1]
-_MIGRATION = _ROOT / "database/migrations/0020_reconciliation_exception_resolution_command.sql"
+_MIGRATION = _ROOT / "database/migrations/0021_reconciliation_exception_resolution_command.sql"
 
 
 class ReconciliationExceptionResolutionReviewRegressionTests(unittest.TestCase):
@@ -53,7 +53,7 @@ class ReconciliationExceptionResolutionReviewRegressionTests(unittest.TestCase):
                 )
 
     def test_upgrade_preflight_rejects_legacy_terminal_exceptions(self) -> None:
-        """Migration 0020 stops before minting authority over legacy terminal rows."""
+        """Migration 0021 stops before minting authority over legacy terminal rows."""
         migration = _MIGRATION.read_text(encoding="utf-8")
         marker = "reconciliation_exception_resolution_legacy_terminal_preflight"
         self.assertIn(marker, migration)
@@ -114,9 +114,9 @@ class ReconciliationExceptionResolutionReviewRegressionTests(unittest.TestCase):
         self.assertIn("recorded_at <= clock_timestamp()", source)
 
     def test_canonical_foundation_loader_installs_exception_resolution_migration(self) -> None:
-        """Any shared PostgreSQL fixture using the canonical loader reaches migration 0020."""
+        """Any shared PostgreSQL fixture using the canonical loader reaches migration 0021."""
         loader_source = inspect.getsource(persistence.apply_foundation_migration)
-        self.assertIn("0020_reconciliation_exception_resolution_command.sql", loader_source)
+        self.assertIn("0021_reconciliation_exception_resolution_command.sql", loader_source)
 
     def test_resolution_command_schema_retains_source_payload_hash(self) -> None:
         """Idempotency persists command payload identity apart from reviewed evidence."""

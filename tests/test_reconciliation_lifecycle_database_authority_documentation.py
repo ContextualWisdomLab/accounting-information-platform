@@ -31,7 +31,7 @@ class ReconciliationLifecycleDatabaseAuthorityDocumentationTests(unittest.TestCa
         )
         self.assertIn("accounting_reconciliation_transition_database_authority_guard", text)
         self.assertIn("accounting_reconciliation_transition_evidence_snapshot_guard", text)
-        self.assertIn("0019_reconciliation_run_database_snapshot_authority.sql", text)
+        self.assertIn("0020_reconciliation_run_database_snapshot_authority.sql", text)
         self.assertIn("test_reconciliation_lifecycle_database_authority_postgres.py", text)
         self.assertNotIn("accounting_reconciliation_transition_authority_snapshot_guard", text)
 
