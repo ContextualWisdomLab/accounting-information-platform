@@ -12,6 +12,20 @@ from accounting_information_platform import AccountingValidationError
 from accounting_information_platform import migration_install
 
 
+_FORWARD_MIGRATIONS = (
+    ("parent", "0020_reconciliation_run_database_snapshot_authority.sql", "SELECT 'parent authority';"),
+    ("resolution", "0021_reconciliation_exception_resolution_command.sql", "SELECT 'resolution authority';"),
+    ("outbox", "0022_reconciliation_exception_resolution_outbox_pair.sql", "SELECT 'outbox authority';"),
+    ("retention", "0023_reconciliation_authority_outbox_retention.sql", "SELECT 'outbox retention';"),
+    ("orphan_guard", "0024_reconciliation_authority_outbox_orphan_guard.sql", "SELECT 'outbox orphan guard';"),
+    ("control_time", "0025_reconciliation_control_recording_time_authority.sql", "SELECT 'control recording time';"),
+    ("lifecycle_time", "0026_reconciliation_lifecycle_recording_time_authority.sql", "SELECT 'lifecycle recording time';"),
+    ("source_payload", "0027_reconciliation_lifecycle_source_payload_identity.sql", "SELECT 'source payload identity';"),
+    ("session_lock", "0028_reconciliation_lifecycle_session_lock_authority.sql", "SELECT 'session lock authority';"),
+    ("capability", "0029_reconciliation_lifecycle_capability_privileges.sql", "SELECT 'capability privileges';"),
+)
+
+
 class _Connection:
     """Capture forward migration execution."""
 
@@ -42,49 +56,27 @@ class _Psycopg:
 class ReconciliationExceptionResolutionInstallTests(unittest.TestCase):
     """Keep the complete reconciliation authority overlay fail-closed and ordered."""
 
-    def _paths(
-        self, root: Path
-    ) -> tuple[Path, Path, Path, Path, Path, Path, Path, Path]:
-        """Create base plus every required reconciliation authority migration path."""
+    def _paths(self, root: Path) -> tuple[Path, dict[str, Path]]:
+        """Create the complete canonical forward-migration fixture."""
         base = root / "0001_accounting_foundation.sql"
-        parent_authority = root / "0019_reconciliation_run_database_snapshot_authority.sql"
-        resolution = root / "0020_reconciliation_exception_resolution_command.sql"
-        outbox = root / "0021_reconciliation_exception_resolution_outbox_pair.sql"
-        retention = root / "0022_reconciliation_authority_outbox_retention.sql"
-        orphan_guard = root / "0023_reconciliation_authority_outbox_orphan_guard.sql"
-        control_time = root / "0024_reconciliation_control_recording_time_authority.sql"
-        lifecycle_time = root / "0025_reconciliation_lifecycle_recording_time_authority.sql"
         base.write_text("BEGIN; COMMIT;", encoding="utf-8")
-        parent_authority.write_text("SELECT 'parent authority';", encoding="utf-8")
-        return (
-            base,
-            parent_authority,
-            resolution,
-            outbox,
-            retention,
-            orphan_guard,
-            control_time,
-            lifecycle_time,
-        )
+        paths: dict[str, Path] = {}
+        for key, filename, statement in _FORWARD_MIGRATIONS:
+            path = root / filename
+            path.write_text(statement, encoding="utf-8")
+            paths[key] = path
+        return base, paths
 
     def test_missing_resolution_migration_fails_before_base_install(self) -> None:
         """The public loader cannot silently stop before exception-resolution authority."""
         with tempfile.TemporaryDirectory() as directory:
-            (
-                base,
-                _parent,
-                _resolution,
-                _outbox,
-                _retention,
-                _orphan_guard,
-                _control_time,
-                _lifecycle_time,
-            ) = self._paths(Path(directory))
+            base, paths = self._paths(Path(directory))
+            paths["resolution"].unlink()
             base_loader = Mock()
             with patch.object(
                 migration_install, "_base_foundation_chain_is_complete", return_value=True
             ), patch.object(migration_install, "_apply_foundation_migration", base_loader):
-                with self.assertRaisesRegex(AccountingValidationError, "0020"):
+                with self.assertRaisesRegex(AccountingValidationError, "0021"):
                     migration_install.apply_foundation_migration(
                         "postgresql://unused", base
                     )
@@ -93,22 +85,7 @@ class ReconciliationExceptionResolutionInstallTests(unittest.TestCase):
     def test_forward_migrations_execute_after_existing_chain_in_order(self) -> None:
         """The exported loader applies every reconciliation authority overlay in order."""
         with tempfile.TemporaryDirectory() as directory:
-            (
-                base,
-                _parent,
-                resolution,
-                outbox,
-                retention,
-                orphan_guard,
-                control_time,
-                lifecycle_time,
-            ) = self._paths(Path(directory))
-            resolution.write_text("SELECT 'resolution authority';", encoding="utf-8")
-            outbox.write_text("SELECT 'outbox authority';", encoding="utf-8")
-            retention.write_text("SELECT 'outbox retention';", encoding="utf-8")
-            orphan_guard.write_text("SELECT 'outbox orphan guard';", encoding="utf-8")
-            control_time.write_text("SELECT 'control recording time';", encoding="utf-8")
-            lifecycle_time.write_text("SELECT 'lifecycle recording time';", encoding="utf-8")
+            base, _paths = self._paths(Path(directory))
             calls: list[str] = []
 
             def base_loader(database_url: str, migration_path: Path) -> None:
@@ -135,38 +112,14 @@ class ReconciliationExceptionResolutionInstallTests(unittest.TestCase):
                     "postgresql://example", base
                 )
 
-            expected = [
-                "base",
-                "SELECT 'parent authority';",
-                "SELECT 'resolution authority';",
-                "SELECT 'outbox authority';",
-                "SELECT 'outbox retention';",
-                "SELECT 'outbox orphan guard';",
-                "SELECT 'control recording time';",
-                "SELECT 'lifecycle recording time';",
-            ]
+            expected = ["base", *[statement for _key, _filename, statement in _FORWARD_MIGRATIONS]]
             self.assertEqual(calls, expected)
             self.assertEqual(ordered_connection.executed, expected[1:])
 
     def test_forward_database_failure_keeps_original_cause(self) -> None:
         """Operators get one stable error while retaining the PostgreSQL root cause."""
         with tempfile.TemporaryDirectory() as directory:
-            (
-                base,
-                _parent,
-                resolution,
-                outbox,
-                retention,
-                orphan_guard,
-                control_time,
-                lifecycle_time,
-            ) = self._paths(Path(directory))
-            resolution.write_text("SELECT 'resolution authority';", encoding="utf-8")
-            outbox.write_text("SELECT 'outbox authority';", encoding="utf-8")
-            retention.write_text("SELECT 'outbox retention';", encoding="utf-8")
-            orphan_guard.write_text("SELECT 'outbox orphan guard';", encoding="utf-8")
-            control_time.write_text("SELECT 'control recording time';", encoding="utf-8")
-            lifecycle_time.write_text("SELECT 'lifecycle recording time';", encoding="utf-8")
+            base, _paths = self._paths(Path(directory))
             with patch.object(
                 migration_install, "_base_foundation_chain_is_complete", return_value=True
             ), patch.object(

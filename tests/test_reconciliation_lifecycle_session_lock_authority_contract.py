@@ -9,15 +9,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PARENT_MIGRATION = (
     ROOT
-    / "database/migrations/0019_reconciliation_run_database_snapshot_authority.sql"
+    / "database/migrations/0020_reconciliation_run_database_snapshot_authority.sql"
 )
 MIGRATION = (
     ROOT
-    / "database/migrations/0027_reconciliation_lifecycle_session_lock_authority.sql"
+    / "database/migrations/0028_reconciliation_lifecycle_session_lock_authority.sql"
 )
 CAPABILITY_MIGRATION = (
     ROOT
-    / "database/migrations/0028_reconciliation_lifecycle_capability_privileges.sql"
+    / "database/migrations/0029_reconciliation_lifecycle_capability_privileges.sql"
 )
 INSTALLER = ROOT / "src/accounting_information_platform/migration_install.py"
 SESSION_TRIGGER = "accounting_reconciliation_transition_000_session_lock_guard"
@@ -81,11 +81,11 @@ class ReconciliationLifecycleSessionLockAuthorityContractTests(unittest.TestCase
         """Supported installs cannot stop before the fresh-transaction authority guard."""
         installer = INSTALLER.read_text(encoding="utf-8")
         self.assertIn(
-            "0027_reconciliation_lifecycle_session_lock_authority.sql",
+            "0028_reconciliation_lifecycle_session_lock_authority.sql",
             installer,
         )
         self.assertIn(
-            "0028_reconciliation_lifecycle_capability_privileges.sql",
+            "0029_reconciliation_lifecycle_capability_privileges.sql",
             installer,
         )
 

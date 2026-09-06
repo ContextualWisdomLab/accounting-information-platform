@@ -7,12 +7,12 @@ from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
 _MIGRATION = (
-    _ROOT / "database/migrations/0024_reconciliation_control_recording_time_authority.sql"
+    _ROOT / "database/migrations/0025_reconciliation_control_recording_time_authority.sql"
 )
 
 
 class ReconciliationRecordingTimeUpgradeContractTests(unittest.TestCase):
-    """Keep pre-0024 caller-shaped system time explicit without destroying history."""
+    """Keep pre-0025 caller-shaped system time explicit without destroying history."""
 
     def test_legacy_rows_remain_untrusted_while_new_rows_gain_database_authority(self) -> None:
         """Upgrade must preserve old rows, tag provenance, and gate new command authority."""

@@ -1,4 +1,4 @@
-"""Upgrade contracts for pre-0024 resolution recording-time authority."""
+"""Upgrade contracts for pre-0025 resolution recording-time authority."""
 
 from __future__ import annotations
 
@@ -6,14 +6,14 @@ import unittest
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
-_MIGRATION = _ROOT / "database/migrations/0024_reconciliation_control_recording_time_authority.sql"
+_MIGRATION = _ROOT / "database/migrations/0025_reconciliation_control_recording_time_authority.sql"
 
 
 class ReconciliationResolutionRecordingTimeUpgradeContractTests(unittest.TestCase):
     """Do not grandfather commands backed by unverifiable source chronology."""
 
     def test_upgrade_refuses_preexisting_resolution_commands_before_schema_change(self) -> None:
-        """Authority-bearing pre-0024 commands require audited remediation."""
+        """Authority-bearing pre-0025 commands require audited remediation."""
         migration = _MIGRATION.read_text(encoding="utf-8")
         policy = "reconciliation_resolution_recording_time_upgrade_visibility"
         marker = "reconciliation_resolution_legacy_recording_time_preflight"

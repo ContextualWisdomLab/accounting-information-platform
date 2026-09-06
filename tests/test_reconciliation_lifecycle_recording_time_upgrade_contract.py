@@ -6,14 +6,14 @@ import unittest
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
-_MIGRATION = _ROOT / "database/migrations/0025_reconciliation_lifecycle_recording_time_authority.sql"
+_MIGRATION = _ROOT / "database/migrations/0026_reconciliation_lifecycle_recording_time_authority.sql"
 
 
 class ReconciliationLifecycleRecordingTimeUpgradeContractTests(unittest.TestCase):
-    """Prevent pre-0025 caller-shaped system time from becoming close authority."""
+    """Prevent pre-0026 caller-shaped system time from becoming close authority."""
 
     def test_upgrade_refuses_unverifiable_legacy_transition_rows(self) -> None:
-        """A pre-0025 transition cannot be silently promoted to database-clock authority."""
+        """A pre-0026 transition cannot be silently promoted to database-clock authority."""
         migration = _MIGRATION.read_text(encoding="utf-8")
         marker = "reconciliation_lifecycle_legacy_recording_time_preflight"
         visibility_policy = "reconciliation_lifecycle_recording_time_upgrade_visibility"

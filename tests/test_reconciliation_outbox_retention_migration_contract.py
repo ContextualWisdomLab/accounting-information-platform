@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
-_MIGRATION = _ROOT / "database/migrations/0022_reconciliation_authority_outbox_retention.sql"
+_MIGRATION = _ROOT / "database/migrations/0023_reconciliation_authority_outbox_retention.sql"
 
 
 class ReconciliationOutboxRetentionMigrationContractTests(unittest.TestCase):

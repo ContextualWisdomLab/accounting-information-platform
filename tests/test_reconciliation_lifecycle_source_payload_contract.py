@@ -14,7 +14,7 @@ from tests.test_reconciliation_lifecycle import _command
 
 
 class ReconciliationLifecycleSourcePayloadContractTests(unittest.TestCase):
-    """Keep strict JSON identity and migration 0026 on the supported boundary."""
+    """Keep strict JSON identity and migration 0027 on the supported boundary."""
 
     def test_strict_nested_json_values_have_one_deterministic_identity(self) -> None:
         """Lists and JSON scalar values remain valid and independent of object key order."""
@@ -52,14 +52,14 @@ class ReconciliationLifecycleSourcePayloadContractTests(unittest.TestCase):
         original_is_file = Path.is_file
 
         def is_file(path: Path) -> bool:
-            if path.name == "0026_reconciliation_lifecycle_source_payload_identity.sql":
+            if path.name == "0027_reconciliation_lifecycle_source_payload_identity.sql":
                 return False
             return original_is_file(path)
 
         with patch.object(Path, "is_file", is_file):
             with self.assertRaisesRegex(
                 AccountingValidationError,
-                "0026_reconciliation_lifecycle_source_payload_identity",
+                "0027_reconciliation_lifecycle_source_payload_identity",
             ):
                 migration_install.apply_foundation_migration(
                     "postgresql://unused",
