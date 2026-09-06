@@ -17,24 +17,24 @@ from tests.test_reconciliation_run_api import ReconciliationRunApiTests
 
 
 class ReconciliationLifecycleRecordingTimeUpgradePostgresTests(unittest.TestCase):
-    """Prove migration 0025 never promotes unverifiable legacy transition time."""
+    """Prove migration 0026 never promotes unverifiable legacy transition time."""
 
     @classmethod
     def setUpClass(cls) -> None:
         """Ensure the shared PostgreSQL cluster roles exist."""
         posting.PostgresPostingTests.setUpClass()
 
-    def test_non_bypass_upgrade_rejects_pre_0025_transition_chronology(self) -> None:
+    def test_non_bypass_upgrade_rejects_pre_0026_transition_chronology(self) -> None:
         """A caller-shaped historical transition blocks upgrade instead of gaining trust."""
         role_name, database_name, _password, migration_url, admin_url = (
             ReconciliationRecordingTimeUpgradePostgresTests._create_isolated_database()
         )
         migration_root = posting.MIGRATION_PATH.parent
-        migration_0024 = (
-            migration_root / "0024_reconciliation_control_recording_time_authority.sql"
-        ).read_text(encoding="utf-8")
         migration_0025 = (
-            migration_root / "0025_reconciliation_lifecycle_recording_time_authority.sql"
+            migration_root / "0025_reconciliation_control_recording_time_authority.sql"
+        ).read_text(encoding="utf-8")
+        migration_0026 = (
+            migration_root / "0026_reconciliation_lifecycle_recording_time_authority.sql"
         ).read_text(encoding="utf-8")
         fixture: ReconciliationRunApiTests | None = None
 
@@ -47,7 +47,7 @@ class ReconciliationLifecycleRecordingTimeUpgradePostgresTests(unittest.TestCase
                 autocommit=True,
                 cursor_factory=psycopg.ClientCursor,
             ) as migration_connection:
-                migration_connection.execute(migration_0024)
+                migration_connection.execute(migration_0025)
 
             with mock.patch.object(posting, "DATABASE_URL", migration_url):
                 fixture = ReconciliationRunApiTests(
@@ -124,7 +124,7 @@ class ReconciliationLifecycleRecordingTimeUpgradePostgresTests(unittest.TestCase
                     psycopg.Error,
                     "reconciliation_lifecycle_legacy_recording_time_preflight",
                 ):
-                    migration_connection.execute(migration_0025)
+                    migration_connection.execute(migration_0026)
 
             with psycopg.connect(admin_url, autocommit=True) as admin_database:
                 authority_column = admin_database.execute(
