@@ -11,7 +11,7 @@ AUTHORITY_MIGRATION = (
     ROOT
     / "database"
     / "migrations"
-    / "0020_reconciliation_run_database_snapshot_authority.sql"
+    / "0021_reconciliation_run_database_snapshot_authority.sql"
 )
 INSTALLER = ROOT / "src" / "accounting_information_platform" / "migration_install.py"
 
@@ -33,11 +33,12 @@ class ReconciliationTransitionDatabaseSnapshotAuthorityTests(unittest.TestCase):
         self.assertIn("NEW.statement_population_reference := database_statement_reference", sql)
         self.assertIn("NEW.book_population_reference := database_book_reference", sql)
 
-    def test_public_installer_applies_authority_after_base_0019(self) -> None:
+    def test_public_installer_applies_authority_after_base_0020(self) -> None:
         """Every supported foundation install must include the database-authority overlay."""
         source = INSTALLER.read_text(encoding="utf-8")
 
-        self.assertIn("0020_reconciliation_run_database_snapshot_authority.sql", source)
+        self.assertIn("0020_reconciliation_run_completion_evidence.sql", source)
+        self.assertIn("0021_reconciliation_run_database_snapshot_authority.sql", source)
         self.assertIn("_persistence.apply_foundation_migration = apply_foundation_migration", source)
 
 
