@@ -18,7 +18,7 @@ from tests.test_reconciliation_exception_resolution_postgres import (
 
 
 class ReconciliationOutboxRetentionPreflightPostgresTests(unittest.TestCase):
-    """Prove migration 0022 cannot hide damaged authority behind FORCE RLS."""
+    """Prove migration 0023 cannot hide damaged authority behind FORCE RLS."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -42,16 +42,16 @@ class ReconciliationOutboxRetentionPreflightPostgresTests(unittest.TestCase):
 
     @staticmethod
     def _apply_pre_retention_chain(database_url: str) -> None:
-        """Install through 0021 so migration 0022 can be exercised as an upgrade."""
+        """Install through 0022 so migration 0023 can be exercised as an upgrade."""
         migration_root = posting.MIGRATION_PATH.parent
         migration_install._apply_foundation_migration(  # pylint: disable=protected-access
             database_url,
             posting.MIGRATION_PATH,
         )
         forward_names = (
-            "0019_reconciliation_run_database_snapshot_authority.sql",
-            "0020_reconciliation_exception_resolution_command.sql",
-            "0021_reconciliation_exception_resolution_outbox_pair.sql",
+            "0020_reconciliation_run_database_snapshot_authority.sql",
+            "0021_reconciliation_exception_resolution_command.sql",
+            "0022_reconciliation_exception_resolution_outbox_pair.sql",
         )
         with psycopg.connect(
             database_url,
@@ -74,9 +74,9 @@ class ReconciliationOutboxRetentionPreflightPostgresTests(unittest.TestCase):
             password=password,
         )
         admin_url = self._database_url(database_name)
-        migration_0022 = (
+        migration_0023 = (
             posting.MIGRATION_PATH.parent
-            / "0022_reconciliation_authority_outbox_retention.sql"
+            / "0023_reconciliation_authority_outbox_retention.sql"
         ).read_text(encoding="utf-8")
         fixture: ReconciliationExceptionResolutionPostgresTests | None = None
 
@@ -167,7 +167,7 @@ class ReconciliationOutboxRetentionPreflightPostgresTests(unittest.TestCase):
                         autocommit=True,
                         cursor_factory=psycopg.ClientCursor,
                     ) as migration_connection:
-                        migration_connection.execute(migration_0022)
+                        migration_connection.execute(migration_0023)
 
                 with psycopg.connect(admin_url, autocommit=True) as admin_database:
                     failed_upgrade_policies = admin_database.execute(
@@ -205,7 +205,7 @@ class ReconciliationOutboxRetentionPreflightPostgresTests(unittest.TestCase):
                     autocommit=True,
                     cursor_factory=psycopg.ClientCursor,
                 ) as migration_connection:
-                    migration_connection.execute(migration_0022)
+                    migration_connection.execute(migration_0023)
                     role_row = migration_connection.execute(
                         "SELECT rolbypassrls FROM pg_catalog.pg_roles "
                         "WHERE rolname = current_user"
