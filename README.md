@@ -65,7 +65,7 @@ PYTHONPATH=src:. python3 -m unittest discover -s tests -p 'test_*.py' -v
 
 For the repository's full reproducible quality contract, including hash-locked tooling, 100% coverage gates, PostgreSQL-backed tests and repository validation, follow [`docs/TEST_STRATEGY.md`](docs/TEST_STRATEGY.md) and the current CI workflow rather than copying an abbreviated command list from this README.
 
-Some persistence tests require a reachable PostgreSQL 18 instance and `ACCOUNTING_DATABASE_URL`; the test strategy documents that boundary explicitly.
+Some persistence tests require a reachable PostgreSQL 18 instance and `ACCOUNTING_DATABASE_URL`; CI applies the checked-in migration chain through `database/migrations/0014_reconciliation_candidate_allocation.sql`, and the test strategy documents that boundary explicitly.
 
 ## Integrate a producer or consumer
 
@@ -93,7 +93,7 @@ See [`docs/ACCOUNTING_BOUNDARY.md`](docs/ACCOUNTING_BOUNDARY.md) and [`docs/TRD.
 
 The integrated foundation includes an **immutable camt.053.001.14 bank-statement evidence registry**, a **deterministic reconciliation proposal engine**, an **exact book-to-bank bridge**, and **durable reconciliation runs, exceptions, and evidence**. These capabilities preserve independent bank evidence and review lineage rather than treating matching as an irreversible side effect.
 
-Reconciliation completion hardening is still stacked beyond the protected foundation. Full cross-run many-to-many allocation, complete purpose-bound lifecycle authorization, close-package provenance, and buyer-facing workflow completeness remain explicit gaps where the durable baseline says they are not yet complete.
+Reconciliation completion hardening is still stacked beyond the protected foundation. The full cross-run many-to-many allocation, complete purpose-bound lifecycle authorization, close-package provenance, and buyer-facing workflow completeness remain explicit gaps where the durable baseline says they are not yet complete.
 
 Implementation-specific migration and table identities stay in the [data model](docs/DATA_MODEL.md), migration chain, and product-gap baseline rather than customer-facing copy.
 
