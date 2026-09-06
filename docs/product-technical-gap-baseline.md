@@ -1,6 +1,6 @@
 # Product and technical gap baseline
 
-**Evidence refresh:** 2026-09-02 (Asia/Seoul)
+**Evidence refresh:** 2026-09-03 (Asia/Seoul)
 
 This file is the durable buyer-visible gap queue for `accounting-information-platform`.
 It records product authority, dependency order, architectural boundaries, acceptance
@@ -42,9 +42,25 @@ integrated on protected `develop` after one unchanged head satisfies every appli
 gate. A stacked lifecycle candidate now adds the supported `reconciled` transition,
 exact replay of persisted statement/book population provenance, immutable
 evidence-to-run aggregate membership, and a database state-machine rule that
-`superseded` can only follow a retained approved/rejected decision. It likewise is not
-integration evidence until its own exact-head proof passes and it is incorporated into
-the parent before protected-branch integration. The product does not transmit
+`superseded` can only follow a retained approved/rejected decision. A further stacked
+maker-checker slice replaces terminal exception status as standalone authority with an
+immutable exception-resolution command, command/status/outbox commit pairing, and
+layered PostgreSQL snapshot evidence. The lifecycle parent owns the exact statement/book
+bridge plus server-owned population identities; the child adds immutable resolution
+commands to that parent snapshot and must not reimplement or weaken the monetary bridge.
+
+The child also separates valid time from provable system time at both source-control and
+lifecycle-command boundaries. Migration 0024 preserves unresolved pre-0024 exception
+and retained review rows exactly as `legacy_unverified`, but now refuses the upgrade if
+a pre-0024 resolution command already exists: such a command has already made those
+source rows authority-bearing, while their caller-overridable historical `recorded_at`
+cannot be proven. Migration 0025 applies the same fail-closed principle to pre-0025
+lifecycle transition commands. Neither migration rewrites immutable audit history or
+manufactures `database_clock` provenance. Remediation for already-authoritative legacy
+commands must be explicit and audit-backed.
+
+None of these mutable candidates is integration evidence until its own exact-head proof
+passes and the stack is incorporated dependency-first. The product does not transmit
 HomeTax/NTS filings, enforce purpose-bound application authorization on every route, or
 provide a controller UI. Those omissions are explicit product scope, not implied
 successes.
@@ -79,11 +95,14 @@ statement facts never gain posting authority. A reconciliation package is eviden
 an authorized close decision; it is not itself a journal, approval principal, or period
 state transition. The lifecycle command belongs to the reconciliation-run aggregate and
 remains separate from the period-close aggregate. Candidate, match, allocation,
-approval, and exception evidence may not be re-parented between tenant/run aggregate
-roots; corrections are append/supersede operations in a new run rather than historical
-foreign-key reassignment. `superseded` is a historical overlay on an already reviewed
-`approved` or `rejected` decision, never a third decision or a shortcut around approval
-evidence.
+approval, exception, exception-resolution, and lifecycle-command evidence may not be
+re-parented between tenant/run aggregate roots; corrections are append/supersede
+operations in a new run rather than historical foreign-key reassignment. `superseded`
+is a historical overlay on an already reviewed `approved` or `rejected` decision, never
+a third decision or a shortcut around approval evidence. Exception resolution is a
+maker-checker accounting-control decision: the reviewer must be distinct from the
+retained exception owner, and any correcting journal remains a separate General Ledger
+command.
 
 ## Open work inventory
 
@@ -93,8 +112,9 @@ evidence.
 | Immutable bank-statement evidence registry | First buyer-visible reconciliation input | Integrated | Exact replay, changed-hash conflict, parser fail-closed behavior, tenant isolation, canonical timestamp handling, and assignment command identity remain protected-branch invariants |
 | Deterministic reconciliation and exact book-to-bank bridge | Deterministic evidence interpretation | Integrated foundation plus current hardening candidate | Exact Decimal equations, explicit abstention, stable-source conservation, and no automatic posting remain invariant |
 | Durable reconciliation review evidence | Candidate/match/allocation + approval snapshot + run command provenance | Present in current integration candidate | Current-head PostgreSQL tests prove RLS, graph connectivity, conservation, snapshot binding, lock order, source provenance, immutable reviewed evidence, and rejection of direct/proposed-to-superseded state bypasses |
-| Database-owned close projection | Authority-bearing statement/book populations and monetary bridge | **Source-addressed on dependency root; exact-head proof pending** | Current exact-head evidence must prove statement balances/entries, assigned-book cash journals, approved allocations, population digests, bridge components, `REPEATABLE READ`, and caller-substitution rejection from PostgreSQL facts |
-| Reconciliation lifecycle command | Lawful transition from `evaluating`/`review_required` to `reconciled` | **Stacked implementation candidate; exact-head proof pending** | Tenant-scoped idempotency, actor/purpose evidence, exact source/review snapshot binding, persisted population provenance on replay, DB-enforced legal edge, direct-SQL rejection, reviewed-only supersession, immutable evidence aggregate membership, post-reconcile evidence freeze, atomic outbox, concurrency proof, and later purpose-bound HTTP integration |
+| Database-owned close projection | Authority-bearing statement/book populations and monetary bridge | **Stacked parent source-addressed; exact-head proof pending** | Current exact-head evidence must prove statement balances/entries, assigned-book cash journals, approved allocations, population digests, bridge components, `REPEATABLE READ`, caller-substitution rejection from PostgreSQL facts, and that child overlays preserve rather than replace this authority |
+| Reconciliation exception-resolution command | Named maker-checker authority for terminal exception state | **Stacked child implementation; exact-head proof pending** | Complete strict-JSON source identity, retained evidence binding, maker/owner freeze, reviewer separation, temporal causality, tenant-wide idempotency conflict/replay, command/status/outbox atomicity, legacy-terminal migration preflight, FORCE-RLS-safe rejection of already-authoritative pre-0024 resolution chronology, preservation of unresolved legacy rows as `legacy_unverified`, lifecycle-lock concurrency, immutable terminal evidence, and no journal/close authority |
+| Reconciliation lifecycle command | Lawful transition from `evaluating`/`review_required` to `reconciled` | **Stacked implementation candidate; exact-head proof pending** | Tenant-scoped idempotency, actor/purpose evidence, parent DB-derived statement/book identities, child resolution-evidence overlay, DB-enforced legal edge, direct-SQL rejection, reviewed-only supersession, immutable evidence aggregate membership, post-reconcile evidence freeze, atomic outbox, coherent-snapshot concurrency proof, database-owned lifecycle recording time, FORCE-RLS-safe rejection or audited remediation of pre-0025 transition chronology, and later purpose-bound HTTP integration |
 | Historical timing-difference evidence | Carry-forward/outstanding treatment across periods | Open after current-period authority | Durable, policy-traceable representation; never fabricate an opening difference from caller-shaped projection data |
 | Purpose-bound accounting authorization | Least-privilege operation authority | Open | Versioned permission model with fail-closed decisions and immutable allow/deny evidence; lifecycle HTTP exposure must use this boundary rather than create an unauthenticated high-impact route |
 | Controller close/reconciliation UX | Buyer-facing workflow | Open | Figma source of truth, design tokens, Storybook scene/edge inventory, accessibility/i18n, screenshot review, and API-backed actions only after the accounting authority path is stable |
@@ -108,26 +128,33 @@ renumbering or restacking cannot silently drop a commitment.
 1. **Preserve protected accounting foundations.** Posting and immutable statement
    acceptance stay stronger than application intent and remain the base for every
    successor.
-2. **Prove database-owned close projection authority on the dependency root.** The
-   production implementation is now source-addressed directly on the active dependency
-   root: one `REPEATABLE READ` transaction reconstructs statement facts, book-scoped
-   cash journals, current allocations, deterministic population identities, and the
-   exact bridge from PostgreSQL. This state remains provisional until one unchanged
-   parent head passes the real PostgreSQL, coverage, repository, security, supply-chain,
-   and review evidence; queued or predecessor checks do not transfer.
-3. **Prove and integrate the evidence-backed `reconciled` transition.** A stacked child
-   now implements a public lifecycle command that accepts only `evaluating` or
-   `review_required`, derives eligibility from the database-owned bridge plus complete
-   review/exception populations, persists actor/purpose/idempotency/snapshot and exact
-   statement/book population evidence, rejects raw SQL reconciliation status authority,
-   rejects tenant/run re-parenting of lifecycle-protected evidence, rejects direct or
-   proposed-to-superseded match transitions that lack a retained reviewed decision,
-   freezes reviewed evidence after reconciliation, replays the stored provenance rather
-   than rebuilding from later state, and publishes the transactional outbox event
-   atomically. Because it extends still-unreleased reconciliation migrations, this child
-   must merge into the parent before that parent integrates into protected `develop`; if
-   the parent lands first, the lifecycle schema must become a forward migration instead
-   of rewriting an already-applied migration.
+2. **Prove database-owned close projection authority on the lifecycle parent.** The
+   production implementation is source-addressed on the active lifecycle parent: one
+   PostgreSQL authority function reconstructs statement facts, book-scoped cash
+   journals, current allocations, deterministic population identities, and the exact
+   bridge from database-owned facts. This state remains provisional until one unchanged
+   parent/combined head passes the real PostgreSQL, coverage, repository, security,
+   supply-chain, and review evidence; queued or predecessor checks do not transfer.
+3. **Prove the maker-checker exception command and evidence-backed `reconciled`
+   transition as one monotonic stack.** The child adds strict immutable
+   exception-resolution command identity, reviewer separation and temporal causality,
+   command/status/outbox atomicity, terminal-evidence freeze, and lifecycle system-time
+   authority. The parent `accounting_reconciliation_transition_database_authority_guard`
+   derives the exact bridge and three transition identities first; the child
+   `accounting_reconciliation_transition_evidence_snapshot_guard` composes immutable
+   resolution commands second; the transition hash guard binds the final snapshot.
+   Migration 0024 now distinguishes unresolved legacy source evidence from an
+   already-authoritative legacy resolution command: unresolved rows are retained as
+   `legacy_unverified`, while any pre-0024 resolution command aborts the upgrade before
+   durable schema change because its source chronology cannot be retroactively proven.
+   A later lifecycle recording-time trigger overwrites caller-supplied `recorded_at`,
+   marks the transition `database_clock`, and rejects future-effective decisions.
+   Migration 0025 likewise fails closed before durable schema change when pre-0025
+   lifecycle transition rows are present. The child therefore adds bounded-context
+   evidence without duplicating or weakening parent monetary authority. Because these
+   are still-unreleased reconciliation migrations, the child must merge into the parent
+   before that parent integrates into the dependency root; if protected/released history
+   is reached first, subsequent repairs become forward migrations rather than rewrites.
 4. **Revalidate the combined dependency root.** After the child is incorporated, one
    unchanged normalized parent head must reacquire real PostgreSQL behavior, 100% owned
    statement/branch and edge-case coverage, repository/public-docstring contracts,
@@ -142,16 +169,16 @@ renumbering or restacking cannot silently drop a commitment.
    outcomes and next actions, not internal service or repository boundaries.
 
 Central reviewer reliability is a causal ecosystem dependency, not a reason to weaken
-accounting gates. The Strix model-preflight zero-timeout defect has been repaired in the
-central `.github` owner; runner/reviewer queue waits remain non-blocking and work moves
-to another safe lane while evidence is pending.
+accounting gates. Runner/reviewer queue waits remain non-blocking and work moves to
+another safe lane while evidence is pending.
 
 ## Buyer-visible gaps and exit evidence
 
 | Priority | Gap | Buyer impact | Required evidence before closing |
 | --- | --- | --- | --- |
-| P0 | Database-owned close projection is source-addressed but not yet proven on one unchanged integration head | Controllers must know a close package cannot wrap a genuine run around invented population references, digests, or balanced amounts | Exact-head real PostgreSQL regressions proving database-derived statement/book population identity, exact opening/movement/closing balances, source-capacity-bounded allocation consumption, exact bridge equality, `REPEATABLE READ`, assigned-book scoping, and caller substitution rejection |
-| P0 | Supported `reconciled` transition now exists only as a stacked implementation candidate | Controllers still lack protected-branch lifecycle authority until the candidate is proven and integrated; direct SQL must remain invalid | Exact-head unit/PostgreSQL proof for idempotent tenant command, immutable actor/purpose/snapshot evidence, DB-enforced state edge, approved-match completeness, reviewed-only supersession, unresolved-exception rejection, exact population/bridge binding, stable stored population provenance on replay, lifecycle-lock concurrency, cross-run evidence re-parent rejection, post-reconcile evidence freeze, atomic outbox, complete coverage, and parent-head revalidation after stacking |
+| P0 | Database-owned close projection is source-addressed but not yet proven on one unchanged integration head | Controllers must know a close package cannot wrap a genuine run around invented population references, digests, or balanced amounts | Exact-head real PostgreSQL regressions proving database-derived statement/book population identity, exact opening/movement/closing balances, source-capacity-bounded allocation consumption, exact bridge equality, `REPEATABLE READ`, assigned-book scoping, caller substitution rejection, and preservation through the child resolution-evidence overlay |
+| P0 | Maker-checker exception resolution exists only as a stacked implementation candidate | Controllers need terminal exceptions to carry durable separation-of-duties evidence rather than mutable status, and upgrades must not grandfather authority backed by unprovable system chronology | Exact-head unit/PostgreSQL proof for strict command identity, immutable owner/evidence, reviewer separation, temporal causality, tenant-wide idempotency replay/conflict, command/status/outbox commit pairing, legacy-terminal preflight, pre-0024 resolution-command recording-time preflight with rollback under forced RLS, unresolved legacy-row preservation, concurrency/retry behavior, and finalization rejection when terminal status lacks matching command |
+| P0 | Supported `reconciled` transition exists only as a stacked implementation candidate | Controllers still lack protected-branch lifecycle authority until the candidate is proven and integrated; direct SQL and legacy caller-shaped system time must remain invalid | Exact-head unit/PostgreSQL proof for idempotent tenant command, immutable actor/purpose/snapshot evidence, parent DB-owned statement/book identities, child resolution-command snapshot binding, DB-enforced state edge, approved-match completeness, reviewed-only supersession, unresolved-exception rejection, stable stored population provenance on replay, lifecycle-lock concurrency, cross-run evidence re-parent rejection, post-reconcile evidence freeze, atomic outbox, database-owned `recorded_at`, future-effective rejection, pre-0025 transition upgrade preflight under forced RLS, complete coverage, and parent-head revalidation after stacking |
 | P0 | Repository governance must enforce intended merge/release policy | A technically green candidate could otherwise integrate without durable control-plane enforcement | Protected `develop`/`main`, required accounting CI/security/dependency gates, independent review, resolved current-head findings, no force-push/deletion path, and effective ruleset evidence |
 | P0 | Database authority must remain stronger than application intent | Direct SQL must never rewrite balances, tenant scope, finalized facts, reviewed evidence, or closed periods | PostgreSQL runtime tests for deferred balance, append-only/finalization guards, forced RLS with restricted runtime login, DB-owned tenant binding, lifecycle/status guard, reviewed-only supersession, lock order, temporal reversal rules, and purpose-limited close authority |
 | P1 | Historical outstanding/timing differences lack a durable carry-forward model | Reconciliation may explain the current period but cannot safely invent prior-period opening differences | Policy-backed persisted evidence and exact lineage across run cutoffs, with fail-closed handling when immutable history is insufficient |
@@ -200,11 +227,18 @@ inform diagnosis but cannot satisfy the exact-head release gate.
 - Commands use tenant-scoped idempotency identity plus immutable source evidence; a
   changed command under the same key fails closed.
 - Command outcome and accounting transactional-outbox evidence commit atomically.
+- A terminal reconciliation exception is authority-bearing only when an immutable
+  maker-checker resolution command binds the complete strict-JSON source identity,
+  retained evidence, distinct reviewer, target status, purpose/effective time, and the
+  matching accounting outbox event. Its source exception/review chronology must be
+  database-owned at the applicable migration boundary; direct status mutation and
+  silent grandfathering of unverifiable pre-0024 resolution authority are not supported.
 - A reconciliation run can become `reconciled` only through one immutable lifecycle
-  command whose exact source/review snapshot ties; reviewed evidence is frozen after
-  reconciliation, tenant/run aggregate membership is immutable, exact population
-  provenance replays from durable command evidence, and corrections require a
-  new/superseding run.
+  command whose parent database-owned source/bridge snapshot and child immutable
+  resolution-command overlay tie; reviewed evidence is frozen after reconciliation,
+  tenant/run aggregate membership is immutable, exact population provenance replays
+  from durable command evidence, lifecycle system time is PostgreSQL-owned after the
+  verified migration boundary, and corrections require a new/superseding run.
 - A reconciliation match can become `superseded` only from a retained `approved` or
   `rejected` reviewed decision. Direct insertion or `proposed -> superseded` mutation is
   a database-level authority violation, because supersession must never erase the fact
@@ -234,7 +268,11 @@ immutable bank statement artifact
 → candidate/match allocation conservation              [current integration candidate]
 → immutable approval snapshot                          [current integration candidate]
 → reviewed-only supersession                           [stacked implementation; proof pending]
-→ DB-owned statement/book populations + bridge         [source-addressed; proof pending]
+→ parent DB-owned statement/book populations + bridge  [source-addressed; proof pending]
+→ maker-checker exception-resolution command           [stacked implementation; proof pending]
+→ DB-owned source chronology / legacy preflight        [stacked implementation; proof pending]
+→ child resolution-evidence snapshot overlay           [stacked implementation; proof pending]
+→ database-owned lifecycle valid/system-time boundary  [stacked implementation; proof pending]
 → evidence-backed reconciled transition                [stacked implementation; proof pending]
 → authority-bearing close package                      [blocked until combined head is green]
 → purpose-bound controller HTTP/API workflow           [next buyer-facing authority slice]
@@ -285,9 +323,10 @@ records remain authoritative in `README.md`, `AGENTS.md`, `CLAUDE.md`, `docs/PRD
 `docs/SECURITY.md`, `docs/TEST_STRATEGY.md`, `docs/OPERABILITY.md`, `docs/adr/`, and
 `docs/doctoring/`. Current international/accounting technical decisions belong in the
 APA 7 bibliography and standards traceability records, including ISO 20022 evidence
-backing the statement adapter and PostgreSQL 18 concurrency/row-trigger semantics
-backing ADRs 0060 and 0061 plus the supersession-authority doctoring record. CSAP/SOC 2
-are design and diligence targets, not certification claims. Real-person and institution
-data used for development/testing must be anonymized, while production PII protection
-must preserve lawful accounting work rather than relying on masking that destroys
-required business meaning.
+backing the statement adapter and PostgreSQL 18 concurrency, trigger, row-security and
+transaction semantics backing ADRs 0060/0062, the control recording-time authority
+record, and the lifecycle recording-time upgrade record. CSAP/SOC 2 are design and
+diligence targets, not certification claims. Real-person and institution data used for
+development/testing must be anonymized, while production PII protection must preserve
+lawful accounting work rather than relying on masking that destroys required business
+meaning.

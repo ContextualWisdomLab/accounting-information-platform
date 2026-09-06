@@ -121,7 +121,7 @@ factory/runner and provide the tenant-bound host boundary explicitly.
 `unittest` discovery also runs `tests/test_postgres_posting.py`, which needs a
 reachable PostgreSQL 18 instance and `ACCOUNTING_DATABASE_URL` (CI uses
 `postgresql://postgres:postgres@127.0.0.1:5432/accounting_test` and applies
-the checked-in migration chain through `database/migrations/0020_reconciliation_run_database_snapshot_authority.sql`). Persistence is still
+the checked-in migration chain through `database/migrations/0029_reconciliation_lifecycle_capability_privileges.sql`). Persistence is still
 local to this repository; it is not a Naruon or sibling checkout.
 
 Optional import smoke after the editable install above:
@@ -193,7 +193,7 @@ International Organization for Standardization. (2026). *ISO 20022-1:2026 financ
 
 International Organization for Standardization. (2022). *ISO/IEC/IEEE 42010:2022 software, systems and enterprise—Architecture description*. https://www.iso.org/standard/74393.html
 
-Internet Engineering Task Force. (2024). *Universally unique IDentifiers (UUIDs)* (RFC 9562). https://www.rfc-editor.org/rfc/rfc9562
+Internet Engineering Task Force. (2024). *Universally unique IDentifiers (UUIDs)* (RFC 9562). RFC Editor. https://www.rfc-editor.org/rfc/rfc9562
 
 PostgreSQL Global Development Group. (2026). *PostgreSQL 18.4 release notes*. https://www.postgresql.org/docs/release/18.4/
 

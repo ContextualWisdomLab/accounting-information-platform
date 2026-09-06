@@ -21,8 +21,11 @@ _RECORDED_AT = datetime(2026, 9, 1, 12, 1, tzinfo=timezone.utc)
 _COMMAND_HASH = "sha256:" + "a" * 64
 _TRANSITION_HASH = "sha256:" + "b" * 64
 _SNAPSHOT_HASH = "sha256:" + "c" * 64
+_RESOLUTION_EVIDENCE_HASH = "sha256:" + "d" * 64
+_RESOLUTION_COMMAND_HASH = "sha256:" + "e" * 64
 _STATEMENT_POPULATION_HASH = "sha256:" + "1" * 64
 _BOOK_POPULATION_HASH = "sha256:" + "2" * 64
+_SOURCE_PAYLOAD_HASH = "sha256:59fa80449a3024745d96995052b92bd20758624804cf6c5a9aa97308a6311b82"
 
 
 class _Rows:
@@ -50,6 +53,7 @@ class _Connection:
         self.existing_transition_key: str | None = None
         self.match_rows: list[tuple[object, ...]] = []
         self.exception_rows: list[tuple[object, ...]] = []
+        self.resolution_rows: list[tuple[object, ...]] = []
         self.run_command_hash: str | None = _COMMAND_HASH
         self.transition_document: tuple[object, ...] | None = (
             _TRANSITION_ID,
@@ -62,8 +66,11 @@ class _Connection:
             "reconciled",
             _STATEMENT_POPULATION_HASH,
             _BOOK_POPULATION_HASH,
+            _SOURCE_PAYLOAD_HASH,
         )
         self.executed: list[tuple[str, tuple[object, ...]]] = []
+        self.commit_count = 0
+        self.rollback_count = 0
 
     def execute(
         self, query: str, parameters: tuple[object, ...] = ()
@@ -71,6 +78,10 @@ class _Connection:
         """Return fixture rows by stable SQL landmarks."""
         normalized = " ".join(query.split())
         self.executed.append((normalized, parameters))
+        if normalized.startswith("SELECT pg_advisory_lock"):
+            return _Rows([(True,)])
+        if normalized.startswith("SELECT pg_advisory_unlock"):
+            return _Rows([(True,)])
         if normalized.startswith("SET TRANSACTION ISOLATION LEVEL"):
             return _Rows()
         if (
@@ -98,6 +109,11 @@ class _Connection:
             )
         if "FROM accounting_core.reconciliation_match AS reviewed_match" in normalized:
             return _Rows(self.match_rows)
+        if (
+            "FROM accounting_core.reconciliation_exception_resolution_command"
+            in normalized
+        ):
+            return _Rows(self.resolution_rows)
         if "FROM accounting_core.reconciliation_exception" in normalized:
             return _Rows(self.exception_rows)
         if (
@@ -124,6 +140,14 @@ class _Connection:
                 [] if self.transition_document is None else [self.transition_document]
             )
         raise AssertionError(f"unexpected lifecycle query: {normalized}")
+
+    def commit(self) -> None:
+        """Record an explicit transaction boundary used by the session-lock protocol."""
+        self.commit_count += 1
+
+    def rollback(self) -> None:
+        """Record an explicit rollback used by the session-lock protocol."""
+        self.rollback_count += 1
 
 
 class _Ledger:
@@ -224,6 +248,7 @@ class ReconciliationLifecycleTests(unittest.TestCase):
         self.assertRegex(str(result["reconciliation_snapshot_hash"]), r"^sha256:[0-9a-f]{64}$")
         self.assertEqual(result["statement_population_reference"], _STATEMENT_POPULATION_HASH)
         self.assertEqual(result["book_population_reference"], _BOOK_POPULATION_HASH)
+        self.assertEqual(result["source_payload_hash"], _SOURCE_PAYLOAD_HASH)
         self.assertFalse(result["replayed"])
         self.assertEqual(
             _Ledger.locks,
@@ -234,9 +259,34 @@ class ReconciliationLifecycleTests(unittest.TestCase):
         )
         self.bridge_mock.assert_called_once()
         sql = "\n".join(query for query, _parameters in _Ledger.connection.executed)
+        self.assertIn("SELECT pg_advisory_lock", sql)
         self.assertIn("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ", sql)
+        self.assertIn("SELECT pg_advisory_unlock", sql)
+        self.assertNotIn("SET TRANSACTION ISOLATION LEVEL READ COMMITTED", sql)
+        self.assertEqual(_Ledger.connection.commit_count, 3)
+        self.assertEqual(_Ledger.connection.rollback_count, 0)
         self.assertIn("INSERT INTO accounting_integration.outbox_event", sql)
         self.assertIn("UPDATE accounting_core.reconciliation_run", sql)
+
+    def test_resolved_exception_with_matching_command_can_finalize(self) -> None:
+        """Terminal exception state becomes authority only with its named command."""
+        _Ledger.connection.exception_rows = [
+            ("exception-a", "amount_mismatch", "resolved")
+        ]
+        _Ledger.connection.resolution_rows = [
+            (
+                "exception-a",
+                "resolved",
+                "urn:cwl:evidence:reconciliation-exception:exception-a",
+                _RESOLUTION_EVIDENCE_HASH,
+                _RESOLUTION_COMMAND_HASH,
+            )
+        ]
+
+        result = self._reconcile()
+
+        self.assertEqual(result["run_status_code"], "reconciled")
+        self.bridge_mock.assert_called_once()
 
     def test_exact_transition_replays_without_rebuilding_bridge(self) -> None:
         """An exact lifecycle key replays the durable transition receipt."""
@@ -245,22 +295,67 @@ class ReconciliationLifecycleTests(unittest.TestCase):
             "urn:cwl:principal:controller",
             "month_end_reconciliation",
             _EFFECTIVE_AT,
+            _SOURCE_PAYLOAD_HASH,
         )
         result = self._reconcile()
         self.assertTrue(result["replayed"])
         self.assertEqual(result["reconciliation_transition_command_hash"], _TRANSITION_HASH)
+        self.assertEqual(result["source_payload_hash"], _SOURCE_PAYLOAD_HASH)
         self.bridge_mock.assert_not_called()
 
     def test_reused_transition_key_rejects_each_changed_identity_field(self) -> None:
-        """Run, actor, purpose, or effective-time changes under one key conflict."""
+        """Run, actor, purpose, effective-time, or source changes under one key conflict."""
         cases = (
             (
-                (UUID("33333333-3333-3333-3333-333333333333"), "urn:cwl:principal:controller", "month_end_reconciliation", _EFFECTIVE_AT),
+                (
+                    UUID("33333333-3333-3333-3333-333333333333"),
+                    "urn:cwl:principal:controller",
+                    "month_end_reconciliation",
+                    _EFFECTIVE_AT,
+                    _SOURCE_PAYLOAD_HASH,
+                ),
                 "run",
             ),
-            ((_RUN_ID, "urn:cwl:principal:other", "month_end_reconciliation", _EFFECTIVE_AT), "actor"),
-            ((_RUN_ID, "urn:cwl:principal:controller", "other_purpose", _EFFECTIVE_AT), "purpose"),
-            ((_RUN_ID, "urn:cwl:principal:controller", "month_end_reconciliation", datetime(2026, 9, 1, 12, 2, tzinfo=timezone.utc)), "effective"),
+            (
+                (
+                    _RUN_ID,
+                    "urn:cwl:principal:other",
+                    "month_end_reconciliation",
+                    _EFFECTIVE_AT,
+                    _SOURCE_PAYLOAD_HASH,
+                ),
+                "actor",
+            ),
+            (
+                (
+                    _RUN_ID,
+                    "urn:cwl:principal:controller",
+                    "other_purpose",
+                    _EFFECTIVE_AT,
+                    _SOURCE_PAYLOAD_HASH,
+                ),
+                "purpose",
+            ),
+            (
+                (
+                    _RUN_ID,
+                    "urn:cwl:principal:controller",
+                    "month_end_reconciliation",
+                    datetime(2026, 9, 1, 12, 2, tzinfo=timezone.utc),
+                    _SOURCE_PAYLOAD_HASH,
+                ),
+                "effective",
+            ),
+            (
+                (
+                    _RUN_ID,
+                    "urn:cwl:principal:controller",
+                    "month_end_reconciliation",
+                    _EFFECTIVE_AT,
+                    "sha256:" + "9" * 64,
+                ),
+                "source",
+            ),
         )
         for prior, label in cases:
             with self.subTest(label=label):
@@ -325,6 +420,9 @@ class ReconciliationLifecycleTests(unittest.TestCase):
         ]
         with self.assertRaisesRegex(AccountingValidationError, "still open"):
             self._reconcile()
+        self.assertEqual(_Ledger.connection.rollback_count, 1)
+        sql = "\n".join(query for query, _parameters in _Ledger.connection.executed)
+        self.assertIn("SELECT pg_advisory_unlock", sql)
 
     def test_terminal_exception_without_resolution_command_blocks_reconciliation(self) -> None:
         """Mutable terminal status is not sufficient maker-checker authority."""
@@ -339,6 +437,23 @@ class ReconciliationLifecycleTests(unittest.TestCase):
                     "resolution-command evidence",
                 ):
                     self._reconcile()
+
+    def test_resolution_command_target_must_match_exception_status(self) -> None:
+        """A resolved row cannot borrow a supersession command as authority."""
+        _Ledger.connection.exception_rows = [
+            ("exception-a", "amount_mismatch", "resolved")
+        ]
+        _Ledger.connection.resolution_rows = [
+            (
+                "exception-a",
+                "superseded",
+                "urn:cwl:evidence:reconciliation-exception:exception-a",
+                _RESOLUTION_EVIDENCE_HASH,
+                _RESOLUTION_COMMAND_HASH,
+            )
+        ]
+        with self.assertRaisesRegex(AccountingValidationError, "matching durable"):
+            self._reconcile()
 
     def test_non_tying_bridge_is_actionable_validation_failure(self) -> None:
         """The lifecycle API converts exact-bridge failures to buyer-actionable validation."""
@@ -359,13 +474,14 @@ class ReconciliationLifecycleTests(unittest.TestCase):
             "urn:cwl:principal:controller",
             "month_end_reconciliation",
             _EFFECTIVE_AT,
+            _SOURCE_PAYLOAD_HASH,
         )
         _Ledger.connection.transition_document = None
         with self.assertRaisesRegex(AccountingValidationError, "evidence is missing"):
             self._reconcile()
 
     def test_payload_validation_fails_before_database_work(self) -> None:
-        """Shape, tenant, action, identifiers, and timestamps fail before a transaction."""
+        """Shape, tenant, action, identifiers, JSON values, and timestamps fail before SQL."""
         cases: tuple[tuple[object, str], ...] = (
             ([], "JSON object"),
             (_command(tenant_reference="urn:cwl:tenant:other"), "tenant_reference"),
@@ -376,6 +492,8 @@ class ReconciliationLifecycleTests(unittest.TestCase):
             (_command(purpose_code=""), "purpose_code"),
             (_command(reconciliation_run_id="not-a-uuid"), "UUID"),
             (_command(effective_at="2026-09-01 12:00:00"), "canonical UTC"),
+            (_command(request_context=("python", "tuple")), "only JSON values"),
+            (_command(request_context={1: "non-string-key"}), "string JSON object keys"),
         )
         for payload, message in cases:
             with self.subTest(message=message):
@@ -400,15 +518,32 @@ class ReconciliationLifecycleTests(unittest.TestCase):
             match_state=(("match-a", "approved", "approved", "sha256:" + "4" * 64),),
             exception_state=(),
         )
+        changed_resolution = lifecycle._transition_snapshot_hash(
+            run_id=_RUN_ID,
+            run_command_hash=_COMMAND_HASH,
+            bridge=_bridge(),
+            match_state=(),
+            exception_state=(("exception-a", "amount_mismatch", "resolved"),),
+            exception_resolution_state=(
+                (
+                    "exception-a",
+                    "resolved",
+                    "urn:cwl:evidence:reconciliation-exception:exception-a",
+                    _RESOLUTION_EVIDENCE_HASH,
+                    _RESOLUTION_COMMAND_HASH,
+                ),
+            ),
+        )
         self.assertRegex(baseline, r"^sha256:[0-9a-f]{64}$")
         self.assertNotEqual(baseline, changed)
+        self.assertNotEqual(baseline, changed_resolution)
 
 
 class ReconciliationLifecycleMigrationContractTests(unittest.TestCase):
-    """Keep database status authority and lifecycle serialization in migration 0019."""
+    """Keep database status and exception-resolution authority in forward migrations."""
 
     def test_migration_persists_transition_and_rejects_direct_reconciled_status(self) -> None:
-        """The unreleased migration carries immutable transition, lock, and status guards."""
+        """Migration 0019 carries immutable transition, lock, and status guards."""
         from pathlib import Path
 
         root = Path(__file__).resolve().parents[1]
@@ -421,6 +556,36 @@ class ReconciliationLifecycleMigrationContractTests(unittest.TestCase):
         self.assertIn("reconciliation_lifecycle_frozen", migration)
         self.assertIn("reconciliation_match_snapshot_hash", migration)
         self.assertIn("FORCE ROW LEVEL SECURITY", migration)
+
+    def test_exception_resolution_migration_requires_named_maker_checker_command(self) -> None:
+        """Migration 0020 replaces mutable exception status with durable command authority."""
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        migration = (
+            root / "database/migrations/0020_reconciliation_exception_resolution_command.sql"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "CREATE TABLE accounting_core.reconciliation_exception_resolution_command",
+            migration,
+        )
+        self.assertIn("reconciliation_exception_maker_checker_required", migration)
+        self.assertIn("reconciliation_exception_resolution_command_required", migration)
+        self.assertIn("reconciliation_exception_resolution_atomic_pair", migration)
+        self.assertIn("FORCE ROW LEVEL SECURITY", migration)
+
+    def test_lifecycle_source_payload_identity_is_forward_only_and_database_bound(self) -> None:
+        """Migration 0026 persists strict source identity without inventing legacy hashes."""
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        migration = (
+            root / "database/migrations/0026_reconciliation_lifecycle_source_payload_identity.sql"
+        ).read_text(encoding="utf-8")
+        self.assertIn("ADD COLUMN source_payload_hash text NOT NULL", migration)
+        self.assertIn("reconciliation_lifecycle_source_payload_preflight", migration)
+        self.assertIn("'source_payload_hash', NEW.source_payload_hash", migration)
+        self.assertIn("reconciliation_run_transition_command:v2|", migration)
 
 
 if __name__ == "__main__":
