@@ -228,11 +228,42 @@ jobs:
       - name: Run behavior and repository tests
         env:
           PYTHONPATH: src:.
-        run: python -m unittest discover -s tests -p 'test_*.py' -v
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          behavior_log="${RUNNER_TEMP}/accounting-behavior-tests-${EXPECTED_SHA}.log"
+          python -m unittest discover -s tests -p 'test_*.py' -v 2>&1 | tee "$behavior_log"
+      - name: Upload behavior-test evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: accounting-behavior-tests-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/accounting-behavior-tests-${{ github.event.pull_request.head.sha || github.sha }}.log
+          if-no-files-found: error
+          retention-days: 14
       - name: Run complete production branch coverage
         env:
           PYTHONPATH: src:.
         run: python -m coverage run --branch -m unittest discover -s tests -p 'test_*.py'
+      - name: Publish coverage diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m coverage report --fail-under=0 --show-missing | tee coverage.txt
+          python -m coverage json -o coverage.json
+          python -m coverage xml -o coverage.xml
+      - name: Upload coverage diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: accounting-coverage-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            coverage.txt
+            coverage.json
+            coverage.xml
+          if-no-files-found: error
+          retention-days: 14
       - name: Enforce complete coverage and publish denominator evidence
         shell: bash
         run: |

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import unittest
 import uuid
 from datetime import datetime, timezone
@@ -11,6 +12,7 @@ from urllib.parse import quote
 
 import psycopg
 
+import accounting_information_platform.bank_statement as bank_statement
 from accounting_information_platform import (
     AccountingValidationError,
     CAMT053_MESSAGE_DEFINITION,
@@ -28,6 +30,45 @@ from tests import test_postgres_posting as posting
 
 
 VALID_FROM = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+def _pre_0018_normalized_hash(statement: object) -> str:
+    """Recreate the normalized hash shape emitted before balance evidence rows."""
+    payload = bank_statement._normalized_payload(statement)
+    balances = payload.pop("balances")
+    for field_name, balance_code in (
+        ("opening_balance_hash", "OPBD"),
+        ("closing_balance_hash", "CLBD"),
+    ):
+        balance = next(
+            (
+                item
+                for item in balances
+                if item["balance_type_code"] == balance_code
+                and item["balance_type_source_code"] == "cd"
+            ),
+            None,
+        )
+        payload[field_name] = (
+            None
+            if balance is None
+            else "sha256:"
+            + hashlib.sha256(
+                json.dumps(
+                    {
+                        "code": balance["balance_type_code"],
+                        "amount": balance["balance_amount"],
+                        "currency": balance["balance_currency_code"],
+                        "credit_debit": balance["credit_debit_code"],
+                    },
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode("utf-8")
+            ).hexdigest()
+        )
+    return "sha256:" + hashlib.sha256(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).hexdigest()
 
 
 class BankStatementRegistryTests(unittest.TestCase):
@@ -77,6 +118,33 @@ class BankStatementRegistryTests(unittest.TestCase):
         self.assertEqual(document["entry_count"], 2)
         self.assertEqual(document["credit_total_amount"], "25000")
         self.assertEqual(document["debit_total_amount"], "10000")
+        self.assertEqual(
+            document["balances"],
+            [
+                {
+                    "balance_sequence_number": 1,
+                    "balance_type_code": "OPBD",
+                    "balance_type_source_code": "cd",
+                    "balance_amount": "100000",
+                    "balance_currency_code": "KRW",
+                    "credit_debit_code": "CRDT",
+                    "balance_effective_at": "2026-08-23T00:00:00Z",
+                    "source_locator_path": "Document/BkToCstmrStmt/Stmt/Bal[1]",
+                    "source_balance_hash": document["balances"][0]["source_balance_hash"],
+                },
+                {
+                    "balance_sequence_number": 2,
+                    "balance_type_code": "CLBD",
+                    "balance_type_source_code": "cd",
+                    "balance_amount": "115000",
+                    "balance_currency_code": "KRW",
+                    "credit_debit_code": "CRDT",
+                    "balance_effective_at": "2026-08-24T00:00:00Z",
+                    "source_locator_path": "Document/BkToCstmrStmt/Stmt/Bal[2]",
+                    "source_balance_hash": document["balances"][1]["source_balance_hash"],
+                },
+            ],
+        )
         self.assertTrue(document["artifact_store_reference"].startswith("memory:"))
         entries = lookup_bank_statement_entries(
             posting.DATABASE_URL,
@@ -101,6 +169,169 @@ class BankStatementRegistryTests(unittest.TestCase):
         self.assertEqual(first["bank_statement_record_id"], third["bank_statement_record_id"])
         self.assertEqual(self._count("accounting_integration.bank_statement_record"), 1)
         self.assertEqual(self._count("accounting_integration.bank_statement_entry"), 2)
+        self.assertEqual(self._count("accounting_integration.bank_statement_balance"), 2)
+
+    def test_legacy_normalized_hash_replays_without_synthesizing_balance_rows(self) -> None:
+        """Pre-0018 normalized hashes remain exact-replay compatible after upgrade."""
+        payload = load_canonical_statement_fixture()
+        first = self._ingest(payload, key="legacy-normalized-replay")
+        normalized = bank_statement.parse_bank_statement_payload(
+            payload, CAMT053_MESSAGE_DEFINITION
+        )
+        legacy_hash = _pre_0018_normalized_hash(normalized)
+
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            connection.execute(
+                "ALTER TABLE accounting_integration.bank_statement_record "
+                "DISABLE TRIGGER bank_statement_record_immutable_guard"
+            )
+            connection.execute(
+                "ALTER TABLE accounting_integration.bank_statement_balance "
+                "DISABLE TRIGGER bank_statement_balance_immutable_guard"
+            )
+            connection.execute(
+                "DELETE FROM accounting_integration.bank_statement_balance "
+                "WHERE bank_statement_record_id = %s",
+                (first["bank_statement_record_id"],),
+            )
+            connection.execute(
+                "UPDATE accounting_integration.bank_statement_record "
+                "SET normalized_payload_hash = %s "
+                "WHERE bank_statement_record_id = %s",
+                (legacy_hash, first["bank_statement_record_id"]),
+            )
+            connection.execute(
+                "ALTER TABLE accounting_integration.bank_statement_balance "
+                "ENABLE TRIGGER bank_statement_balance_immutable_guard"
+            )
+            connection.execute(
+                "ALTER TABLE accounting_integration.bank_statement_record "
+                "ENABLE TRIGGER bank_statement_record_immutable_guard"
+            )
+            connection.commit()
+
+        same_key = self._ingest(payload, key="legacy-normalized-replay")
+        different_key = self._ingest(payload, key="legacy-normalized-replay-other")
+        self.assertTrue(same_key["replayed"])
+        self.assertTrue(different_key["replayed"])
+        self.assertEqual(same_key["balances"], [])
+        self.assertEqual(different_key["balances"], [])
+
+    def test_legacy_normalized_hash_replays_through_statement_identity(self) -> None:
+        """Legacy identity replays accept unchanged evidence without inventing balances."""
+        original = load_canonical_statement_fixture()
+        first = self._ingest(original, key="legacy-identity-replay")
+        normalized = bank_statement.parse_bank_statement_payload(
+            original, CAMT053_MESSAGE_DEFINITION
+        )
+        legacy_hash = _pre_0018_normalized_hash(normalized)
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            connection.execute(
+                "ALTER TABLE accounting_integration.bank_statement_record "
+                "DISABLE TRIGGER bank_statement_record_immutable_guard"
+            )
+            connection.execute(
+                "ALTER TABLE accounting_integration.bank_statement_balance "
+                "DISABLE TRIGGER bank_statement_balance_immutable_guard"
+            )
+            connection.execute(
+                "DELETE FROM accounting_integration.bank_statement_balance "
+                "WHERE bank_statement_record_id = %s",
+                (first["bank_statement_record_id"],),
+            )
+            connection.execute(
+                "UPDATE accounting_integration.bank_statement_record "
+                "SET normalized_payload_hash = %s "
+                "WHERE bank_statement_record_id = %s",
+                (legacy_hash, first["bank_statement_record_id"]),
+            )
+            connection.execute(
+                "ALTER TABLE accounting_integration.bank_statement_balance "
+                "ENABLE TRIGGER bank_statement_balance_immutable_guard"
+            )
+            connection.execute(
+                "ALTER TABLE accounting_integration.bank_statement_record "
+                "ENABLE TRIGGER bank_statement_record_immutable_guard"
+            )
+            connection.commit()
+
+        changed_bytes = original.replace(b"  <Ntry>", b"   <Ntry>", 1)
+        replayed = self._ingest(changed_bytes, key="legacy-identity-replay-other")
+        self.assertTrue(replayed["replayed"])
+        self.assertEqual(replayed["bank_statement_record_id"], first["bank_statement_record_id"])
+        self.assertEqual(replayed["balances"], [])
+
+    def test_legacy_identity_rejects_changed_additional_balance_evidence(self) -> None:
+        """Legacy identity replay cannot discard an added balance fact."""
+        original = load_canonical_statement_fixture()
+        first = self._ingest(original, key="legacy-balance-change")
+        normalized = bank_statement.parse_bank_statement_payload(
+            original, CAMT053_MESSAGE_DEFINITION
+        )
+        legacy_hash = _pre_0018_normalized_hash(normalized)
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            connection.execute(
+                "ALTER TABLE accounting_integration.bank_statement_record "
+                "DISABLE TRIGGER bank_statement_record_immutable_guard"
+            )
+            connection.execute(
+                "ALTER TABLE accounting_integration.bank_statement_balance "
+                "DISABLE TRIGGER bank_statement_balance_immutable_guard"
+            )
+            connection.execute(
+                "DELETE FROM accounting_integration.bank_statement_balance "
+                "WHERE bank_statement_record_id = %s",
+                (first["bank_statement_record_id"],),
+            )
+            connection.execute(
+                "UPDATE accounting_integration.bank_statement_record "
+                "SET normalized_payload_hash = %s "
+                "WHERE bank_statement_record_id = %s",
+                (legacy_hash, first["bank_statement_record_id"]),
+            )
+            connection.execute(
+                "ALTER TABLE accounting_integration.bank_statement_balance "
+                "ENABLE TRIGGER bank_statement_balance_immutable_guard"
+            )
+            connection.execute(
+                "ALTER TABLE accounting_integration.bank_statement_record "
+                "ENABLE TRIGGER bank_statement_record_immutable_guard"
+            )
+            connection.commit()
+
+        start = original.index(b"      <Bal>\n")
+        end = original.index(b"      </Bal>\n", start) + len(b"      </Bal>\n")
+        balance_block = original[start:end]
+        changed_bytes = original.replace(
+            b"      <Ntry>\n", balance_block + b"      <Ntry>\n", 1
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "different entry evidence"):
+            self._ingest(changed_bytes, key="legacy-balance-change-other")
+        self.assertEqual(self._count("accounting_integration.bank_statement_record"), 1)
+        with mock.patch.object(self.store, "get_artifact", return_value=b"tampered"):
+            with self.assertRaisesRegex(AccountingValidationError, "different entry evidence"):
+                self._ingest(changed_bytes, key="legacy-balance-change-hash")
+        with mock.patch.object(
+            self.store,
+            "get_artifact",
+            side_effect=bank_statement.ArtifactStoreError("artifact unavailable"),
+        ):
+            with self.assertRaisesRegex(AccountingValidationError, "different entry evidence"):
+                self._ingest(changed_bytes, key="legacy-balance-change-missing")
+
+    def test_legacy_identity_rejects_unparseable_retained_artifact(self) -> None:
+        """A retained artifact that cannot be parsed is not replay evidence."""
+        statement = bank_statement.parse_bank_statement_payload(
+            load_canonical_statement_fixture(), CAMT053_MESSAGE_DEFINITION
+        )
+        invalid = b"<broken"
+        invalid_hash = "sha256:" + hashlib.sha256(invalid).hexdigest()
+        reference = self.store.put_artifact(invalid_hash, invalid)
+        self.assertFalse(
+            bank_statement._legacy_statement_matches_artifact(
+                statement, invalid_hash, reference, self.store
+            )
+        )
 
     def test_same_key_changed_bytes_writes_nothing(self) -> None:
         """Same idempotency key with changed bytes conflicts and writes nothing."""
@@ -121,6 +352,16 @@ class BankStatementRegistryTests(unittest.TestCase):
             self._ingest(changed, key="second-identity")
         self.assertEqual(self._count("accounting_integration.bank_statement_record"), 1)
 
+    def test_balance_currency_mismatch_fails_closed_before_persist(self) -> None:
+        """A balance outside the registered account currency cannot enter evidence."""
+        payload = load_canonical_statement_fixture().replace(
+            b'<Amt Ccy="KRW">100000.00</Amt>', b'<Amt Ccy="USD">100000.00</Amt>', 1
+        )
+        with self.assertRaisesRegex(AccountingValidationError, "statement balance"):
+            self._ingest(payload, key="balance-currency-mismatch")
+        self.assertEqual(self._count("accounting_integration.bank_statement_record"), 0)
+        self.assertEqual(self._count("accounting_integration.bank_statement_balance"), 0)
+
     def test_parser_failures_write_no_partial_population(self) -> None:
         """Revision, DTD, bound, and decimal failures persist zero rows."""
         original = load_canonical_statement_fixture().decode("utf-8")
@@ -138,6 +379,7 @@ class BankStatementRegistryTests(unittest.TestCase):
                     self._ingest(payload, key=f"fail-{index}")
         self.assertEqual(self._count("accounting_integration.bank_statement_record"), 0)
         self.assertEqual(self._count("accounting_integration.bank_statement_entry"), 0)
+        self.assertEqual(self._count("accounting_integration.bank_statement_balance"), 0)
         self.assertEqual(self._count("accounting_integration.bank_statement_artifact"), 0)
 
     def test_debit_credit_survives_persist_read_round_trip(self) -> None:
@@ -150,6 +392,9 @@ class BankStatementRegistryTests(unittest.TestCase):
         )
         self.assertEqual(loaded["credit_total_amount"], "25000")
         self.assertEqual(loaded["debit_total_amount"], "10000")
+        self.assertEqual(
+            loaded["balances"][0]["balance_effective_at"], "2026-08-23T00:00:00Z"
+        )
         listed = lookup_bank_statements(
             posting.DATABASE_URL,
             self.case.policy.tenant_reference,
@@ -174,6 +419,16 @@ class BankStatementRegistryTests(unittest.TestCase):
             cursor=str(page["next_cursor"]),
         )
         self.assertEqual(rest["bank_statement_entries"][0]["credit_debit_code"], "DBIT")
+
+    def test_missing_balance_effective_date_round_trips_as_unavailable(self) -> None:
+        """Unavailable balance dates remain explicit null evidence after persistence."""
+        payload = load_canonical_statement_fixture().replace(
+            b"        <Dt>\n          <Dt>2026-08-23</Dt>\n        </Dt>\n",
+            b"",
+            1,
+        )
+        document = self._ingest(payload, key="balance-date-missing")
+        self.assertIsNone(document["balances"][0]["balance_effective_at"])
 
     def test_cross_tenant_assignment_and_read_fail(self) -> None:
         """Another tenant cannot assign, read, or overwrite this bank account."""
@@ -267,7 +522,7 @@ class BankStatementRegistryTests(unittest.TestCase):
                     "accounting_book_reference": self.case.policy.accounting_book_reference,
                     "chart_account_code": "119900",
                     "valid_from": "2026-02-01T00:00:00Z",
-                    "assignment_idempotency_key": f"assign-x1-" + uuid.uuid4().hex,
+                    "assignment_idempotency_key": "assign-x1-" + uuid.uuid4().hex,
                 },
                 posting.DATABASE_URL,
                 self.case.policy.tenant_reference,
@@ -543,6 +798,21 @@ class BankStatementRegistryTests(unittest.TestCase):
                 )
                 connection.commit()
 
+    def test_balance_rows_are_immutable(self) -> None:
+        """UPDATE or DELETE of persisted numeric balance evidence fails at PostgreSQL."""
+        document = self._ingest(load_canonical_statement_fixture())
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            with self.assertRaises(psycopg.Error):
+                connection.execute(
+                    """
+                    UPDATE accounting_integration.bank_statement_balance
+                    SET balance_amount = 1
+                    WHERE bank_statement_record_id = %s
+                    """,
+                    (document["bank_statement_record_id"],),
+                )
+                connection.commit()
+
     def test_http_accept_list_get_and_conflict(self) -> None:
         """HTTP accept, list, get, replay, and tenant mismatch use the stdlib surface."""
         server = self.case._start_http_server()
@@ -602,6 +872,23 @@ class BankStatementRegistryTests(unittest.TestCase):
         get_assignment, _ = self.case._http_json("GET", "/bank-account-assignments", None)
         self.assertEqual(get_assignment, 405)
 
+    def test_http_rejects_balance_storage_overflow_as_client_error(self) -> None:
+        """An oversized balance is a validation error, not a persistence 500."""
+        server = self.case._start_http_server()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        payload = load_canonical_statement_fixture().replace(
+            b"100000.00", b"1" + b"0" * 32, 1
+        )
+        status, body = self.case._http_json(
+            "POST",
+            "/bank-statements",
+            self._command(payload, key="oversized-balance"),
+        )
+        self.assertEqual(status, 422)
+        self.assertIn("storage bound", str(body))
+        self.assertEqual(self._count("accounting_integration.bank_statement_record"), 0)
+
     def test_command_validation_and_list_cursors(self) -> None:
         """Missing fields, hash mismatch, and bad cursors fail before persistence."""
         with self.assertRaisesRegex(AccountingValidationError, "JSON object"):
@@ -647,7 +934,7 @@ class BankStatementRegistryTests(unittest.TestCase):
                     "legal_entity_reference": self.case.policy.legal_entity_reference,
                     "accounting_book_reference": self.case.policy.accounting_book_reference,
                     "valid_from": "2026-03-01T00:00:00Z",
-                    "assignment_idempotency_key": f"assign-x2-" + uuid.uuid4().hex,
+                    "assignment_idempotency_key": "assign-x2-" + uuid.uuid4().hex,
                 },
                 posting.DATABASE_URL,
                 self.case.policy.tenant_reference,
@@ -661,7 +948,7 @@ class BankStatementRegistryTests(unittest.TestCase):
                     "accounting_book_reference": "urn:cwl:accounting_book:missing",
                     "chart_account_code": "110200",
                     "valid_from": "2026-03-01T00:00:00Z",
-                    "assignment_idempotency_key": f"assign-x3-" + uuid.uuid4().hex,
+                    "assignment_idempotency_key": "assign-x3-" + uuid.uuid4().hex,
                 },
                 posting.DATABASE_URL,
                 self.case.policy.tenant_reference,
@@ -893,7 +1180,7 @@ class BankStatementRegistryTests(unittest.TestCase):
                         "accounting_book_reference": self.case.policy.accounting_book_reference,
                         "chart_account_code": "110200",
                         "valid_from": "2026-04-01T00:00:00Z",
-                    "assignment_idempotency_key": f"assign-x4-" + uuid.uuid4().hex,
+                    "assignment_idempotency_key": "assign-x4-" + uuid.uuid4().hex,
                     },
                     posting.DATABASE_URL,
                     self.case.policy.tenant_reference,

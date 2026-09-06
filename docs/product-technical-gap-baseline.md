@@ -1,16 +1,15 @@
 # Product and technical gap baseline
 
-**Evidence refresh:** 2026-08-27 (Asia/Seoul)
+**Evidence refresh:** 2026-09-07 (Asia/Seoul)
 
 This file is the durable buyer-visible gap queue for `accounting-information-platform`.
-It records authority, dependency order, acceptance evidence, and product gaps that
-remain meaningful after an individual commit or workflow run changes. **Live
-PR/check evidence is intentionally not duplicated here**: refetch every open pull
-request, issue, the live `develop`/`main` branch state, formal reviews, review
-threads, and exact-head workflow jobs before making any merge, release, or
-readiness decision. A remembered head, workflow conclusion, local run,
-predecessor review, or status-only signal is never a substitute for that fresh
-evidence.
+It records product authority, dependency order, architectural boundaries, acceptance
+evidence, and gaps that remain meaningful after an individual commit or workflow run
+changes. **Live PR/check evidence is intentionally not duplicated here**: refetch every
+open pull request, issue, the live `develop`/`main` branch state, formal reviews, review
+threads, rulesets, and exact-head workflow jobs before making any merge, release, or
+readiness decision. A remembered head, queued workflow, predecessor review, generated
+repair commit, or status-only signal is never a substitute for that fresh evidence.
 
 ## Durable product boundary
 
@@ -19,119 +18,160 @@ commercial and operational systems. It owns legal entities, accounting books, ch
 accounts and mappings, fiscal periods, authoritative balanced journals, reversal
 lineage, close, trial balance, statutory/management projections, posting receipts,
 accounting transactional-outbox evidence, and accepted immutable bank-statement
-evidence with its normalized entries.
+evidence with normalized entries and exact numeric balance facts.
 
 Metering/billing remains authoritative for usage, pricing, invoice intent, payment,
 refund, dispute, provider-settlement, and other commercial evidence. It may publish
-versioned accounting proposals through the agreed contract, but it may not write
+versioned accounting proposals through an agreed contract, but it may not write
 accounting tables directly, select final chart-account identifiers, or claim that a
 proposal is a statutory posting.
 
 The current foundation is backend-first: Python domain/reference logic, PostgreSQL
 persistence and database-owned invariants, a bounded stdlib HTTP surface, versioned
-JSON contracts, and a durable outbox. The accounting posting foundation and the
-immutable `camt.053.001.14` bank-statement evidence registry are integrated protected
-`develop` facts. The platform does not yet reconcile statements to journals,
-transmit HomeTax/NTS filings, enforce purpose-bound application authorization, or
-provide a controller UI. Those omissions are explicit product scope, not implied
-successes.
+JSON contracts, and a durable outbox. Mathematical/statistical/data-science core
+computation is not owned by this accounting bounded context; if such computation is
+introduced, the ecosystem Rust-core rule applies at the owning boundary rather than
+silently embedding a Python numerical engine here.
+
+The accounting posting foundation and immutable `camt.053.001.14` bank-statement
+evidence registry are protected-`develop` facts. The current reconciliation integration
+candidate contains database-owned candidate/match/allocation conservation, durable
+human approval snapshots, run command provenance, and close-package hardening, but it
+is **not** release authority until integrated on protected `develop` after one unchanged
+head satisfies every applicable gate. It does not transmit HomeTax/NTS filings, enforce
+purpose-bound application authorization, or provide a controller UI. Those omissions
+are explicit product scope, not implied successes.
+
+Conservation and approval persistence from migrations `0015` through `0017` are current
+integration-tree facts. Candidate/match allocation conservation is [delivered in current
+tree; migration 0015], while migrations 0016 and 0017 retain immutable approval evidence
+and lock-order controls. These controls are not release authority: close-package
+provenance remains open until database-owned statement/book populations, the exact
+bridge, and the lawful reconciliation lifecycle transition are integrated and green on
+one protected-head lineage.
+
+## Current DDD and context-map baseline
+
+Core subdomain: **Accounting Record & Close**. Supporting subdomains include **Bank
+Statement Evidence**, **Reconciliation Review**, **Reporting Projection**, and
+**Accounting Operations**. Identity is supplied by the ecosystem IdP boundary; billing,
+enterprise-architecture, retrieval, and orchestration products are foreign contexts and
+must enter through versioned APIs/events or anti-corruption layers. Shared kernels stay
+minimal and contain contracts rather than mutable implementation.
+
+```mermaid
+flowchart LR
+  Billing[Commercial / Billing Context] -->|versioned accounting proposal| ACL[Accounting ACL]
+  Bank[Bank / ISO 20022 Evidence] --> Registry[Bank Statement Evidence]
+  Registry --> Reconcile[Reconciliation Review]
+  ACL --> Ledger[Accounting Record & Ledger]
+  Ledger --> Reconcile
+  Reconcile --> Close[Period Close Evidence]
+  Ledger --> Report[Reporting Projection]
+  Close --> Report
+  Identity[Keyverse / Identity Context] -->|tenant and principal identity| Ledger
+  Identity -->|tenant and principal identity| Reconcile
+  EA[Enterprise Architecture Context] <-->|architecture/change evidence only| ACL
+```
+
+Minimum aggregate boundaries remain small: journal/posting, reconciliation run/review,
+period close, and statement acceptance do not become one transaction aggregate. Bank
+statement facts never gain posting authority. A reconciliation package is evidence for
+an authorized close decision; it is not itself a journal, approval principal, or period
+state transition.
 
 ## Open work inventory
 
-| Item | Durable role | State expectation before it can close |
-| --- | --- | --- |
-| Accounting posting foundation | Dependency root for every later slice | Integrated into protected `develop`; post-integration signed provenance/SBOM attestations must stay green on the integrated head before any release claim |
-| Immutable bank-statement evidence registry | First buyer-visible reconciliation input; implements the statement-evidence issue | Integrated into protected `develop`; exact replay, changed-hash conflict, parser fail-closed behavior, tenant isolation, and assignment command identity remain protected-branch invariants |
-| Documentation successor | Customer/operator README plus ADR enrichment rebuilt from the integrated foundation | Reconstructed from the exact integrated tree after the dependency roots land; stale ancestry must not merge |
-| Deterministic reconciliation and book-to-bank bridge | Second bounded reconciliation slice | Delivered on protected `develop`: deterministic proposal engine, exact bridge with finite-`Decimal` boundary, immutable-scope close-review projection, and the durable `reconciliation_run`/`reconciliation_exception`/`reconciliation_evidence` substrate with forced tenant RLS and immutable run scope |
-| Bank-reconciliation buyer slice | Close-out of the reconciliation vertical | Closed only after candidate/match allocation conservation, exception/approval workflow, and close-package provenance are integrated on top of the delivered substrate |
-| Purpose-bound accounting authorization | Least-privilege operation authority | Versioned permission model with fail-closed decisions and immutable audit evidence |
-| Branch/release governance | Integration and release control plane | Protected `develop`/`main` effective policy including repository-owned exact-head accounting CI, independent reviews, and no normal force-push/deletion/bypass path |
+| Item | Durable role | Current state | State expectation before it can close |
+| --- | --- | --- | --- |
+| Accounting posting foundation | Dependency root for every later slice | Integrated | Post-integration signed provenance/SBOM attestations remain green on the integrated head before any release claim |
+| Immutable bank-statement evidence registry | First buyer-visible reconciliation input | Integrated | Exact replay, changed-hash conflict, parser fail-closed behavior, tenant isolation, canonical timestamp handling, and assignment command identity remain protected-branch invariants |
+| Deterministic reconciliation and exact book-to-bank bridge | Deterministic evidence interpretation | Integrated foundation plus current hardening candidate | Exact Decimal equations, explicit abstention, stable-source conservation, and no automatic posting remain invariant |
+| Durable reconciliation review evidence | Candidate/match/allocation + approval snapshot + run command provenance | Present in current integration candidate | Current-head PostgreSQL tests prove RLS, graph connectivity, conservation, snapshot binding, lock order, source provenance, and immutable reviewed evidence |
+| Database-owned close projection | Authority-bearing statement/book populations and monetary bridge | **Open P0** | Derive statement balances/entries, assigned-book cash journal population, current approved allocations, exact population digests, and every bridge component from one PostgreSQL `REPEATABLE READ` snapshot; caller population/balance substitution must fail |
+| Reconciliation lifecycle command | Lawful transition from `evaluating` to `reconciled` | **Open P0** | Tenant-scoped, idempotent, evidence-derived transition command/API with database-enforced legal edges; no direct SQL status rewrite is an owner-control path |
+| Historical timing-difference evidence | Carry-forward/outstanding treatment across periods | Open after current-period authority | Durable, policy-traceable representation; never fabricate an opening difference from caller-shaped projection data |
+| Purpose-bound accounting authorization | Least-privilege operation authority | Open | Versioned permission model with fail-closed decisions and immutable allow/deny evidence |
+| Controller close/reconciliation UX | Buyer-facing workflow | Open | Figma source of truth, design tokens, Storybook scene/edge inventory, accessibility/i18n, screenshot review, and API-backed actions only after the accounting authority path is stable |
+| Branch/release governance | Integration and release control plane | In progress across repository and central `.github` | Protected `develop`/`main`, exact-head required checks, independent review, no force-push/deletion/bypass path, reliable central reviewer execution, and post-merge attestations |
 
-Issue numbering belongs to live tracker state; this table records durable roles so
-that renumbering cannot silently drop a commitment.
+Issue and PR numbering belongs to live tracker state; this table records durable roles so
+renumbering or restacking cannot silently drop a commitment.
 
-## Dependency-root order
+## Current dependency-root order
 
-1. **Accounting posting foundation.** Integrated into protected `develop` after
-   all exact-head gates — repository CI, SAST/security, dependency evidence,
-   CodeRabbit current-head status, and Strix — passed together on one unchanged
-   head. Post-integration signed provenance/SBOM attestations run on the
-   integrated-head push before any release/tag claim.
-2. **Immutable bank-statement evidence registry.** Integrated into protected
-   `develop`; preserve its exact replay, changed-hash conflict, parser fail-closed,
-   tenant-isolation, assignment-command identity, direction-aware counterparty,
-   and currency-scope invariants on every later integrated head.
-3. **Documentation successor rebuild.** Its unique documentation value must be
-   reconstructed and revalidated from the exact integrated foundation rather than
-   merging stale ancestry or transferring predecessor checks/reviews.
-4. **Deterministic reconciliation and exact book-to-bank bridge.** Build on the
-   integrated registry; deterministic evidence rules and explicit abstention
-   precede any probabilistic/LLM assistance. Split/aggregate matches conserve
-   exact amounts and statement lines never post journals automatically. The exact
-   bridge is integrated protected `develop` fact including its runtime
-   finite-`Decimal` monetary-domain boundary (binary float, `NaN`, and infinities
-   fail closed before bridge arithmetic; finite signed balances and movements
-   remain valid because populations may be signed; ADR 0054).
-5. **Bank-reconciliation buyer-slice close-in.** Close only after candidate/match
-   allocation conservation, exception/approval workflow, exact bridge, close
-   evidence, and provenance are integrated on top of the delivered substrate.
-   Delivered on `develop`: read-only close-review projection (exact
-   bank/book/reconciled/outstanding/unexplained values, immutable run and
-   population provenance, unresolved statement-entry references, preceding-run
-   deltas scoped to the same accounting scope, JSON/CSV decimal-string exports,
-   and evidence-eligibility-only `suitable_for_period_close_review`) plus the
-   durable `reconciliation_run`/`reconciliation_exception`/
-   `reconciliation_evidence` rows with forced tenant RLS and the immutable
-   evaluated-run scope guard. Open: many-to-many exact allocation conservation,
-   candidate/match persistence, and reconciliation approval with close-package
-   provenance.
-6. **Purpose-bound accounting authorization.** Keep tenant identity separate from
-   operation authority for posting, reversal, close, tax, outbox, audit, and read
-   permissions.
+1. **Preserve protected accounting foundations.** Posting and immutable statement
+   acceptance stay stronger than application intent and remain the base for every
+   successor.
+2. **Finish database-owned close projection authority.** The active dependency-root
+   candidate already has RED contracts for caller-owned population/bridge evidence and
+   for database consistency. The production implementation must be committed directly
+   to the PR head; self-modifying/source-fix workflows are not acceptable evidence and
+   must not remain in the merge tree. Read run, approvals, exceptions, statement facts,
+   cash-journal facts, and allocations in one `REPEATABLE READ` transaction. Cash
+   journal selection must prove that the journal's `accounting_book_id` is the book that
+   owns the assigned cash `chart_account` rather than trusting tenant + chart-account id
+   alone.
+3. **Add the evidence-backed `reconciled` transition.** `accept_reconciliation_run()`
+   opens an `evaluating` run. A supported transition may be implemented only after step
+   2 is authoritative, otherwise the lifecycle command could bless fabricated
+   populations or balances. Legal edges, exact command identity, current approval and
+   exception populations, and idempotent concurrency behavior belong in both DB guards
+   and API tests.
+4. **Revalidate and integrate the dependency root.** One unchanged normalized head must
+   pass real PostgreSQL behavior, 100% owned statement/branch coverage and denominator
+   checks, repository/public-docstring contracts, SAST/security/dependency review,
+   reproducible package/SBOM/provenance, current-head reviews, and protection rules.
+5. **Restack downstream reconciliation/verification work.** Rebuild successors from the
+   integrated protected head; do not transfer predecessor checks or consume mutable
+   open-PR implementation bytes across repositories.
+6. **Build buyer workflow and authorization.** Purpose-bound authority precedes a
+   production controller UI. The UI then exposes next actions, not internal service or
+   repository boundaries.
 
-Repository-governance work is an integration/release prerequisite running across
-all of the above: the protected branch policy must enforce the intended review and
-exact-head gates rather than leaving merge safety to convention alone.
+Central reviewer reliability is a causal ecosystem dependency, not a reason to weaken
+accounting gates. The Strix model-preflight zero-timeout defect has been repaired in the
+central `.github` owner; runner/reviewer queue waits remain non-blocking and work moves
+to another safe lane while evidence is pending.
 
 ## Buyer-visible gaps and exit evidence
 
 | Priority | Gap | Buyer impact | Required evidence before closing |
 | --- | --- | --- | --- |
-| P0 | Repository governance does not yet enforce the intended merge/release policy everywhere | A technically green candidate could be integrated without durable control-plane enforcement, and `main` remains outside release-grade protection | Protected `develop`/`main` policy with required accounting CI/security/dependency gates, independent review, thread resolution, no force-push/deletion path, and fresh effective-policy evidence from branch and ruleset surfaces together |
-| P0 | Database authority must remain stronger than application intent on the integrated head | Direct SQL must never rewrite balances, tenant scope, finalized facts, or closed periods | Real PostgreSQL runtime tests for deferred balance, append-only/finalization guards, forced RLS with a restricted runtime login, DB-owned tenant binding, temporal reversal rules, and purpose-limited close authority |
-| P0 | Stateful commands require exact replay identity and immutable source evidence | Retries must not duplicate or mutate posting, reversal, close, tax, or statement-acceptance evidence | Tenant-scoped command keys, immutable source hashes/references, exact replay, changed-evidence conflict, and atomic command/outbox persistence proven in PostgreSQL |
-| P1 | Deterministic reconciliation and candidate/match allocation are partially delivered | Cash close can now explain differences and safely abstain, but approved candidates with exact split/aggregate conservation are not yet persistent across runs | Exact split/aggregate conservation with many-to-many allocation rows, temporal cutoff, concurrency safety, exception/approval workflow, provenance, and bridge equations from bank evidence to posted cash journals. Delivered so far: deterministic proposal engine, finite-Decimal bridge, immutable-scope close-review projection, and the durable run/exception/evidence substrate on protected `develop` |
-| P1 | Close-review projection integration is in flight | Controllers cannot yet read an exact, exportable close-review projection from one integrated head | The read-only projection and its authority/export contracts are integrated; it cannot approve or post. Outstanding: close-review opened only from integrated projection and its restacked successors |
-| P1 | Purpose-bound authorization is absent | Tenant authentication alone is too coarse for accounting powers | Versioned operation-to-permission mapping, host identity adapter boundary, fail-closed authorization tests, immutable allow/deny audit evidence, and no caller/model-controlled promotion |
-| P1 | Production operability and release proof remain incomplete | An operator cannot yet deploy, observe, back up, and recover the service with release-grade evidence | Supported deployment boundary, migration/rollback rehearsal, outbox-drain ownership, metrics/alerts, backup/restore exercise, integrated-head signed attestations, release version, artifact/source hashes, and recovery runbook evidence |
-| P2 | No frontend/design-system surface exists | Controllers have no visual close/reconciliation workflow | Introduce Figma source of truth, reusable design tokens, Storybook inventory with scene/edge-case event definitions, exact-value tables/exports, and browser accessibility tests only when a UI is actually added |
+| P0 | Authority-bearing close packages still require database-derived populations and bridge amounts | A genuine run/approval chain must not be wrapped around invented population references, digests, or balanced amounts | Real PostgreSQL regressions proving database-derived statement/book population identity, exact opening/movement/closing balances, source-capacity-bounded allocation consumption, exact bridge equality, `REPEATABLE READ`, assigned-book scoping, and caller substitution rejection |
+| P0 | Normal API-created runs lack a lawful path to `reconciled` | Controllers cannot complete the supported reconciliation lifecycle, while ad hoc SQL would bypass owner controls | Idempotent tenant-scoped command/API, immutable command evidence, DB-enforced legal state edges, approved-match completeness, unresolved-exception rejection, exact population/bridge binding, concurrency tests, and audit evidence |
+| P0 | Repository governance must enforce intended merge/release policy | A technically green candidate could otherwise integrate without durable control-plane enforcement | Protected `develop`/`main`, required accounting CI/security/dependency gates, independent review, resolved current-head findings, no force-push/deletion path, and effective ruleset evidence |
+| P0 | Database authority must remain stronger than application intent | Direct SQL must never rewrite balances, tenant scope, finalized facts, reviewed evidence, or closed periods | PostgreSQL runtime tests for deferred balance, append-only/finalization guards, forced RLS with restricted runtime login, DB-owned tenant binding, lock order, temporal reversal rules, and purpose-limited close authority |
+| P1 | Historical outstanding/timing differences lack a durable carry-forward model | Reconciliation may explain the current period but cannot safely invent prior-period opening differences | Policy-backed persisted evidence and exact lineage across run cutoffs, with fail-closed handling when immutable history is insufficient |
+| P1 | Purpose-bound authorization is absent | Tenant authentication alone is too coarse for posting, reversal, approval, close, tax, and audit powers | Versioned operation-to-permission mapping, host identity adapter boundary, fail-closed authorization tests, immutable allow/deny evidence, and no caller/model-controlled promotion |
+| P1 | Production operability and release proof remain incomplete | An operator cannot yet deploy, observe, back up, recover, and release with diligence-grade evidence | Supported compose/Podman/Colima boundary, migration/rollback rehearsal, outbox-drain ownership, metrics/alerts, backup/restore exercise, integrated-head signed attestations, release version, artifact/source hashes, and recovery runbook |
+| P2 | No controller frontend/design-system surface exists | Controllers have no visual close/reconciliation workflow | Figma File ID recorded in ADR, reusable design tokens, Storybook scene/edge events, exact-value tables/exports, i18n consistency, accessibility/touch/responsive tests, browser screenshots, and k6-backed asynchronous APIs |
 
 ## Evidence model for integration
 
-Each integration candidate is expected to prove the following together on one
-unchanged head before it is accepted. The numbers, digests, run identifiers, and
-commit hashes are deliberately kept in live PR/issue evidence rather than copied
-into this file.
+Each integration candidate is expected to prove the following together on one unchanged
+head before it is accepted. Numbers, digests, run identifiers, and commit hashes stay in
+live PR/issue evidence rather than being copied into this durable baseline.
 
 - real PostgreSQL integration on the pinned supported major/minor image;
-- exact 100% statement and branch coverage for owned production/validator code;
+- exact 100% statement and branch coverage for owned production/validator code plus
+  explicit edge-case denominator evidence;
 - complete public production API docstrings and deterministic repository contracts;
-- database-owned balance, finalization/append-only, tenant-isolation, close,
-  temporal, and command-idempotency invariants;
-- exact-head SAST, vulnerability/secret/misconfiguration scanning, and dependency
-  diff/vulnerability evidence bound to an independently resolved live base;
-- reproducible package build, install smoke, deterministic checksums, SPDX SBOM,
-  and source-provenance evidence bound to the same exact head;
-- no self-mutating repair/normalization workflow in the publishable tree;
+- database-owned balance, finalization/append-only, tenant-isolation, reconciliation,
+  close, temporal, and command-idempotency invariants;
+- exact-head SAST, vulnerability/secret/misconfiguration scanning, dependency diff and
+  vulnerability evidence bound to an independently resolved live base;
+- reproducible package build, install smoke, deterministic checksums, SPDX SBOM, and
+  source-provenance evidence bound to the same exact head;
+- no self-mutating repair/normalization/source-fix workflow in the publishable tree;
 - all still-valid review findings resolved and qualifying independent approvals;
-- after lawful integration, signed integrated-head provenance/SBOM attestations
-  before any version/tag/release claim.
+- after lawful integration, signed integrated-head provenance/SBOM attestations before
+  any version/tag/release claim.
 
-An aggregate workflow conclusion is not enough if a required step is skipped or
-the workflow checked out a synthetic merge ref. Likewise, a local test, model
-review, status context, predecessor head, or old artifact may inform diagnosis but
-cannot satisfy the exact-head release gate.
+An aggregate workflow conclusion is not enough if a required step is skipped or the
+workflow checked out a synthetic merge ref. Likewise, a local test, model review,
+status context, predecessor head, generated successor commit, or old artifact may
+inform diagnosis but cannot satisfy the exact-head release gate.
 
 ## Accounting invariants that remain non-negotiable
 
@@ -139,66 +179,90 @@ cannot satisfy the exact-head release gate.
   reconciliation use exact decimal arithmetic; no binary floating-point accounting.
 - A durable journal is non-empty and exactly debit/credit balanced at the database
   commit boundary.
-- Finalized journal facts and their source/reversal/receipt evidence are
-  append-only; corrections use explicit reversal and reposting.
-- Ordinary posting cannot bypass a closed period; limited soft-close exceptions
-  require database-owned authorization as well as the matching transaction intent.
-- Runtime tenant isolation is derived from database-controlled runtime identity,
-  not from a caller-writable session setting or request-body field.
-- Commands use tenant-scoped idempotency identity plus immutable source evidence;
-  a changed command under the same key fails closed.
+- Finalized journal facts and source/reversal/receipt evidence are append-only;
+  corrections use explicit reversal and reposting.
+- Ordinary posting cannot bypass a closed period; limited soft-close exceptions require
+  database-owned authorization as well as matching transaction intent.
+- Runtime tenant isolation is derived from database-controlled runtime identity, not a
+  caller-writable session setting or request-body field.
+- Commands use tenant-scoped idempotency identity plus immutable source evidence; a
+  changed command under the same key fails closed.
 - Command outcome and accounting transactional-outbox evidence commit atomically.
-- Authoritative relational data stays normalized, tenant-scoped, and uses
-  descriptive two-or-more-word `snake_case` object names with effective/system
-  time where policy or mappings vary.
+- Authoritative relational data stays in 3NF unless a documented bounded read model
+  justifies otherwise; hot partitions, lock order, read/write separation, and every
+  item-level UPSERT/ownership contract are explicit.
+- Database object names use descriptive two-or-more-word `snake_case` by preference;
+  contextually required camelCase/PascalCase is acceptable, but ambiguous one-word
+  identifiers are not introduced as durable object names.
 - LLM/model output is untrusted interpretation or proposal only. It cannot post a
-  journal, approve a reconciliation, choose a chart account, consume a monetary
-  amount, or alter accounting policy.
-- A bank-statement entry never posts, reverses, approves, or mutates a journal by
-  itself; unmatched evidence becomes an exception or an explicit adjusting-journal
-  proposal reviewed under authority.
+  journal, approve reconciliation, choose a chart account, consume a monetary amount,
+  alter accounting policy, or manufacture accounting evidence.
+- A bank-statement entry never posts, reverses, approves, or mutates a journal by itself;
+  unmatched evidence becomes an exception or an explicit adjusting-journal proposal
+  reviewed under authority.
 
-## Bank-reconciliation target after foundation integration
-
-The first buyer-visible reconciliation vertical is deliberately bounded:
+## Bank-reconciliation target
 
 ```text
 immutable bank statement artifact
-→ normalized statement / entry identity          [delivered by the registry slice]
-→ bank-account ↔ legal-entity / book assignment  [delivered by the registry slice]
-→ deterministic candidate matching               [delivered: proposal engine]
-→ exact book-to-bank bridge                      [delivered; finite-Decimal boundary + bridge scope in ADR 0054]
-→ durable run / exception / evidence rows        [delivered; forced RLS + run-scope guard]
-→ close-review projection                        [delivered; evidence eligibility only, same-scope deltas]
-→ candidate/match allocation conservation        [open M2 slice]
-→ reconciliation approval and close package      [open M2 slice]
+→ normalized statement / entry / balance identity     [integrated]
+→ bank-account ↔ legal-entity / accounting-book scope [integrated]
+→ deterministic candidate matching                    [integrated]
+→ exact book-to-bank bridge                            [foundation integrated]
+→ durable run / exception / command evidence           [current integration candidate]
+→ candidate/match allocation conservation              [current integration candidate]
+→ immutable approval snapshot                          [current integration candidate]
+→ DB-owned statement/book populations + bridge         [P0 open dependency root]
+→ evidence-backed reconciled transition                [P0 open; depends on prior step]
+→ authority-bearing close package                      [blocked until both P0s are green]
+→ controller close/reconciliation workflow             [later buyer-facing slice]
 ```
 
-The delivered adapter pins the supported ISO 20022 message-definition revision and
-vendored validation evidence; runtime parsing performs no external schema/entity
-fetch and fails closed on revision drift, entity expansion, unbounded depth, or
-non-canonical decimals. Matching precedence starts with stable provider/end-to-end
-identities, then exact amount/currency plus bounded date policy, then approved
-composite rules, and otherwise abstains. LLM assistance may summarize or prioritize
-exceptions but never consumes monetary evidence or approves/posts a result.
+The statement adapter pins the supported ISO 20022 message-definition revision and
+vendored validation evidence; runtime parsing performs no external schema/entity fetch
+and fails closed on revision drift, entity expansion, unbounded depth, or non-canonical
+decimals. Matching precedence starts with stable provider/end-to-end identities, then
+exact amount/currency plus bounded date policy, then approved composite rules, and
+otherwise abstains. LLM assistance may summarize or prioritize exceptions but never
+consumes monetary evidence or approves/posts a result.
+
+## Web, operability, and UX acceptance once those surfaces exist
+
+Any HTTP path used by the production buyer workflow must be asynchronous where blocking
+work would otherwise make the service unresponsive. k6 end-to-end load tests cover all
+buyer pages/critical API actions with a p95 target of 20 ms per page/action; exceeding
+the gate requires bottleneck removal rather than threshold relaxation. Connection
+cleanup tests must not assume `close_connection` exists only as an instance attribute.
+Container guidance records compose-first operation, Podman/Colima alternatives,
+hardware-aware PostgreSQL/shared-memory tuning, and any relevant CPU/GPU/native-module
+boundary. Temporary isolation containers are removed after verification.
+
+When a frontend is introduced, customer copy names accounting outcomes and the next
+action rather than repositories, services, or agent internals. Repeated UI objects use
+design tokens and reusable components. Figma, Storybook, accessibility, touch and
+interaction, responsive layout, typography/color, forms/feedback, navigation, charts,
+i18n, and screenshot review become required evidence rather than documentation-only
+intent.
 
 ## Release and diligence rule
 
-Do not create a release, version, or tag from a PR candidate. Release evidence
-must come from one exact integrated protected head after migration and rollback
-rehearsal, backup/restore and operational acceptance, current security/dependency
-gates, reproducible package/SBOM/provenance evidence, qualifying review, and any
-applicable accessibility acceptance all pass together. `CHANGELOG.md` and
-artifact/source hashes must describe that exact integrated release fact.
+Do not create a release, version, or tag from a PR candidate. Release evidence must come
+from one exact integrated protected head after migration and rollback rehearsal,
+backup/restore and operational acceptance, current security/dependency gates,
+reproducible package/SBOM/provenance evidence, qualifying review, and any applicable
+accessibility acceptance all pass together. `CHANGELOG.md` and artifact/source hashes
+must describe that exact integrated release fact. Mention GitHub Pages as a product
+surface only after it is actually published and verified.
 
 ## Authority and standards traceability
 
 The durable product, technical, security, data, operating, decision, and standards
-records remain authoritative in `README.md`, `AGENTS.md`, `CLAUDE.md`,
-`docs/PRD.md`, `docs/TRD.md`, `docs/ARCHITECTURE.md`, `docs/DATA_MODEL.md`,
-`docs/ERD.md`, `docs/SECURITY.md`, `docs/TEST_STRATEGY.md`, `docs/OPERABILITY.md`,
-`docs/adr/`, and `docs/doctoring/`. Current international/accounting technical
-decisions belong in the APA 7 bibliography and standards traceability records,
-including the ISO 20022 message-definition citations backing the statement
-adapter; this gap baseline does not claim certification or compliance on their
-behalf.
+records remain authoritative in `README.md`, `AGENTS.md`, `CLAUDE.md`, `docs/PRD.md`,
+`docs/TRD.md`, `docs/ARCHITECTURE.md`, `docs/DATA_MODEL.md`, `docs/ERD.md`,
+`docs/SECURITY.md`, `docs/TEST_STRATEGY.md`, `docs/OPERABILITY.md`, `docs/adr/`, and
+`docs/doctoring/`. Current international/accounting technical decisions belong in the
+APA 7 bibliography and standards traceability records, including ISO 20022 evidence
+backing the statement adapter. CSAP/SOC 2 are design and diligence targets, not
+certification claims. Real-person and institution data used for development/testing
+must be anonymized, while production PII protection must preserve lawful accounting
+work rather than relying on masking that destroys required business meaning.

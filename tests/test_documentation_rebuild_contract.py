@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
@@ -61,6 +62,26 @@ class DocumentationRebuildContractTests(unittest.TestCase):
         self.assertIn("live ruleset", text)
         self.assertIn("predecessor evidence", text)
         self.assertIn("already integrated", text)
+
+    def test_standard_traceability_uses_the_real_ci_postgres_minor(self) -> None:
+        """Standards traceability must name the exact PostgreSQL minor exercised in CI."""
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        service_image = re.search(r"(?m)^\s+image: postgres:(18\.\d+)@sha256:", workflow)
+        self.assertIsNotNone(service_image)
+        postgres_minor = service_image.group(1)
+        traceability = (
+            ROOT / "docs" / "doctoring" / "STANDARD_TRACEABILITY.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            f"| PostgreSQL {postgres_minor} test environment |",
+            traceability,
+        )
+        self.assertIn(
+            f"The real regression environment uses PostgreSQL {postgres_minor}",
+            traceability,
+        )
 
 
 if __name__ == "__main__":
