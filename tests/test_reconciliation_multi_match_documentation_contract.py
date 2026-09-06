@@ -58,7 +58,7 @@ class ReconciliationMultiMatchDocumentationContractTests(unittest.TestCase):
         normalized_text = " ".join(text.split())
         self.assertIn("from migrations `0015` through `0017`", text)
         self.assertIn("close-package provenance remains open", normalized_text)
-        self.assertIn("[delivered in current tree; migration 0015]", text)
+        self.assertIn("[delivered in current tree; migration 0015]", normalized_text)
         self.assertNotRegex(
             text.lower(),
             r"candidate/match\s+allocation\s+conservation\s+\[open\s+m2\s+slice\]",
