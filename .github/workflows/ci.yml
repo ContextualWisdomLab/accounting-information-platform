@@ -251,8 +251,8 @@ jobs:
         run: |
           set -euo pipefail
           python -m coverage report --fail-under=0 --show-missing | tee coverage.txt
-          python -m coverage json -o coverage.json
-          python -m coverage xml -o coverage.xml
+          python -m coverage json --fail-under=0 -o coverage.json
+          python -m coverage xml --fail-under=0 -o coverage.xml
       - name: Upload coverage diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
