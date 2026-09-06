@@ -40,6 +40,20 @@ class AccountingCiContractTests(unittest.TestCase):
         )
         self.assertIn('test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"', workflow)
 
+    def test_ci_pins_supported_hosted_runner_image(self) -> None:
+        """Runner-backed accounting gates use one explicit supported hosted image."""
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        runner_lines = [
+            line.strip()
+            for line in workflow.splitlines()
+            if line.lstrip().startswith("runs-on:")
+        ]
+        self.assertGreaterEqual(len(runner_lines), 5)
+        self.assertEqual(set(runner_lines), {"runs-on: ubuntu-24.04"})
+        self.assertNotIn("ubuntu-latest", workflow)
+
     def test_ci_runs_pinned_semgrep_on_the_verified_exact_head(self) -> None:
         """Repository-owned SAST must scan the exact PR head, not a synthetic merge ref."""
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(

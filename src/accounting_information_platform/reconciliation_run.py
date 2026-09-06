@@ -5,9 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from functools import wraps
 from datetime import datetime, timezone
-from typing import Mapping
+from typing import Callable, Mapping, ParamSpec
 from uuid import UUID
+
+import psycopg
 
 from .core import (
     AccountingValidationError,
@@ -23,8 +26,34 @@ _RUN_NEXT_ACTION = (
 _CANONICAL_UTC_TIMESTAMP_PATTERN = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|\+00:00)$"
 )
+_P = ParamSpec("_P")
 
 
+def _normalize_reconciliation_command_identity_conflicts(
+    command: Callable[_P, dict[str, object]],
+) -> Callable[_P, dict[str, object]]:
+    """Translate only the database-owned shared command identity conflict."""
+
+    @wraps(command)
+    def normalized(*args: _P.args, **kwargs: _P.kwargs) -> dict[str, object]:
+        try:
+            return command(*args, **kwargs)
+        except psycopg.errors.UniqueViolation as error:
+            message_primary = getattr(error.diag, "message_primary", "") or ""
+            if (
+                error.sqlstate != "23505"
+                or "reconciliation_command_identity_conflict" not in message_primary
+            ):
+                raise
+            raise IdempotencyConflictError(
+                "reconciliation idempotency key was concurrently claimed by another command. "
+                "Supply a new reconciliation_idempotency_key, then retry."
+            ) from error
+
+    return normalized
+
+
+@_normalize_reconciliation_command_identity_conflicts
 def accept_reconciliation_run(
     payload: object, database_url: str, tenant_reference: str
 ) -> dict[str, object]:
@@ -87,6 +116,20 @@ def accept_reconciliation_run(
         ledger._acquire_command_lock(
             connection, f"reconciliation_run_key:{idempotency_key}"
         )
+        prior_identity = connection.execute(
+            """
+            SELECT command_family_code
+            FROM accounting_core.reconciliation_command_identity
+            WHERE tenant_account_id = %s
+              AND reconciliation_command_identity_key = %s
+            """,
+            (tenant_id, idempotency_key),
+        ).fetchone()
+        if prior_identity is not None and prior_identity[0] != "run_opening":
+            raise IdempotencyConflictError(
+                "reconciliation idempotency key is already owned by a lifecycle command. "
+                "Supply a new reconciliation_idempotency_key, then retry the run."
+            )
         prior_command = connection.execute(
             """
             SELECT reconciliation_run_id, source_payload_hash,
