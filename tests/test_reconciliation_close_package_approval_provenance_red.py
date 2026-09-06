@@ -234,7 +234,7 @@ class ReconciliationClosePackageApprovalProvenanceRedTests(unittest.TestCase):
                 pass
 
             @contextmanager
-            def _session(self):
+            def _consistent_read_session(self):
                 yield Connection()
 
             def _require_tenant(self, _connection):
