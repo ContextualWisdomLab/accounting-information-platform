@@ -13,6 +13,8 @@ _apply_base_foundation_migration = _persistence.apply_foundation_migration
 
 def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
     """Apply the complete checked-in foundation chain through the canonical loader."""
+    _apply_base_foundation_migration(database_url, migration_path)
+
     authority_migration_path = (
         migration_path.parent / "0019_reconciliation_run_database_snapshot_authority.sql"
     )
@@ -22,7 +24,6 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
             f"{authority_migration_path}. Restore the checked-in migration chain, then retry."
         )
 
-    _apply_base_foundation_migration(database_url, migration_path)
     psycopg = _persistence._import_psycopg()
     try:
         with psycopg.connect(
