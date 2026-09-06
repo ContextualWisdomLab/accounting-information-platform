@@ -121,7 +121,7 @@ factory/runner and provide the tenant-bound host boundary explicitly.
 `unittest` discovery also runs `tests/test_postgres_posting.py`, which needs a
 reachable PostgreSQL 18 instance and `ACCOUNTING_DATABASE_URL` (CI uses
 `postgresql://postgres:postgres@127.0.0.1:5432/accounting_test` and applies
-the checked-in migration chain through `database/migrations/0028_reconciliation_lifecycle_capability_privileges.sql`). Persistence is still
+the checked-in migration chain through `database/migrations/0029_reconciliation_lifecycle_capability_privileges.sql`). Persistence is still
 local to this repository; it is not a Naruon or sibling checkout.
 
 Optional import smoke after the editable install above:
