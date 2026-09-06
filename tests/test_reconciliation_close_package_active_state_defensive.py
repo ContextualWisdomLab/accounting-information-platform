@@ -55,8 +55,8 @@ class _Ledger:
         self.tenant_reference = tenant_reference
 
     @contextmanager
-    def _session(self):
-        """Yield the configured connection like the PostgreSQL ledger session."""
+    def _consistent_read_session(self):
+        """Yield the configured connection like the PostgreSQL snapshot session."""
         yield self.connection
 
     def _require_tenant(self, _connection: object) -> str:
