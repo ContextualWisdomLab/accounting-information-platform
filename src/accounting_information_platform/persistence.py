@@ -1144,12 +1144,23 @@ class PostgresPostingLedger:
                         accounting_book_reference=accounting_book_reference,
                         idempotency_key=close_idempotency_key,
                     )
-                package = self._assemble_period_close_package(
-                    legal_entity_reference,
-                    accounting_book_reference,
-                    period_code,
+                close_lines = self._aggregate_trial_balance(
+                    connection, tenant_id, legal_entity_id, book_id, period_end_date
                 )
-                self._require_closeable_package(package)
+                debit_total = sum(
+                    (line[2] for line in close_lines),
+                    Decimal("0"),
+                )
+                credit_total = sum(
+                    (line[3] for line in close_lines),
+                    Decimal("0"),
+                )
+                if debit_total != credit_total:
+                    raise AccountingValidationError(
+                        "trial balance does not balance. "
+                        "Correct the posted journals so debit totals equal credit totals, "
+                        "then retry the close."
+                    )
                 return self._persist_period_close(
                     connection,
                     tenant_id=tenant_id,
@@ -5327,7 +5338,8 @@ class PostgresPostingLedger:
         )
         income_rows = connection.execute(
             """
-            SELECT chart_account.chart_account_code,
+            SELECT journal_entry_line.chart_account_id,
+                   chart_account.chart_account_code,
                    journal_entry_line.account_role_code,
                    SUM(journal_entry_line.debit_amount),
                    SUM(journal_entry_line.credit_amount)
@@ -5345,15 +5357,18 @@ class PostgresPostingLedger:
               AND journal_entry_line.account_role_code IN (
                     'usage_revenue', 'write_off_expense'
                   )
-            GROUP BY chart_account.chart_account_code,
+            GROUP BY journal_entry_line.chart_account_id,
+                     chart_account.chart_account_code,
                      journal_entry_line.account_role_code
-            ORDER BY chart_account.chart_account_code
+            ORDER BY chart_account.chart_account_code,
+                     journal_entry_line.chart_account_id
             """,
             (tenant_id, legal_entity_id, book_id, period_end_date),
         ).fetchall()
         closing_lines: list[PostedJournalLine] = []
+        historical_chart_account_ids: dict[int, UUID] = {}
         retained_earnings_amount = Decimal("0")
-        for account_code, role_code, debit_total, credit_total in income_rows:
+        for account_id, account_code, role_code, debit_total, credit_total in income_rows:
             net_amount = Decimal(credit_total) - Decimal(debit_total)
             if net_amount == 0:
                 continue
@@ -5378,6 +5393,7 @@ class PostgresPostingLedger:
                         credit_amount=-net_amount,
                     )
                 )
+            historical_chart_account_ids[line_number] = account_id
             retained_earnings_amount += net_amount
         if not closing_lines:
             return
@@ -5457,6 +5473,7 @@ class PostgresPostingLedger:
             policy=policy,
             proposal_record_id=proposal_record_id,
             lines=tuple(closing_lines),
+            historical_chart_account_ids=historical_chart_account_ids,
         )
 
     def _require_retained_earnings_mapping(
@@ -5628,6 +5645,7 @@ class PostgresPostingLedger:
         policy: AccountingPolicy,
         proposal_record_id: UUID,
         lines: tuple[PostedJournalLine, ...],
+        historical_chart_account_ids: Mapping[int, UUID] | None = None,
     ) -> UUID:
         connection.execute(
             "SELECT set_config('accounting_core.journal_write_role', %s, true)",
@@ -5660,17 +5678,40 @@ class PostgresPostingLedger:
             ),
         ).fetchone()[0]
         for line in lines:
-            chart_account_id = connection.execute(
-                """
-                SELECT chart_account_id
-                FROM accounting_core.chart_account
-                WHERE tenant_account_id = %s
-                  AND accounting_book_id = %s
-                  AND chart_account_code = %s
-                  AND valid_to IS NULL
-                """,
-                (tenant_id, book_id, line.chart_account_code),
-            ).fetchone()
+            historical_chart_account_id = (
+                historical_chart_account_ids.get(line.line_number)
+                if historical_chart_account_ids is not None
+                else None
+            )
+            if historical_chart_account_id is None:
+                chart_account_id = connection.execute(
+                    """
+                    SELECT chart_account_id
+                    FROM accounting_core.chart_account
+                    WHERE tenant_account_id = %s
+                      AND accounting_book_id = %s
+                      AND chart_account_code = %s
+                      AND valid_to IS NULL
+                    """,
+                    (tenant_id, book_id, line.chart_account_code),
+                ).fetchone()
+            else:
+                chart_account_id = connection.execute(
+                    """
+                    SELECT chart_account_id
+                    FROM accounting_core.chart_account
+                    WHERE tenant_account_id = %s
+                      AND accounting_book_id = %s
+                      AND chart_account_id = %s
+                      AND chart_account_code = %s
+                    """,
+                    (
+                        tenant_id,
+                        book_id,
+                        historical_chart_account_id,
+                        line.chart_account_code,
+                    ),
+                ).fetchone()
             if chart_account_id is None:
                 raise AccountingValidationError(
                     f"Chart account {line.chart_account_code} is not recorded on this book. "
@@ -6385,11 +6426,12 @@ def _canonical_snapshot_hash(
             "lines": [
                 {
                     "chart_account_code": account_code,
+                    "chart_account_id": str(account_id),
                     "credit_total_amount": format(credit_total, "f"),
                     "debit_total_amount": format(debit_total, "f"),
                     "net_balance_amount": format(debit_total - credit_total, "f"),
                 }
-                for _account_id, account_code, debit_total, credit_total in lines
+                for account_id, account_code, debit_total, credit_total in lines
             ],
             "period_code": period_code,
             "snapshot_currency_code": snapshot_currency_code,
