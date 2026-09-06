@@ -1,4 +1,4 @@
-"""Real PostgreSQL upgrade acceptance for pre-0024 resolution authority."""
+"""Real PostgreSQL upgrade acceptance for pre-0025 resolution authority."""
 
 from __future__ import annotations
 
@@ -24,14 +24,14 @@ class ReconciliationResolutionRecordingTimeUpgradePostgresTests(unittest.TestCas
         posting.PostgresPostingTests.setUpClass()
 
     def test_preexisting_resolution_command_blocks_recording_time_upgrade(self) -> None:
-        """A pre-0024 authority command cannot inherit database-clock source provenance."""
+        """A pre-0025 authority command cannot inherit database-clock source provenance."""
         helper = ReconciliationRecordingTimeUpgradePostgresTests
         role_name, database_name, _password, migration_url, admin_url = (
             helper._create_isolated_database()
         )
-        migration_0024 = (
+        migration_0025 = (
             posting.MIGRATION_PATH.parent
-            / "0024_reconciliation_control_recording_time_authority.sql"
+            / "0025_reconciliation_control_recording_time_authority.sql"
         ).read_text(encoding="utf-8")
         fixture: ReconciliationRunApiTests | None = None
 
@@ -143,7 +143,7 @@ class ReconciliationResolutionRecordingTimeUpgradePostgresTests(unittest.TestCas
                     autocommit=True,
                     cursor_factory=psycopg.ClientCursor,
                 ) as migration_connection:
-                    migration_connection.execute(migration_0024)
+                    migration_connection.execute(migration_0025)
 
             with psycopg.connect(admin_url, autocommit=True) as admin_database:
                 command_count = admin_database.execute(
@@ -161,7 +161,7 @@ class ReconciliationResolutionRecordingTimeUpgradePostgresTests(unittest.TestCas
                     WHERE table_schema = 'accounting_core'
                       AND table_name IN ('reconciliation_exception', 'reconciliation_evidence')
                       AND column_name = 'recording_time_authority_code'
-                    """
+                    """,
                 ).fetchone()[0]
                 visibility_policy_count = admin_database.execute(
                     """
@@ -170,7 +170,7 @@ class ReconciliationResolutionRecordingTimeUpgradePostgresTests(unittest.TestCas
                     WHERE schemaname = 'accounting_core'
                       AND tablename = 'reconciliation_exception_resolution_command'
                       AND policyname = 'reconciliation_resolution_recording_time_upgrade_visibility'
-                    """
+                    """,
                 ).fetchone()[0]
 
             self.assertEqual(command_count, 1)
