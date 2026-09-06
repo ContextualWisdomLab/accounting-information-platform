@@ -54,8 +54,16 @@ class AccountingCoverageEvidenceContractTests(unittest.TestCase):
             "python -m coverage report --fail-under=0 --show-missing | tee coverage.txt",
             diagnostics_section,
         )
-        self.assertIn("python -m coverage json -o coverage.json", diagnostics_section)
-        self.assertIn("python -m coverage xml -o coverage.xml", diagnostics_section)
+        self.assertIn(
+            "python -m coverage json --fail-under=0 -o coverage.json",
+            diagnostics_section,
+        )
+        self.assertIn(
+            "python -m coverage xml --fail-under=0 -o coverage.xml",
+            diagnostics_section,
+        )
+        self.assertNotIn("python -m coverage json -o coverage.json", diagnostics_section)
+        self.assertNotIn("python -m coverage xml -o coverage.xml", diagnostics_section)
         self.assertIn("        if: always()\n", upload_section)
         self.assertIn(
             "          name: accounting-coverage-${{ github.event.pull_request.head.sha || github.sha }}\n",
