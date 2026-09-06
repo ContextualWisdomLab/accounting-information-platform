@@ -29,6 +29,7 @@ _BASE_FOUNDATION_PREREQUISITES = (
     "0017_reconciliation_approval_lock_order.sql",
     "0018_bank_statement_balance_evidence.sql",
     "0019_reconciliation_run_command_evidence.sql",
+    "0020_reconciliation_run_completion_evidence.sql",
 )
 
 
@@ -52,7 +53,7 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
         )
 
     authority_migration_path = (
-        migration_path.parent / "0020_reconciliation_run_database_snapshot_authority.sql"
+        migration_path.parent / "0021_reconciliation_run_database_snapshot_authority.sql"
     )
     if not authority_migration_path.is_file():
         raise AccountingValidationError(
@@ -77,7 +78,7 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
 
 # A large integration-test and operator surface historically imports the loader
 # from persistence directly. Keep that compatibility path on the complete-chain
-# installer so no supported install can stop after the caller-trusting 0019 base
+# installer so no supported install can stop after the caller-trusting base
 # definition and accidentally omit the database-owned transition authority.
 _persistence.apply_foundation_migration = apply_foundation_migration
 
