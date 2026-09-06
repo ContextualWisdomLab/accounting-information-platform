@@ -20,6 +20,7 @@ from accounting_information_platform.reconciliation_close_package import (
 from accounting_information_platform.reconciliation_read_model import (
     ReconciliationAllocationEvidence,
     ReconciliationCloseReviewProjection,
+    ReconciliationCloseReviewScope,
     ReconciliationReviewedMatch,
 )
 
@@ -211,6 +212,39 @@ class ReconciliationClosePackageApprovalProvenanceRedTests(unittest.TestCase):
             for evidence in package_input.evidence_references
         )
         approval = package_input.approval_evidence[0]
+        authoritative_run = next(
+            evidence
+            for evidence in package_input.evidence_references
+            if evidence.evidence_kind_code == "reconciliation_run"
+        )
+        authoritative_artifact = next(
+            evidence
+            for evidence in package_input.evidence_references
+            if evidence.evidence_kind_code == "statement_artifact"
+        )
+        authoritative_scope = ReconciliationCloseReviewScope(
+            tenant_account_reference=package_input.projection.tenant_account_reference,
+            legal_entity_reference=package_input.projection.legal_entity_reference,
+            accounting_book_reference=package_input.projection.accounting_book_reference,
+            bank_account_assignment_reference=(
+                package_input.projection.bank_account_assignment_reference
+            ),
+            currency_code=package_input.projection.currency_code,
+        )
+        authoritative_projection = close_package._DatabaseOwnedCloseProjectionEvidence(
+            statement_population_reference="sha256:" + "3" * 64,
+            book_population_reference="sha256:" + "4" * 64,
+            statement_opening_balance=Decimal("100.00"),
+            statement_period_movements=Decimal("0.00"),
+            statement_closing_balance=package_input.projection.bank_closing_balance,
+            book_opening_balance=Decimal("100.00"),
+            posted_cash_book_movements=Decimal("0.00"),
+            book_closing_balance=package_input.projection.posted_book_cash_balance,
+            reconciled_book_balance=package_input.projection.reconciled_balance,
+            outstanding_bank_items=package_input.projection.outstanding_bank_items,
+            outstanding_book_items=package_input.projection.outstanding_book_items,
+            unexplained_difference=package_input.projection.unexplained_difference,
+        )
 
         class Rows:
             def fetchall(self):
@@ -240,7 +274,23 @@ class ReconciliationClosePackageApprovalProvenanceRedTests(unittest.TestCase):
             def _require_tenant(self, _connection):
                 return "tenant-id"
 
-        with mock.patch.object(close_package, "PostgresPostingLedger", Ledger):
+        with (
+            mock.patch.object(close_package, "PostgresPostingLedger", Ledger),
+            mock.patch.object(
+                close_package,
+                "_database_owned_run_source_evidence",
+                return_value=(
+                    authoritative_run,
+                    authoritative_artifact,
+                    authoritative_scope,
+                ),
+            ),
+            mock.patch.object(
+                close_package,
+                "_database_owned_close_projection_evidence",
+                return_value=authoritative_projection,
+            ),
+        ):
             with self.assertRaisesRegex(
                 ValueError,
                 "active approved match population",
