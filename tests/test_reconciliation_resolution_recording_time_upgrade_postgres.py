@@ -161,7 +161,7 @@ class ReconciliationResolutionRecordingTimeUpgradePostgresTests(unittest.TestCas
                     WHERE table_schema = 'accounting_core'
                       AND table_name IN ('reconciliation_exception', 'reconciliation_evidence')
                       AND column_name = 'recording_time_authority_code'
-                    """,
+                    """
                 ).fetchone()[0]
                 visibility_policy_count = admin_database.execute(
                     """
@@ -170,7 +170,7 @@ class ReconciliationResolutionRecordingTimeUpgradePostgresTests(unittest.TestCas
                     WHERE schemaname = 'accounting_core'
                       AND tablename = 'reconciliation_exception_resolution_command'
                       AND policyname = 'reconciliation_resolution_recording_time_upgrade_visibility'
-                    """,
+                    """
                 ).fetchone()[0]
 
             self.assertEqual(command_count, 1)
