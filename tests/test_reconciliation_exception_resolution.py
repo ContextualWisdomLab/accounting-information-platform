@@ -396,7 +396,7 @@ class ReconciliationExceptionResolutionTests(unittest.TestCase):
             (_command(resolution_evidence_reference="evidence"), "CWL URN"),
             (_command(resolution_evidence_hash="sha256:short"), "canonical sha256"),
             (_command(effective_at="2026-09-02 00:20:00"), "canonical UTC"),
-            (_command(request_context={"bad": {1, 2}}), "JSON-compatible"),
+            (_command(request_context={"bad": {1, 2}}), "only JSON values"),
         )
         for payload, message in cases:
             with self.subTest(message=message):
