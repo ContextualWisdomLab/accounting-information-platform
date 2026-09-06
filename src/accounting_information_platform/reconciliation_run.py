@@ -36,6 +36,7 @@ def _normalize_reconciliation_command_identity_conflicts(
 
     @wraps(command)
     def normalized(*args: _P.args, **kwargs: _P.kwargs) -> dict[str, object]:
+        """Run one command while normalizing only its shared identity race."""
         try:
             return command(*args, **kwargs)
         except psycopg.errors.UniqueViolation as error:
