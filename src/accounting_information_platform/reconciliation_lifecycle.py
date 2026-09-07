@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Mapping
+from contextlib import contextmanager
+from typing import Iterator, Mapping
 from uuid import UUID
 
 from .core import (
@@ -34,16 +35,68 @@ _RECONCILED_NEXT_ACTION = (
 _TRANSITION_HASH_SENTINEL = "sha256:" + "0" * 64
 
 
+@contextmanager
+def _lifecycle_authority_session(
+    ledger: PostgresPostingLedger, run_id: UUID
+) -> Iterator[object]:
+    """Admit the run lock before opening the repeatable-read authority snapshot.
+
+    PostgreSQL fixes a repeatable-read snapshot at the transaction's first query.
+    Waiting on ``pg_advisory_xact_lock`` as that query would therefore freeze a
+    pre-admission snapshot. Acquire the same key as a session lock, commit that
+    acquisition transaction while retaining the lock, then open a fresh
+    repeatable-read transaction and retain the ordinary transaction lock for the
+    accounting mutation. The session lock is released only after the authority
+    transaction commits or rolls back.
+    """
+    command_scope = f"reconciliation_run_lifecycle:{run_id}"
+    with ledger._session() as connection:
+        session_lock_acquired = False
+        authority_error = False
+        try:
+            connection.execute(
+                "SELECT pg_advisory_lock(hashtext(%s), hashtext(%s))",
+                (ledger._tenant_reference, command_scope),
+            )
+            session_lock_acquired = True
+            connection.commit()
+            connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            ledger._acquire_command_lock(connection, command_scope)
+            yield connection
+            connection.commit()
+        except Exception:
+            authority_error = True
+            connection.rollback()
+            raise
+        finally:
+            if session_lock_acquired:
+                try:
+                    released = connection.execute(
+                        "SELECT pg_advisory_unlock(hashtext(%s), hashtext(%s))",
+                        (ledger._tenant_reference, command_scope),
+                    ).fetchone()
+                    if released is None or not bool(released[0]):
+                        raise AccountingValidationError(
+                            "reconciliation lifecycle session lock could not be released. "
+                            "Close the database session before retrying the command."
+                        )
+                    connection.commit()
+                except Exception:
+                    connection.rollback()
+                    if not authority_error:
+                        raise
+
+
 @_normalize_reconciliation_command_identity_conflicts
 def reconcile_reconciliation_run(
     payload: object, database_url: str, tenant_reference: str
 ) -> dict[str, object]:
     """Transition one run to ``reconciled`` from database-owned evidence.
 
-    The run lifecycle advisory lock is acquired before the first MVCC snapshot,
-    then source and review state are evaluated under PostgreSQL ``REPEATABLE
-    READ``. Exact retries replay immutable command evidence; changed retries fail
-    closed.
+    The run lifecycle advisory lock is admitted before the repeatable-read MVCC
+    snapshot begins, then source and review state are evaluated under PostgreSQL
+    ``REPEATABLE READ``. Exact retries replay immutable command evidence; changed
+    retries fail closed.
     """
     command = _require_transition_command(payload, tenant_reference)
     run_id = _parse_uuid(
@@ -60,11 +113,7 @@ def reconcile_reconciliation_run(
     effective_at = _parse_timestamp(str(command.get("effective_at") or ""), "effective_at")
 
     ledger = PostgresPostingLedger(database_url, tenant_reference)
-    with ledger._session() as connection:
-        # SET TRANSACTION itself does not establish the data snapshot. Acquire
-        # the lifecycle lock next, before tenant or reconciliation rows are read.
-        connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
-        ledger._acquire_command_lock(connection, f"reconciliation_run_lifecycle:{run_id}")
+    with _lifecycle_authority_session(ledger, run_id) as connection:
         tenant_id = ledger._require_tenant(connection)
         ledger._acquire_command_lock(
             connection, f"reconciliation_run_transition_key:{idempotency_key}"
