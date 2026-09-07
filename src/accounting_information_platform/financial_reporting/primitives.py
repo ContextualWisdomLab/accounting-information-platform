@@ -93,11 +93,14 @@ def _absolute_uri(raw_value: object, field_name: str) -> str:
         if not parsed_uri.netloc:
             raise AccountingValidationError(f"{field_name} must include an authority")
         try:
+            host_name = parsed_uri.hostname
             parsed_uri.port
         except ValueError as error:
             raise AccountingValidationError(
                 f"{field_name} must be an absolute URI"
             ) from error
+        if not host_name:
+            raise AccountingValidationError(f"{field_name} must be an absolute URI")
     if parsed_uri.scheme.lower() == "urn" and not parsed_uri.path:
         raise AccountingValidationError(f"{field_name} must include a URN namespace")
     return uri_text
