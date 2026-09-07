@@ -20,6 +20,7 @@ from accounting_information_platform import (
 )
 from accounting_information_platform import reconciliation_close_package as close_package
 from tests import test_postgres_posting as posting
+from tests.reconciliation_opening_book_fixture import post_reconciliation_opening_book_balance
 from tests.test_reconciliation_run_api import ReconciliationRunApiTests
 
 
@@ -56,6 +57,7 @@ class ReconciliationLifecyclePostgresTests(unittest.TestCase):
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
         self.addCleanup(self.fixture.tearDown)
+        post_reconciliation_opening_book_balance(self.fixture.case)
         _statement, command = self.fixture._statement_and_command()
         self.opened = accept_reconciliation_run(
             command,
@@ -304,6 +306,39 @@ class ReconciliationLifecyclePostgresTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIsInstance(errors[0], AccountingValidationError)
         self.assertIn("still open", str(errors[0]))
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            tenant_id = self._tenant_id(connection)
+            run_status_code = connection.execute(
+                """
+                SELECT run_status_code
+                FROM accounting_core.reconciliation_run
+                WHERE tenant_account_id = %s
+                  AND reconciliation_run_id = %s
+                """,
+                (tenant_id, run_id),
+            ).fetchone()[0]
+            transition_count = connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM accounting_core.reconciliation_run_transition_command
+                WHERE tenant_account_id = %s
+                  AND reconciliation_run_id = %s
+                """,
+                (tenant_id, run_id),
+            ).fetchone()[0]
+            outbox_count = connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM accounting_integration.outbox_event
+                WHERE tenant_account_id = %s
+                  AND aggregate_reference = %s
+                  AND event_type_code = 'reconciliation_run_reconciled'
+                """,
+                (tenant_id, f"urn:cwl:accounting:reconciliation_run:{run_id}"),
+            ).fetchone()[0]
+        self.assertNotEqual(run_status_code, "reconciled")
+        self.assertEqual(transition_count, 0)
+        self.assertEqual(outbox_count, 0)
 
     def test_supported_command_persists_transition_outbox_and_freezes_review_state(self) -> None:
         """One exact command transitions atomically, replays provenance, and freezes evidence."""
