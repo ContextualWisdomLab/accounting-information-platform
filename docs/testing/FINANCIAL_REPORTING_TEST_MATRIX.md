@@ -16,6 +16,7 @@ This matrix separates supplied-package arithmetic, proposal classification, AIS 
 | Exact values | Revenue, expense, net income, assets, liabilities, equity, cash, and movement values remain canonical decimal strings | `tests/test_financial_reporting.py` |
 | Supplied evidence linkage | Every fact has supplied statement paths; proposals retain claimed snapshot references and source hashes without treating them as database authority | `tests/test_financial_reporting.py` |
 | Context contract | Absolute entity scheme, canonical entity identifier, uppercase currency, ordered current/comparison dates, paired comparison dates, bounded integer precision | `tests/test_financial_reporting_context.py` |
+| URI syntax boundary | Taxonomy namespace/schema/entity URIs reject unescaped whitespace, malformed percent escapes, raw backslashes, and non-numeric HTTP(S) authority ports while preserving valid percent encoding | `tests/test_financial_reporting_uri_rfc3986_red.py` |
 | Taxonomy profile | Version, reporting-standard code, release code, XML prefix, namespace, schema reference, package digest, mapping type, and mapping uniqueness | `tests/test_financial_reporting_context.py` |
 | Statement identity | Four required supplied statements share tenant, entity, book, period, scope, comparison identity, and statement type | `tests/test_financial_reporting_artifact_validation.py` |
 | Line shape | Each supplied line has a canonical role/class/account code, finite non-negative one-sided debit/credit, and exact totals | `tests/test_financial_reporting_artifact_validation.py` |
@@ -91,6 +92,7 @@ A queued, pending, cancelled, stale, predecessor, synthetic merge-ref, or skippe
 ### Official taxonomy profile
 
 - Official package source, license classification, package digest, entry point, release, and validator compatibility are verified.
+- Production selection accepts only immutable released-package evidence; consultation/proposed taxonomy updates can be reviewed for mapping impact but cannot be selected as filing authority.
 - Canonical fact mapping covers sign, scale, period, balance, unit, dimensions, and disclosures required by the selected filing profile.
 - Unsupported facts/disclosures fail with explicit gaps rather than disappearing.
 - Taxonomy release change creates a new immutable profile; an old filed artifact remains reproducible.
