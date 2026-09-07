@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import re
+import sys
 import unittest
 from pathlib import Path
 
@@ -44,14 +45,8 @@ GENERIC_BUCKET_NAMES = {
     "legacy",
 }
 TRANSITIONAL_GENERIC_PATHS = {PACKAGE / "core.py"}
-FORBIDDEN_APPLICATION_IMPORT_ROOTS = {
-    "metering_billing_platform",
-    "contextual_orchestrator",
-    "naruon",
-    "keyverse",
-    "context_graph_contracts",
-    "enterprise_architecture_core",
-}
+LOCAL_APPLICATION_IMPORT_ROOT = "accounting_information_platform"
+APPROVED_THIRD_PARTY_IMPORT_ROOTS: frozenset[str] = frozenset()
 REQUIRED_UBIQUITOUS_TERMS = {
     "Journal proposal",
     "General journal",
@@ -83,6 +78,15 @@ def _import_roots(path: Path) -> set[str]:
     return roots
 
 
+def _forbidden_external_import_roots(roots: set[str]) -> set[str]:
+    """Reject every undeclared absolute import instead of naming sibling applications one by one."""
+    return roots - set(sys.stdlib_module_names) - {
+        "__future__",
+        LOCAL_APPLICATION_IMPORT_ROOT,
+        *APPROVED_THIRD_PARTY_IMPORT_ROOTS,
+    }
+
+
 def _physical_ownership_rows(text: str) -> list[tuple[str, str, str]]:
     """Parse physical path, primary owner and transitional responsibility cells."""
     header = (
@@ -111,6 +115,23 @@ def _physical_ownership_rows(text: str) -> list[tuple[str, str, str]]:
             )
         )
     return rows
+
+
+def _primary_ownership_rows_for_path(
+    relative_path: str,
+    rows: list[tuple[str, str, str]],
+) -> list[tuple[str, str, str]]:
+    """Return the most-specific exact or package-directory ownership rows for one module."""
+    candidates = [
+        row
+        for row in rows
+        if row[0] == relative_path
+        or (row[0].endswith("/") and relative_path.startswith(row[0]))
+    ]
+    if not candidates:
+        return []
+    most_specific_length = max(len(row[0]) for row in candidates)
+    return [row for row in candidates if len(row[0]) == most_specific_length]
 
 
 class DddArchitectureFitnessTests(unittest.TestCase):
@@ -175,8 +196,8 @@ class DddArchitectureFitnessTests(unittest.TestCase):
         self.assertIn("EA Decision Plane", context_map)
         self.assertIn("architecture/change evidence only", context_map)
 
-    def test_every_top_level_production_module_has_exactly_one_primary_owner(self) -> None:
-        """Require one accountable owner even while mixed modules retain transitional duties."""
+    def test_every_production_module_has_exactly_one_primary_owner(self) -> None:
+        """Require one accountable owner for root and nested production modules."""
         text = CONTEXT_MAP.read_text(encoding="utf-8")
         rows = _physical_ownership_rows(text)
         self.assertTrue(
@@ -188,16 +209,15 @@ class DddArchitectureFitnessTests(unittest.TestCase):
         )
         production_paths = sorted(
             path.relative_to(ROOT).as_posix()
-            for path in PACKAGE.glob("*.py")
+            for path in PACKAGE.rglob("*.py")
             if path.name != "__init__.py"
         )
-        production_paths.append("src/accounting_information_platform/iso20022/")
         for relative in production_paths:
-            matches = [row for row in rows if row[0] == relative]
+            matches = _primary_ownership_rows_for_path(relative, rows)
             self.assertEqual(
                 1,
                 len(matches),
-                msg=f"{relative} needs exactly one physical-ownership row",
+                msg=f"{relative} needs exactly one most-specific physical-ownership row",
             )
             primary_owner_codes = re.findall(r"`([^`]+)`", matches[0][1])
             self.assertEqual(
@@ -214,6 +234,26 @@ class DddArchitectureFitnessTests(unittest.TestCase):
                     BOUND_CONTEXTS,
                     msg=f"{relative} primary owner must be one declared bounded context",
                 )
+
+    def test_directory_owner_covers_nested_modules_but_not_undeclared_packages(self) -> None:
+        """Treat a documented package row as ownership for descendants, never unrelated packages."""
+        rows = [
+            (
+                "src/accounting_information_platform/iso20022/",
+                "`bank_statement_registry`",
+                "None",
+            )
+        ]
+        covered = _primary_ownership_rows_for_path(
+            "src/accounting_information_platform/iso20022/parser.py",
+            rows,
+        )
+        undeclared = _primary_ownership_rows_for_path(
+            "src/accounting_information_platform/new_context/parser.py",
+            rows,
+        )
+        self.assertEqual(rows, covered)
+        self.assertEqual([], undeclared)
 
     def test_no_new_generic_domain_bucket_is_created(self) -> None:
         """Keep existing core.py debt from becoming precedent for more generic buckets."""
@@ -242,18 +282,28 @@ class DddArchitectureFitnessTests(unittest.TestCase):
         self.assertIn("Python package root is a deployment container, not a DDD Shared Kernel", text)
 
     def test_domain_source_does_not_import_foreign_application_repositories(self) -> None:
-        """Force cross-repository coupling through published contracts and ACLs."""
+        """Fail closed on every undeclared absolute import, including newly named sibling apps."""
         violations: dict[str, list[str]] = {}
         for path in sorted(PACKAGE.rglob("*.py")):
-            roots = _import_roots(path)
-            forbidden = sorted(roots & FORBIDDEN_APPLICATION_IMPORT_ROOTS)
+            forbidden = sorted(_forbidden_external_import_roots(_import_roots(path)))
             if forbidden:
                 violations[path.relative_to(ROOT).as_posix()] = forbidden
         self.assertEqual(
             {},
             violations,
-            msg="accounting domain/application code must not import foreign application repositories",
+            msg=(
+                "accounting domain/application code may import only stdlib, its own package, "
+                "or an explicitly reviewed third-party library root; foreign applications "
+                "must cross released contracts and ACLs"
+            ),
         )
+
+    def test_foreign_import_gate_does_not_depend_on_known_sibling_names(self) -> None:
+        """Reject a newly named foreign application without updating a sibling-name denylist."""
+        forbidden = _forbidden_external_import_roots(
+            {"json", LOCAL_APPLICATION_IMPORT_ROOT, "future_commercial_service"}
+        )
+        self.assertEqual({"future_commercial_service"}, forbidden)
 
     def test_ubiquitous_language_covers_authority_sensitive_terms(self) -> None:
         """Keep proposal, posting, reconciliation, time and evidence terms unambiguous."""
