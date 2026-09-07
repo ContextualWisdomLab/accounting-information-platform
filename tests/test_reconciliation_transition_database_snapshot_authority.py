@@ -33,6 +33,18 @@ class ReconciliationTransitionDatabaseSnapshotAuthorityTests(unittest.TestCase):
         self.assertIn("NEW.statement_population_reference := database_statement_reference", sql)
         self.assertIn("NEW.book_population_reference := database_book_reference", sql)
 
+    def test_hashed_timestamptz_facts_are_canonicalized_to_utc(self) -> None:
+        """Snapshot digests must not inherit the database session TimeZone setting."""
+        sql = AUTHORITY_MIGRATION.read_text(encoding="utf-8")
+
+        self.assertIn("journal.posted_at AT TIME ZONE 'UTC'", sql)
+        self.assertIn("exception.effective_at AT TIME ZONE 'UTC'", sql)
+        self.assertIn("knowledge_cutoff_at AT TIME ZONE 'UTC'", sql)
+        self.assertGreaterEqual(
+            sql.count("'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"'"),
+            3,
+        )
+
     def test_public_installer_applies_authority_after_base_0020(self) -> None:
         """Every supported foundation install must include the database-authority overlay."""
         source = INSTALLER.read_text(encoding="utf-8")
