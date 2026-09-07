@@ -88,9 +88,11 @@ class ReconciliationLifecyclePostgresTests(unittest.TestCase):
             (self.opened["reconciliation_run_id"],),
         ).fetchone()[0]
 
-    def _insert_transition_only(self, connection: psycopg.Connection) -> None:
-        """Insert a syntactically valid command without its required paired status update."""
-        connection.execute(
+    def _insert_transition_only(
+        self, connection: psycopg.Connection
+    ) -> tuple[object, str]:
+        """Insert a transition command and return its database-owned identity and hash."""
+        return connection.execute(
             """
             INSERT INTO accounting_core.reconciliation_run_transition_command (
                 tenant_account_id,
@@ -108,6 +110,8 @@ class ReconciliationLifecyclePostgresTests(unittest.TestCase):
             VALUES (%s, %s, %s, 'reconciled', %s, %s, %s, %s,
                     'urn:cwl:principal:test_controller',
                     'month_end_reconciliation', %s)
+            RETURNING reconciliation_run_transition_command_id,
+                      reconciliation_transition_command_hash
             """,
             (
                 self._tenant_id(connection),
@@ -119,7 +123,7 @@ class ReconciliationLifecyclePostgresTests(unittest.TestCase):
                 "sha256:" + "0" * 64,
                 datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc),
             ),
-        )
+        ).fetchone()
 
     def test_direct_status_update_without_transition_command_fails(self) -> None:
         """Raw status SQL is not an owner-control path for reconciled authority."""
@@ -138,7 +142,27 @@ class ReconciliationLifecyclePostgresTests(unittest.TestCase):
     def test_transition_command_cannot_commit_without_reconciled_status(self) -> None:
         """A lifecycle command cannot be parked for a later raw status rewrite."""
         with psycopg.connect(posting.DATABASE_URL) as connection:
-            self._insert_transition_only(connection)
+            transition_id, transition_hash = self._insert_transition_only(connection)
+            tenant_id = self._tenant_id(connection)
+            run_id = self.opened["reconciliation_run_id"]
+            connection.execute(
+                """
+                INSERT INTO accounting_integration.outbox_event (
+                    tenant_account_id,
+                    event_type_code,
+                    aggregate_reference,
+                    payload_reference,
+                    payload_hash
+                )
+                VALUES (%s, 'reconciliation_run_reconciled', %s, %s, %s)
+                """,
+                (
+                    tenant_id,
+                    f"urn:cwl:accounting:reconciliation_run:{run_id}",
+                    f"urn:cwl:accounting:reconciliation_run_transition:{transition_id}",
+                    transition_hash,
+                ),
+            )
             with self.assertRaisesRegex(psycopg.Error, "commit atomically"):
                 connection.commit()
             connection.rollback()
