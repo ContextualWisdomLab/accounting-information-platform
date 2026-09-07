@@ -1,4 +1,4 @@
-"""RFC 3986 regressions for financial-report URI value objects."""
+"""URI-standard regressions for financial-report URI value objects."""
 
 from __future__ import annotations
 
@@ -49,14 +49,36 @@ class FinancialReportingUriRfc3986Tests(unittest.TestCase):
                 ):
                     primitives._absolute_uri(raw_value, "taxonomy_uri")
 
-    def test_absolute_uri_retains_valid_percent_encoding(self) -> None:
-        """RFC 3986 percent-encoded octets remain valid absolute URI data."""
+    def test_absolute_uri_rejects_urn_authority_and_missing_nss(self) -> None:
+        """RFC 8141 URNs require an NID and NSS rather than URI authority syntax."""
+        for raw_value in (
+            "urn://example.com/taxonomy",
+            "urn:cwl",
+            "urn::taxonomy",
+            "urn:cwl:",
+        ):
+            with self.subTest(raw_value=raw_value):
+                with self.assertRaisesRegex(
+                    AccountingValidationError,
+                    "URN namespace",
+                ):
+                    primitives._absolute_uri(raw_value, "taxonomy_uri")
+
+    def test_absolute_uri_retains_valid_percent_encoding_and_urn(self) -> None:
+        """Valid percent-encoded URI data and an RFC 8141 assigned-name remain valid."""
         self.assertEqual(
             primitives._absolute_uri(
                 "https://example.com/taxonomy%20schema.xsd",
                 "taxonomy_uri",
             ),
             "https://example.com/taxonomy%20schema.xsd",
+        )
+        self.assertEqual(
+            primitives._absolute_uri(
+                "urn:cwl:taxonomy:ifrs-2025",
+                "taxonomy_uri",
+            ),
+            "urn:cwl:taxonomy:ifrs-2025",
         )
 
 
