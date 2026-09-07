@@ -82,6 +82,15 @@ class ReconciliationRunApiTests(unittest.TestCase):
             self.case.policy.tenant_reference,
             artifact_store=self.store,
         )
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            knowledge_cutoff_at = connection.execute(
+                """
+                SELECT to_char(
+                    clock_timestamp() AT TIME ZONE 'UTC',
+                    'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+                )
+                """
+            ).fetchone()[0]
         source_payload_hash = "sha256:" + hashlib.sha256(fixture).hexdigest()
         with psycopg.connect(posting.DATABASE_URL) as connection:
             knowledge_cutoff_at = connection.execute(
@@ -95,7 +104,7 @@ class ReconciliationRunApiTests(unittest.TestCase):
             "bank_cutoff_at": "2026-08-24T23:59:59Z",
             "book_cutoff_at": "2026-08-24T23:59:59Z",
             "matching_policy_version": "deterministic-v1",
-            "knowledge_cutoff_at": knowledge_cutoff_at.isoformat().replace("+00:00", "Z"),
+            "knowledge_cutoff_at": knowledge_cutoff_at,
             "reconciliation_idempotency_key": f"run-{uuid.uuid4().hex}",
             "source_payload_hash": source_payload_hash,
         }

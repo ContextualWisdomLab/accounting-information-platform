@@ -1,6 +1,6 @@
 # Product and technical gap baseline
 
-**Evidence refresh:** 2026-09-02 (Asia/Seoul)
+**Evidence refresh:** 2026-09-07 (Asia/Seoul)
 
 This file is the durable buyer-visible gap queue for `accounting-information-platform`.
 It records product authority, dependency order, architectural boundaries, acceptance
@@ -48,6 +48,14 @@ the parent before protected-branch integration. The product does not transmit
 HomeTax/NTS filings, enforce purpose-bound application authorization on every route, or
 provide a controller UI. Those omissions are explicit product scope, not implied
 successes.
+
+Conservation and approval persistence from migrations `0015` through `0017` are current
+integration-tree facts. Candidate/match allocation conservation is [delivered in current
+tree; migration 0015], while migrations 0016 and 0017 retain immutable approval evidence
+and lock-order controls. These controls are not release authority: close-package
+provenance remains open until database-owned statement/book populations, the exact
+bridge, and the lawful reconciliation lifecycle transition are integrated and green on
+one protected-head lineage.
 
 ## Current DDD and context-map baseline
 

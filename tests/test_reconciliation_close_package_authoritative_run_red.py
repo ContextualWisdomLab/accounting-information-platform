@@ -32,7 +32,7 @@ class _Ledger:
 
     @contextmanager
     def _consistent_read_session(self):
-        """Yield the configured connection through the authoritative read boundary."""
+        """Yield the configured connection like the PostgreSQL snapshot session."""
         yield self.connection
 
     def _require_tenant(self, _connection: object) -> str:
@@ -98,6 +98,24 @@ class ReconciliationClosePackageAuthoritativeRunTests(unittest.TestCase):
                 self.authoritative_scope,
             )
 
+        def load_projection(*_args: object, **_kwargs: object):
+            call_order.append("projection")
+            projection = package_input.projection
+            return close_package._DatabaseOwnedCloseProjectionEvidence(
+                statement_population_reference="sha256:" + "3" * 64,
+                book_population_reference="sha256:" + "4" * 64,
+                statement_opening_balance=Decimal("0"),
+                statement_period_movements=Decimal("0"),
+                statement_closing_balance=projection.bank_closing_balance,
+                book_opening_balance=Decimal("0"),
+                posted_cash_book_movements=Decimal("0"),
+                book_closing_balance=projection.posted_book_cash_balance,
+                reconciled_book_balance=projection.reconciled_balance,
+                outstanding_bank_items=projection.outstanding_bank_items,
+                outstanding_book_items=projection.outstanding_book_items,
+                unexplained_difference=projection.unexplained_difference,
+            )
+
         def load_state(*_args: object, **_kwargs: object):
             call_order.append("match")
             return self.state_evidence
@@ -106,26 +124,16 @@ class ReconciliationClosePackageAuthoritativeRunTests(unittest.TestCase):
             call_order.append("exception")
 
         run_loader = mock.Mock(side_effect=load_run)
-        projection_loader = mock.Mock(
-            return_value=close_package._DatabaseOwnedCloseProjectionEvidence(
-                statement_population_reference="sha256:" + "d" * 64,
-                book_population_reference="sha256:" + "b" * 64,
-                statement_opening_balance=self.projection.bank_closing_balance,
-                statement_period_movements=Decimal("0"),
-                statement_closing_balance=self.projection.bank_closing_balance,
-                book_opening_balance=self.projection.posted_book_cash_balance,
-                posted_cash_book_movements=Decimal("0"),
-                book_closing_balance=self.projection.posted_book_cash_balance,
-                reconciled_book_balance=self.projection.reconciled_balance,
-                outstanding_bank_items=self.projection.outstanding_bank_items,
-                outstanding_book_items=self.projection.outstanding_book_items,
-                unexplained_difference=self.projection.unexplained_difference,
-            )
-        )
+        projection_loader = mock.Mock(side_effect=load_projection)
         state_loader = mock.Mock(side_effect=load_state)
         exception_validator = mock.Mock(side_effect=validate_exceptions)
         with (
             mock.patch.object(close_package, "PostgresPostingLedger", _Ledger),
+            mock.patch.object(
+                close_package,
+                "_database_owned_close_projection_evidence",
+                projection_loader,
+            ),
             mock.patch.object(
                 close_package,
                 "_database_owned_match_state_evidence",
@@ -158,7 +166,7 @@ class ReconciliationClosePackageAuthoritativeRunTests(unittest.TestCase):
                 tenant_reference=self.projection.tenant_account_reference,
             )
         self.assertIs(result, sentinel)
-        self.assertEqual(call_order, ["run", "match", "exception"])
+        self.assertEqual(call_order, ["run", "projection", "match", "exception"])
         run_loader.assert_called_once_with(
             _Ledger.connection,
             "tenant-id",
