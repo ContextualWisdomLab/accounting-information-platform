@@ -16,9 +16,17 @@ class ReconciliationCommandIdentityPublicErrorTests(unittest.TestCase):
 
     def test_unrelated_unique_violation_is_not_masked(self) -> None:
         """Only the database-owned reconciliation identity marker becomes a domain conflict."""
-        unrelated = psycopg.errors.UniqueViolation(
+
+        class _MarkerlessUniqueViolation(psycopg.errors.UniqueViolation):
+            @property
+            def sqlstate(self) -> str:
+                """Exercise the marker-free SQLSTATE 23505 normalization branch."""
+                return "23505"
+
+        unrelated = _MarkerlessUniqueViolation(
             "unrelated accounting uniqueness invariant"
         )
+        self.assertEqual(unrelated.sqlstate, "23505")
 
         @_normalize_reconciliation_command_identity_conflicts
         def command() -> dict[str, object]:
