@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 import unittest
 import unittest.mock as mock
 from datetime import datetime, timezone
@@ -12,6 +14,7 @@ import uuid
 import psycopg
 
 from accounting_information_platform import (
+    AccountingValidationError,
     reconcile_reconciliation_run,
     accept_reconciliation_run,
 )
@@ -209,6 +212,98 @@ class ReconciliationLifecyclePostgresTests(unittest.TestCase):
                     (second["reconciliation_run_id"], exception_id),
                 )
             connection.rollback()
+
+    def test_waiting_lifecycle_observes_evidence_committed_before_lock_admission(self) -> None:
+        """A blocked transition must open its authority snapshot after the writer commits."""
+        run_id = str(self.opened["reconciliation_run_id"])
+        tenant_reference = self.fixture.case.policy.tenant_reference
+        command = self._command()
+        bridge = _bridge(run_id)
+        application_name = f"reconciliation_snapshot_wait_{uuid.uuid4().hex}"
+        separator = "&" if "?" in posting.DATABASE_URL else "?"
+        transition_database_url = (
+            f"{posting.DATABASE_URL}{separator}application_name={application_name}"
+        )
+        results: list[dict[str, object]] = []
+        errors: list[BaseException] = []
+
+        def transition() -> None:
+            try:
+                with mock.patch.object(
+                    close_package,
+                    "_database_owned_close_projection_evidence",
+                    return_value=bridge,
+                ):
+                    results.append(
+                        reconcile_reconciliation_run(
+                            command,
+                            transition_database_url,
+                            tenant_reference,
+                        )
+                    )
+            except BaseException as error:  # noqa: BLE001 - test captures thread outcome
+                errors.append(error)
+
+        worker = threading.Thread(target=transition, name=application_name, daemon=True)
+        blocked = False
+        with psycopg.connect(posting.DATABASE_URL) as writer:
+            tenant_id = self._tenant_id(writer)
+            writer.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+                (tenant_reference, f"reconciliation_run_lifecycle:{run_id}"),
+            )
+            writer.execute(
+                """
+                INSERT INTO accounting_core.reconciliation_exception (
+                    tenant_account_id,
+                    reconciliation_run_id,
+                    exception_code,
+                    owner_reference,
+                    next_action,
+                    effective_at,
+                    resolution_status_code
+                )
+                VALUES (%s, %s, 'concurrent_evidence',
+                        'urn:cwl:principal:test_controller',
+                        'Review the concurrently committed evidence.', %s, 'open')
+                """,
+                (
+                    tenant_id,
+                    run_id,
+                    datetime(2026, 9, 1, 12, 1, tzinfo=timezone.utc),
+                ),
+            )
+            worker.start()
+            try:
+                with psycopg.connect(posting.DATABASE_URL, autocommit=True) as observer:
+                    deadline = time.monotonic() + 5.0
+                    while time.monotonic() < deadline:
+                        wait_state = observer.execute(
+                            """
+                            SELECT wait_event_type, wait_event
+                            FROM pg_stat_activity
+                            WHERE application_name = %s
+                              AND pid <> pg_backend_pid()
+                            """,
+                            (application_name,),
+                        ).fetchone()
+                        if wait_state is not None and wait_state[0] == "Lock":
+                            blocked = True
+                            break
+                        time.sleep(0.01)
+            finally:
+                if blocked:
+                    writer.commit()
+                else:
+                    writer.rollback()
+
+        worker.join(timeout=5.0)
+        self.assertTrue(blocked, "lifecycle command never reached the advisory-lock wait")
+        self.assertFalse(worker.is_alive(), "lifecycle command remained blocked after writer commit")
+        self.assertEqual(results, [])
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], AccountingValidationError)
+        self.assertIn("still open", str(errors[0]))
 
     def test_supported_command_persists_transition_outbox_and_freezes_review_state(self) -> None:
         """One exact command transitions atomically, replays provenance, and freezes evidence."""
