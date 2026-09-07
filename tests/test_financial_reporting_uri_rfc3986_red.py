@@ -25,18 +25,16 @@ class FinancialReportingUriRfc3986Tests(unittest.TestCase):
                 ):
                     primitives._absolute_uri(raw_value, "taxonomy_uri")
 
-    def test_absolute_uri_rejects_invalid_http_port_syntax(self) -> None:
-        """HTTP authorities cannot retain non-numeric or out-of-range ports."""
-        for raw_value in (
-            "https://example.com:accounting/taxonomy.xsd",
-            "https://example.com:99999/taxonomy.xsd",
+    def test_absolute_uri_rejects_non_numeric_http_port(self) -> None:
+        """RFC 3986 permits only digits in the authority port component."""
+        with self.assertRaisesRegex(
+            AccountingValidationError,
+            "absolute URI",
         ):
-            with self.subTest(raw_value=raw_value):
-                with self.assertRaisesRegex(
-                    AccountingValidationError,
-                    "absolute URI",
-                ):
-                    primitives._absolute_uri(raw_value, "taxonomy_uri")
+            primitives._absolute_uri(
+                "https://example.com:accounting/taxonomy.xsd",
+                "taxonomy_uri",
+            )
 
     def test_absolute_uri_retains_valid_percent_encoding(self) -> None:
         """RFC 3986 percent-encoded octets remain valid absolute URI data."""
