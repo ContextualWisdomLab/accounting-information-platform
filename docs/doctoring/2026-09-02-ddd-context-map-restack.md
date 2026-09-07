@@ -16,6 +16,16 @@ The repair was test-first. Commit `b3123838185bfc2e0f8084499ff229dfdbf0f8d5` add
 
 Concrete failure scene: an implementation Agent preparing a new accounting module reads the Context Map before the ADR and interprets `accepted architecture` as protected-branch evidence. It then treats a proposed cross-repository boundary as settled and builds against it before released conformance evidence exists. Keeping both the ADR and its Context Map explicitly Proposed prevents that evidence escalation. Promotion to Accepted requires the same exact protected integration evidence described by ADR 0059; a queued workflow, predecessor check, Draft PR, or source inspection is insufficient.
 
+## Primary-owner fitness repair
+
+CodeRabbit review of exact head `342f98408f201599f8ac8506edae1b9d8a3120a6` found that the physical-ownership table could list several bounded contexts in one owner cell while the fitness test checked only that a path string appeared somewhere in the Context Map. The check therefore proved presence, not single-writer ownership: `accept.py`, `core.py`, `persistence.py`, `http_api.py`, and `reconciliation_read_model.py` could retain or gain multiple nominal owners without failing the architecture gate.
+
+The repair is test-first. Commit `f7d63332fd1c002dc5a12f3168020a6ad7f5e69f` changes the fitness contract to require a parseable `Primary owner` column, exactly one ownership row per production path, and exactly one primary-owner token per row. Domain/application paths must name one of the declared bounded contexts. The sole existing technical exception is pinned to the exact path `src/accounting_information_platform/migration_install.py` with technical owner `deployment_infrastructure`; it is not a reusable generic exemption and cannot own an accounting decision. On the predecessor Context Map this contract is deterministically RED because the table exposes only `Current owner(s)` and several rows contain multiple owners.
+
+Successor commit `9ebe709d1ea5e650af3e30920354212eb4d67a9a` makes ownership accountability explicit without pretending the flat modules are already separated. Each physical path now has one primary owner. Co-located behavior that still serves another context is recorded only under `Transitional responsibilities`, so it cannot silently become a second source of journal, period, reconciliation, policy, reporting, or integration authority. For mixed transport/persistence modules, the primary owner is accountability for the next split, not permission to make decisions owned by the transitional contexts.
+
+This changes architecture description and its executable fitness contract only. It does not move code, change imports, alter database/API/event behavior, grant `deployment_infrastructure` domain authority, or convert ADR 0059 from Proposed to Accepted.
+
 ## Evidence boundary
 
 The relevant architecture-description authority was rechecked against the publisher on 2026-09-02. ISO lists **ISO/IEC/IEEE 42010:2022, Software, systems and enterprise — Architecture description, Edition 2** as the currently published International Standard; the 2011 edition is withdrawn and replaced by the 2022 edition. The standard specifies requirements for architecture descriptions and their concepts/relationships, viewpoints, frameworks and languages; it does not prescribe Domain-Driven Design, a directory structure, a microservice split, or a specific implementation method. Accordingly, ADR 0059 and the Context Map use it only as architecture-description guidance and make no standards-conformance claim.
@@ -26,7 +36,7 @@ DDD remains the modeling method used to express responsibility and authority bou
 
 The architecture slice remains GREEN only when all of the following are true on one unchanged exact head:
 
-1. every top-level production module has an explicit current owner in `docs/CONTEXT_MAP.md`;
+1. every listed production path has exactly one physical-ownership row and exactly one primary owner in `docs/CONTEXT_MAP.md`; domain/application paths name one declared bounded context, while any technical exception is exact-path scoped and cannot own accounting decisions;
 2. no new generic domain bucket hides responsibility behind names such as `utils`, `helpers`, `common`, `services`, `shared` or `core`;
 3. accounting domain/application source does not import foreign ContextualWisdomLab application implementations;
 4. the only declared Context Fabric Shared Kernel is a later immutable released provider-neutral contract grammar, never mutable open-PR bytes;
