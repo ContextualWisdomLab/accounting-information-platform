@@ -69,6 +69,13 @@ from .bank_statement import (
     load_canonical_statement_fixture,
     parse_bank_statement_payload,
 )
+from .financial_reporting import (
+    FinancialReportContext,
+    XbrlConceptMapping,
+    XbrlTaxonomyProfile,
+    build_financial_report_artifact,
+    export_xbrl_instance,
+)
 from .http_api import create_journal_proposal_server, run_journal_proposal_server
 from .ingest import ingest_journal_proposal
 from .persistence import PostgresPostingLedger
@@ -78,6 +85,7 @@ __all__ = [
     "AccountBalance",
     "AccountingPolicy",
     "AccountingValidationError",
+    "FinancialReportContext",
     "IdempotencyConflictError",
     "JournalLineProposal",
     "JournalProposal",
@@ -88,6 +96,8 @@ __all__ = [
     "PostgresPostingLedger",
     "PostingLedger",
     "PostingReceipt",
+    "XbrlConceptMapping",
+    "XbrlTaxonomyProfile",
     "CAMT053_MESSAGE_DEFINITION",
     "MemoryArtifactStore",
     "accept_adjusting_journal",
@@ -102,7 +112,9 @@ __all__ = [
     "accept_period_open",
     "accept_pulled_proposals",
     "apply_foundation_migration",
+    "build_financial_report_artifact",
     "create_journal_proposal_server",
+    "export_xbrl_instance",
     "ingest_journal_proposal",
     "load_adapter_manifest",
     "load_canonical_statement_fixture",
