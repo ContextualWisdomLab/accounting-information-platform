@@ -125,26 +125,28 @@ Domain services may coordinate calculations that do not naturally belong to one 
 
 ## Current physical ownership and correction plan
 
-The current package predates the explicit context map. The table below is therefore deliberately candid: several files contain more than one bounded context. `transitional-debt` means the path is accepted only as an existing migration source, not as a destination for new unrelated domain behavior.
+The current package predates the explicit context map. Several files still contain behavior serving more than one bounded context. The table therefore names exactly one accountable **Primary owner** per physical path; entries under **Transitional responsibilities** describe co-located behavior that must be split or adapted later and do not confer additional ownership or accounting authority. `transitional-debt` means the path is accepted only as an existing migration source, not as a destination for new unrelated domain behavior.
 
-| Physical path | Current owner(s) | DDD status | Next correction |
-|---|---|---|---|
-| `src/accounting_information_platform/ingest.py` | `proposal_intake` | transitional | Keep source-contract parsing isolated from posting decisions |
-| `src/accounting_information_platform/accept.py` | `proposal_intake`, `journal_posting`, `journal_reversal` | `transitional-debt` | Split by command/application boundary when a touched slice can move with all imports/tests/contracts |
-| `src/accounting_information_platform/core.py` | `policy_resolution`, `journal_posting` domain types | `transitional-debt` | Do not add a new unrelated rule; move the next touched coherent domain type set into its owning context |
-| `src/accounting_information_platform/persistence.py` | multiple accounting contexts, persistence adapters | `transitional-debt` | Extract repository adapters context-by-context; database adapters must remain downstream of domain rules |
-| `src/accounting_information_platform/http_api.py` | application/API adapters for multiple contexts | `transitional-debt` | Split routes/application orchestration by context without moving domain invariants into HTTP code |
-| `src/accounting_information_platform/billing_pull.py` | `proposal_intake` ACL | transitional | Keep Billing/provider models outside journal domain entities |
-| `src/accounting_information_platform/bank_statement.py` | `bank_statement_registry` | transitional | Preserve provider/camt parsing as an ACL; move only as a coherent adapter/evidence slice |
-| `src/accounting_information_platform/iso20022/` | `bank_statement_registry` ACL | aligned | Version provider-format adapters independently from accounting domain types |
-| `src/accounting_information_platform/reconciliation_run.py` | `reconciliation_run_control` | aligned | Keep lifecycle scope/evidence distinct from matching decisions |
-| `src/accounting_information_platform/reconciliation_completion.py` | `reconciliation_run_control` | transitional | Preserve the evidence-derived completion command as run lifecycle authority; do not let it acquire posting or period-close authority |
-| `src/accounting_information_platform/reconciliation.py` | `reconciliation_review` | transitional | Retain deterministic policy/domain behavior; no provider DTO dependency |
-| `src/accounting_information_platform/allocation.py` | `reconciliation_review` | transitional | Keep exact allocation conservation in the domain boundary |
-| `src/accounting_information_platform/reconciliation_bridge.py` | `reconciliation_review` | transitional | Keep exact book-to-bank arithmetic independent of HTTP/provider DTOs |
-| `src/accounting_information_platform/reconciliation_read_model.py` | `reconciliation_review`, `reporting_projection` | transitional | Separate projection mechanics when the next material UI/read slice requires it |
-| `src/accounting_information_platform/reconciliation_close_package.py` | `reconciliation_review` | transitional | Keep evidence packaging read-only and PostgreSQL-authority checks explicit |
-| `src/accounting_information_platform/migration_install.py` | Generic deployment infrastructure | aligned | No accounting decision logic |
+`migration_install.py` is the one current non-domain exception: `deployment_infrastructure` is a technical primary owner for the executable migration installer, not a bounded context and never an accounting decision authority. The architecture fitness gate pins that exception to this exact path rather than creating a generic escape hatch for future modules.
+
+| Physical path | Primary owner | Transitional responsibilities | DDD status | Next correction |
+|---|---|---|---|---|
+| `src/accounting_information_platform/ingest.py` | `proposal_intake` | — | transitional | Keep source-contract parsing isolated from posting decisions |
+| `src/accounting_information_platform/accept.py` | `journal_posting` | Proposal intake, reversal, period-control, reporting, tax and bank-evidence application orchestration remain co-located | `transitional-debt` | Split by command/application boundary when a touched slice can move with all imports/tests/contracts |
+| `src/accounting_information_platform/core.py` | `journal_posting` | Policy-resolution and other posting-adjacent value types remain co-located in the legacy domain bucket | `transitional-debt` | Do not add a new unrelated rule; move the next touched coherent domain type set into its owning context |
+| `src/accounting_information_platform/persistence.py` | `journal_posting` | Repository adapters for policy, reversal, close, trial-balance, reporting, outbox, tax and bank-evidence paths remain co-located | `transitional-debt` | Extract repository adapters context-by-context; database adapters must remain downstream of domain rules |
+| `src/accounting_information_platform/http_api.py` | `proposal_intake` | HTTP route adapters and application orchestration for other contexts remain co-located; this primary owner is migration accountability, not authority over those contexts | `transitional-debt` | Split routes/application orchestration by context without moving domain invariants into HTTP code |
+| `src/accounting_information_platform/billing_pull.py` | `proposal_intake` | Billing/provider pull transport remains behind the proposal ACL | transitional | Keep Billing/provider models outside journal domain entities |
+| `src/accounting_information_platform/bank_statement.py` | `bank_statement_registry` | Provider/camt adapter and artifact mechanics remain inside the bank ACL | transitional | Preserve provider/camt parsing as an ACL; move only as a coherent adapter/evidence slice |
+| `src/accounting_information_platform/iso20022/` | `bank_statement_registry` | Provider-format adapter mechanics only | aligned | Version provider-format adapters independently from accounting domain types |
+| `src/accounting_information_platform/reconciliation_run.py` | `reconciliation_run_control` | — | aligned | Keep lifecycle scope/evidence distinct from matching decisions |
+| `src/accounting_information_platform/reconciliation_completion.py` | `reconciliation_run_control` | Evidence-derived completion command remains separate from review decisions | transitional | Preserve the evidence-derived completion command as run lifecycle authority; do not let it acquire posting or period-close authority |
+| `src/accounting_information_platform/reconciliation.py` | `reconciliation_review` | — | transitional | Retain deterministic policy/domain behavior; no provider DTO dependency |
+| `src/accounting_information_platform/allocation.py` | `reconciliation_review` | — | transitional | Keep exact allocation conservation in the domain boundary |
+| `src/accounting_information_platform/reconciliation_bridge.py` | `reconciliation_review` | — | transitional | Keep exact book-to-bank arithmetic independent of HTTP/provider DTOs |
+| `src/accounting_information_platform/reconciliation_read_model.py` | `reconciliation_review` | `reporting_projection` consumes the read-model mechanics without becoming a second owner | transitional | Separate projection mechanics when the next material UI/read slice requires it |
+| `src/accounting_information_platform/reconciliation_close_package.py` | `reconciliation_review` | Read-only packaging consumes close/trial-balance evidence without owning those authorities | transitional | Keep evidence packaging read-only and PostgreSQL-authority checks explicit |
+| `src/accounting_information_platform/migration_install.py` | `deployment_infrastructure` | Cross-context executable migration-manifest mechanics only | aligned | No accounting decision logic |
 
 Physical moves are made only with a bounded behavior slice: map all imports/consumers, migration/API/event/schema contracts, tests and release compatibility first; then move the smallest coherent unit and update references in one change. No bulk rename is justified merely to make the directory tree resemble this document.
 
@@ -160,7 +162,7 @@ New work must satisfy all of the following:
 6. A context may read a downstream projection only when the dependency is explicitly documented and cannot create a circular source of accounting truth.
 7. Context Fabric contract consumption requires a released `cwl-context-contracts` version plus applicable conformance/admission evidence. Schema/profile/version drift fails closed; open-PR or branch bytes are not pinned as production dependencies.
 8. Context Assertion/CloudEvents publication must preserve canonical authority references, truth status, valid/system time and provenance and must exclude journal/ledger balances and other financial facts from EA architecture projections.
-9. Every newly created production module must be assignable to exactly one primary bounded context in this map. Cross-context application orchestration must be explicit rather than hidden in a generic module.
+9. Every newly created domain/application production module must be assignable to exactly one primary bounded context in this map. A genuinely technical module must still have exactly one named technical primary owner, requires an explicit fitness-gate exception tied to its exact path, and may not own accounting decisions. Cross-context application orchestration must be explicit rather than hidden in a generic module.
 
 `tests/test_ddd_architecture_fitness.py` ratchets these rules that are mechanically checkable today. The test intentionally does not pretend that the transitional files above are already separated or that unreleased Context Fabric runtime integration has shipped.
 
