@@ -39,12 +39,17 @@ class _PlaceholderHashConnection:
 
     def __init__(self) -> None:
         self.executed: list[str] = []
+        self.transaction_events: list[str] = []
 
     def execute(self, query: str, parameters: tuple[object, ...] = ()) -> _Rows:
         """Return stable authority rows while retaining the sentinel transition hash."""
         del parameters
         normalized = " ".join(query.split())
         self.executed.append(normalized)
+        if normalized.startswith("SELECT pg_advisory_lock("):
+            return _Rows()
+        if normalized.startswith("SELECT pg_advisory_unlock("):
+            return _Rows([(True,)])
         if normalized.startswith("SET TRANSACTION ISOLATION LEVEL"):
             return _Rows()
         if (
@@ -83,6 +88,14 @@ class _PlaceholderHashConnection:
             )
         raise AssertionError(f"unexpected lifecycle query: {normalized}")
 
+    def commit(self) -> None:
+        """Record one transaction boundary for the lifecycle lease protocol."""
+        self.transaction_events.append("commit")
+
+    def rollback(self) -> None:
+        """Record rollback before session-lock cleanup after the expected guard failure."""
+        self.transaction_events.append("rollback")
+
 
 class _Ledger:
     """Expose the exact transaction and tenant hooks needed by the lifecycle command."""
@@ -92,6 +105,7 @@ class _Ledger:
     def __init__(self, database_url: str, tenant_reference: str) -> None:
         self.database_url = database_url
         self.tenant_reference = tenant_reference
+        self._tenant_reference = tenant_reference
 
     @contextlib.contextmanager
     def _session(self):
@@ -153,6 +167,9 @@ class ReconciliationLifecycleTransitionHashGuardTests(unittest.TestCase):
                 )
 
         sql = "\n".join(_Ledger.connection.executed)
+        self.assertIn("SELECT pg_advisory_lock", sql)
+        self.assertIn("SELECT pg_advisory_unlock", sql)
+        self.assertIn("rollback", _Ledger.connection.transaction_events)
         self.assertNotIn("UPDATE accounting_core.reconciliation_run", sql)
         self.assertNotIn("INSERT INTO accounting_integration.outbox_event", sql)
 
