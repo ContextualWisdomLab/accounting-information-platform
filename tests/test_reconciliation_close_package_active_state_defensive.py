@@ -6,7 +6,6 @@ import unittest
 import unittest.mock as mock
 from contextlib import contextmanager
 from decimal import Decimal
-from types import SimpleNamespace
 
 from accounting_information_platform import reconciliation_close_package as close_package
 from accounting_information_platform.reconciliation_close_package import (
@@ -286,25 +285,6 @@ class ReconciliationClosePackageActiveStateDefensiveTests(unittest.TestCase):
             evidence_reference="database-owned:approved",
             sha256_digest="sha256:" + "1" * 64,
         )
-        authoritative_projection_evidence = (
-            close_package._DatabaseOwnedCloseProjectionEvidence(
-                statement_population_reference="sha256:" + "3" * 64,
-                book_population_reference="sha256:" + "4" * 64,
-                statement_opening_balance=0,
-                statement_period_movements=0,
-                statement_closing_balance=0,
-                book_opening_balance=0,
-                posted_cash_book_movements=0,
-                book_closing_balance=0,
-                reconciled_book_balance=0,
-                outstanding_bank_items=0,
-                outstanding_book_items=0,
-                unexplained_difference=0,
-            )
-        )
-
-        def replace_projection(projection, **changes):
-            return SimpleNamespace(**({**vars(projection), **changes}))
 
         sentinel = object()
         with (
@@ -328,16 +308,6 @@ class ReconciliationClosePackageActiveStateDefensiveTests(unittest.TestCase):
                     authoritative_scope,
                 ),
             ) as run_loader,
-            mock.patch.object(
-                close_package,
-                "_database_owned_close_projection_evidence",
-                return_value=authoritative_projection_evidence,
-            ) as projection_loader,
-            mock.patch.object(
-                close_package,
-                "replace",
-                side_effect=replace_projection,
-            ),
             mock.patch.object(
                 close_package,
                 "_build_reconciliation_close_package_from_verified_state",
@@ -369,11 +339,6 @@ class ReconciliationClosePackageActiveStateDefensiveTests(unittest.TestCase):
             tenant_reference="tenant-1",
             reconciliation_run_reference="run-1",
         )
-        projection_loader.assert_called_once_with(
-            _Ledger.connection,
-            "tenant-id",
-            reconciliation_run_reference="run-1",
-        )
         self.assertEqual(
             _Ledger.connection.parameters,
             ("tenant-id", "run-1"),
@@ -383,6 +348,38 @@ class ReconciliationClosePackageActiveStateDefensiveTests(unittest.TestCase):
             _Ledger.connection.query or "",
         )
         verified_input = verified_builder.call_args.args[0]
+        self.assertEqual(
+            verified_input.projection.statement_population_reference,
+            authoritative_projection.statement_population_reference,
+        )
+        self.assertEqual(
+            verified_input.projection.book_population_reference,
+            authoritative_projection.book_population_reference,
+        )
+        self.assertEqual(
+            verified_input.projection.bank_closing_balance,
+            authoritative_projection.statement_closing_balance,
+        )
+        self.assertEqual(
+            verified_input.projection.posted_book_cash_balance,
+            authoritative_projection.book_closing_balance,
+        )
+        self.assertEqual(
+            verified_input.projection.reconciled_balance,
+            authoritative_projection.reconciled_book_balance,
+        )
+        self.assertEqual(
+            verified_input.projection.outstanding_bank_items,
+            authoritative_projection.outstanding_bank_items,
+        )
+        self.assertEqual(
+            verified_input.projection.outstanding_book_items,
+            authoritative_projection.outstanding_book_items,
+        )
+        self.assertEqual(
+            verified_input.projection.unexplained_difference,
+            authoritative_projection.unexplained_difference,
+        )
         self.assertEqual(
             tuple(
                 (evidence.evidence_kind_code, evidence.evidence_reference)
