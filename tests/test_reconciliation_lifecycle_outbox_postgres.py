@@ -82,6 +82,44 @@ class ReconciliationLifecycleOutboxPostgresTests(unittest.TestCase):
             ),
         ).fetchone()
 
+    def _complete_with_outbox(
+        self, connection: psycopg.Connection
+    ) -> tuple[object, object, str]:
+        """Commit the exact raw three-way lifecycle fact and return its event identity."""
+        run_id = self.opened["reconciliation_run_id"]
+        tenant_id = self._tenant_id(connection)
+        transition_id, transition_hash = self._insert_transition(connection)
+        connection.execute(
+            """
+            UPDATE accounting_core.reconciliation_run
+            SET run_status_code = 'reconciled'
+            WHERE tenant_account_id = %s
+              AND reconciliation_run_id = %s
+            """,
+            (tenant_id, run_id),
+        )
+        outbox_event_id = connection.execute(
+            """
+            INSERT INTO accounting_integration.outbox_event (
+                tenant_account_id,
+                event_type_code,
+                aggregate_reference,
+                payload_reference,
+                payload_hash
+            )
+            VALUES (%s, 'reconciliation_run_reconciled', %s, %s, %s)
+            RETURNING outbox_event_id
+            """,
+            (
+                tenant_id,
+                f"urn:cwl:accounting:reconciliation_run:{run_id}",
+                f"urn:cwl:accounting:reconciliation_run_transition:{transition_id}",
+                transition_hash,
+            ),
+        ).fetchone()[0]
+        connection.commit()
+        return tenant_id, outbox_event_id, str(transition_hash)
+
     def test_reconciled_transition_cannot_commit_without_lifecycle_outbox(self) -> None:
         """Authority-bearing reconciled state cannot commit without its exact publication evidence."""
         run_id = self.opened["reconciliation_run_id"]
@@ -134,6 +172,88 @@ class ReconciliationLifecycleOutboxPostgresTests(unittest.TestCase):
         self.assertNotEqual(run_status, "reconciled")
         self.assertEqual(transition_count, 0)
         self.assertEqual(outbox_count, 0)
+
+    def test_exact_lifecycle_outbox_commits_and_allows_publication_only(self) -> None:
+        """The exact event commits, can be published, and keeps identity/hash immutable."""
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            tenant_id, outbox_event_id, transition_hash = self._complete_with_outbox(connection)
+
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            row = connection.execute(
+                """
+                UPDATE accounting_integration.outbox_event
+                SET published_at = clock_timestamp()
+                WHERE tenant_account_id = %s
+                  AND outbox_event_id = %s
+                RETURNING payload_hash, published_at
+                """,
+                (tenant_id, outbox_event_id),
+            ).fetchone()
+            connection.commit()
+        self.assertEqual(row[0], transition_hash)
+        self.assertIsNotNone(row[1])
+
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            with self.assertRaisesRegex(psycopg.Error, "immutable"):
+                connection.execute(
+                    """
+                    UPDATE accounting_integration.outbox_event
+                    SET payload_hash = %s
+                    WHERE tenant_account_id = %s
+                      AND outbox_event_id = %s
+                    """,
+                    ("sha256:" + "f" * 64, tenant_id, outbox_event_id),
+                )
+            connection.rollback()
+
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            with self.assertRaisesRegex(psycopg.Error, "immutable"):
+                connection.execute(
+                    """
+                    DELETE FROM accounting_integration.outbox_event
+                    WHERE tenant_account_id = %s
+                      AND outbox_event_id = %s
+                    """,
+                    (tenant_id, outbox_event_id),
+                )
+            connection.rollback()
+
+    def test_forged_lifecycle_outbox_cannot_commit(self) -> None:
+        """A lifecycle event with a wrong transition hash cannot satisfy publication authority."""
+        run_id = self.opened["reconciliation_run_id"]
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            tenant_id = self._tenant_id(connection)
+            transition_id, _transition_hash = self._insert_transition(connection)
+            connection.execute(
+                """
+                UPDATE accounting_core.reconciliation_run
+                SET run_status_code = 'reconciled'
+                WHERE tenant_account_id = %s
+                  AND reconciliation_run_id = %s
+                """,
+                (tenant_id, run_id),
+            )
+            connection.execute(
+                """
+                INSERT INTO accounting_integration.outbox_event (
+                    tenant_account_id,
+                    event_type_code,
+                    aggregate_reference,
+                    payload_reference,
+                    payload_hash
+                )
+                VALUES (%s, 'reconciliation_run_reconciled', %s, %s, %s)
+                """,
+                (
+                    tenant_id,
+                    f"urn:cwl:accounting:reconciliation_run:{run_id}",
+                    f"urn:cwl:accounting:reconciliation_run_transition:{transition_id}",
+                    "sha256:" + "f" * 64,
+                ),
+            )
+            with self.assertRaisesRegex(psycopg.Error, "outbox"):
+                connection.commit()
+            connection.rollback()
 
 
 if __name__ == "__main__":
