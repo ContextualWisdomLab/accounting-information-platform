@@ -1,6 +1,6 @@
 # XBRL and financial-reporting standards traceability
 
-**Observed:** 2026-09-04  
+**Observed:** 2026-09-08  
 **Implementation:** `accounting_information_platform.financial_reporting`  
 **Decision:** ADR 0067
 
@@ -18,11 +18,11 @@ The current implementation is a **proposal formatter and serializer**. It always
 | Taxonomy Packages 1.0 | Portable taxonomy package identity and catalog handling | Bind every profile to an immutable official-package digest and schema entry point | `XbrlTaxonomyProfile.taxonomy_package_hash`; profile identity tests | **Profile contract implemented.** Package loading, catalog resolution, signature/license verification, and release registry are not implemented |
 | Taxonomy Packages 1.1 public working draft | Candidate successor package semantics | Monitor through a later ADR; do not make a public working draft a production contract | ADR 0067 standards baseline | **Monitoring only** |
 | Project Tavi public working drafts | Candidate next-generation XBRL report and taxonomy architecture | Preserve a format-neutral proposal and adapters; do not replace XBRL 2.1 before Recommendation and adoption review | canonical proposal facts and injected profile boundary | **Monitoring only** |
-| IFRS Accounting Taxonomy 2025 | Current published IFRS digital reporting taxonomy available for 2026 reporting | Do not hard-code or redistribute it. Release a reviewed profile independently using the official package digest and licensed taxonomy content | taxonomy profile port; Issue #51 and ADR 0067 | **No IFRS profile or conformance claim** |
+| IFRS Accounting Taxonomy 2025 | Current published IFRS digital reporting taxonomy; IFRS Foundation confirmed in February 2026 that it remains current for 2026 reporting until the 2027 taxonomy is issued | Do not hard-code or redistribute it. Release a reviewed profile independently using the official package digest and licensed taxonomy content; do not promote 2026 consultation drafts to released filing authority | taxonomy profile port; Issue #51 and ADR 0067 | **No IFRS profile or conformance claim.** The current low-level serializer does not load an official package |
 | IFRS Accounting Taxonomy formula linkbase | Validation formulae distributed separately for the IFRS taxonomy | Retain formula processor identity and results as validation evidence when a statutory profile is introduced | planned validation registry | **Not implemented** |
 | DART/OpenDART XBRL financial-statement services | Korean filing taxonomy, validation, submission, and data-use context | Treat DART as a jurisdiction adapter and filing authority, not as the accounting ledger or generic taxonomy profile | planned DART profile, validation fixtures, and delivery receipts | **Not implemented. No DART acceptance claim** |
 | XML 1.0 and Namespaces in XML | Well-formed XML and namespace-qualified elements | Construct XML with the standard library; validate profile URI, XML prefix, and concept local name before serialization | `contracts.py`, `xbrl.py`, URI/prefix/concept tests | **Implemented for generated proposal syntax.** No external entity or DTD processing exists |
-| RFC 3986 URI generic syntax | Percent-encoded octets use `%` followed by exactly two hexadecimal digits; URI syntax does not admit a raw backslash as a generic URI character | Fail closed on malformed percent escapes or raw backslashes before a taxonomy namespace, schema reference, or entity identifier is serialized | `financial_reporting/primitives.py`; `test_financial_reporting_uri_rfc3986_red.py` | **Implemented at the proposal input boundary.** Valid percent-encoded data is preserved; this is syntax validation, not URI dereferencing or taxonomy trust |
+| RFC 3986 URI generic syntax | Percent-encoded octets use `%` followed by exactly two hexadecimal digits; generic URI syntax does not admit a raw backslash; the authority `port` component is digits | Fail closed before serialization on malformed percent escapes, raw backslashes, or a non-numeric HTTP(S) authority port. Reuse the standard parser for authority/IPv6 handling rather than inventing a second URI parser | `financial_reporting/primitives.py`; `tests/test_financial_reporting_uri_rfc3986_red.py` | **Implemented at the proposal input boundary.** Valid percent-encoded data is preserved; HTTP(S) port validation is intentionally fail-closed. This is syntax/authority validation, not URI dereferencing or taxonomy trust |
 | ISO 4217 representation used by XBRL | Currency unit QName | Require a three-letter uppercase caller-supplied reporting currency and emit `iso4217:{code}` | `FinancialReportContext`; unit tests | **Implemented syntax only.** Currency authority must come from the future AIS owner command |
 | FIPS PUB 180-4 SHA-256 | Content identity | Bind supplied statement package, report proposal, taxonomy package, and generated instance to namespaced SHA-256 digests | `primitives.py`, artifact/export tests | **Implemented.** Hash identity is neither a digital signature nor proof of AIS origin |
 
@@ -99,6 +99,8 @@ A released taxonomy profile is still not sufficient for authoritative report pub
 Berners-Lee, T., Fielding, R., & Masinter, L. (2005). *Uniform Resource Identifier (URI): Generic syntax* (RFC 3986). RFC Editor. https://www.rfc-editor.org/rfc/rfc3986
 
 IFRS Foundation. (2025). *IFRS Accounting Taxonomy 2025*. https://www.ifrs.org/issued-standards/ifrs-taxonomy/ifrs-accounting-taxonomy-2025/
+
+IFRS Foundation. (2026, February). *IFRS Accounting Taxonomy 2025 to remain current for 2026 reporting*. https://www.ifrs.org/news-and-events/news/2026/02/ifrs-accounting-taxonomy-2025-to-remain-current-for-2026/
 
 National Institute of Standards and Technology. (2015). *Secure Hash Standard (SHS)* (FIPS PUB 180-4). https://doi.org/10.6028/NIST.FIPS.180-4
 
