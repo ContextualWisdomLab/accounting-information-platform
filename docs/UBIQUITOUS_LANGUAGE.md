@@ -1,6 +1,6 @@
 # Accounting Ubiquitous Language
 
-Status: accepted architecture vocabulary. Definitions describe this product's model and evidence boundaries; they are not a substitute for accounting, tax or legal advice.
+Status: proposed architecture vocabulary. Definitions describe this product's model and evidence boundaries; they are not a substitute for accounting, tax or legal advice.
 
 Use these terms consistently in source, tests, ADRs, APIs and operator documentation. When an external provider uses a conflicting term, preserve the provider term inside its Anti-Corruption Layer and translate it at the boundary.
 
