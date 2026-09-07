@@ -36,6 +36,19 @@ class FinancialReportingUriRfc3986Tests(unittest.TestCase):
                 "taxonomy_uri",
             )
 
+    def test_absolute_uri_rejects_http_userinfo(self) -> None:
+        """Caller-supplied HTTP(S) identifiers cannot retain authority userinfo."""
+        for raw_value in (
+            "https://reporting-user@example.com/taxonomy.xsd",
+            "https://reporting-user:secret@example.com/taxonomy.xsd",
+        ):
+            with self.subTest(raw_value=raw_value):
+                with self.assertRaisesRegex(
+                    AccountingValidationError,
+                    "absolute URI",
+                ):
+                    primitives._absolute_uri(raw_value, "taxonomy_uri")
+
     def test_absolute_uri_rejects_http_authority_without_host(self) -> None:
         """HTTP(S) report identifiers require a non-empty origin host."""
         for raw_value in (
