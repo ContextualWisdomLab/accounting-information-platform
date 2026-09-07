@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import re
 import unittest
 from pathlib import Path
 
@@ -26,6 +27,9 @@ BOUND_CONTEXTS = {
     "bank_statement_registry",
     "reconciliation_run_control",
     "reconciliation_review",
+}
+TECHNICAL_PRIMARY_OWNER_EXCEPTIONS = {
+    "src/accounting_information_platform/migration_install.py": "deployment_infrastructure",
 }
 GENERIC_BUCKET_NAMES = {
     "utils",
@@ -77,6 +81,36 @@ def _import_roots(path: Path) -> set[str]:
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             roots.add(node.module.split(".", 1)[0])
     return roots
+
+
+def _physical_ownership_rows(text: str) -> list[tuple[str, str, str]]:
+    """Parse physical path, primary owner and transitional responsibility cells."""
+    header = (
+        "| Physical path | Primary owner | Transitional responsibilities | "
+        "DDD status | Next correction |"
+    )
+    lines = text.splitlines()
+    if header not in lines:
+        return []
+    start = lines.index(header) + 2
+    rows: list[tuple[str, str, str]] = []
+    for line in lines[start:]:
+        if not line.startswith("|"):
+            break
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) != 5:
+            continue
+        path_cell, primary_owner, transitional_responsibilities, _, _ = cells
+        if not path_cell.startswith("`src/accounting_information_platform/"):
+            continue
+        rows.append(
+            (
+                path_cell.strip("`"),
+                primary_owner,
+                transitional_responsibilities,
+            )
+        )
+    return rows
 
 
 class DddArchitectureFitnessTests(unittest.TestCase):
@@ -141,22 +175,45 @@ class DddArchitectureFitnessTests(unittest.TestCase):
         self.assertIn("EA Decision Plane", context_map)
         self.assertIn("architecture/change evidence only", context_map)
 
-    def test_every_top_level_production_module_has_explicit_physical_owner(self) -> None:
-        """Require new modules to be assigned to a context in the code-current map."""
+    def test_every_top_level_production_module_has_exactly_one_primary_owner(self) -> None:
+        """Require one accountable owner even while mixed modules retain transitional duties."""
         text = CONTEXT_MAP.read_text(encoding="utf-8")
-        production_modules = sorted(
-            path
+        rows = _physical_ownership_rows(text)
+        self.assertTrue(
+            rows,
+            msg=(
+                "docs/CONTEXT_MAP.md must expose a parseable physical-ownership table "
+                "with one Primary owner column"
+            ),
+        )
+        production_paths = sorted(
+            path.relative_to(ROOT).as_posix()
             for path in PACKAGE.glob("*.py")
             if path.name != "__init__.py"
         )
-        for path in production_modules:
-            relative = path.relative_to(ROOT).as_posix()
-            self.assertIn(
-                f"`{relative}`",
-                text,
-                msg=f"{relative} needs an explicit primary/current owner in docs/CONTEXT_MAP.md",
+        production_paths.append("src/accounting_information_platform/iso20022/")
+        for relative in production_paths:
+            matches = [row for row in rows if row[0] == relative]
+            self.assertEqual(
+                1,
+                len(matches),
+                msg=f"{relative} needs exactly one physical-ownership row",
             )
-        self.assertIn("`src/accounting_information_platform/iso20022/`", text)
+            primary_owner_codes = re.findall(r"`([^`]+)`", matches[0][1])
+            self.assertEqual(
+                1,
+                len(primary_owner_codes),
+                msg=f"{relative} needs exactly one primary owner token",
+            )
+            expected_technical_owner = TECHNICAL_PRIMARY_OWNER_EXCEPTIONS.get(relative)
+            if expected_technical_owner is not None:
+                self.assertEqual([expected_technical_owner], primary_owner_codes)
+            else:
+                self.assertIn(
+                    primary_owner_codes[0],
+                    BOUND_CONTEXTS,
+                    msg=f"{relative} primary owner must be one declared bounded context",
+                )
 
     def test_no_new_generic_domain_bucket_is_created(self) -> None:
         """Keep existing core.py debt from becoming precedent for more generic buckets."""
