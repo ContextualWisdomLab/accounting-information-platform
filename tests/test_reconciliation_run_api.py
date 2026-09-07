@@ -92,10 +92,6 @@ class ReconciliationRunApiTests(unittest.TestCase):
                 """
             ).fetchone()[0]
         source_payload_hash = "sha256:" + hashlib.sha256(fixture).hexdigest()
-        with psycopg.connect(posting.DATABASE_URL) as connection:
-            knowledge_cutoff_at = connection.execute(
-                "SELECT clock_timestamp()"
-            ).fetchone()[0]
         return statement, {
             "tenant_reference": self.case.policy.tenant_reference,
             "bank_statement_record_id": statement["bank_statement_record_id"],
