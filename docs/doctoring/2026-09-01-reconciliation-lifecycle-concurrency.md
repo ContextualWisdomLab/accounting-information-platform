@@ -9,23 +9,25 @@ What concurrency and transaction contract is required so a reconciliation run ca
 
 ## Authoritative findings
 
-PostgreSQL 18 documents that `REPEATABLE READ` uses a transaction snapshot and that the snapshot is established when the first non-transaction-control statement begins. `SET TRANSACTION` configures isolation but is not itself the source-data read. Therefore the lifecycle path sets `REPEATABLE READ`, acquires the transaction advisory lock for the run, and only then performs the tenant/run/source/review queries. A competing evidence mutation path uses the same transaction-level advisory lock, so the transition either observes the completed writer in its later snapshot or completes before the later writer; it does not validate one snapshot and then allow a concurrent reviewed-evidence mutation behind the status change.
+PostgreSQL 18 documents that `REPEATABLE READ` fixes its snapshot at the first query or data-modification statement in the transaction. `SELECT pg_advisory_xact_lock(...)` is itself a query and can wait. Therefore a transaction-level advisory-lock query cannot safely be used as the supposedly pre-snapshot admission point: if another evidence writer holds the same key, the waiting transition can freeze a snapshot before that writer commits and then continue with stale review/source facts after lock acquisition.
 
-`SELECT ... FOR UPDATE` is retained for the `reconciliation_run` row so conflicting status writers serialize on the aggregate state. PostgreSQL transaction-level advisory locks are used for the wider application-defined run boundary because candidates, matches, allocations, approvals, and exceptions reside in different tables. Transaction-level advisory locks release automatically when the transaction ends.
+The corrected lifecycle protocol acquires the same run key first as a **session-level** advisory lock, commits that acquisition transaction while retaining the session lock, then starts a fresh `REPEATABLE READ` authority transaction and acquires the matching transaction-level advisory lock before tenant/run/source/review reads. Competing evidence mutation paths still use the transaction-level key, so the session lease excludes them before the repeatable-read snapshot begins. `SELECT ... FOR UPDATE` remains on the `reconciliation_run` row so conflicting status writers serialize on aggregate state. The session lease is released only after the authority transaction commits or rolls back.
+
+The prior wording in this record that described the transaction-level advisory-lock query itself as occurring before snapshot establishment was corrected on 2026-09-07. Detailed RED/GREEN evidence and rejected alternatives are recorded in `2026-09-07-reconciliation-snapshot-lock-admission.md`.
 
 ### References (APA 7th)
 
-PostgreSQL Global Development Group. (2026). *PostgreSQL 18 documentation: SELECT*. https://www.postgresql.org/docs/18/sql-select.html
+PostgreSQL Global Development Group. (2026a). *PostgreSQL 18 documentation: SET TRANSACTION*. https://www.postgresql.org/docs/18/sql-set-transaction.html
 
-PostgreSQL Global Development Group. (2026). *PostgreSQL 18 documentation: SET TRANSACTION*. https://www.postgresql.org/docs/18/sql-set-transaction.html
+PostgreSQL Global Development Group. (2026b). *PostgreSQL 18 documentation: System administration functions—Advisory lock functions*. https://www.postgresql.org/docs/18/functions-admin.html
 
-PostgreSQL Global Development Group. (2026). *PostgreSQL 18 documentation: System administration functions—Advisory lock functions*. https://www.postgresql.org/docs/18/functions-admin.html
+PostgreSQL Global Development Group. (2026c). *PostgreSQL 18 documentation: Transaction isolation*. https://www.postgresql.org/docs/18/transaction-iso.html
 
 ## Code-to-evidence traceability
 
 | Requirement | Implementation boundary | Falsifiable evidence |
 | --- | --- | --- |
-| One coherent authority snapshot | `reconcile_reconciliation_run()` sets `REPEATABLE READ`, acquires `reconciliation_run_lifecycle:<run_id>` before the first data query, then reads run/review/source state | Unit SQL-order assertion plus exact PostgreSQL lifecycle test and existing database-owned close-projection tests |
+| One coherent authority snapshot | `_lifecycle_authority_session()` acquires and commits the session-level `reconciliation_run_lifecycle:<run_id>` lease before starting fresh `REPEATABLE READ`; it then retains the matching transaction-level lock before authority reads | `tests/test_reconciliation_lifecycle_snapshot_lock_order.py` plus exact PostgreSQL lifecycle and database-owned close-projection tests |
 | Aggregate initial state | Migration lifecycle trigger rejects every new `reconciliation_run` whose initial `run_status_code` is not `evaluating` | Real PostgreSQL raw `INSERT ... run_status_code='reconciled'` must fail with `reconciliation_lifecycle_initial_state` before deferred provenance could make a forged terminal run durable |
 | Legal state edge | `reconciliation_run` row lock + migration status guard permits only `evaluating`/`review_required` → `reconciled`; every other changed target is rejected until a separate named command evolves the state machine | Raw SQL into `reconciled` without transition evidence and raw SQL into `not_reconciled` without a named command must both fail |
 | Aggregate membership | Existing candidate/match/allocation/approval/exception rows may not change tenant/run ownership before lifecycle-lock selection | Repository contract proves the tenant/run reassignment guard precedes lifecycle lock; real PostgreSQL cross-run UPDATE must fail with `reconciliation_lifecycle_scope_immutable` |
@@ -36,9 +38,15 @@ PostgreSQL Global Development Group. (2026). *PostgreSQL 18 documentation: Syste
 | Currency authority | The locked `reconciliation_run` row supplies `currency_code` to the transition snapshot digest; the close-projection helper is not treated as the owner of run scope | Regression constructs a bridge object with no currency attribute and still hashes successfully when the locked run currency is supplied |
 | Replay provenance | Transition row persists statement/book population references and database-owned command hash binds them; `_load_transition_document()` returns those persisted values | Migration contract plus direct replay receipt regression; real PostgreSQL replay must return the same two identities without a bridge rebuild |
 | Post-transition immutability | Candidate/match/allocation/approval/exception trigger paths acquire the same run lock and reject writes when run is reconciled | PostgreSQL late-exception insert must fail after supported transition |
-| Atomic publication evidence | Transition command, status update, and `reconciliation_run_reconciled` outbox row share one transaction | PostgreSQL test reads all three after command completion |
+| Atomic publication evidence | Transition command, status update, and `reconciliation_run_reconciled` outbox row share one authority transaction | PostgreSQL test reads all three after command completion |
 
 ## Current-head causal repairs
+
+### Snapshot admission before repeatable-read authority
+
+A 2026-09-07 re-read of PostgreSQL 18 concurrency semantics invalidated the earlier assumption that `SET TRANSACTION` followed by `SELECT pg_advisory_xact_lock(...)` admitted the run lock before the repeatable-read snapshot. The lock function is called through `SELECT`, so it is the first query and therefore establishes the snapshot even when it blocks. A competing evidence writer could commit while the lifecycle command waited, yet the lifecycle command would continue from the older snapshot after admission.
+
+Commit `9214c056149be43f03f2014638ff5c777d1f5b81` introduced the RED ordering contract. Commit `dab17c4c7cf3d4922e7259f1a20fff6bdc30e7c6` added `_lifecycle_authority_session()`: acquire the same aggregate key as a session-level advisory lock, commit that acquisition transaction, begin fresh `REPEATABLE READ`, acquire the matching transaction-level advisory lock, then perform authority reads and writes. Commit `4ae56148a7c7d4f9060d81027f950db21f572332` exercises success, failed admission, authority rollback and cleanup edges. `2026-09-07-reconciliation-snapshot-lock-admission.md` records the exact reasoning and primary references. The change is limited to transaction admission; monetary, review, idempotency, RLS, posting, close and foreign-truth boundaries remain unchanged.
 
 ### Run-scope currency ownership
 
@@ -80,4 +88,4 @@ This lifecycle candidate extends migration `0019_reconciliation_run_command_evid
 
 ## Next evidence
 
-The stacked PR is not merge-ready until its exact head passes repository validation, real PostgreSQL tests, complete statement/branch and edge-case coverage, SAST/security/dependency review, reproducible package/SBOM/provenance, and required independent review. Real PostgreSQL replay must prove that first execution and exact retry return the same statement/book population identities, and PostgreSQL evidence tests must prove cross-run membership reassignment fails. The parent dependency root must then rerun its own exact-head evidence after incorporating this child; predecessor checks do not transfer.
+The stacked PR is not merge-ready until its exact head passes repository validation, real PostgreSQL tests, complete statement/branch and edge-case coverage, SAST/security/dependency review, reproducible package/SBOM/provenance, and required independent review. Real PostgreSQL replay must prove that first execution and exact retry return the same statement/book population identities, PostgreSQL evidence tests must prove cross-run membership reassignment fails, and the exact-head lock-admission regression must remain GREEN. The parent dependency root must then rerun its own exact-head evidence after incorporating this child; predecessor checks do not transfer.
