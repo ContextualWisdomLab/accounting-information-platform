@@ -375,8 +375,11 @@ class ReconciliationLifecyclePostgresTests(unittest.TestCase):
             first["book_population_reference"],
             replay["book_population_reference"],
         )
-        self.assertEqual(first["statement_population_reference"], bridge.statement_population_reference)
-        self.assertEqual(first["book_population_reference"], bridge.book_population_reference)
+        self.assertNotEqual(
+            first["statement_population_reference"],
+            bridge.statement_population_reference,
+        )
+        self.assertNotEqual(first["book_population_reference"], bridge.book_population_reference)
         with psycopg.connect(posting.DATABASE_URL) as connection:
             transition = connection.execute(
                 """
@@ -396,8 +399,8 @@ class ReconciliationLifecyclePostgresTests(unittest.TestCase):
             self.assertEqual(transition[0], first["reconciliation_transition_command_hash"])
             self.assertEqual(transition[1], first["reconciliation_snapshot_hash"])
             self.assertEqual(transition[2], "reconciled")
-            self.assertEqual(transition[3], bridge.statement_population_reference)
-            self.assertEqual(transition[4], bridge.book_population_reference)
+            self.assertEqual(transition[3], first["statement_population_reference"])
+            self.assertEqual(transition[4], first["book_population_reference"])
             outbox = connection.execute(
                 """
                 SELECT event_type_code, payload_hash
