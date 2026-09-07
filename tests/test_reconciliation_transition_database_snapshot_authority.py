@@ -45,6 +45,22 @@ class ReconciliationTransitionDatabaseSnapshotAuthorityTests(unittest.TestCase):
             3,
         )
 
+    def test_reconciled_transition_requires_exact_immutable_outbox_evidence(self) -> None:
+        """The database must bind reconciled authority to one matching lifecycle event."""
+        sql = AUTHORITY_MIGRATION.read_text(encoding="utf-8")
+
+        self.assertIn("reconciliation_run_transition_outbox_guard", sql)
+        self.assertIn("reconciliation_run_outbox_transition_guard", sql)
+        self.assertIn("reconciliation_run_outbox_immutable_guard", sql)
+        self.assertIn("reconciliation_run_reconciled_outbox_transition_unique", sql)
+        self.assertIn("event_type_code = 'reconciliation_run_reconciled'", sql)
+        self.assertIn(
+            "'urn:cwl:accounting:reconciliation_run_transition:' ||",
+            sql,
+        )
+        self.assertIn("event.payload_hash = NEW.reconciliation_transition_command_hash", sql)
+        self.assertIn("only publication state may change", sql)
+
     def test_public_installer_applies_authority_after_base_0020(self) -> None:
         """Every supported foundation install must include the database-authority overlay."""
         source = INSTALLER.read_text(encoding="utf-8")
