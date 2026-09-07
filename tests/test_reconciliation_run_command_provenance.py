@@ -206,17 +206,61 @@ class ReconciliationRunCommandProvenanceTests(unittest.TestCase):
         migration_body = migration_sql.removeprefix("BEGIN;\n").rsplit("\nCOMMIT;", 1)[0]
 
         with psycopg.connect(posting.DATABASE_URL) as connection:
-            # Transactionally reconstruct the pre-0019 schema boundary. The
-            # context manager rolls the catalog back if this RED assertion
-            # fails, so no shared fixture state escapes the test.
+            # Reconstruct the pre-0019 catalog inside this transaction instead
+            # of making the production migration silently idempotent. Later
+            # migrations may have added dependencies to these objects, so the
+            # rollback-only fixture removes the complete 0019-owned table and
+            # trigger surface before replaying the canonical migration body.
             connection.execute(
                 """
-                DROP TRIGGER reconciliation_run_command_provenance_guard
+                DROP TRIGGER IF EXISTS reconciliation_run_command_provenance_guard
                 ON accounting_core.reconciliation_run
                 """
             )
             connection.execute(
+                """
+                DROP TRIGGER IF EXISTS accounting_reconciliation_run_transition_guard
+                ON accounting_core.reconciliation_run
+                """
+            )
+            for table_name, trigger_name in (
+                (
+                    "reconciliation_candidate",
+                    "accounting_reconciliation_lifecycle_candidate_guard",
+                ),
+                (
+                    "reconciliation_match",
+                    "accounting_reconciliation_lifecycle_match_guard",
+                ),
+                (
+                    "statement_match_allocation",
+                    "accounting_reconciliation_lifecycle_statement_allocation_guard",
+                ),
+                (
+                    "journal_match_allocation",
+                    "accounting_reconciliation_lifecycle_journal_allocation_guard",
+                ),
+                (
+                    "reconciliation_approval",
+                    "accounting_reconciliation_lifecycle_approval_guard",
+                ),
+                (
+                    "reconciliation_exception",
+                    "accounting_reconciliation_lifecycle_exception_guard",
+                ),
+            ):
+                connection.execute(
+                    f"DROP TRIGGER IF EXISTS {trigger_name} "
+                    f"ON accounting_core.{table_name}"
+                )
+            connection.execute(
+                "DROP TABLE accounting_core.reconciliation_run_transition_command CASCADE"
+            )
+            connection.execute(
                 "DROP TABLE accounting_core.reconciliation_run_command CASCADE"
+            )
+            connection.execute(
+                "DROP TABLE accounting_core.reconciliation_command_identity CASCADE"
             )
             self._insert_run(connection, scope, command)
 
