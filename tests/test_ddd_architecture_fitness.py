@@ -104,6 +104,14 @@ class DddArchitectureFitnessTests(unittest.TestCase):
         self.assertIn("Status: proposed architecture", context_map)
         self.assertNotIn("Status: accepted architecture", context_map)
 
+    def test_ubiquitous_language_does_not_outrun_the_proposed_adr(self) -> None:
+        """Keep architecture vocabulary Proposed while ADR 0059 remains Proposed."""
+        ubiquitous_language = UBIQUITOUS_LANGUAGE.read_text(encoding="utf-8")
+        adr = CONTEXT_MAP_ADR.read_text(encoding="utf-8")
+        self.assertIn("Status: Proposed", adr)
+        self.assertIn("Status: proposed architecture vocabulary", ubiquitous_language)
+        self.assertNotIn("Status: accepted architecture vocabulary", ubiquitous_language)
+
     def test_proposed_adr_owns_the_context_map_decision_until_integration(self) -> None:
         """Keep an unintegrated architecture decision Proposed until evidence is complete."""
         text = CONTEXT_MAP_ADR.read_text(encoding="utf-8")
