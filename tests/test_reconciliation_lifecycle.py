@@ -64,6 +64,7 @@ class _Connection:
             _BOOK_POPULATION_HASH,
         )
         self.executed: list[tuple[str, tuple[object, ...]]] = []
+        self.transaction_events: list[str] = []
 
     def execute(
         self, query: str, parameters: tuple[object, ...] = ()
@@ -71,6 +72,10 @@ class _Connection:
         """Return fixture rows by stable SQL landmarks."""
         normalized = " ".join(query.split())
         self.executed.append((normalized, parameters))
+        if normalized.startswith("SELECT pg_advisory_lock("):
+            return _Rows()
+        if normalized.startswith("SELECT pg_advisory_unlock("):
+            return _Rows([(True,)])
         if normalized.startswith("SET TRANSACTION ISOLATION LEVEL"):
             return _Rows()
         if (
@@ -125,6 +130,14 @@ class _Connection:
             )
         raise AssertionError(f"unexpected lifecycle query: {normalized}")
 
+    def commit(self) -> None:
+        """Record a transaction commit boundary used by the lifecycle lease protocol."""
+        self.transaction_events.append("commit")
+
+    def rollback(self) -> None:
+        """Record a transaction rollback boundary used by the lifecycle lease protocol."""
+        self.transaction_events.append("rollback")
+
 
 class _Ledger:
     """Tenant-bound ledger double sharing one configured connection."""
@@ -135,6 +148,7 @@ class _Ledger:
     def __init__(self, database_url: str, tenant_reference: str) -> None:
         self.database_url = database_url
         self.tenant_reference = tenant_reference
+        self._tenant_reference = tenant_reference
 
     @contextlib.contextmanager
     def _session(self):
@@ -234,9 +248,12 @@ class ReconciliationLifecycleTests(unittest.TestCase):
         )
         self.bridge_mock.assert_called_once()
         sql = "\n".join(query for query, _parameters in _Ledger.connection.executed)
+        self.assertIn("SELECT pg_advisory_lock", sql)
         self.assertIn("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ", sql)
+        self.assertIn("SELECT pg_advisory_unlock", sql)
         self.assertIn("INSERT INTO accounting_integration.outbox_event", sql)
         self.assertIn("UPDATE accounting_core.reconciliation_run", sql)
+        self.assertGreaterEqual(_Ledger.connection.transaction_events.count("commit"), 3)
 
     def test_exact_transition_replays_without_rebuilding_bridge(self) -> None:
         """An exact lifecycle key replays the durable transition receipt."""
