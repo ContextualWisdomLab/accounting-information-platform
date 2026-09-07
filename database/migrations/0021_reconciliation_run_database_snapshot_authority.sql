@@ -221,7 +221,10 @@ BEGIN
                    jsonb_build_object(
                        'journal_reference', journal.journal_reference,
                        'accounting_date', journal.accounting_date,
-                       'posted_at', journal.posted_at,
+                       'posted_at', to_char(
+                           journal.posted_at AT TIME ZONE 'UTC',
+                           'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+                       ),
                        'line_number', line.line_number,
                        'debit_amount', line.debit_amount,
                        'credit_amount', line.credit_amount,
@@ -523,7 +526,10 @@ BEGIN
                        'reconciliation_exception_id', exception.reconciliation_exception_id::text,
                        'exception_code', exception.exception_code,
                        'owner_reference', exception.owner_reference,
-                       'effective_at', exception.effective_at,
+                       'effective_at', to_char(
+                           exception.effective_at AT TIME ZONE 'UTC',
+                           'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+                       ),
                        'resolution_status_code', exception.resolution_status_code
                    )
                    ORDER BY exception.reconciliation_exception_id
@@ -561,7 +567,10 @@ BEGIN
         'book_population', book_population,
         'book_population_reference', database_book_reference,
         'exception_population', exception_population,
-        'knowledge_cutoff_at', knowledge_cutoff_at,
+        'knowledge_cutoff_at', to_char(
+            knowledge_cutoff_at AT TIME ZONE 'UTC',
+            'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+        ),
         'opening_command_hash', opening_command_hash,
         'posted_cash_book_movements', posted_cash_book_movements,
         'reconciliation_run_id', authority_reconciliation_run_id::text,
