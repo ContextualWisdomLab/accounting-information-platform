@@ -368,6 +368,14 @@ class ReconciliationLifecycleAuthorityEdgeTests(unittest.TestCase):
                     "urn:cwl:tenant:test",
                 )
 
+        executed_sql = [query for query, _parameters in _LifecycleLedger.connection.executed]
+        self.assertFalse(
+            any(
+                "INSERT INTO accounting_core.reconciliation_run_transition_command" in query
+                for query in executed_sql
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
