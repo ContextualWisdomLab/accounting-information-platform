@@ -131,15 +131,17 @@ class ReconciliationOutboxRetentionPostgresTests(unittest.TestCase):
         tenant_id: object,
         outbox_event_id: object,
     ) -> None:
-        """Require a second exact authority event to fail at COMMIT."""
+        """Require a second exact authority event to fail at its specific database invariant."""
         with psycopg.connect(posting.DATABASE_URL) as connection:
             event_type, aggregate_reference, payload_reference, payload_hash = (
                 self._outbox_identity(connection, tenant_id, outbox_event_id)
             )
-            with self.assertRaisesRegex(
-                psycopg.Error,
-                "reconciliation_authority_outbox_retention",
-            ):
+            expected_marker = (
+                "reconciliation_run_reconciled_outbox_transition_unique"
+                if event_type == "reconciliation_run_reconciled"
+                else "reconciliation_authority_outbox_retention"
+            )
+            with self.assertRaisesRegex(psycopg.Error, expected_marker):
                 connection.execute(
                     """
                     INSERT INTO accounting_integration.outbox_event (
@@ -265,7 +267,7 @@ class ReconciliationOutboxRetentionPostgresTests(unittest.TestCase):
         with psycopg.connect(posting.DATABASE_URL) as connection:
             with self.assertRaisesRegex(
                 psycopg.Error,
-                "reconciliation_authority_outbox_retention",
+                "reconciliation_lifecycle_outbox_immutable",
             ):
                 connection.execute(
                     """
