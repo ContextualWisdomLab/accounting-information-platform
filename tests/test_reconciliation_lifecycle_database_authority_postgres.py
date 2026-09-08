@@ -77,6 +77,19 @@ class ReconciliationLifecycleDatabaseAuthorityPostgresTests(unittest.TestCase):
             (self.fixture.case.policy.tenant_reference, lifecycle_scope),
         )
 
+    def _release_safe_raw_transition(self, connection: psycopg.Connection) -> None:
+        """Release the test lifecycle lease after the rolled-back authority probe."""
+        released = connection.execute(
+            "SELECT accounting_core.release_reconciliation_lifecycle_session(%s, %s)",
+            (
+                self.fixture.case.policy.tenant_reference,
+                self.opened["reconciliation_run_id"],
+            ),
+        ).fetchone()
+        self.assertIsNotNone(released)
+        self.assertTrue(bool(released[0]))
+        connection.commit()
+
     def _insert_transition(
         self,
         connection: psycopg.Connection,
@@ -145,6 +158,7 @@ class ReconciliationLifecycleDatabaseAuthorityPostgresTests(unittest.TestCase):
                 key_suffix=key_suffix,
             )
             connection.rollback()
+            self._release_safe_raw_transition(connection)
         return persisted
 
     def test_database_replaces_all_caller_transition_identities(self) -> None:
@@ -166,6 +180,7 @@ class ReconciliationLifecycleDatabaseAuthorityPostgresTests(unittest.TestCase):
                 key_suffix="forged-identities",
             )
             connection.rollback()
+            self._release_safe_raw_transition(connection)
 
         self.assertNotEqual(persisted[0], forged_snapshot)
         self.assertNotEqual(persisted[1], forged_statement_reference)
@@ -228,6 +243,7 @@ class ReconciliationLifecycleDatabaseAuthorityPostgresTests(unittest.TestCase):
                     key_suffix="untied-bridge",
                 )
             connection.rollback()
+            self._release_safe_raw_transition(connection)
 
 
 if __name__ == "__main__":
