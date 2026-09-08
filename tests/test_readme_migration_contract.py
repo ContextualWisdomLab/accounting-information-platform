@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import unittest
 
 
@@ -10,14 +11,21 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReadmeMigrationContractTests(unittest.TestCase):
-    """Keep operator install guidance aligned with the checked-in schema chain."""
+    """Keep operator install guidance aligned with the canonical foundation manifest."""
 
-    def test_readme_names_latest_checked_in_migration(self) -> None:
-        """README installation guidance must name the latest ordered migration."""
-        migration_names = sorted(
-            path.name for path in (ROOT / "database" / "migrations").glob("*.sql")
+    def test_readme_names_canonical_foundation_install_endpoint(self) -> None:
+        """Branch-local provisional migrations must not redefine the foundation endpoint."""
+        validator = (ROOT / "scripts" / "validate_repository.py").read_text(
+            encoding="utf-8"
         )
-        self.assertTrue(migration_names, "expected at least one accounting migration")
+        migration_names = re.findall(
+            r'"database/migrations/(\d{4}_[^"]+\.sql)"',
+            validator,
+        )
+        self.assertTrue(
+            migration_names,
+            "expected canonical accounting migrations in REQUIRED_FILES",
+        )
         latest_migration = migration_names[-1]
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn(
