@@ -103,7 +103,7 @@ class ReconciliationClosePackageAuthoritativeExceptionTests(unittest.TestCase):
 
 
 class PostgresReconciliationClosePackageAuthoritativeStateTests(unittest.TestCase):
-    """Exercise run scope and unresolved-exception eligibility in real PostgreSQL."""
+    """Exercise run status and unresolved-exception eligibility in real PostgreSQL."""
 
     @classmethod
     def setUpClass(cls) -> None:

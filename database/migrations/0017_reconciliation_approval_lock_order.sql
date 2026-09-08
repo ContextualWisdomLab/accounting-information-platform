@@ -544,6 +544,22 @@ BEGIN
         END IF;
     END IF;
 
+    -- Superseded is a historical overlay on an already reviewed decision, not
+    -- an alternate terminal state that can skip decision evidence. New matches
+    -- and proposed matches therefore cannot jump directly to superseded.
+    IF NEW.match_status_code = 'superseded' THEN
+        IF TG_OP <> 'UPDATE' THEN
+            RAISE EXCEPTION
+                'reconciliation match may be superseded only from approved or rejected reviewed evidence (reconciliation_supersede_requires_reviewed_decision)'
+                USING ERRCODE = '23514';
+        END IF;
+        IF OLD.match_status_code NOT IN ('approved', 'rejected', 'superseded') THEN
+            RAISE EXCEPTION
+                'reconciliation match may be superseded only from approved or rejected reviewed evidence (reconciliation_supersede_requires_reviewed_decision)'
+                USING ERRCODE = '23514';
+        END IF;
+    END IF;
+
     IF TG_OP = 'UPDATE'
        AND OLD.match_status_code IN ('approved', 'rejected', 'superseded') THEN
         IF NEW.approved_at IS DISTINCT FROM OLD.approved_at THEN
