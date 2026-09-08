@@ -21,6 +21,7 @@ from accounting_information_platform import (
 from accounting_information_platform import reconciliation_close_package as close_package
 from accounting_information_platform.persistence import PostgresPostingLedger
 from tests import test_postgres_posting as posting
+from tests.reconciliation_opening_book_fixture import post_reconciliation_opening_book_balance
 from tests.test_reconciliation_run_api import ReconciliationRunApiTests
 
 
@@ -40,6 +41,7 @@ class ReconciliationLifecycleLockWaitPostgresTests(unittest.TestCase):
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
         self.addCleanup(self.fixture.tearDown)
+        post_reconciliation_opening_book_balance(self.fixture.case)
         _statement, command = self.fixture._statement_and_command()
         self.opened = accept_reconciliation_run(
             command,
@@ -73,6 +75,28 @@ class ReconciliationLifecycleLockWaitPostgresTests(unittest.TestCase):
                     datetime(2026, 9, 2, 0, 10, tzinfo=timezone.utc),
                 ),
             ).fetchone()[0]
+            connection.execute(
+                """
+                INSERT INTO accounting_core.reconciliation_evidence (
+                    tenant_account_id,
+                    reconciliation_run_id,
+                    reconciliation_exception_id,
+                    evidence_type_code,
+                    evidence_reference,
+                    evidence_payload_hash,
+                    effective_at
+                )
+                VALUES (%s, %s, %s, 'exception_resolution_review', %s, %s, %s)
+                """,
+                (
+                    tenant_id,
+                    self.opened["reconciliation_run_id"],
+                    self.exception_id,
+                    f"urn:cwl:evidence:reconciliation_exception:{self.exception_id}:review",
+                    "sha256:" + "a" * 64,
+                    datetime(2026, 9, 2, 0, 15, tzinfo=timezone.utc),
+                ),
+            )
             connection.commit()
 
     def _tenant_id(self, connection: psycopg.Connection) -> object:
@@ -171,7 +195,7 @@ class ReconciliationLifecycleLockWaitPostgresTests(unittest.TestCase):
         writer_holds_lock = Event()
         release_writer = Event()
         outcomes: dict[str, dict[str, object]] = {}
-        failures: list[BaseException] = []
+        failures: list[Exception] = []
         original_lock = PostgresPostingLedger._acquire_command_lock
 
         def gated_lock(
@@ -190,7 +214,7 @@ class ReconciliationLifecycleLockWaitPostgresTests(unittest.TestCase):
                     posting.DATABASE_URL,
                     self.fixture.case.policy.tenant_reference,
                 )
-            except BaseException as error:  # pragma: no cover - surfaced below
+            except Exception as error:  # pragma: no cover - surfaced below
                 failures.append(error)
 
         def run_finalization() -> None:
@@ -200,7 +224,7 @@ class ReconciliationLifecycleLockWaitPostgresTests(unittest.TestCase):
                     posting.DATABASE_URL,
                     self.fixture.case.policy.tenant_reference,
                 )
-            except BaseException as error:  # pragma: no cover - surfaced below
+            except Exception as error:  # pragma: no cover - surfaced below
                 failures.append(error)
 
         with mock.patch.object(
