@@ -88,6 +88,38 @@ class ReconciliationLifecyclePostgresTests(unittest.TestCase):
             (self.opened["reconciliation_run_id"],),
         ).fetchone()[0]
 
+    def _begin_safe_raw_transition(self, connection: psycopg.Connection) -> None:
+        """Enter the database-proven lease/fresh-snapshot lifecycle protocol."""
+        lifecycle_scope = (
+            "reconciliation_run_lifecycle:" + self.opened["reconciliation_run_id"]
+        )
+        connection.execute(
+            "SELECT accounting_core.acquire_reconciliation_lifecycle_session(%s, %s)",
+            (
+                self.fixture.case.policy.tenant_reference,
+                self.opened["reconciliation_run_id"],
+            ),
+        )
+        connection.commit()
+        connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        connection.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+            (self.fixture.case.policy.tenant_reference, lifecycle_scope),
+        )
+
+    def _release_safe_raw_transition(self, connection: psycopg.Connection) -> None:
+        """Release the test session lease so fixture teardown has no stale FK row."""
+        released = connection.execute(
+            "SELECT accounting_core.release_reconciliation_lifecycle_session(%s, %s)",
+            (
+                self.fixture.case.policy.tenant_reference,
+                self.opened["reconciliation_run_id"],
+            ),
+        ).fetchone()
+        self.assertIsNotNone(released)
+        self.assertTrue(bool(released[0]))
+        connection.commit()
+
     def _insert_transition_only(
         self, connection: psycopg.Connection
     ) -> tuple[object, str]:
@@ -142,6 +174,7 @@ class ReconciliationLifecyclePostgresTests(unittest.TestCase):
     def test_transition_command_cannot_commit_without_reconciled_status(self) -> None:
         """A lifecycle command cannot be parked for a later raw status rewrite."""
         with psycopg.connect(posting.DATABASE_URL) as connection:
+            self._begin_safe_raw_transition(connection)
             transition_id, transition_hash = self._insert_transition_only(connection)
             tenant_id = self._tenant_id(connection)
             run_id = self.opened["reconciliation_run_id"]
@@ -166,10 +199,12 @@ class ReconciliationLifecyclePostgresTests(unittest.TestCase):
             with self.assertRaisesRegex(psycopg.Error, "commit atomically"):
                 connection.commit()
             connection.rollback()
+            self._release_safe_raw_transition(connection)
 
     def test_pending_transition_command_freezes_review_evidence(self) -> None:
         """Evidence cannot change after a transition command snapshots the run."""
         with psycopg.connect(posting.DATABASE_URL) as connection:
+            self._begin_safe_raw_transition(connection)
             self._insert_transition_only(connection)
             with self.assertRaisesRegex(psycopg.Error, "evidence is frozen"):
                 connection.execute(
@@ -194,6 +229,7 @@ class ReconciliationLifecyclePostgresTests(unittest.TestCase):
                     ),
                 )
             connection.rollback()
+            self._release_safe_raw_transition(connection)
 
     def test_review_evidence_cannot_move_to_another_run(self) -> None:
         """Existing evidence cannot escape its aggregate by rewriting run membership."""
@@ -228,7 +264,10 @@ class ReconciliationLifecyclePostgresTests(unittest.TestCase):
                     datetime(2026, 9, 1, 12, 1, tzinfo=timezone.utc),
                 ),
             )
-            with self.assertRaisesRegex(psycopg.Error, "aggregate membership is immutable"):
+            with self.assertRaisesRegex(
+                psycopg.Error,
+                "reconciliation_exception_evidence_immutable",
+            ):
                 connection.execute(
                     """
                     UPDATE accounting_core.reconciliation_exception
@@ -251,7 +290,7 @@ class ReconciliationLifecyclePostgresTests(unittest.TestCase):
             f"{posting.DATABASE_URL}{separator}application_name={application_name}"
         )
         results: list[dict[str, object]] = []
-        errors: list[BaseException] = []
+        errors: list[Exception] = []
 
         def transition() -> None:
             try:
@@ -267,7 +306,7 @@ class ReconciliationLifecyclePostgresTests(unittest.TestCase):
                             tenant_reference,
                         )
                     )
-            except BaseException as error:  # noqa: BLE001 - test captures thread outcome
+            except Exception as error:  # test captures the worker's application outcome
                 errors.append(error)
 
         worker = threading.Thread(target=transition, name=application_name, daemon=True)
