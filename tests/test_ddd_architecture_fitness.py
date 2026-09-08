@@ -235,6 +235,20 @@ class DddArchitectureFitnessTests(unittest.TestCase):
                     msg=f"{relative} primary owner must be one declared bounded context",
                 )
 
+    def test_every_physical_ownership_row_references_an_existing_path(self) -> None:
+        """Reject stale file rows while allowing documented package-directory owners."""
+        rows = _physical_ownership_rows(CONTEXT_MAP.read_text(encoding="utf-8"))
+        stale_paths = [
+            relative
+            for relative, _, _ in rows
+            if not (ROOT / relative).exists()
+        ]
+        self.assertEqual(
+            [],
+            stale_paths,
+            msg="physical ownership rows must reference current production files or directories",
+        )
+
     def test_directory_owner_covers_nested_modules_but_not_undeclared_packages(self) -> None:
         """Treat a documented package row as ownership for descendants, never unrelated packages."""
         rows = [
