@@ -7,8 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from accounting_information_platform import IdempotencyConflictError
-from accounting_information_platform import persistence
+from accounting_information_platform import IdempotencyConflictError, migration_install
 from accounting_information_platform import reconciliation_exception_resolution as resolution
 from tests.test_reconciliation_exception_resolution import (
     _EFFECTIVE_AT,
@@ -115,8 +114,10 @@ class ReconciliationExceptionResolutionReviewRegressionTests(unittest.TestCase):
 
     def test_canonical_foundation_loader_installs_exception_resolution_migration(self) -> None:
         """Any shared PostgreSQL fixture using the canonical loader reaches migration 0022."""
-        loader_source = inspect.getsource(persistence.apply_foundation_migration)
-        self.assertIn("0022_reconciliation_exception_resolution_command.sql", loader_source)
+        self.assertIn(
+            "0022_reconciliation_exception_resolution_command.sql",
+            migration_install._FORWARD_MIGRATIONS,
+        )
 
     def test_resolution_command_schema_retains_source_payload_hash(self) -> None:
         """Idempotency persists command payload identity apart from reviewed evidence."""

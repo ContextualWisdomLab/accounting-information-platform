@@ -13,6 +13,17 @@ class _StopAfterLifecycleLock(RuntimeError):
     """Stop the focused test immediately before the first authority read."""
 
 
+class _RecordingResult:
+    """Return the one result shape needed by the session-release boundary."""
+
+    def __init__(self, row: tuple[object, ...] | None = None) -> None:
+        self._row = row
+
+    def fetchone(self) -> tuple[object, ...] | None:
+        """Return the configured row without emulating unrelated queries."""
+        return self._row
+
+
 class _RecordingConnection:
     """Record transaction and session-lock SQL without emulating authority queries."""
 
@@ -23,10 +34,13 @@ class _RecordingConnection:
         self.rollback_count = 0
 
     def execute(self, query: str, parameters: tuple[object, ...] = ()) -> object:
-        """Record one SQL statement; later authority behavior is unreachable."""
+        """Record one SQL statement; emulate only successful session-lock release."""
         del parameters
-        self.statements.append(" ".join(query.split()))
-        return object()
+        normalized = " ".join(query.split())
+        self.statements.append(normalized)
+        if "release_reconciliation_lifecycle_session" in normalized:
+            return _RecordingResult((True,))
+        return _RecordingResult()
 
     def commit(self) -> None:
         """Record an explicit commit while preserving the session advisory lock."""

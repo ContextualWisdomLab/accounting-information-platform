@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 import unittest
 from pathlib import Path
 
@@ -17,10 +16,9 @@ class ReconciliationLifecycleRecordingTimeContractTests(unittest.TestCase):
 
     def test_canonical_installer_requires_transition_recording_time_authority(self) -> None:
         """Every supported install reaches the lifecycle system-time repair."""
-        loader_source = inspect.getsource(migration_install.apply_foundation_migration)
         self.assertIn(
             "0027_reconciliation_lifecycle_recording_time_authority.sql",
-            loader_source,
+            migration_install._FORWARD_MIGRATIONS,
         )
 
     def test_transition_recorded_at_is_database_owned_and_future_time_fails_closed(self) -> None:

@@ -47,7 +47,17 @@ class ReconciliationRecordingTimeUpgradeContractTests(unittest.TestCase):
             migration,
         )
         self.assertNotIn("reconciliation_recording_time_legacy_preflight", migration)
-        self.assertNotIn("recording_time_upgrade_visibility", migration)
+
+        policy = "CREATE POLICY reconciliation_resolution_recording_time_upgrade_visibility"
+        marker = "reconciliation_resolution_legacy_recording_time_preflight"
+        drop_policy = "DROP POLICY reconciliation_resolution_recording_time_upgrade_visibility"
+        first_durable_change = "ALTER TABLE accounting_core.reconciliation_exception"
+        self.assertIn(policy, migration)
+        self.assertIn("FOR SELECT\n    TO current_user\n    USING (true);", migration)
+        self.assertIn(drop_policy, migration)
+        self.assertLess(migration.index(policy), migration.index(marker))
+        self.assertLess(migration.index(marker), migration.index(drop_policy))
+        self.assertLess(migration.index(drop_policy), migration.index(first_durable_change))
 
 
 if __name__ == "__main__":
