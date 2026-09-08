@@ -95,7 +95,7 @@ class ReconciliationCommandIdentityPublicRacePostgresTests(unittest.TestCase):
             "effective_at": "2026-09-02T00:00:00Z",
         }
         barrier = threading.Barrier(2)
-        failures: list[BaseException] = []
+        failures: list[Exception] = []
         outcomes: list[str] = []
         original_lock = PostgresPostingLedger._acquire_command_lock
         synchronized_scopes = {
@@ -120,7 +120,7 @@ class ReconciliationCommandIdentityPublicRacePostgresTests(unittest.TestCase):
                 outcomes.append(f"{name}:success")
             except IdempotencyConflictError:
                 outcomes.append(f"{name}:conflict")
-            except BaseException as error:  # captured for the main test thread
+            except Exception as error:  # captured for the main test thread
                 failures.append(error)
 
         opening = threading.Thread(
