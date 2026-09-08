@@ -79,7 +79,7 @@ class ReconciliationLifecycleAggregateMembershipPostgresTests(unittest.TestCase)
             )
 
     def test_raw_exception_resolution_cannot_authorize_reconciliation(self) -> None:
-        """A naked status rewrite is not maker-checker evidence for finalization."""
+        """A naked status rewrite is rejected before it can become maker-checker evidence."""
         with psycopg.connect(posting.DATABASE_URL) as connection:
             tenant_id = self._tenant_id(connection)
             exception_id = connection.execute(
@@ -104,59 +104,27 @@ class ReconciliationLifecycleAggregateMembershipPostgresTests(unittest.TestCase)
                     datetime(2026, 9, 1, 11, 58, tzinfo=timezone.utc),
                 ),
             ).fetchone()[0]
-            connection.execute(
-                """
-                UPDATE accounting_core.reconciliation_exception
-                SET resolution_status_code = 'resolved'
-                WHERE tenant_account_id = %s
-                  AND reconciliation_exception_id = %s
-                """,
-                (tenant_id, exception_id),
-            )
+            connection.commit()
 
         with psycopg.connect(posting.DATABASE_URL) as connection:
-            tenant_id = self._tenant_id(connection)
             with self.assertRaisesRegex(
                 psycopg.Error,
                 "reconciliation_exception_resolution_command_required",
             ):
                 connection.execute(
                     """
-                    INSERT INTO accounting_core.reconciliation_run_transition_command (
-                        tenant_account_id,
-                        reconciliation_run_id,
-                        reconciliation_transition_idempotency_key,
-                        target_run_status_code,
-                        reconciliation_snapshot_hash,
-                        statement_population_reference,
-                        book_population_reference,
-                        reconciliation_transition_command_hash,
-                        actor_reference,
-                        purpose_code,
-                        effective_at
-                    )
-                    VALUES (
-                        %s, %s, %s, 'reconciled', %s, %s, %s, %s,
-                        'urn:cwl:principal:test_controller',
-                        'month_end_reconciliation', %s
-                    )
+                    UPDATE accounting_core.reconciliation_exception
+                    SET resolution_status_code = 'resolved'
+                    WHERE tenant_account_id = %s
+                      AND reconciliation_exception_id = %s
                     """,
-                    (
-                        tenant_id,
-                        self.opened["reconciliation_run_id"],
-                        f"raw-resolution-{uuid.uuid4().hex}",
-                        "sha256:" + "6" * 64,
-                        "sha256:" + "7" * 64,
-                        "sha256:" + "8" * 64,
-                        "sha256:" + "0" * 64,
-                        datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc),
-                    ),
+                    (tenant_id, exception_id),
                 )
             connection.rollback()
 
         with self.assertRaisesRegex(
             AccountingValidationError,
-            "resolution-command evidence",
+            "still open",
         ):
             self._reconcile()
 
@@ -220,7 +188,10 @@ class ReconciliationLifecycleAggregateMembershipPostgresTests(unittest.TestCase)
                 (destination_run_id, self.opened["reconciliation_run_id"]),
             )
             try:
-                with self.assertRaisesRegex(psycopg.Error, "aggregate membership is immutable"):
+                with self.assertRaisesRegex(
+                    psycopg.Error,
+                    "reconciliation_exception_evidence_immutable",
+                ):
                     connection.execute(
                         """
                         UPDATE accounting_core.reconciliation_exception

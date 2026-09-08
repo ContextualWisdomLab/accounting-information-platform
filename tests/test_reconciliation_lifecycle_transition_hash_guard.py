@@ -46,9 +46,13 @@ class _PlaceholderHashConnection:
         del parameters
         normalized = " ".join(query.split())
         self.executed.append(normalized)
-        if normalized.startswith("SELECT pg_advisory_lock("):
+        if normalized.startswith(
+            "SELECT accounting_core.acquire_reconciliation_lifecycle_session"
+        ):
             return _Rows()
-        if normalized.startswith("SELECT pg_advisory_unlock("):
+        if normalized.startswith(
+            "SELECT accounting_core.release_reconciliation_lifecycle_session"
+        ):
             return _Rows([(True,)])
         if normalized.startswith("SET TRANSACTION ISOLATION LEVEL"):
             return _Rows()
@@ -83,6 +87,7 @@ class _PlaceholderHashConnection:
                         "reconciled",
                         "sha256:" + "1" * 64,
                         "sha256:" + "2" * 64,
+                        "sha256:" + "3" * 64,
                     )
                 ]
             )
@@ -157,6 +162,7 @@ class ReconciliationLifecycleTransitionHashGuardTests(unittest.TestCase):
         with (
             mock.patch.object(lifecycle, "PostgresPostingLedger", _Ledger),
             mock.patch.object(lifecycle, "_load_review_control_state", return_value=((), ())),
+            mock.patch.object(lifecycle, "_load_exception_resolution_state", return_value=()),
             mock.patch.object(close_package, "_database_owned_close_projection_evidence", return_value=_bridge()),
         ):
             with self.assertRaisesRegex(AccountingValidationError, "transition command hash"):
@@ -167,8 +173,8 @@ class ReconciliationLifecycleTransitionHashGuardTests(unittest.TestCase):
                 )
 
         sql = "\n".join(_Ledger.connection.executed)
-        self.assertIn("SELECT pg_advisory_lock", sql)
-        self.assertIn("SELECT pg_advisory_unlock", sql)
+        self.assertIn("accounting_core.acquire_reconciliation_lifecycle_session", sql)
+        self.assertIn("accounting_core.release_reconciliation_lifecycle_session", sql)
         self.assertIn("rollback", _Ledger.connection.transaction_events)
         self.assertNotIn("UPDATE accounting_core.reconciliation_run", sql)
         self.assertNotIn("INSERT INTO accounting_integration.outbox_event", sql)

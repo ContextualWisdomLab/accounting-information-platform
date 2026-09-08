@@ -33,6 +33,15 @@ _BASE_FOUNDATION_PREREQUISITES = (
 _FORWARD_MIGRATIONS = (
     "0020_reconciliation_run_completion_evidence.sql",
     "0021_reconciliation_run_database_snapshot_authority.sql",
+    "0022_reconciliation_exception_resolution_command.sql",
+    "0023_reconciliation_exception_resolution_outbox_pair.sql",
+    "0024_reconciliation_authority_outbox_retention.sql",
+    "0025_reconciliation_authority_outbox_orphan_guard.sql",
+    "0026_reconciliation_control_recording_time_authority.sql",
+    "0027_reconciliation_lifecycle_recording_time_authority.sql",
+    "0028_reconciliation_lifecycle_source_payload_identity.sql",
+    "0029_reconciliation_lifecycle_session_lock_authority.sql",
+    "0030_reconciliation_lifecycle_capability_privileges.sql",
 )
 
 
