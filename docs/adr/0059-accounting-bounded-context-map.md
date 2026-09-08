@@ -47,7 +47,7 @@ Operational/commercial systems, including metering-billing-platform, are upstrea
 
 `policy_resolution` resolves Accounting-owned policy and effective-dated chart mappings. `journal_posting` and `journal_reversal` are the only contexts that create authoritative journal facts. `close_control` owns period-state authority. `trial_balance` and `reporting_projection` are downstream projections and cannot mutate ledger truth. `integration_outbox` publishes facts atomically produced by the owning accounting transaction and cannot create accounting facts itself.
 
-Bank/provider models terminate at `bank_statement_registry` ACLs. `reconciliation_run_control` owns immutable run scope and lifecycle evidence; `reconciliation_review` owns deterministic matching, exact allocation conservation, approval/exception evidence, book-to-bank bridge evidence and close-review packaging. A reconciliation decision is evidence only and never authorizes automatic journal posting or period close.
+Bank/provider models terminate at `bank_statement_registry` ACLs. `reconciliation_run_control` owns immutable run scope and lifecycle evidence; `reconciliation_review` owns deterministic matching, exact allocation conservation, approval/exception evidence, book-to-bank bridge evidence and close-review packaging. `src/accounting_information_platform/reconciliation_lifecycle.py` is therefore physically owned by `reconciliation_run_control`: its session lease, advisory-lock and fresh `REPEATABLE READ` orchestration coordinates lifecycle authority but does not acquire reconciliation-review, journal-posting or period-close authority. A reconciliation decision is evidence only and never authorizes automatic journal posting or period close.
 
 `tax_interface` consumes authoritative accounting evidence through implemented contracts without claiming external tax-system authority or statutory certification.
 
@@ -60,6 +60,8 @@ The Shared Kernel carries canonical reference grammar, authority/truth status an
 `ContextualWisdomLab/enterprise-architecture-core` consumes those released contract assertions/events as the authoritative EA Decision Plane. Accounting sends architecture/change evidence only: application/service/runtime/database/integration ownership and lifecycle changes, contract/profile versions, technology/provider versions where operationally material, risk/remediation references and source provenance. EA Core must not become a replica of accounting journal/ledger balances or other financial facts.
 
 There is no direct source dependency on either foreign application repository. The only permitted cross-repository Python dependency is the released contract-only `cwl-context-contracts` package when integration code is added. Direct `context_graph_contracts`, `enterprise_architecture_core` or other product implementation imports and cross-service SQL remain forbidden. Contract version drift or missing conformance/admission evidence fails closed at the integration boundary rather than being silently coerced.
+
+The architecture fitness gate separately permits `psycopg` as the one current third-party absolute import root because it is PostgreSQL infrastructure used by repository-owned persistence and reconciliation transaction boundaries. This is an infrastructure-adapter exception, not a Shared Kernel or foreign application dependency; driver objects cannot own accounting invariants or leak into domain vocabulary. Every other non-stdlib absolute import remains deny-by-default until explicitly reviewed, documented and ratcheted.
 
 The accounting Python package root remains a deployment container, not a DDD Shared Kernel. Existing `core.py` likewise remains transitional debt and does not acquire Shared Kernel status merely because Context Fabric has a separately owned contract-only Shared Kernel.
 
@@ -75,6 +77,7 @@ New unrelated domain behavior must not be added to generic buckets named `utils`
 
 - Domain rules do not depend on HTTP/framework/provider/ORM DTO implementations.
 - Persistence and transport adapters may depend on domain/application contracts; domain code does not depend on persistence/transport implementations.
+- `psycopg` is permitted only as a PostgreSQL infrastructure adapter root; it does not make persistence or driver types part of the domain model and does not weaken the foreign-application deny-by-default rule.
 - Direct SQL against another service's application tables is forbidden; all cross-service SQL is forbidden.
 - Foreign service/provider models remain behind ACLs and published contracts.
 - Released `cwl-context-contracts` types may be used only at the Context Fabric interoperability boundary and may not become accounting aggregate/entity implementations.
@@ -106,6 +109,8 @@ The fitness test is a ratchet, not proof that DDD separation or Context Fabric i
 **Create an accounting-owned cross-repository domain package.** Rejected because it would couple independent product authorities and blur accounting ownership. The Context Fabric Shared Kernel is deliberately restricted to the separately owned provider-neutral `context-graph-contracts` contract grammar; accounting domain objects remain local.
 
 **Pin Context Fabric to an open PR/branch or copy provisional schemas.** Rejected because mutable predecessor evidence cannot support an authoritative integration boundary. Accounting waits for a released `cwl-context-contracts` package with applicable conformance/admission evidence.
+
+**Treat PostgreSQL driver access as a generic third-party escape hatch.** Rejected because a broad allowlist would make the architecture gate incapable of detecting newly introduced application/framework dependencies. Only the currently used `psycopg` PostgreSQL infrastructure root is admitted; any additional third-party root requires a new reviewed architecture decision and executable ratchet.
 
 **Write financial facts directly into EA Core.** Rejected because EA Core is the architecture Decision Plane, not a financial ledger or reconciliation store. Architecture/change assertions reference the accounting system and its contracts without duplicating journal/ledger balances.
 
