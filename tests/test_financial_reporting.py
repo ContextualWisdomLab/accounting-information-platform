@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from importlib import import_module
 import unittest
 import xml.etree.ElementTree as element_tree
 from datetime import date
@@ -240,7 +241,7 @@ class FinancialReportingContractTests(unittest.TestCase):
 
     def test_package_root_exports_the_reporting_api(self) -> None:
         """Keep reporting consumers on the supported package surface."""
-        import accounting_information_platform as package_api
+        package_api = import_module("accounting_information_platform")
 
         self.assertIs(package_api.FinancialReportContext, FinancialReportContext)
         self.assertIs(package_api.XbrlConceptMapping, XbrlConceptMapping)

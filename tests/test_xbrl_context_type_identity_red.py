@@ -19,6 +19,35 @@ from financial_reporting_fixtures import (
 class XbrlContextTypeIdentityTests(unittest.TestCase):
     """Reject JSON numeric aliases that compare equal after Python coercion."""
 
+    def test_context_text_json_types_cannot_alias_canonical_strings(self) -> None:
+        """Required and optional context text must remain JSON strings on replay."""
+        artifact = reporting.build_financial_report_artifact(
+            _statement_package(),
+            _report_context(),
+        )
+        for field_name in (
+            "entity_identifier_scheme",
+            "entity_identifier_value",
+            "reporting_currency_code",
+            "current_period_start_date",
+            "current_period_end_date",
+            "comparison_period_start_date",
+            "comparison_period_end_date",
+        ):
+            with self.subTest(field_name=field_name):
+                forged_artifact = copy.deepcopy(artifact)
+                forged_artifact["report_context"][field_name] = False
+                _rehash(forged_artifact)
+
+                with self.assertRaisesRegex(
+                    AccountingValidationError,
+                    "report_context contains invalid values",
+                ):
+                    reporting.export_xbrl_instance(
+                        forged_artifact,
+                        _taxonomy_profile(),
+                    )
+
     def test_decimal_precision_json_type_cannot_alias_integer_context(self) -> None:
         """A bool or float must not replay as the canonical integer precision."""
         for canonical_precision, forged_precision in ((0, False), (1, 1.0)):

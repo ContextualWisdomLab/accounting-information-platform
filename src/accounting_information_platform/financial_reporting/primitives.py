@@ -18,6 +18,7 @@ _CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 _XML_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9._-]*$")
 _HASH_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _INVALID_PERCENT_ENCODING_PATTERN = re.compile(r"%(?![0-9A-Fa-f]{2})")
+_URN_NID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,30}[A-Za-z0-9]$")
 _NUMERIC_MAX_INTEGRAL_DIGITS = 32
 _NUMERIC_MAX_FRACTIONAL_DIGITS = 6
 
@@ -87,12 +88,35 @@ def _absolute_uri(raw_value: object, field_name: str) -> str:
         parsed_uri = urlparse(uri_text)
     except ValueError as error:
         raise AccountingValidationError(f"{field_name} must be an absolute URI") from error
-    if parsed_uri.scheme.lower() not in _URI_SCHEMES:
+    uri_scheme = parsed_uri.scheme.lower()
+    if uri_scheme not in _URI_SCHEMES:
         raise AccountingValidationError(f"{field_name} must be an absolute URI")
-    if parsed_uri.scheme.lower() in {"http", "https"} and not parsed_uri.netloc:
-        raise AccountingValidationError(f"{field_name} must include an authority")
-    if parsed_uri.scheme.lower() == "urn" and not parsed_uri.path:
-        raise AccountingValidationError(f"{field_name} must include a URN namespace")
+    if uri_scheme in {"http", "https"}:
+        if not parsed_uri.netloc:
+            raise AccountingValidationError(f"{field_name} must include an authority")
+        try:
+            user_name = parsed_uri.username
+            host_name = parsed_uri.hostname
+            parsed_uri.port
+        except ValueError as error:
+            raise AccountingValidationError(
+                f"{field_name} must be an absolute URI"
+            ) from error
+        if user_name is not None or not host_name:
+            raise AccountingValidationError(f"{field_name} must be an absolute URI")
+    if uri_scheme == "urn":
+        namespace_identifier, separator, namespace_specific_string = (
+            parsed_uri.path.partition(":")
+        )
+        if (
+            parsed_uri.netloc
+            or not separator
+            or _URN_NID_PATTERN.fullmatch(namespace_identifier) is None
+            or not namespace_specific_string
+        ):
+            raise AccountingValidationError(
+                f"{field_name} must include a URN namespace"
+            )
     return uri_text
 
 
