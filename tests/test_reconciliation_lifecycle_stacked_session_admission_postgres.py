@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timezone
 
 import psycopg
 
@@ -121,6 +122,105 @@ class ReconciliationLifecycleStackedSessionAdmissionPostgresTests(unittest.TestC
                     self._raw_transition(owner, tenant_id)
                 self.assertIn(
                     "reconciliation_lifecycle_session_lock_required",
+                    str(raised.exception),
+                )
+                owner.rollback()
+            finally:
+                owner.rollback()
+                owner.execute("SELECT pg_advisory_unlock_all()")
+                owner.commit()
+
+    def test_reacquired_lock_pair_cannot_reuse_lease_invalidated_by_late_exception(
+        self,
+    ) -> None:
+        """A released lease cannot authorize a snapshot predating a later exception."""
+        tenant_reference = self.fixture.case.policy.tenant_reference
+        run_id = self.opened["reconciliation_run_id"]
+        lifecycle_scope = f"reconciliation_run_lifecycle:{run_id}"
+
+        with psycopg.connect(posting.DATABASE_URL) as owner:
+            try:
+                tenant_id = self._tenant_id(owner)
+                owner.execute(
+                    "SELECT accounting_core.acquire_reconciliation_lifecycle_session(%s, %s)",
+                    (tenant_reference, run_id),
+                )
+                owner.commit()
+
+                released = owner.execute(
+                    "SELECT pg_advisory_unlock(hashtext(%s), hashtext(%s))",
+                    (tenant_reference, lifecycle_scope),
+                ).fetchone()[0]
+                owner.commit()
+                self.assertTrue(released)
+
+                owner.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+                exception_count_before = owner.execute(
+                    """
+                    SELECT count(*)
+                    FROM accounting_core.reconciliation_exception
+                    WHERE tenant_account_id = %s
+                      AND reconciliation_run_id = %s
+                    """,
+                    (tenant_id, run_id),
+                ).fetchone()[0]
+                self.assertEqual(exception_count_before, 0)
+
+                with psycopg.connect(posting.DATABASE_URL) as writer:
+                    writer.execute(
+                        """
+                        INSERT INTO accounting_core.reconciliation_exception (
+                            tenant_account_id,
+                            reconciliation_run_id,
+                            exception_code,
+                            owner_reference,
+                            next_action,
+                            effective_at,
+                            resolution_status_code
+                        )
+                        VALUES (%s, %s, 'late_after_released_lease',
+                                'urn:cwl:principal:controller_owner',
+                                'Review this exception before reconciliation.',
+                                %s, 'open')
+                        """,
+                        (
+                            tenant_id,
+                            run_id,
+                            datetime(2026, 9, 8, 10, 5, tzinfo=timezone.utc),
+                        ),
+                    )
+                    writer.commit()
+
+                # The attack transaction intentionally retains the predecessor
+                # snapshot, then recreates both lock forms without going through
+                # the canonical acquisition helper. A stale committed lease must
+                # no longer be sufficient evidence of acquisition ordering.
+                self.assertEqual(
+                    owner.execute(
+                        """
+                        SELECT count(*)
+                        FROM accounting_core.reconciliation_exception
+                        WHERE tenant_account_id = %s
+                          AND reconciliation_run_id = %s
+                        """,
+                        (tenant_id, run_id),
+                    ).fetchone()[0],
+                    0,
+                )
+                owner.execute(
+                    "SELECT pg_advisory_lock(hashtext(%s), hashtext(%s))",
+                    (tenant_reference, lifecycle_scope),
+                )
+                owner.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+                    (tenant_reference, lifecycle_scope),
+                )
+
+                with self.assertRaises(psycopg.Error) as raised:
+                    self._raw_transition(owner, tenant_id)
+                self.assertEqual(raised.exception.sqlstate, "40001")
+                self.assertIn(
+                    "reconciliation_lifecycle_fresh_transaction_required",
                     str(raised.exception),
                 )
                 owner.rollback()
