@@ -14,7 +14,6 @@ from accounting_information_platform import (
     reconcile_reconciliation_run,
 )
 from accounting_information_platform import reconciliation_lifecycle as lifecycle
-from accounting_information_platform import reconciliation_close_package as close_package
 from tests import test_postgres_posting as posting
 from tests.reconciliation_opening_book_fixture import post_reconciliation_opening_book_balance
 from tests.test_reconciliation_run_api import ReconciliationRunApiTests
@@ -78,27 +77,37 @@ class ReconciliationLifecycleSourceSnapshotPostgresTests(unittest.TestCase):
         }
 
     def test_late_source_insert_does_not_split_review_and_book_to_bank_snapshot(self) -> None:
-        """A source insert after review reads must not enter the later bridge population."""
+        """A source insert after review reads must not enter the durable authority population."""
         with psycopg.connect(posting.DATABASE_URL) as connection:
             tenant_id, statement_id, knowledge_cutoff_at, currency_code = self._scope(
                 connection
             )
-            baseline = close_package._database_owned_close_projection_evidence(
-                connection,
-                tenant_id,
-                reconciliation_run_reference=self.opened["reconciliation_run_id"],
-            )
+            baseline = connection.execute(
+                """
+                SELECT database_statement_reference, database_book_reference
+                FROM accounting_core.reconciliation_run_database_snapshot_authority(%s, %s)
+                """,
+                (tenant_id, self.opened["reconciliation_run_id"]),
+            ).fetchone()
+        self.assertIsNotNone(baseline)
+        baseline_statement_reference = str(baseline[0])
+        baseline_book_reference = str(baseline[1])
 
         review_state_read = Event()
         allow_bridge_read = Event()
         failures: list[Exception] = []
         outcome: dict[str, object] = {}
+        observed_isolation: list[str] = []
         original_review_loader = lifecycle._load_review_control_state
 
         def gated_review_loader(
             connection: object, tenant_account_id: object, run_id: object
         ) -> object:
             state = original_review_loader(connection, tenant_account_id, run_id)
+            isolation_row = connection.execute("SHOW transaction_isolation").fetchone()
+            if isolation_row is None:
+                raise AssertionError("lifecycle authority transaction isolation was not observable")
+            observed_isolation.append(str(isolation_row[0]))
             review_state_read.set()
             if not allow_bridge_read.wait(timeout=10):
                 raise TimeoutError("test did not release the lifecycle bridge read")
@@ -168,11 +177,17 @@ class ReconciliationLifecycleSourceSnapshotPostgresTests(unittest.TestCase):
         self.assertFalse(worker.is_alive())
         if failures:
             self.fail(f"reconciliation finalization failed: {failures!r}")
+        self.assertEqual(observed_isolation, ["repeatable read"])
         self.assertEqual(outcome["run_status_code"], "reconciled")
         self.assertEqual(
             outcome["statement_population_reference"],
-            baseline.statement_population_reference,
-            "finalization mixed a later statement insert into an authority snapshot whose review state was already read",
+            baseline_statement_reference,
+            "finalization mixed a later statement insert into the durable database authority snapshot",
+        )
+        self.assertEqual(
+            outcome["book_population_reference"],
+            baseline_book_reference,
+            "finalization changed the durable book population while testing statement snapshot isolation",
         )
 
 
