@@ -167,6 +167,12 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 BEGIN
+    IF NEW.run_status_code IS DISTINCT FROM OLD.run_status_code THEN
+        RAISE EXCEPTION
+            'financial report run lifecycle is immutable until a purpose-bound command owns supersession (financial_report_run_lifecycle_immutable)'
+            USING ERRCODE = '23514';
+    END IF;
+
     IF NEW.tenant_account_id IS DISTINCT FROM OLD.tenant_account_id
        OR NEW.legal_entity_id IS DISTINCT FROM OLD.legal_entity_id
        OR NEW.accounting_book_id IS DISTINCT FROM OLD.accounting_book_id
@@ -196,6 +202,7 @@ CREATE TRIGGER financial_report_run_scope_guard
         source_period_status_code,
         knowledge_cutoff_at,
         report_purpose_code,
+        run_status_code,
         recorded_at
     ON accounting_reporting.financial_report_run
     FOR EACH ROW
