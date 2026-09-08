@@ -10,6 +10,7 @@ import psycopg
 
 from accounting_information_platform import accept_reconciliation_run
 from tests import test_postgres_posting as posting
+from tests.reconciliation_opening_book_fixture import post_reconciliation_opening_book_balance
 from tests.test_reconciliation_run_api import ReconciliationRunApiTests
 
 
@@ -29,6 +30,7 @@ class ReconciliationLifecycleOutboxPairPostgresTests(unittest.TestCase):
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
         self.addCleanup(self.fixture.tearDown)
+        post_reconciliation_opening_book_balance(self.fixture.case)
         _statement, command = self.fixture._statement_and_command()
         self.opened = accept_reconciliation_run(
             command,
