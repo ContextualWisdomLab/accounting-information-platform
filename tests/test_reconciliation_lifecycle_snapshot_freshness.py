@@ -44,9 +44,10 @@ class _FreshSnapshotLedger:
     locks: list[str] = []
 
     def __init__(self, database_url: str, tenant_reference: str) -> None:
-        """Retain constructor inputs only to match the production adapter boundary."""
+        """Retain constructor inputs required by the production adapter boundary."""
         self.database_url = database_url
         self.tenant_reference = tenant_reference
+        self._tenant_reference = tenant_reference
 
     @contextlib.contextmanager
     def _session(self):

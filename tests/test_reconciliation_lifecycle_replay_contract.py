@@ -35,6 +35,7 @@ class _Result:
             "reconciled",
             "sha256:" + "3" * 64,
             "sha256:" + "4" * 64,
+            "sha256:" + "5" * 64,
         )
 
 
@@ -69,6 +70,7 @@ class ReconciliationLifecycleReplayContractTests(unittest.TestCase):
 
         self.assertEqual(document["statement_population_reference"], "sha256:" + "3" * 64)
         self.assertEqual(document["book_population_reference"], "sha256:" + "4" * 64)
+        self.assertEqual(document["source_payload_hash"], "sha256:" + "5" * 64)
         self.assertTrue(document["replayed"])
 
 
