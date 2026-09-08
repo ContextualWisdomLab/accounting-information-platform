@@ -2,7 +2,7 @@
 
 A lifecycle command can mark one reviewed run ``reconciled`` only after the
 PostgreSQL-owned statement/book populations form an exact bridge, every terminal
-match has durable decision evidence, and every exception has durable maker-checker
+match has durable decision evidence, and no exception lacks durable maker-checker
 resolution-command evidence. This module cannot post or reverse journals, close
 periods, or change accounting policy.
 """
@@ -36,43 +36,55 @@ _TRANSITION_HASH_SENTINEL = "sha256:" + "0" * 64
 
 
 @contextmanager
-def _coherent_lifecycle_session(
-    ledger: PostgresPostingLedger,
-    tenant_reference: str,
-    run_id: UUID,
+def _lifecycle_authority_session(
+    ledger: PostgresPostingLedger, run_id: UUID
 ) -> Iterator[object]:
-    """Yield one post-lock repeatable-read transaction for lifecycle authority.
+    """Admit the run lock before opening the repeatable-read authority snapshot.
 
-    PostgreSQL cannot retroactively refresh a ``REPEATABLE READ`` snapshot after
-    a lock wait. The database-owned acquisition function therefore obtains the
-    tenant/run session advisory lock and records the backend lease in one
-    transaction. That transaction is committed before a fresh repeatable-read
-    transaction is opened on the same session. The matching transaction lock is
-    then reacquired reentrantly before any authority read. Migration 0027 checks
-    the lease transaction identity at the transition table boundary, so a raw
-    caller that established its snapshot before lock grant fails closed.
+    PostgreSQL fixes a repeatable-read snapshot at the transaction's first query.
+    Waiting on ``pg_advisory_xact_lock`` as that query would therefore freeze a
+    pre-admission snapshot. Acquire the same key as a session lock, commit that
+    acquisition transaction while retaining the lock, then open a fresh
+    repeatable-read transaction and retain the ordinary transaction lock for the
+    accounting mutation. The session lock is released only after the authority
+    transaction commits or rolls back.
     """
-    lifecycle_scope = f"reconciliation_run_lifecycle:{run_id}"
+    command_scope = f"reconciliation_run_lifecycle:{run_id}"
     with ledger._session() as connection:
-        connection.execute(
-            "SELECT accounting_core.acquire_reconciliation_lifecycle_session(%s, %s)",
-            (tenant_reference, run_id),
-        )
-        connection.commit()
+        session_lock_acquired = False
+        authority_error = False
         try:
+            connection.execute(
+                "SELECT pg_advisory_lock(hashtext(%s), hashtext(%s))",
+                (ledger._tenant_reference, command_scope),
+            )
+            session_lock_acquired = True
+            connection.commit()
             connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
-            ledger._acquire_command_lock(connection, lifecycle_scope)
+            ledger._acquire_command_lock(connection, command_scope)
             yield connection
             connection.commit()
         except Exception:
+            authority_error = True
             connection.rollback()
             raise
         finally:
-            connection.execute(
-                "SELECT accounting_core.release_reconciliation_lifecycle_session(%s, %s)",
-                (tenant_reference, run_id),
-            )
-            connection.commit()
+            if session_lock_acquired:
+                try:
+                    released = connection.execute(
+                        "SELECT pg_advisory_unlock(hashtext(%s), hashtext(%s))",
+                        (ledger._tenant_reference, command_scope),
+                    ).fetchone()
+                    if released is None or not bool(released[0]):
+                        raise AccountingValidationError(
+                            "reconciliation lifecycle session lock could not be released. "
+                            "Close the database session before retrying the command."
+                        )
+                    connection.commit()
+                except Exception:
+                    connection.rollback()
+                    if not authority_error:
+                        raise
 
 
 @_normalize_reconciliation_command_identity_conflicts
@@ -81,14 +93,12 @@ def reconcile_reconciliation_run(
 ) -> dict[str, object]:
     """Transition one run to ``reconciled`` from database-owned evidence.
 
-    A database-owned session lease is committed before opening the authority-bearing
-    ``REPEATABLE READ`` transaction. A waiter therefore observes the preceding
-    guarded writer's commit and then evaluates run, review, exception, statement,
-    and book evidence from one coherent PostgreSQL snapshot. Exact retries replay
-    immutable command evidence; changed retries fail closed.
+    The run lifecycle advisory lock is admitted before the repeatable-read MVCC
+    snapshot begins, then source and review state are evaluated under PostgreSQL
+    ``REPEATABLE READ``. Exact retries replay immutable command evidence; changed
+    retries fail closed.
     """
     command = _require_transition_command(payload, tenant_reference)
-    source_payload_hash = _source_payload_hash(command)
     run_id = _parse_uuid(
         str(command.get("reconciliation_run_id") or ""), "reconciliation_run_id"
     )
@@ -103,11 +113,7 @@ def reconcile_reconciliation_run(
     effective_at = _parse_timestamp(str(command.get("effective_at") or ""), "effective_at")
 
     ledger = PostgresPostingLedger(database_url, tenant_reference)
-    with _coherent_lifecycle_session(
-        ledger,
-        tenant_reference,
-        run_id,
-    ) as connection:
+    with _lifecycle_authority_session(ledger, run_id) as connection:
         tenant_id = ledger._require_tenant(connection)
         ledger._acquire_command_lock(
             connection, f"reconciliation_run_transition_key:{idempotency_key}"
@@ -115,8 +121,7 @@ def reconcile_reconciliation_run(
 
         prior = connection.execute(
             """
-            SELECT reconciliation_run_id, actor_reference, purpose_code, effective_at,
-                   source_payload_hash
+            SELECT reconciliation_run_id, actor_reference, purpose_code, effective_at
             FROM accounting_core.reconciliation_run_transition_command
             WHERE tenant_account_id = %s
               AND reconciliation_transition_idempotency_key = %s
@@ -124,18 +129,10 @@ def reconcile_reconciliation_run(
             (tenant_id, idempotency_key),
         ).fetchone()
         if prior is not None:
-            expected = (
-                run_id,
-                actor_reference,
-                purpose_code,
-                effective_at,
-                source_payload_hash,
-            )
-            if prior != expected:
+            if prior != (run_id, actor_reference, purpose_code, effective_at):
                 raise IdempotencyConflictError(
                     "reconciliation lifecycle idempotency key was already used with different "
-                    "transition evidence or source payload. Supply a new "
-                    "reconciliation_idempotency_key, then retry."
+                    "transition evidence. Supply a new reconciliation_idempotency_key, then retry."
                 )
             return _load_transition_document(
                 connection,
@@ -202,14 +199,7 @@ def reconcile_reconciliation_run(
             )
 
         match_state, exception_state = _load_review_control_state(connection, tenant_id, run_id)
-        exception_resolution_state = _load_exception_resolution_state(
-            connection, tenant_id, run_id
-        )
-        _validate_review_control_state(
-            match_state,
-            exception_state,
-            exception_resolution_state,
-        )
+        _validate_review_control_state(match_state, exception_state)
 
         from .reconciliation_close_package import (  # pylint: disable=import-outside-toplevel
             _database_owned_close_projection_evidence,
@@ -250,7 +240,6 @@ def reconcile_reconciliation_run(
             match_state,
             exception_state,
             currency_code=authoritative_currency_code,
-            exception_resolution_state=exception_resolution_state,
         )
         transition_id, transition_hash, _recorded_at = connection.execute(
             """
@@ -258,11 +247,10 @@ def reconcile_reconciliation_run(
                 tenant_account_id, reconciliation_run_id,
                 reconciliation_transition_idempotency_key, target_run_status_code,
                 reconciliation_snapshot_hash, statement_population_reference,
-                book_population_reference, source_payload_hash,
-                reconciliation_transition_command_hash, actor_reference,
-                purpose_code, effective_at
+                book_population_reference, reconciliation_transition_command_hash,
+                actor_reference, purpose_code, effective_at
             )
-            VALUES (%s, %s, %s, 'reconciled', %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, 'reconciled', %s, %s, %s, %s, %s, %s, %s)
             RETURNING reconciliation_run_transition_command_id,
                       reconciliation_transition_command_hash, recorded_at
             """,
@@ -273,7 +261,6 @@ def reconcile_reconciliation_run(
                 snapshot_hash,
                 bridge.statement_population_reference,
                 bridge.book_population_reference,
-                source_payload_hash,
                 _TRANSITION_HASH_SENTINEL,
                 actor_reference,
                 purpose_code,
@@ -336,47 +323,6 @@ def _require_transition_command(payload: object, tenant_reference: str) -> Mappi
     return payload
 
 
-def _require_strict_json_value(value: object) -> None:
-    """Reject Python-only structures before they can influence lifecycle identity."""
-    if value is None or isinstance(value, (str, bool, int, float)):
-        return
-    if isinstance(value, list):
-        for item in value:
-            _require_strict_json_value(item)
-        return
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise AccountingValidationError(
-                    "reconciliation lifecycle payload must use string JSON object keys. "
-                    "Supply the exact JSON command, then retry."
-                )
-            _require_strict_json_value(item)
-        return
-    raise AccountingValidationError(
-        "reconciliation lifecycle payload must contain only JSON values. Supply the exact JSON "
-        "command, then retry."
-    )
-
-
-def _source_payload_hash(command: Mapping[str, object]) -> str:
-    """Hash the complete strict-JSON lifecycle command for idempotent replay identity."""
-    _require_strict_json_value(command)
-    try:
-        canonical = json.dumps(
-            command,
-            allow_nan=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
-    except (TypeError, ValueError) as error:
-        raise AccountingValidationError(
-            "reconciliation lifecycle payload must contain JSON-compatible values. Supply the "
-            "exact JSON command, then retry."
-        ) from error
-    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
 def _canonical_text(value: object, field_name: str) -> str:
     """Require a non-empty canonical string without surrounding whitespace."""
     if not isinstance(value, str) or not value or value.strip() != value:
@@ -423,35 +369,11 @@ def _load_review_control_state(
     )
 
 
-def _load_exception_resolution_state(
-    connection: object, tenant_id: UUID, run_id: UUID
-) -> tuple[tuple[str, str, str, str, str], ...]:
-    """Load immutable maker-checker resolution evidence in stable exception order."""
-    rows = connection.execute(
-        """
-        SELECT reconciliation_exception_id::text,
-               target_resolution_status_code,
-               resolution_evidence_reference,
-               resolution_evidence_hash,
-               reconciliation_exception_resolution_command_hash
-        FROM accounting_core.reconciliation_exception_resolution_command
-        WHERE tenant_account_id = %s AND reconciliation_run_id = %s
-        ORDER BY reconciliation_exception_id
-        """,
-        (tenant_id, run_id),
-    ).fetchall()
-    return tuple(
-        (str(row[0]), str(row[1]), str(row[2]), str(row[3]), str(row[4]))
-        for row in rows
-    )
-
-
 def _validate_review_control_state(
     match_state: tuple[tuple[str, str, str, str], ...],
     exception_state: tuple[tuple[str, str, str], ...],
-    exception_resolution_state: tuple[tuple[str, str, str, str, str], ...] = (),
 ) -> None:
-    """Reject incomplete reviews and exceptions lacking command authority."""
+    """Reject incomplete reviews and exception states without command authority."""
     for match_reference, status_code, decision_code, snapshot_hash in match_state:
         if status_code == "proposed":
             raise AccountingValidationError(
@@ -465,28 +387,17 @@ def _validate_review_control_state(
                 f"reconciliation match {match_reference} lacks decision-consistent immutable approval evidence. "
                 "Restore the reviewed decision evidence, then retry reconciliation."
             )
-    resolution_by_exception = {
-        row[0]: row[1:] for row in exception_resolution_state
-    }
     for exception_reference, exception_code, resolution_status in exception_state:
         if resolution_status == "open":
             raise AccountingValidationError(
                 f"reconciliation exception {exception_reference} ({exception_code}) is still open. "
-                "Resolve or supersede it through the named maker-checker command, then retry reconciliation."
+                "Keep the run in review until a named maker-checker resolution command is available."
             )
-        resolution_evidence = resolution_by_exception.get(exception_reference)
-        if (
-            resolution_evidence is None
-            or resolution_evidence[0] != resolution_status
-            or not resolution_evidence[1]
-            or not resolution_evidence[2]
-            or not resolution_evidence[3]
-        ):
-            raise AccountingValidationError(
-                f"reconciliation exception {exception_reference} ({exception_code}) is marked "
-                f"{resolution_status} without matching durable resolution-command evidence. "
-                "Restore the original maker-checker command evidence, then retry reconciliation."
-            )
+        raise AccountingValidationError(
+            f"reconciliation exception {exception_reference} ({exception_code}) is marked "
+            f"{resolution_status} without durable resolution-command evidence. Keep the run in "
+            "review; do not treat a mutable exception status as reconciliation authority."
+        )
 
 
 def _transition_snapshot_hash(
@@ -497,9 +408,8 @@ def _transition_snapshot_hash(
     exception_state: tuple[tuple[str, str, str], ...],
     *,
     currency_code: str | None = None,
-    exception_resolution_state: tuple[tuple[str, str, str, str, str], ...] = (),
 ) -> str:
-    """Bind run scope, populations, bridge arithmetic, and review authority to one digest."""
+    """Bind run scope, exact populations, bridge arithmetic, and review state to one digest."""
     authoritative_currency_code = (
         currency_code if currency_code is not None else str(bridge.currency_code)
     )
@@ -508,7 +418,6 @@ def _transition_snapshot_hash(
         "book_opening_balance": str(bridge.book_opening_balance),
         "book_population_reference": bridge.book_population_reference,
         "currency_code": authoritative_currency_code,
-        "exception_resolution_state": exception_resolution_state,
         "exception_state": exception_state,
         "match_state": match_state,
         "outstanding_bank_items": str(bridge.outstanding_bank_items),
@@ -547,8 +456,7 @@ def _load_transition_document(
                transition.actor_reference, transition.purpose_code,
                transition.effective_at, transition.recorded_at, run.run_status_code,
                transition.statement_population_reference,
-               transition.book_population_reference,
-               transition.source_payload_hash
+               transition.book_population_reference
         FROM accounting_core.reconciliation_run_transition_command AS transition
         JOIN accounting_core.reconciliation_run AS run
           ON run.tenant_account_id = transition.tenant_account_id
@@ -577,7 +485,6 @@ def _load_transition_document(
         "recorded_at": _format_timestamp(row[6]),
         "statement_population_reference": row[8],
         "book_population_reference": row[9],
-        "source_payload_hash": row[10],
         "next_action": _RECONCILED_NEXT_ACTION,
         "replayed": replayed,
     }

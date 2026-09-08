@@ -11,7 +11,7 @@ AUTHORITY_MIGRATION = (
     ROOT
     / "database"
     / "migrations"
-    / "0020_reconciliation_run_database_snapshot_authority.sql"
+    / "0021_reconciliation_run_database_snapshot_authority.sql"
 )
 INSTALLER = ROOT / "src" / "accounting_information_platform" / "migration_install.py"
 
@@ -33,11 +33,40 @@ class ReconciliationTransitionDatabaseSnapshotAuthorityTests(unittest.TestCase):
         self.assertIn("NEW.statement_population_reference := database_statement_reference", sql)
         self.assertIn("NEW.book_population_reference := database_book_reference", sql)
 
-    def test_public_installer_applies_authority_after_base_0019(self) -> None:
+    def test_hashed_timestamptz_facts_are_canonicalized_to_utc(self) -> None:
+        """Snapshot digests must not inherit the database session TimeZone setting."""
+        sql = AUTHORITY_MIGRATION.read_text(encoding="utf-8")
+
+        self.assertIn("journal.posted_at AT TIME ZONE 'UTC'", sql)
+        self.assertIn("exception.effective_at AT TIME ZONE 'UTC'", sql)
+        self.assertIn("knowledge_cutoff_at AT TIME ZONE 'UTC'", sql)
+        self.assertGreaterEqual(
+            sql.count("'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"'"),
+            3,
+        )
+
+    def test_reconciled_transition_requires_exact_immutable_outbox_evidence(self) -> None:
+        """The database must bind reconciled authority to one matching lifecycle event."""
+        sql = AUTHORITY_MIGRATION.read_text(encoding="utf-8")
+
+        self.assertIn("reconciliation_run_transition_outbox_guard", sql)
+        self.assertIn("reconciliation_run_outbox_transition_guard", sql)
+        self.assertIn("reconciliation_run_outbox_immutable_guard", sql)
+        self.assertIn("reconciliation_run_reconciled_outbox_transition_unique", sql)
+        self.assertIn("event_type_code = 'reconciliation_run_reconciled'", sql)
+        self.assertIn(
+            "'urn:cwl:accounting:reconciliation_run_transition:' ||",
+            sql,
+        )
+        self.assertIn("event.payload_hash = NEW.reconciliation_transition_command_hash", sql)
+        self.assertIn("only publication state may change", sql)
+
+    def test_public_installer_applies_authority_after_base_0020(self) -> None:
         """Every supported foundation install must include the database-authority overlay."""
         source = INSTALLER.read_text(encoding="utf-8")
 
-        self.assertIn("0020_reconciliation_run_database_snapshot_authority.sql", source)
+        self.assertIn("0020_reconciliation_run_completion_evidence.sql", source)
+        self.assertIn("0021_reconciliation_run_database_snapshot_authority.sql", source)
         self.assertIn("_persistence.apply_foundation_migration = apply_foundation_migration", source)
 
 

@@ -221,7 +221,10 @@ BEGIN
                    jsonb_build_object(
                        'journal_reference', journal.journal_reference,
                        'accounting_date', journal.accounting_date,
-                       'posted_at', journal.posted_at,
+                       'posted_at', to_char(
+                           journal.posted_at AT TIME ZONE 'UTC',
+                           'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+                       ),
                        'line_number', line.line_number,
                        'debit_amount', line.debit_amount,
                        'credit_amount', line.credit_amount,
@@ -523,7 +526,10 @@ BEGIN
                        'reconciliation_exception_id', exception.reconciliation_exception_id::text,
                        'exception_code', exception.exception_code,
                        'owner_reference', exception.owner_reference,
-                       'effective_at', exception.effective_at,
+                       'effective_at', to_char(
+                           exception.effective_at AT TIME ZONE 'UTC',
+                           'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+                       ),
                        'resolution_status_code', exception.resolution_status_code
                    )
                    ORDER BY exception.reconciliation_exception_id
@@ -561,7 +567,10 @@ BEGIN
         'book_population', book_population,
         'book_population_reference', database_book_reference,
         'exception_population', exception_population,
-        'knowledge_cutoff_at', knowledge_cutoff_at,
+        'knowledge_cutoff_at', to_char(
+            knowledge_cutoff_at AT TIME ZONE 'UTC',
+            'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+        ),
         'opening_command_hash', opening_command_hash,
         'posted_cash_book_movements', posted_cash_book_movements,
         'reconciliation_run_id', authority_reconciliation_run_id::text,
@@ -634,5 +643,131 @@ CREATE TRIGGER accounting_reconciliation_transition_database_authority_guard
     BEFORE INSERT ON accounting_core.reconciliation_run_transition_command
     FOR EACH ROW
     EXECUTE FUNCTION accounting_core.assign_reconciliation_run_database_snapshot_authority();
+
+-- Reconciled lifecycle authority is a three-way durable fact: the immutable
+-- transition command, the aggregate status, and exactly one publication/audit
+-- event must describe the same tenant/run/transition/hash at commit. The
+-- application keeps explicit event creation; PostgreSQL only validates the
+-- completed transaction so raw SQL cannot omit or forge publication evidence.
+CREATE UNIQUE INDEX reconciliation_run_reconciled_outbox_transition_unique
+    ON accounting_integration.outbox_event (
+        tenant_account_id,
+        payload_reference
+    )
+    WHERE event_type_code = 'reconciliation_run_reconciled';
+
+CREATE OR REPLACE FUNCTION accounting_core.enforce_reconciliation_transition_outbox_evidence()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    matching_event_count integer;
+BEGIN
+    SELECT count(*)
+    INTO matching_event_count
+    FROM accounting_integration.outbox_event AS event
+    WHERE event.tenant_account_id = NEW.tenant_account_id
+      AND event.event_type_code = 'reconciliation_run_reconciled'
+      AND event.aggregate_reference =
+          'urn:cwl:accounting:reconciliation_run:' || NEW.reconciliation_run_id::text
+      AND event.payload_reference =
+          'urn:cwl:accounting:reconciliation_run_transition:' ||
+          NEW.reconciliation_run_transition_command_id::text
+      AND event.payload_hash = NEW.reconciliation_transition_command_hash;
+
+    IF matching_event_count <> 1 THEN
+        RAISE EXCEPTION
+            'reconciliation lifecycle transition requires exactly one matching outbox event at commit (reconciliation_lifecycle_outbox_required)'
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN NULL;
+END;
+$$;
+
+CREATE CONSTRAINT TRIGGER reconciliation_run_transition_outbox_guard
+    AFTER INSERT ON accounting_core.reconciliation_run_transition_command
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.enforce_reconciliation_transition_outbox_evidence();
+
+CREATE OR REPLACE FUNCTION accounting_core.enforce_reconciliation_lifecycle_outbox_binding()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    matching_transition_count integer;
+BEGIN
+    IF NEW.event_type_code <> 'reconciliation_run_reconciled' THEN
+        RETURN NULL;
+    END IF;
+
+    SELECT count(*)
+    INTO matching_transition_count
+    FROM accounting_core.reconciliation_run_transition_command AS transition
+    WHERE transition.tenant_account_id = NEW.tenant_account_id
+      AND NEW.aggregate_reference =
+          'urn:cwl:accounting:reconciliation_run:' || transition.reconciliation_run_id::text
+      AND NEW.payload_reference =
+          'urn:cwl:accounting:reconciliation_run_transition:' ||
+          transition.reconciliation_run_transition_command_id::text
+      AND NEW.payload_hash = transition.reconciliation_transition_command_hash
+      AND transition.target_run_status_code = 'reconciled';
+
+    IF matching_transition_count <> 1 THEN
+        RAISE EXCEPTION
+            'reconciliation lifecycle outbox event must bind exactly one immutable transition command (reconciliation_lifecycle_outbox_binding)'
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN NULL;
+END;
+$$;
+
+CREATE CONSTRAINT TRIGGER reconciliation_run_outbox_transition_guard
+    AFTER INSERT ON accounting_integration.outbox_event
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.enforce_reconciliation_lifecycle_outbox_binding();
+
+CREATE OR REPLACE FUNCTION accounting_core.guard_reconciliation_lifecycle_outbox_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        IF OLD.event_type_code = 'reconciliation_run_reconciled' THEN
+            RAISE EXCEPTION
+                'reconciliation lifecycle outbox evidence is immutable once recorded (reconciliation_lifecycle_outbox_immutable)'
+                USING ERRCODE = '23514';
+        END IF;
+        RETURN OLD;
+    END IF;
+
+    IF OLD.event_type_code = 'reconciliation_run_reconciled' THEN
+        IF NEW.tenant_account_id IS DISTINCT FROM OLD.tenant_account_id
+           OR NEW.event_type_code IS DISTINCT FROM OLD.event_type_code
+           OR NEW.aggregate_reference IS DISTINCT FROM OLD.aggregate_reference
+           OR NEW.payload_reference IS DISTINCT FROM OLD.payload_reference
+           OR NEW.payload_hash IS DISTINCT FROM OLD.payload_hash
+           OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+            RAISE EXCEPTION
+                'reconciliation lifecycle outbox identity and hash are immutable; only publication state may change (reconciliation_lifecycle_outbox_immutable)'
+                USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF NEW.event_type_code = 'reconciliation_run_reconciled' THEN
+        RAISE EXCEPTION
+            'an unrelated outbox event cannot be repurposed as reconciliation lifecycle evidence (reconciliation_lifecycle_outbox_immutable)'
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER reconciliation_run_outbox_immutable_guard
+    BEFORE UPDATE OR DELETE ON accounting_integration.outbox_event
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.guard_reconciliation_lifecycle_outbox_mutation();
 
 COMMIT;

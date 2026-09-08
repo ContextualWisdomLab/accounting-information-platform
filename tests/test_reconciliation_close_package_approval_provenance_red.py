@@ -231,21 +231,19 @@ class ReconciliationClosePackageApprovalProvenanceRedTests(unittest.TestCase):
             ),
             currency_code=package_input.projection.currency_code,
         )
-        authoritative_projection_evidence = (
-            close_package._DatabaseOwnedCloseProjectionEvidence(
-                statement_population_reference="sha256:" + "3" * 64,
-                book_population_reference="sha256:" + "4" * 64,
-                statement_opening_balance=Decimal("100.00"),
-                statement_period_movements=Decimal("0.00"),
-                statement_closing_balance=Decimal("100.00"),
-                book_opening_balance=Decimal("100.00"),
-                posted_cash_book_movements=Decimal("0.00"),
-                book_closing_balance=Decimal("100.00"),
-                reconciled_book_balance=Decimal("100.00"),
-                outstanding_bank_items=Decimal("0.00"),
-                outstanding_book_items=Decimal("0.00"),
-                unexplained_difference=Decimal("0.00"),
-            )
+        authoritative_projection = close_package._DatabaseOwnedCloseProjectionEvidence(
+            statement_population_reference="sha256:" + "3" * 64,
+            book_population_reference="sha256:" + "4" * 64,
+            statement_opening_balance=Decimal("100.00"),
+            statement_period_movements=Decimal("0.00"),
+            statement_closing_balance=package_input.projection.bank_closing_balance,
+            book_opening_balance=Decimal("100.00"),
+            posted_cash_book_movements=Decimal("0.00"),
+            book_closing_balance=package_input.projection.posted_book_cash_balance,
+            reconciled_book_balance=package_input.projection.reconciled_balance,
+            outstanding_bank_items=package_input.projection.outstanding_bank_items,
+            outstanding_book_items=package_input.projection.outstanding_book_items,
+            unexplained_difference=package_input.projection.unexplained_difference,
         )
 
         class Rows:
@@ -290,7 +288,7 @@ class ReconciliationClosePackageApprovalProvenanceRedTests(unittest.TestCase):
             mock.patch.object(
                 close_package,
                 "_database_owned_close_projection_evidence",
-                return_value=authoritative_projection_evidence,
+                return_value=authoritative_projection,
             ),
         ):
             with self.assertRaisesRegex(

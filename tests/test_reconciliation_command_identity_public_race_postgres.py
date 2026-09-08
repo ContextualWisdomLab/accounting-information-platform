@@ -19,6 +19,7 @@ from accounting_information_platform import (
 )
 from accounting_information_platform import reconciliation_close_package as close_package
 from tests import test_postgres_posting as posting
+from tests.reconciliation_opening_book_fixture import post_reconciliation_opening_book_balance
 from tests.test_reconciliation_run_api import ReconciliationRunApiTests
 
 
@@ -59,6 +60,7 @@ class ReconciliationCommandIdentityPublicRacePostgresTests(unittest.TestCase):
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
         self.addCleanup(self.fixture.tearDown)
+        post_reconciliation_opening_book_balance(self.fixture.case)
         _statement, command = self.fixture._statement_and_command()
         self.opened = accept_reconciliation_run(
             command,
@@ -93,7 +95,7 @@ class ReconciliationCommandIdentityPublicRacePostgresTests(unittest.TestCase):
             "effective_at": "2026-09-02T00:00:00Z",
         }
         barrier = threading.Barrier(2)
-        failures: list[BaseException] = []
+        failures: list[Exception] = []
         outcomes: list[str] = []
         original_lock = PostgresPostingLedger._acquire_command_lock
         synchronized_scopes = {
@@ -118,7 +120,7 @@ class ReconciliationCommandIdentityPublicRacePostgresTests(unittest.TestCase):
                 outcomes.append(f"{name}:success")
             except IdempotencyConflictError:
                 outcomes.append(f"{name}:conflict")
-            except BaseException as error:  # captured for the main test thread
+            except Exception as error:  # captured for the main test thread
                 failures.append(error)
 
         opening = threading.Thread(

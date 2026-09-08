@@ -118,7 +118,7 @@ class ReconciliationCrossCommandIdentityPostgresTests(unittest.TestCase):
         """Concurrent transactions leave exactly one durable tenant/key identity."""
         key = f"concurrent-shared-{uuid.uuid4().hex}"
         start = threading.Barrier(2)
-        failures: list[BaseException] = []
+        failures: list[Exception] = []
         successes: list[str] = []
         sqlstates: list[str | None] = []
 
@@ -144,7 +144,7 @@ class ReconciliationCrossCommandIdentityPostgresTests(unittest.TestCase):
                     successes.append(command_family_code)
             except psycopg.Error as error:
                 sqlstates.append(error.sqlstate)
-            except BaseException as error:  # captured for the main test thread
+            except Exception as error:  # captured for the main test thread
                 failures.append(error)
 
         opening = threading.Thread(

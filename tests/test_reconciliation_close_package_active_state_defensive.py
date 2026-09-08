@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 import unittest.mock as mock
 from contextlib import contextmanager
-from types import SimpleNamespace
+from decimal import Decimal
 
 from accounting_information_platform import reconciliation_close_package as close_package
 from accounting_information_platform.reconciliation_close_package import (
@@ -15,6 +15,7 @@ from accounting_information_platform.reconciliation_close_package import (
     _database_owned_match_state_evidence,
 )
 from accounting_information_platform.reconciliation_read_model import (
+    ReconciliationCloseReviewProjection,
     ReconciliationCloseReviewScope,
 )
 
@@ -56,7 +57,7 @@ class _Ledger:
 
     @contextmanager
     def _consistent_read_session(self):
-        """Yield the configured connection through the authoritative read boundary."""
+        """Yield the configured connection like the PostgreSQL snapshot session."""
         yield self.connection
 
     def _require_tenant(self, _connection: object) -> str:
@@ -180,22 +181,34 @@ class ReconciliationClosePackageActiveStateDefensiveTests(unittest.TestCase):
 
     @staticmethod
     def _package_input() -> ReconciliationClosePackageInput:
-        projection = SimpleNamespace(
+        projection = ReconciliationCloseReviewProjection(
             tenant_account_reference="tenant-1",
             legal_entity_reference="entity-1",
             accounting_book_reference="book-1",
             bank_account_assignment_reference="bank-assignment-1",
             reconciliation_run_reference="run-1",
+            statement_population_reference="sha256:" + "3" * 64,
+            book_population_reference="sha256:" + "4" * 64,
             currency_code="KRW",
-            statement_population_reference="caller-statement-population",
-            book_population_reference="caller-book-population",
-            bank_closing_balance=0,
-            posted_book_cash_balance=0,
-            reconciled_balance=0,
-            outstanding_bank_items=0,
-            outstanding_book_items=0,
-            unexplained_difference=0,
+            bank_closing_balance=Decimal("100.00"),
+            posted_book_cash_balance=Decimal("100.00"),
+            reconciled_balance=Decimal("100.00"),
+            outstanding_bank_items=Decimal("0.00"),
+            outstanding_book_items=Decimal("0.00"),
+            unexplained_difference=Decimal("0.00"),
+            safely_matchable_candidate_count=0,
             exception_count=0,
+            exception_statement_entry_references=(),
+            reviewed_match_references=(),
+            reviewed_match_evidence=(),
+            unexplained_difference_change=None,
+            outstanding_bank_items_change=None,
+            outstanding_book_items_change=None,
+            suitable_for_period_close_review=True,
+            next_action=(
+                "Attach this exact reconciliation evidence to the period-close review; "
+                "the authorized reconciliation review remains a separate control."
+            ),
         )
         return ReconciliationClosePackageInput(
             projection=projection,
@@ -253,34 +266,34 @@ class ReconciliationClosePackageActiveStateDefensiveTests(unittest.TestCase):
             bank_account_assignment_reference="bank-assignment-1",
             currency_code="KRW",
         )
+        authoritative_projection = close_package._DatabaseOwnedCloseProjectionEvidence(
+            statement_population_reference="sha256:" + "3" * 64,
+            book_population_reference="sha256:" + "4" * 64,
+            statement_opening_balance=Decimal("100.00"),
+            statement_period_movements=Decimal("0.00"),
+            statement_closing_balance=Decimal("100.00"),
+            book_opening_balance=Decimal("100.00"),
+            posted_cash_book_movements=Decimal("0.00"),
+            book_closing_balance=Decimal("100.00"),
+            reconciled_book_balance=Decimal("100.00"),
+            outstanding_bank_items=Decimal("0.00"),
+            outstanding_book_items=Decimal("0.00"),
+            unexplained_difference=Decimal("0.00"),
+        )
         authoritative_state = ReconciliationEvidenceReference(
             evidence_kind_code="reconciliation_match_state",
             evidence_reference="database-owned:approved",
             sha256_digest="sha256:" + "1" * 64,
         )
-        authoritative_projection_evidence = (
-            close_package._DatabaseOwnedCloseProjectionEvidence(
-                statement_population_reference="sha256:" + "3" * 64,
-                book_population_reference="sha256:" + "4" * 64,
-                statement_opening_balance=0,
-                statement_period_movements=0,
-                statement_closing_balance=0,
-                book_opening_balance=0,
-                posted_cash_book_movements=0,
-                book_closing_balance=0,
-                reconciled_book_balance=0,
-                outstanding_bank_items=0,
-                outstanding_book_items=0,
-                unexplained_difference=0,
-            )
-        )
-
-        def replace_projection(projection, **changes):
-            return SimpleNamespace(**({**vars(projection), **changes}))
 
         sentinel = object()
         with (
             mock.patch.object(close_package, "PostgresPostingLedger", _Ledger),
+            mock.patch.object(
+                close_package,
+                "_database_owned_close_projection_evidence",
+                return_value=authoritative_projection,
+            ) as projection_loader,
             mock.patch.object(
                 close_package,
                 "_database_owned_match_state_evidence",
@@ -297,16 +310,6 @@ class ReconciliationClosePackageActiveStateDefensiveTests(unittest.TestCase):
             ) as run_loader,
             mock.patch.object(
                 close_package,
-                "_database_owned_close_projection_evidence",
-                return_value=authoritative_projection_evidence,
-            ) as projection_loader,
-            mock.patch.object(
-                close_package,
-                "replace",
-                side_effect=replace_projection,
-            ),
-            mock.patch.object(
-                close_package,
                 "_build_reconciliation_close_package_from_verified_state",
                 return_value=sentinel,
             ) as verified_builder,
@@ -318,6 +321,11 @@ class ReconciliationClosePackageActiveStateDefensiveTests(unittest.TestCase):
             )
 
         self.assertIs(result, sentinel)
+        projection_loader.assert_called_once_with(
+            _Ledger.connection,
+            "tenant-id",
+            reconciliation_run_reference="run-1",
+        )
         state_loader.assert_called_once_with(
             _Ledger.connection,
             "tenant-id",
@@ -331,11 +339,6 @@ class ReconciliationClosePackageActiveStateDefensiveTests(unittest.TestCase):
             tenant_reference="tenant-1",
             reconciliation_run_reference="run-1",
         )
-        projection_loader.assert_called_once_with(
-            _Ledger.connection,
-            "tenant-id",
-            reconciliation_run_reference="run-1",
-        )
         self.assertEqual(
             _Ledger.connection.parameters,
             ("tenant-id", "run-1"),
@@ -345,6 +348,38 @@ class ReconciliationClosePackageActiveStateDefensiveTests(unittest.TestCase):
             _Ledger.connection.query or "",
         )
         verified_input = verified_builder.call_args.args[0]
+        self.assertEqual(
+            verified_input.projection.statement_population_reference,
+            authoritative_projection.statement_population_reference,
+        )
+        self.assertEqual(
+            verified_input.projection.book_population_reference,
+            authoritative_projection.book_population_reference,
+        )
+        self.assertEqual(
+            verified_input.projection.bank_closing_balance,
+            authoritative_projection.statement_closing_balance,
+        )
+        self.assertEqual(
+            verified_input.projection.posted_book_cash_balance,
+            authoritative_projection.book_closing_balance,
+        )
+        self.assertEqual(
+            verified_input.projection.reconciled_balance,
+            authoritative_projection.reconciled_book_balance,
+        )
+        self.assertEqual(
+            verified_input.projection.outstanding_bank_items,
+            authoritative_projection.outstanding_bank_items,
+        )
+        self.assertEqual(
+            verified_input.projection.outstanding_book_items,
+            authoritative_projection.outstanding_book_items,
+        )
+        self.assertEqual(
+            verified_input.projection.unexplained_difference,
+            authoritative_projection.unexplained_difference,
+        )
         self.assertEqual(
             tuple(
                 (evidence.evidence_kind_code, evidence.evidence_reference)

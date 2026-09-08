@@ -148,11 +148,14 @@ class PostgresReconciliationClosePackageAuthoritativeStateTests(unittest.TestCas
             )
 
     def test_run_scope_loader_rejects_non_reconciled_run(self) -> None:
-        """Close-package source authority must reject an evaluating run."""
+        """An evaluating fixture cannot be promoted to close-package authority."""
         ledger = self._ledger()
         with ledger._session() as connection:
             tenant_account_id = ledger._require_tenant(connection)
-            with self.assertRaisesRegex(ValueError, "must be reconciled"):
+            with self.assertRaisesRegex(
+                ValueError,
+                "must be reconciled before close-package construction",
+            ):
                 close_package._database_owned_run_source_evidence(
                     connection,
                     tenant_account_id,

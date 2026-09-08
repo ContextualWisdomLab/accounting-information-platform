@@ -6,11 +6,9 @@ from pathlib import Path
 
 from . import persistence as _persistence
 from .core import AccountingValidationError
-from .persistence import (
-    _import_psycopg,
-    apply_foundation_migration as _apply_foundation_migration,
-)
 
+
+_apply_base_foundation_migration = _persistence.apply_foundation_migration
 
 _BASE_FOUNDATION_PREREQUISITES = (
     "0002_chart_account_class.sql",
@@ -32,6 +30,19 @@ _BASE_FOUNDATION_PREREQUISITES = (
     "0018_bank_statement_balance_evidence.sql",
     "0019_reconciliation_run_command_evidence.sql",
 )
+_FORWARD_MIGRATIONS = (
+    "0020_reconciliation_run_completion_evidence.sql",
+    "0021_reconciliation_run_database_snapshot_authority.sql",
+    "0022_reconciliation_exception_resolution_command.sql",
+    "0023_reconciliation_exception_resolution_outbox_pair.sql",
+    "0024_reconciliation_authority_outbox_retention.sql",
+    "0025_reconciliation_authority_outbox_orphan_guard.sql",
+    "0026_reconciliation_control_recording_time_authority.sql",
+    "0027_reconciliation_lifecycle_recording_time_authority.sql",
+    "0028_reconciliation_lifecycle_source_payload_identity.sql",
+    "0029_reconciliation_lifecycle_session_lock_authority.sql",
+    "0030_reconciliation_lifecycle_capability_privileges.sql",
+)
 
 
 def _base_foundation_chain_is_complete(migration_path: Path) -> bool:
@@ -44,35 +55,30 @@ def _base_foundation_chain_is_complete(migration_path: Path) -> bool:
 
 def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
     """Apply the complete checked-in foundation chain through the canonical loader."""
-    # Preserve the base loader's earliest file-specific diagnostic without
-    # applying a partial base chain when a later required overlay is absent.
+    # The complete-chain wrapper must preserve two fail-closed boundaries at once:
+    # base-chain gaps keep the base loader's precise recovery message, while all
+    # forward migrations are required before the first base database write.
     if not _base_foundation_chain_is_complete(migration_path):
-        _apply_foundation_migration(database_url, migration_path)
+        _apply_base_foundation_migration(database_url, migration_path)
         raise AccountingValidationError(
             "Base foundation validation returned without a complete checked-in chain."
         )
 
-    forward_migration_paths = (
-        migration_path.parent / "0020_reconciliation_run_database_snapshot_authority.sql",
-        migration_path.parent / "0021_reconciliation_exception_resolution_command.sql",
-        migration_path.parent / "0022_reconciliation_exception_resolution_outbox_pair.sql",
-        migration_path.parent / "0023_reconciliation_authority_outbox_retention.sql",
-        migration_path.parent / "0024_reconciliation_authority_outbox_orphan_guard.sql",
-        migration_path.parent / "0025_reconciliation_control_recording_time_authority.sql",
-        migration_path.parent / "0026_reconciliation_lifecycle_recording_time_authority.sql",
-        migration_path.parent / "0027_reconciliation_lifecycle_source_payload_identity.sql",
-        migration_path.parent / "0028_reconciliation_lifecycle_session_lock_authority.sql",
-        migration_path.parent / "0029_reconciliation_lifecycle_capability_privileges.sql",
+    forward_migration_paths = tuple(
+        migration_path.parent / filename for filename in _FORWARD_MIGRATIONS
     )
-    for forward_migration_path in forward_migration_paths:
-        if not forward_migration_path.is_file():
-            raise AccountingValidationError(
-                "Required reconciliation authority migration is missing at "
-                f"{forward_migration_path}. Restore the checked-in migration chain, then retry."
-            )
+    missing_forward_paths = tuple(
+        path for path in forward_migration_paths if not path.is_file()
+    )
+    if missing_forward_paths:
+        missing_path = missing_forward_paths[0]
+        raise AccountingValidationError(
+            "Required reconciliation lifecycle migration is missing at "
+            f"{missing_path}. Restore the checked-in migration chain, then retry."
+        )
 
-    _apply_foundation_migration(database_url, migration_path)
-    psycopg = _import_psycopg()
+    _apply_base_foundation_migration(database_url, migration_path)
+    psycopg = _persistence._import_psycopg()
     try:
         with psycopg.connect(
             database_url, autocommit=True, cursor_factory=psycopg.ClientCursor
@@ -81,15 +87,15 @@ def apply_foundation_migration(database_url: str, migration_path: Path) -> None:
                 connection.execute(forward_migration_path.read_text(encoding="utf-8"))
     except Exception as error:
         raise AccountingValidationError(
-            "Reconciliation authority migration failed. Inspect the PostgreSQL error, restore "
+            "Reconciliation lifecycle migration failed. Inspect the PostgreSQL error, restore "
             "a clean database, then retry the complete foundation migration."
         ) from error
 
 
 # A large integration-test and operator surface historically imports the loader
 # from persistence directly. Keep that compatibility path on the complete-chain
-# installer so no supported install can stop before the current database-owned
-# reconciliation authority and exception-resolution boundaries.
+# installer so no supported install can stop after the caller-trusting base
+# definition and accidentally omit the lifecycle successor/snapshot authority.
 _persistence.apply_foundation_migration = apply_foundation_migration
 
 
