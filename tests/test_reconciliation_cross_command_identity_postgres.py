@@ -48,9 +48,39 @@ class ReconciliationCrossCommandIdentityPostgresTests(unittest.TestCase):
             (self.opened["reconciliation_run_id"],),
         ).fetchone()[0]
 
+    def _begin_lifecycle_authority(self, connection: psycopg.Connection) -> None:
+        """Enter the supported lease/fresh-snapshot protocol before a raw transition insert."""
+        tenant_reference = self.fixture.case.policy.tenant_reference
+        run_id = self.opened["reconciliation_run_id"]
+        lifecycle_scope = f"reconciliation_run_lifecycle:{run_id}"
+        connection.execute(
+            "SELECT accounting_core.acquire_reconciliation_lifecycle_session(%s, %s)",
+            (tenant_reference, run_id),
+        )
+        connection.commit()
+        connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        connection.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+            (tenant_reference, lifecycle_scope),
+        )
+
+    def _release_lifecycle_authority(self, connection: psycopg.Connection) -> None:
+        """Release the test lease after the intended raw-insert rejection."""
+        released = connection.execute(
+            "SELECT accounting_core.release_reconciliation_lifecycle_session(%s, %s)",
+            (
+                self.fixture.case.policy.tenant_reference,
+                self.opened["reconciliation_run_id"],
+            ),
+        ).fetchone()
+        self.assertIsNotNone(released)
+        self.assertTrue(bool(released[0]))
+        connection.commit()
+
     def test_transition_cannot_reuse_opening_command_key(self) -> None:
         """The database, not a prior application SELECT, owns cross-family uniqueness."""
         with psycopg.connect(posting.DATABASE_URL) as connection:
+            self._begin_lifecycle_authority(connection)
             tenant_id = self._tenant_id(connection)
             with self.assertRaisesRegex(psycopg.Error, "idempotency key"):
                 connection.execute(
@@ -86,6 +116,7 @@ class ReconciliationCrossCommandIdentityPostgresTests(unittest.TestCase):
                     ),
                 )
             connection.rollback()
+            self._release_lifecycle_authority(connection)
 
     def test_opening_api_reports_lifecycle_owned_key_as_domain_conflict(self) -> None:
         """A durable lifecycle key never leaks a provider-specific unique violation."""
