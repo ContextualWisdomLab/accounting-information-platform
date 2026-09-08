@@ -2,9 +2,9 @@
 
 ## Decision under repair
 
-PR #41 makes bounded-context ownership machine-checkable for the accounting modular monolith. During the reconciliation authority work, dependency-root PR #29 advanced from the parent on which #41 had originally been written and introduced a new top-level production module, `src/accounting_information_platform/reconciliation_completion.py`. The architecture fitness test deliberately enumerates top-level production modules and requires every module to have an explicit physical owner in `docs/CONTEXT_MAP.md`; therefore retaining the old #41 parent would have made the architecture description stale even though its four original files remained internally consistent.
+PR #41 makes bounded-context ownership machine-checkable for the accounting modular monolith. During an earlier reconciliation-authority root, dependency-root PR #29 advanced from the parent on which #41 had originally been written and introduced `src/accounting_information_platform/reconciliation_completion.py`. The architecture fitness test deliberately enumerates production modules and requires every module to have an explicit physical owner in `docs/CONTEXT_MAP.md`; at that historical restack, retaining the old #41 parent would have made the architecture description stale even though its original files remained internally consistent.
 
-The branch was restacked non-destructively on exact #29 head `843f0e3bbe10f3bb989292b5bdf9eeee35b0316d` with a two-parent merge commit. The existing #41 history was retained, the current dependency-root tree was incorporated, and no force push or destructive rebase was used. The Context Map now assigns `reconciliation_completion.py` to `reconciliation_run_control` and states that the evidence-derived completion command must not acquire journal-posting or period-close authority.
+That branch was restacked non-destructively on exact #29 head `843f0e3bbe10f3bb989292b5bdf9eeee35b0316d` with a two-parent merge commit. The existing #41 history was retained, the then-current dependency-root tree was incorporated, and no force push or destructive rebase was used. At that point the Context Map assigned `reconciliation_completion.py` to `reconciliation_run_control` and stated that the evidence-derived completion command must not acquire journal-posting or period-close authority. Later #29 descendants removed that physical module while retaining the run-lifecycle responsibility elsewhere; the stale ownership row is repaired separately below rather than rewriting this historical restack evidence.
 
 This repair changes architecture description and fitness evidence only. It does not grant accounting runtime authority, alter a database migration, change a reconciliation decision, post/reverse a journal, close a fiscal period, or consume mutable foreign-repository implementation code.
 
@@ -36,6 +36,14 @@ The repair lineage is ordinary and non-destructive: `4f86b1b38340cfc461f0b1dca20
 
 The predecessor RED is not transferred. The successor architecture head must run the focused fitness tests and the repository-owned Foundation/coverage/contracts/security/package gates on the unchanged exact SHA before this section can be treated as GREEN evidence.
 
+## Stale physical-owner row repair
+
+Fresh CodeRabbit review of exact architecture head `9e2d582ccfea4d54d6609186ceab6dfa009b4035` found a different direction of drift: the Context Map still listed `src/accounting_information_platform/reconciliation_completion.py`, but that file no longer exists on the current #29-rooted production tree. The existing fitness test guaranteed that every discovered production module had one owner, yet it did not guarantee the inverse—that every file row in the ownership table still named a real production file. A deleted or superseded module could therefore remain presented as current architecture indefinitely.
+
+The repair is again test-first and ordinary/non-force. RED commit `b2fd20fb7ea102902f28e163e53cf6923f9be0aa` adds `test_every_physical_ownership_row_references_an_existing_path`, which evaluates the current ownership table against the repository tree and fails on the obsolete completion-module row while continuing to permit real directory-owner rows such as `src/accounting_information_platform/iso20022/`. Minimal successor `5e8f8a0607aabe98cbc7351cd79f9149a60356bd` removes only the stale `reconciliation_completion.py` row. No replacement module is invented: the live `reconciliation_lifecycle.py` row remains the code-current run-control owner, and no runtime behavior or accounting authority changes.
+
+The earlier restack section remains historical evidence rather than being silently rewritten to pretend `reconciliation_completion.py` never existed. Current architecture truth is the present production inventory plus the current Context Map. This distinction prevents both stale-path drift and historical-evidence falsification.
+
 ## Evidence boundary
 
 The relevant architecture-description authority was rechecked against the publisher on 2026-09-02. ISO lists **ISO/IEC/IEEE 42010:2022, Software, systems and enterprise — Architecture description, Edition 2** as the currently published International Standard; the 2011 edition is withdrawn and replaced by the 2022 edition. The standard specifies requirements for architecture descriptions and their concepts/relationships, viewpoints, frameworks and languages; it does not prescribe Domain-Driven Design, a directory structure, a microservice split, or a specific implementation method. Accordingly, ADR 0059 and the Context Map use it only as architecture-description guidance and make no standards-conformance claim.
@@ -46,7 +54,7 @@ DDD remains the modeling method used to express responsibility and authority bou
 
 The architecture slice remains GREEN only when all of the following are true on one unchanged exact head:
 
-1. every listed production path has exactly one physical-ownership row and exactly one primary owner in `docs/CONTEXT_MAP.md`; domain/application paths name one declared bounded context, while any technical exception is exact-path scoped and cannot own accounting decisions;
+1. every current production module resolves to exactly one most-specific physical-ownership row and exactly one primary owner in `docs/CONTEXT_MAP.md`, and every file/directory row in that table references a path that still exists; domain/application paths name one declared bounded context, while any technical exception is exact-path scoped and cannot own accounting decisions;
 2. no new generic domain bucket hides responsibility behind names such as `utils`, `helpers`, `common`, `services`, `shared` or `core`;
 3. accounting domain/application source does not import foreign ContextualWisdomLab application implementations; the sole currently admitted non-stdlib root is `psycopg`, explicitly classified as PostgreSQL infrastructure rather than domain or Shared Kernel code;
 4. the only declared Context Fabric Shared Kernel is a later immutable released provider-neutral contract grammar, never mutable open-PR bytes;
