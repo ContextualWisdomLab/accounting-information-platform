@@ -98,6 +98,25 @@ class ReconciliationRecordingTimeUpgradePostgresTests(unittest.TestCase):
         return role_name, database_name, password, migration_url, admin_url
 
     @staticmethod
+    def _bind_role_to_tenant(admin_url: str, role_name: str, tenant_id: object) -> None:
+        """Bind the isolated migration login to fixture tenant rows before FORCE-RLS reads."""
+        with psycopg.connect(admin_url, autocommit=True) as admin:
+            role_oid = admin.execute(
+                "SELECT oid FROM pg_catalog.pg_roles WHERE rolname = %s",
+                (role_name,),
+            ).fetchone()[0]
+            admin.execute(
+                """
+                INSERT INTO accounting_core.runtime_tenant_binding (
+                    runtime_role_oid,
+                    runtime_role_name,
+                    tenant_account_id
+                ) VALUES (%s, %s, %s)
+                """,
+                (role_oid, role_name, tenant_id),
+            )
+
+    @staticmethod
     def _drop_isolated_database(database_name: str, role_name: str) -> None:
         """Remove the isolated database and migration login after an acceptance case."""
         with psycopg.connect(posting.DATABASE_URL, autocommit=True) as admin:
@@ -121,82 +140,83 @@ class ReconciliationRecordingTimeUpgradePostgresTests(unittest.TestCase):
 
         try:
             self._apply_pre_recording_time_chain(migration_url)
-            with mock.patch.object(posting, "DATABASE_URL", migration_url):
+            with mock.patch.object(posting, "DATABASE_URL", admin_url):
                 fixture = ReconciliationRunApiTests(
                     "test_open_run_binds_statement_scope_and_replays"
                 )
                 fixture.setUp()
                 _statement, command = fixture._statement_and_command()
-                opened = accept_reconciliation_run(
-                    command,
-                    migration_url,
-                    fixture.case.policy.tenant_reference,
-                )
+            self._bind_role_to_tenant(admin_url, role_name, fixture.case.tenant_id)
+            opened = accept_reconciliation_run(
+                command,
+                migration_url,
+                fixture.case.policy.tenant_reference,
+            )
 
-                with psycopg.connect(migration_url) as connection:
-                    tenant_id = connection.execute(
-                        """
-                        SELECT tenant_account_id
-                        FROM accounting_core.reconciliation_run
-                        WHERE reconciliation_run_id = %s
-                        """,
-                        (opened["reconciliation_run_id"],),
-                    ).fetchone()[0]
-                    exception_id, exception_recorded_at = connection.execute(
-                        """
-                        INSERT INTO accounting_core.reconciliation_exception (
-                            tenant_account_id,
-                            reconciliation_run_id,
-                            exception_code,
-                            owner_reference,
-                            next_action,
-                            effective_at,
-                            recorded_at,
-                            resolution_status_code
-                        )
-                        VALUES (
-                            %s, %s, 'legacy_recording_time_probe',
-                            'urn:cwl:principal:controller_owner',
-                            'Retain for migration provenance review.',
-                            '2026-09-02T00:10:00Z',
-                            '2100-01-01T00:00:00Z',
-                            'open'
-                        )
-                        RETURNING reconciliation_exception_id, recorded_at
-                        """,
-                        (tenant_id, opened["reconciliation_run_id"]),
-                    ).fetchone()
-                    evidence_recorded_at = connection.execute(
-                        """
-                        INSERT INTO accounting_core.reconciliation_evidence (
-                            tenant_account_id,
-                            reconciliation_run_id,
-                            reconciliation_exception_id,
-                            evidence_type_code,
-                            evidence_reference,
-                            evidence_payload_hash,
-                            effective_at,
-                            recorded_at
-                        )
-                        VALUES (
-                            %s, %s, %s, 'exception_resolution_review',
-                            %s, %s, '2026-09-02T00:15:00Z',
-                            '1900-01-01T00:00:00Z'
-                        )
-                        RETURNING recorded_at
-                        """,
-                        (
-                            tenant_id,
-                            opened["reconciliation_run_id"],
-                            exception_id,
-                            f"urn:cwl:evidence:reconciliation_exception:{exception_id}:legacy",
-                            "sha256:" + "7" * 64,
-                        ),
-                    ).fetchone()[0]
-                    connection.commit()
+            with psycopg.connect(migration_url) as connection:
+                tenant_id = connection.execute(
+                    """
+                    SELECT tenant_account_id
+                    FROM accounting_core.reconciliation_run
+                    WHERE reconciliation_run_id = %s
+                    """,
+                    (opened["reconciliation_run_id"],),
+                ).fetchone()[0]
+                exception_id, exception_recorded_at = connection.execute(
+                    """
+                    INSERT INTO accounting_core.reconciliation_exception (
+                        tenant_account_id,
+                        reconciliation_run_id,
+                        exception_code,
+                        owner_reference,
+                        next_action,
+                        effective_at,
+                        recorded_at,
+                        resolution_status_code
+                    )
+                    VALUES (
+                        %s, %s, 'legacy_recording_time_probe',
+                        'urn:cwl:principal:controller_owner',
+                        'Retain for migration provenance review.',
+                        '2026-09-02T00:10:00Z',
+                        '2100-01-01T00:00:00Z',
+                        'open'
+                    )
+                    RETURNING reconciliation_exception_id, recorded_at
+                    """,
+                    (tenant_id, opened["reconciliation_run_id"]),
+                ).fetchone()
+                evidence_recorded_at = connection.execute(
+                    """
+                    INSERT INTO accounting_core.reconciliation_evidence (
+                        tenant_account_id,
+                        reconciliation_run_id,
+                        reconciliation_exception_id,
+                        evidence_type_code,
+                        evidence_reference,
+                        evidence_payload_hash,
+                        effective_at,
+                        recorded_at
+                    )
+                    VALUES (
+                        %s, %s, %s, 'exception_resolution_review',
+                        %s, %s, '2026-09-02T00:15:00Z',
+                        '1900-01-01T00:00:00Z'
+                    )
+                    RETURNING recorded_at
+                    """,
+                    (
+                        tenant_id,
+                        opened["reconciliation_run_id"],
+                        exception_id,
+                        f"urn:cwl:evidence:reconciliation_exception:{exception_id}:legacy",
+                        "sha256:" + "7" * 64,
+                    ),
+                ).fetchone()[0]
+                connection.commit()
 
-                self.assertEqual(str(exception_recorded_at.year), "2100")
-                self.assertEqual(str(evidence_recorded_at.year), "1900")
+            self.assertEqual(str(exception_recorded_at.year), "2100")
+            self.assertEqual(str(evidence_recorded_at.year), "1900")
 
             with psycopg.connect(
                 migration_url,
@@ -334,8 +354,9 @@ class ReconciliationRecordingTimeUpgradePostgresTests(unittest.TestCase):
             )
         finally:
             if fixture is not None:
-                fixture.doCleanups()
-                fixture.tearDown()
+                with mock.patch.object(posting, "DATABASE_URL", admin_url):
+                    fixture.doCleanups()
+                    fixture.tearDown()
             self._drop_isolated_database(database_name, role_name)
 
     def test_empty_non_bypass_upgrade_installs_database_owned_time_guards(self) -> None:
