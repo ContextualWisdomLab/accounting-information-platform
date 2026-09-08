@@ -314,8 +314,9 @@ class PostgresFinancialReportSourceRegistryTests(unittest.TestCase):
                 snapshot_currency_code,
                 snapshot_generated_at,
                 source_journal_count,
-                source_payload_hash
-            ) VALUES (%s, %s, %s, %s, %s, %s, 0, %s)
+                source_payload_hash,
+                close_idempotency_key
+            ) VALUES (%s, %s, %s, %s, %s, %s, 0, %s, %s)
             RETURNING trial_balance_snapshot_id
             """,
             (
@@ -326,6 +327,7 @@ class PostgresFinancialReportSourceRegistryTests(unittest.TestCase):
                 currency_code,
                 generated_at,
                 "sha256:" + "1" * 64,
+                f"financial-report-source-fixture:{uuid.uuid4().hex}",
             ),
         ).fetchone()[0]
 
