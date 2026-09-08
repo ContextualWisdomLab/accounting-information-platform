@@ -7,11 +7,8 @@ from datetime import datetime, timedelta, timezone
 
 import psycopg
 
+from tests import test_postgres_financial_report_source_registry as registry
 from tests import test_postgres_posting as posting
-from tests.test_postgres_financial_report_source_registry import (
-    PostgresFinancialReportSourceRegistryTests,
-    materialize_seeded_book_period_control,
-)
 
 
 class PostgresFinancialReportSourcePopulationFreezeTests(unittest.TestCase):
@@ -29,7 +26,7 @@ class PostgresFinancialReportSourcePopulationFreezeTests(unittest.TestCase):
         self.addCleanup(self.case.doCleanups)
         self.addCleanup(self.case.tearDown)
         with psycopg.connect(posting.DATABASE_URL) as connection:
-            materialize_seeded_book_period_control(connection, self.case)
+            registry.materialize_seeded_book_period_control(connection, self.case)
 
     def test_linked_snapshot_header_cannot_be_rewritten(self) -> None:
         """A retained report source must keep the exact snapshot header it admitted."""
@@ -91,11 +88,11 @@ class PostgresFinancialReportSourcePopulationFreezeTests(unittest.TestCase):
         self, connection: psycopg.Connection
     ) -> tuple[object, object]:
         """Install the registry and link one retained current-period snapshot."""
-        PostgresFinancialReportSourceRegistryTests._apply_registry_inside_transaction(
+        registry.PostgresFinancialReportSourceRegistryTests._apply_registry_inside_transaction(
             connection
         )
         tenant_id, legal_entity_id, book_id, period_id = self._accounting_scope(connection)
-        snapshot_id = PostgresFinancialReportSourceRegistryTests._insert_snapshot(
+        snapshot_id = registry.PostgresFinancialReportSourceRegistryTests._insert_snapshot(
             connection,
             tenant_id=tenant_id,
             legal_entity_id=legal_entity_id,
@@ -104,7 +101,7 @@ class PostgresFinancialReportSourcePopulationFreezeTests(unittest.TestCase):
             currency_code="KRW",
             generated_at=datetime.now(timezone.utc) - timedelta(minutes=1),
         )
-        run_id = PostgresFinancialReportSourceRegistryTests._insert_report_run(
+        run_id = registry.PostgresFinancialReportSourceRegistryTests._insert_report_run(
             connection,
             tenant_id=tenant_id,
             legal_entity_id=legal_entity_id,
