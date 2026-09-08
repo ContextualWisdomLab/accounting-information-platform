@@ -26,6 +26,16 @@ Successor commit `9ebe709d1ea5e650af3e30920354212eb4d67a9a` makes ownership acco
 
 This changes architecture description and its executable fitness contract only. It does not move code, change imports, alter database/API/event behavior, grant `deployment_infrastructure` domain authority, or convert ADR 0059 from Proposed to Accepted.
 
+## Current-root ownership and infrastructure-import repair
+
+After the ordinary restack reached exact `346df07043cb9bd25595b59eacbc7a5b0cba12e7`, the hosted architecture fitness suite exposed exactly two remaining code-to-map failures. First, the current dependency root contains `src/accounting_information_platform/reconciliation_lifecycle.py` but the physical-ownership table did not name a most-specific owner. Second, the deny-by-default absolute-import fitness rule treated the already-used PostgreSQL driver `psycopg` as though it were an undeclared foreign application implementation.
+
+These findings have different meanings and are repaired separately. `reconciliation_lifecycle.py` is assigned exactly once to `reconciliation_run_control` because it coordinates run lifecycle admission, session/advisory locking and the fresh `REPEATABLE READ` authority transaction. That assignment does not transfer reconciliation-review, journal-posting or period-close decisions into run control. The architecture import gate now admits only the existing `psycopg` root as PostgreSQL infrastructure. It remains forbidden for driver objects to become domain entities or to own accounting invariants, and every other non-stdlib absolute import remains fail-closed until separately reviewed and documented.
+
+The repair lineage is ordinary and non-destructive: `4f86b1b38340cfc461f0b1dca208923d5308d247` narrows the executable import exception and adds a ratchet that both Context Map and ADR 0059 must describe `psycopg` as PostgreSQL infrastructure; `3c32b4d7c6a00acb585421523a2e447e7f171ec3` adds the missing lifecycle physical owner and documents the infrastructure boundary in the Context Map; `61b1ccbcaa3268a38f6b3aa2b9b1147e69d18136` aligns ADR 0059 with the same ownership and dependency decision. No runtime source, migration, API/event contract, shared changelog, standards traceability or product-gap baseline byte changes in this repair.
+
+The predecessor RED is not transferred. The successor architecture head must run the focused fitness tests and the repository-owned Foundation/coverage/contracts/security/package gates on the unchanged exact SHA before this section can be treated as GREEN evidence.
+
 ## Evidence boundary
 
 The relevant architecture-description authority was rechecked against the publisher on 2026-09-02. ISO lists **ISO/IEC/IEEE 42010:2022, Software, systems and enterprise — Architecture description, Edition 2** as the currently published International Standard; the 2011 edition is withdrawn and replaced by the 2022 edition. The standard specifies requirements for architecture descriptions and their concepts/relationships, viewpoints, frameworks and languages; it does not prescribe Domain-Driven Design, a directory structure, a microservice split, or a specific implementation method. Accordingly, ADR 0059 and the Context Map use it only as architecture-description guidance and make no standards-conformance claim.
@@ -38,7 +48,7 @@ The architecture slice remains GREEN only when all of the following are true on 
 
 1. every listed production path has exactly one physical-ownership row and exactly one primary owner in `docs/CONTEXT_MAP.md`; domain/application paths name one declared bounded context, while any technical exception is exact-path scoped and cannot own accounting decisions;
 2. no new generic domain bucket hides responsibility behind names such as `utils`, `helpers`, `common`, `services`, `shared` or `core`;
-3. accounting domain/application source does not import foreign ContextualWisdomLab application implementations;
+3. accounting domain/application source does not import foreign ContextualWisdomLab application implementations; the sole currently admitted non-stdlib root is `psycopg`, explicitly classified as PostgreSQL infrastructure rather than domain or Shared Kernel code;
 4. the only declared Context Fabric Shared Kernel is a later immutable released provider-neutral contract grammar, never mutable open-PR bytes;
 5. journal/ledger balances, reconciliation monetary populations, policy, posting authority and close authority remain Accounting-owned and are not promoted into the EA Decision Plane;
 6. an upstream restack that adds, removes or materially reassigns a production module must update the Context Map and rerun the architecture fitness gate before merge;
