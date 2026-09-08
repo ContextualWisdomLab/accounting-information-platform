@@ -16,7 +16,7 @@ from tests.test_reconciliation_run_api import ReconciliationRunApiTests
 
 
 class ReconciliationRecordingTimeUpgradePostgresTests(unittest.TestCase):
-    """Prove migration 0025 preserves legacy time without promoting its authority."""
+    """Prove migration 0026 preserves legacy time without promoting its authority."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -40,18 +40,19 @@ class ReconciliationRecordingTimeUpgradePostgresTests(unittest.TestCase):
 
     @staticmethod
     def _apply_pre_recording_time_chain(database_url: str) -> None:
-        """Install the canonical reconciliation chain only through migration 0024."""
+        """Install the canonical reconciliation chain only through migration 0025."""
         migration_root = posting.MIGRATION_PATH.parent
-        migration_install._apply_foundation_migration(  # pylint: disable=protected-access
+        migration_install._apply_base_foundation_migration(  # pylint: disable=protected-access
             database_url,
             posting.MIGRATION_PATH,
         )
         forward_names = (
-            "0020_reconciliation_run_database_snapshot_authority.sql",
-            "0021_reconciliation_exception_resolution_command.sql",
-            "0022_reconciliation_exception_resolution_outbox_pair.sql",
-            "0023_reconciliation_authority_outbox_retention.sql",
-            "0024_reconciliation_authority_outbox_orphan_guard.sql",
+            "0020_reconciliation_run_completion_evidence.sql",
+            "0021_reconciliation_run_database_snapshot_authority.sql",
+            "0022_reconciliation_exception_resolution_command.sql",
+            "0023_reconciliation_exception_resolution_outbox_pair.sql",
+            "0024_reconciliation_authority_outbox_retention.sql",
+            "0025_reconciliation_authority_outbox_orphan_guard.sql",
         )
         with psycopg.connect(
             database_url,
@@ -112,9 +113,9 @@ class ReconciliationRecordingTimeUpgradePostgresTests(unittest.TestCase):
         role_name, database_name, _password, migration_url, admin_url = (
             self._create_isolated_database()
         )
-        migration_0025 = (
+        migration_0026 = (
             posting.MIGRATION_PATH.parent
-            / "0025_reconciliation_control_recording_time_authority.sql"
+            / "0026_reconciliation_control_recording_time_authority.sql"
         ).read_text(encoding="utf-8")
         fixture: ReconciliationRunApiTests | None = None
 
@@ -202,7 +203,7 @@ class ReconciliationRecordingTimeUpgradePostgresTests(unittest.TestCase):
                 autocommit=True,
                 cursor_factory=psycopg.ClientCursor,
             ) as migration_connection:
-                migration_connection.execute(migration_0025)
+                migration_connection.execute(migration_0026)
                 role_row = migration_connection.execute(
                     "SELECT rolbypassrls FROM pg_catalog.pg_roles WHERE rolname = current_user"
                 ).fetchone()
@@ -344,13 +345,13 @@ class ReconciliationRecordingTimeUpgradePostgresTests(unittest.TestCase):
             self._drop_isolated_database(database_name, role_name)
 
     def test_empty_non_bypass_upgrade_installs_database_owned_time_guards(self) -> None:
-        """A clean pre-0025 database installs the same durable authority boundary."""
+        """A clean pre-0026 database installs the same durable authority boundary."""
         role_name, database_name, _password, migration_url, admin_url = (
             self._create_isolated_database()
         )
-        migration_0025 = (
+        migration_0026 = (
             posting.MIGRATION_PATH.parent
-            / "0025_reconciliation_control_recording_time_authority.sql"
+            / "0026_reconciliation_control_recording_time_authority.sql"
         ).read_text(encoding="utf-8")
 
         try:
@@ -360,7 +361,7 @@ class ReconciliationRecordingTimeUpgradePostgresTests(unittest.TestCase):
                 autocommit=True,
                 cursor_factory=psycopg.ClientCursor,
             ) as migration_connection:
-                migration_connection.execute(migration_0025)
+                migration_connection.execute(migration_0026)
                 role_row = migration_connection.execute(
                     "SELECT rolbypassrls FROM pg_catalog.pg_roles WHERE rolname = current_user"
                 ).fetchone()
