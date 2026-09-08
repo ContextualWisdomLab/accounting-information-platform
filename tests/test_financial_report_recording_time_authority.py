@@ -9,11 +9,8 @@ from pathlib import Path
 
 import psycopg
 
+from tests import test_postgres_financial_report_source_registry as registry
 from tests import test_postgres_posting as posting
-from tests.test_postgres_financial_report_source_registry import (
-    PostgresFinancialReportSourceRegistryTests,
-    materialize_seeded_book_period_control,
-)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -63,12 +60,12 @@ class PostgresFinancialReportRecordingTimeTests(unittest.TestCase):
         self.addCleanup(self.case.doCleanups)
         self.addCleanup(self.case.tearDown)
         with psycopg.connect(posting.DATABASE_URL) as connection:
-            materialize_seeded_book_period_control(connection, self.case)
+            registry.materialize_seeded_book_period_control(connection, self.case)
 
     def test_report_run_recording_time_is_overwritten_and_immutable(self) -> None:
         """A report run cannot forge or later rewrite its system recording time."""
         with psycopg.connect(posting.DATABASE_URL) as connection:
-            PostgresFinancialReportSourceRegistryTests._apply_registry_inside_transaction(
+            registry.PostgresFinancialReportSourceRegistryTests._apply_registry_inside_transaction(
                 connection
             )
             tenant_id, legal_entity_id, book_id, period_id = self._accounting_scope(
@@ -124,13 +121,13 @@ class PostgresFinancialReportRecordingTimeTests(unittest.TestCase):
     def test_report_source_recording_time_is_overwritten(self) -> None:
         """A source link records database system time instead of caller chronology."""
         with psycopg.connect(posting.DATABASE_URL) as connection:
-            PostgresFinancialReportSourceRegistryTests._apply_registry_inside_transaction(
+            registry.PostgresFinancialReportSourceRegistryTests._apply_registry_inside_transaction(
                 connection
             )
             tenant_id, legal_entity_id, book_id, period_id = self._accounting_scope(
                 connection
             )
-            snapshot_id = PostgresFinancialReportSourceRegistryTests._insert_snapshot(
+            snapshot_id = registry.PostgresFinancialReportSourceRegistryTests._insert_snapshot(
                 connection,
                 tenant_id=tenant_id,
                 legal_entity_id=legal_entity_id,
@@ -139,7 +136,7 @@ class PostgresFinancialReportRecordingTimeTests(unittest.TestCase):
                 currency_code="KRW",
                 generated_at=datetime.now(timezone.utc),
             )
-            run_id = PostgresFinancialReportSourceRegistryTests._insert_report_run(
+            run_id = registry.PostgresFinancialReportSourceRegistryTests._insert_report_run(
                 connection,
                 tenant_id=tenant_id,
                 legal_entity_id=legal_entity_id,
