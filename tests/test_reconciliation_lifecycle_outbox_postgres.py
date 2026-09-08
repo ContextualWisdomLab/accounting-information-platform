@@ -91,12 +91,13 @@ class ReconciliationLifecycleOutboxPostgresTests(unittest.TestCase):
                 reconciliation_snapshot_hash,
                 statement_population_reference,
                 book_population_reference,
+                source_payload_hash,
                 reconciliation_transition_command_hash,
                 actor_reference,
                 purpose_code,
                 effective_at
             )
-            VALUES (%s, %s, %s, 'reconciled', %s, %s, %s, %s,
+            VALUES (%s, %s, %s, 'reconciled', %s, %s, %s, %s, %s,
                     'urn:cwl:principal:test_controller',
                     'month_end_reconciliation', %s)
             RETURNING reconciliation_run_transition_command_id,
@@ -109,6 +110,7 @@ class ReconciliationLifecycleOutboxPostgresTests(unittest.TestCase):
                 "sha256:" + "d" * 64,
                 "sha256:" + "1" * 64,
                 "sha256:" + "2" * 64,
+                "sha256:" + "3" * 64,
                 "sha256:" + "0" * 64,
                 datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc),
             ),
