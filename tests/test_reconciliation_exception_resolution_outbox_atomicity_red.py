@@ -82,12 +82,10 @@ class ReconciliationExceptionResolutionOutboxAtomicityRedTests(unittest.TestCase
                 (tenant_id, self.case.exception_id),
             )
             try:
-                connection.execute(
-                    "SET CONSTRAINTS reconciliation_exception_resolution_status_pair_guard IMMEDIATE"
-                )
+                connection.execute("SET CONSTRAINTS ALL IMMEDIATE")
             except psycopg.Error as error:
                 connection.rollback()
-                self.assertIn("reconciliation_exception_resolution_atomic_pair", str(error))
+                self.assertIn("reconciliation_exception_resolution_atomic_outbox", str(error))
             else:
                 connection.rollback()
                 self.fail(
