@@ -233,6 +233,65 @@ $$;
 REVOKE ALL ON FUNCTION accounting_core.release_reconciliation_lifecycle_session(text, uuid)
     FROM PUBLIC;
 
+-- Evidence mutations that can change reconciliation eligibility already pass
+-- through the run lifecycle transaction lock installed by migration 0019. Once
+-- such a mutation succeeds, any older session lease for the run is no longer
+-- proof that a later REPEATABLE READ snapshot was established while the session
+-- lock remained continuously held. Invalidate those leases in the same commit.
+CREATE OR REPLACE FUNCTION accounting_core.invalidate_reconciliation_lifecycle_session_lease()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, accounting_core
+AS $$
+DECLARE
+    lifecycle_tenant_account_id uuid;
+    lifecycle_reconciliation_run_id uuid;
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        lifecycle_tenant_account_id := OLD.tenant_account_id;
+        lifecycle_reconciliation_run_id := OLD.reconciliation_run_id;
+    ELSE
+        lifecycle_tenant_account_id := NEW.tenant_account_id;
+        lifecycle_reconciliation_run_id := NEW.reconciliation_run_id;
+    END IF;
+
+    DELETE FROM accounting_core.reconciliation_lifecycle_session_lease AS lease
+    WHERE lease.tenant_account_id = lifecycle_tenant_account_id
+      AND lease.reconciliation_run_id = lifecycle_reconciliation_run_id;
+
+    RETURN NULL;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION accounting_core.invalidate_reconciliation_lifecycle_session_lease()
+    FROM PUBLIC;
+
+CREATE TRIGGER accounting_reconciliation_lifecycle_candidate_lease_invalidation
+    AFTER INSERT OR UPDATE OR DELETE ON accounting_core.reconciliation_candidate
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.invalidate_reconciliation_lifecycle_session_lease();
+CREATE TRIGGER accounting_reconciliation_lifecycle_match_lease_invalidation
+    AFTER INSERT OR UPDATE OR DELETE ON accounting_core.reconciliation_match
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.invalidate_reconciliation_lifecycle_session_lease();
+CREATE TRIGGER accounting_reconciliation_lifecycle_statement_allocation_lease_invalidation
+    AFTER INSERT OR UPDATE OR DELETE ON accounting_core.statement_match_allocation
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.invalidate_reconciliation_lifecycle_session_lease();
+CREATE TRIGGER accounting_reconciliation_lifecycle_journal_allocation_lease_invalidation
+    AFTER INSERT OR UPDATE OR DELETE ON accounting_core.journal_match_allocation
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.invalidate_reconciliation_lifecycle_session_lease();
+CREATE TRIGGER accounting_reconciliation_lifecycle_approval_lease_invalidation
+    AFTER INSERT OR UPDATE OR DELETE ON accounting_core.reconciliation_approval
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.invalidate_reconciliation_lifecycle_session_lease();
+CREATE TRIGGER accounting_reconciliation_lifecycle_exception_lease_invalidation
+    AFTER INSERT OR UPDATE OR DELETE ON accounting_core.reconciliation_exception
+    FOR EACH ROW
+    EXECUTE FUNCTION accounting_core.invalidate_reconciliation_lifecycle_session_lease();
+
 CREATE OR REPLACE FUNCTION accounting_core.require_reconciliation_lifecycle_session_lock()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -316,15 +375,27 @@ BEGIN
     FROM pg_catalog.pg_stat_activity AS activity
     WHERE activity.pid = pg_backend_pid();
 
-    SELECT lease.acquisition_transaction_id,
-           lease.acquired_at
-    INTO lease_transaction_id,
-         lease_acquired_at
-    FROM accounting_core.reconciliation_lifecycle_session_lease AS lease
-    WHERE lease.backend_pid = pg_backend_pid()
-      AND lease.backend_start = current_backend_start
-      AND lease.tenant_account_id = NEW.tenant_account_id
-      AND lease.reconciliation_run_id = NEW.reconciliation_run_id;
+    -- Lock the committed lease row, not merely a snapshot-visible copy. If an
+    -- eligibility-changing writer invalidated this lease after the current
+    -- REPEATABLE READ snapshot was established, PostgreSQL raises SQLSTATE 40001
+    -- rather than allowing the stale tuple to authorize a reacquired lock pair.
+    BEGIN
+        SELECT lease.acquisition_transaction_id,
+               lease.acquired_at
+        INTO lease_transaction_id,
+             lease_acquired_at
+        FROM accounting_core.reconciliation_lifecycle_session_lease AS lease
+        WHERE lease.backend_pid = pg_backend_pid()
+          AND lease.backend_start = current_backend_start
+          AND lease.tenant_account_id = NEW.tenant_account_id
+          AND lease.reconciliation_run_id = NEW.reconciliation_run_id
+        FOR UPDATE;
+    EXCEPTION
+        WHEN serialization_failure THEN
+            RAISE EXCEPTION
+                'reconciliation lifecycle lease changed after the authority snapshot began; reacquire the session lease and retry in a fresh transaction (reconciliation_lifecycle_fresh_transaction_required)'
+                USING ERRCODE = '40001';
+    END;
 
     current_transaction_id := pg_current_xact_id();
 
