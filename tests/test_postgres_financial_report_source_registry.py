@@ -18,6 +18,35 @@ SOURCE_REGISTRY_MIGRATION = (
 )
 
 
+def materialize_seeded_book_period_control(
+    connection: psycopg.Connection,
+    case: posting.PostgresPostingTests,
+) -> None:
+    """Materialize the seeded primary-book control through the foundation owner helper."""
+    row = connection.execute(
+        """
+        SELECT accounting_book.accounting_book_id,
+               fiscal_period.period_code
+          FROM accounting_core.accounting_book
+          JOIN accounting_core.fiscal_period
+            ON fiscal_period.tenant_account_id = accounting_book.tenant_account_id
+         WHERE accounting_book.tenant_account_id = %s
+           AND accounting_book.book_name = %s
+           AND fiscal_period.period_start_date = %s
+           AND fiscal_period.period_end_date = %s
+        """,
+        (
+            case.tenant_id,
+            case.policy.accounting_book_reference,
+            case.policy.open_period_start,
+            case.policy.open_period_end,
+        ),
+    ).fetchone()
+    assert row is not None
+    book_id, period_code = row
+    case.ledger._lock_book_period(connection, case.tenant_id, book_id, period_code)
+
+
 class PostgresFinancialReportSourceRegistryTests(unittest.TestCase):
     """Prove source provenance controls against real PostgreSQL 18 semantics."""
 
@@ -27,11 +56,13 @@ class PostgresFinancialReportSourceRegistryTests(unittest.TestCase):
         posting.PostgresPostingTests.setUpClass()
 
     def setUp(self) -> None:
-        """Seed one tenant, legal entity, book, and fiscal period using canonical fixtures."""
+        """Seed one tenant, legal entity, book, and lawful book-period control."""
         self.case = posting.PostgresPostingTests("setUp")
         self.case.setUp()
         self.addCleanup(self.case.doCleanups)
         self.addCleanup(self.case.tearDown)
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            materialize_seeded_book_period_control(connection, self.case)
 
     def test_database_derives_book_period_authority_and_rejects_bad_sources(self) -> None:
         """Caller labels cannot override book status or admit cross-scope/future snapshots."""
@@ -332,15 +363,15 @@ class PostgresFinancialReportSourceRegistryTests(unittest.TestCase):
             ),
         ).fetchone()[0]
 
-    @staticmethod
     def _insert_sibling_book(
+        self,
         connection: psycopg.Connection,
         *,
         tenant_id: object,
         legal_entity_id: object,
         period_id: object,
     ) -> object:
-        """Create a management book sharing the same calendar period for scope rejection."""
+        """Create a management book and materialize its close control through the owner helper."""
         suffix = uuid.uuid4().hex[:8]
         book_id = connection.execute(
             """
@@ -361,17 +392,16 @@ class PostgresFinancialReportSourceRegistryTests(unittest.TestCase):
                 datetime(2026, 1, 1, tzinfo=timezone.utc),
             ),
         ).fetchone()[0]
-        connection.execute(
+        period_code = connection.execute(
             """
-            INSERT INTO accounting_core.accounting_book_period_control (
-                tenant_account_id,
-                accounting_book_id,
-                fiscal_period_id,
-                period_status_code
-            ) VALUES (%s, %s, %s, 'open')
+            SELECT period_code
+              FROM accounting_core.fiscal_period
+             WHERE tenant_account_id = %s
+               AND fiscal_period_id = %s
             """,
-            (tenant_id, book_id, period_id),
-        )
+            (tenant_id, period_id),
+        ).fetchone()[0]
+        self.case.ledger._lock_book_period(connection, tenant_id, book_id, period_code)
         return book_id
 
 
