@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import unittest
 from decimal import Decimal
 
@@ -238,10 +240,80 @@ class PeriodClosePostedAccountIdentityPostgresTests(unittest.TestCase):
                 """,
                 (self.case.tenant_id, source_account_id),
             ).fetchone()
+            closing_source_payload_hash = connection.execute(
+                """
+                SELECT journal_proposal_record.source_payload_hash
+                FROM accounting_core.general_journal
+                JOIN accounting_integration.journal_proposal_record
+                  ON journal_proposal_record.tenant_account_id = general_journal.tenant_account_id
+                 AND journal_proposal_record.proposal_record_id = general_journal.source_proposal_record_id
+                WHERE general_journal.tenant_account_id = %s
+                  AND general_journal.journal_reference LIKE
+                      'urn:cwl:accounting:general_journal:period_closing:%%'
+                """,
+                (self.case.tenant_id,),
+            ).fetchone()[0]
+            closing_lines = connection.execute(
+                """
+                SELECT journal_entry_line.line_number,
+                       journal_entry_line.chart_account_id,
+                       chart_account.chart_account_code,
+                       journal_entry_line.account_role_code,
+                       journal_entry_line.debit_amount,
+                       journal_entry_line.credit_amount
+                FROM accounting_core.journal_entry_line
+                JOIN accounting_core.general_journal
+                  ON general_journal.tenant_account_id = journal_entry_line.tenant_account_id
+                 AND general_journal.general_journal_id = journal_entry_line.general_journal_id
+                JOIN accounting_core.chart_account
+                  ON chart_account.tenant_account_id = journal_entry_line.tenant_account_id
+                 AND chart_account.chart_account_id = journal_entry_line.chart_account_id
+                WHERE general_journal.tenant_account_id = %s
+                  AND general_journal.journal_reference LIKE
+                      'urn:cwl:accounting:general_journal:period_closing:%%'
+                ORDER BY journal_entry_line.line_number
+                """,
+                (self.case.tenant_id,),
+            ).fetchall()
+
+        closing_payload_lines: list[dict[str, object]] = []
+        for (
+            line_number,
+            chart_account_id,
+            chart_account_code,
+            account_role_code,
+            debit_amount,
+            credit_amount,
+        ) in closing_lines:
+            payload_line: dict[str, object] = {
+                "account_role_code": str(account_role_code),
+                "chart_account_code": str(chart_account_code),
+                "credit_amount": format(Decimal(credit_amount), "f"),
+                "debit_amount": format(Decimal(debit_amount), "f"),
+                "line_number": int(line_number),
+            }
+            if account_role_code != "retained_earnings":
+                payload_line["chart_account_id"] = str(chart_account_id)
+            closing_payload_lines.append(payload_line)
+        closing_payload = json.dumps(
+            {
+                "accounting_book_reference": self.case.policy.accounting_book_reference,
+                "legal_entity_reference": self.case.policy.legal_entity_reference,
+                "lines": closing_payload_lines,
+                "period_code": "2026-08",
+                "tenant_reference": self.case.policy.tenant_reference,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        expected_closing_source_payload_hash = "sha256:" + hashlib.sha256(
+            closing_payload.encode("utf-8")
+        ).hexdigest()
 
         self.assertEqual(receipt.period_status_code, "hard_closed")
         self.assertEqual(closing_account_id, source_account_id)
         self.assertNotEqual(closing_account_id, successor_account_id)
+        self.assertEqual(closing_source_payload_hash, expected_closing_source_payload_hash)
         self.assertEqual(
             tuple(Decimal(value) for value in snapshot_line),
             (Decimal("25000"), Decimal("25000"), Decimal("0")),
