@@ -75,7 +75,8 @@ def resolve_reconciliation_exception(
     _require_code(purpose_code, "purpose code")
     effective_at = _parse_timestamp(str(command.get("effective_at") or ""), "effective_at")
 
-    for attempt in range(_SERIALIZATION_ATTEMPTS):
+    attempt = 0
+    while True:
         try:
             return _resolve_reconciliation_exception_once(
                 database_url=database_url,
@@ -103,12 +104,12 @@ def resolve_reconciliation_exception(
                     "set under the current database authority before retrying exception "
                     "resolution."
                 ) from error
+            attempt += 1
             if (
                 getattr(error, "sqlstate", None) != _SERIALIZATION_FAILURE_SQLSTATE
-                or attempt + 1 >= _SERIALIZATION_ATTEMPTS
+                or attempt >= _SERIALIZATION_ATTEMPTS
             ):
                 raise
-    raise AssertionError("serialization retry loop exhausted without returning or raising")
 
 
 def _resolve_reconciliation_exception_once(
