@@ -1,4 +1,4 @@
-"""Real PostgreSQL upgrade acceptance for pre-0025 resolution authority."""
+"""Real PostgreSQL upgrade acceptance for pre-0026 resolution authority."""
 
 from __future__ import annotations
 
@@ -24,14 +24,14 @@ class ReconciliationResolutionRecordingTimeUpgradePostgresTests(unittest.TestCas
         posting.PostgresPostingTests.setUpClass()
 
     def test_preexisting_resolution_command_blocks_recording_time_upgrade(self) -> None:
-        """A pre-0025 authority command cannot inherit database-clock source provenance."""
+        """A pre-0026 authority command cannot inherit database-clock source provenance."""
         helper = ReconciliationRecordingTimeUpgradePostgresTests
         role_name, database_name, _password, migration_url, admin_url = (
             helper._create_isolated_database()
         )
-        migration_0025 = (
+        migration_0026 = (
             posting.MIGRATION_PATH.parent
-            / "0025_reconciliation_control_recording_time_authority.sql"
+            / "0026_reconciliation_control_recording_time_authority.sql"
         ).read_text(encoding="utf-8")
         fixture: ReconciliationRunApiTests | None = None
 
@@ -143,7 +143,7 @@ class ReconciliationResolutionRecordingTimeUpgradePostgresTests(unittest.TestCas
                     autocommit=True,
                     cursor_factory=psycopg.ClientCursor,
                 ) as migration_connection:
-                    migration_connection.execute(migration_0025)
+                    migration_connection.execute(migration_0026)
 
             with psycopg.connect(admin_url, autocommit=True) as admin_database:
                 command_count = admin_database.execute(
