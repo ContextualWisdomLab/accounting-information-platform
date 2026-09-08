@@ -11,19 +11,19 @@ PARENT_AUTHORITY_MIGRATION = (
     ROOT
     / "database"
     / "migrations"
-    / "0020_reconciliation_run_database_snapshot_authority.sql"
+    / "0021_reconciliation_run_database_snapshot_authority.sql"
 )
 CHILD_AUTHORITY_MIGRATION = (
     ROOT
     / "database"
     / "migrations"
-    / "0022_reconciliation_exception_resolution_outbox_pair.sql"
+    / "0023_reconciliation_exception_resolution_outbox_pair.sql"
 )
 TEMPORAL_AUTHORITY_MIGRATION = (
     ROOT
     / "database"
     / "migrations"
-    / "0026_reconciliation_lifecycle_recording_time_authority.sql"
+    / "0027_reconciliation_lifecycle_recording_time_authority.sql"
 )
 
 
