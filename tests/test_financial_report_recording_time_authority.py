@@ -12,6 +12,7 @@ import psycopg
 from tests import test_postgres_posting as posting
 from tests.test_postgres_financial_report_source_registry import (
     PostgresFinancialReportSourceRegistryTests,
+    materialize_seeded_book_period_control,
 )
 
 
@@ -56,11 +57,13 @@ class PostgresFinancialReportRecordingTimeTests(unittest.TestCase):
         posting.PostgresPostingTests.setUpClass()
 
     def setUp(self) -> None:
-        """Seed one canonical tenant/accounting scope."""
+        """Seed one canonical tenant/accounting scope and owner book-period control."""
         self.case = posting.PostgresPostingTests("setUp")
         self.case.setUp()
         self.addCleanup(self.case.doCleanups)
         self.addCleanup(self.case.tearDown)
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            materialize_seeded_book_period_control(connection, self.case)
 
     def test_report_run_recording_time_is_overwritten_and_immutable(self) -> None:
         """A report run cannot forge or later rewrite its system recording time."""
