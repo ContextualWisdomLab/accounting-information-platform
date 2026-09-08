@@ -46,7 +46,7 @@ GENERIC_BUCKET_NAMES = {
 }
 TRANSITIONAL_GENERIC_PATHS = {PACKAGE / "core.py"}
 LOCAL_APPLICATION_IMPORT_ROOT = "accounting_information_platform"
-APPROVED_THIRD_PARTY_IMPORT_ROOTS: frozenset[str] = frozenset()
+APPROVED_THIRD_PARTY_IMPORT_ROOTS: frozenset[str] = frozenset({"psycopg"})
 REQUIRED_UBIQUITOUS_TERMS = {
     "Journal proposal",
     "General journal",
@@ -297,6 +297,16 @@ class DddArchitectureFitnessTests(unittest.TestCase):
                 "must cross released contracts and ACLs"
             ),
         )
+
+    def test_only_postgresql_driver_is_an_approved_third_party_import_root(self) -> None:
+        """Keep the infrastructure exception narrow instead of growing a generic allowlist."""
+        self.assertEqual(frozenset({"psycopg"}), APPROVED_THIRD_PARTY_IMPORT_ROOTS)
+        for text in (
+            CONTEXT_MAP.read_text(encoding="utf-8"),
+            CONTEXT_MAP_ADR.read_text(encoding="utf-8"),
+        ):
+            self.assertIn("`psycopg`", text)
+            self.assertIn("PostgreSQL infrastructure", text)
 
     def test_foreign_import_gate_does_not_depend_on_known_sibling_names(self) -> None:
         """Reject a newly named foreign application without updating a sibling-name denylist."""
