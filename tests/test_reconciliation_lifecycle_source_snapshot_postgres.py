@@ -16,6 +16,7 @@ from accounting_information_platform import (
 from accounting_information_platform import reconciliation_lifecycle as lifecycle
 from accounting_information_platform import reconciliation_close_package as close_package
 from tests import test_postgres_posting as posting
+from tests.reconciliation_opening_book_fixture import post_reconciliation_opening_book_balance
 from tests.test_reconciliation_run_api import ReconciliationRunApiTests
 
 
@@ -35,6 +36,7 @@ class ReconciliationLifecycleSourceSnapshotPostgresTests(unittest.TestCase):
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
         self.addCleanup(self.fixture.tearDown)
+        post_reconciliation_opening_book_balance(self.fixture.case)
         _statement, command = self.fixture._statement_and_command()
         self.opened = accept_reconciliation_run(
             command,
@@ -89,7 +91,7 @@ class ReconciliationLifecycleSourceSnapshotPostgresTests(unittest.TestCase):
 
         review_state_read = Event()
         allow_bridge_read = Event()
-        failures: list[BaseException] = []
+        failures: list[Exception] = []
         outcome: dict[str, object] = {}
         original_review_loader = lifecycle._load_review_control_state
 
@@ -111,7 +113,7 @@ class ReconciliationLifecycleSourceSnapshotPostgresTests(unittest.TestCase):
                         self.fixture.case.policy.tenant_reference,
                     )
                 )
-            except BaseException as error:  # pragma: no cover - surfaced below
+            except Exception as error:  # pragma: no cover - surfaced below
                 failures.append(error)
 
         with mock.patch.object(
