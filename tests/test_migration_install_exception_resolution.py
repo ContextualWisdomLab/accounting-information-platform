@@ -13,16 +13,17 @@ from accounting_information_platform import migration_install
 
 
 _FORWARD_MIGRATIONS = (
-    ("parent", "0020_reconciliation_run_database_snapshot_authority.sql", "SELECT 'parent authority';"),
-    ("resolution", "0021_reconciliation_exception_resolution_command.sql", "SELECT 'resolution authority';"),
-    ("outbox", "0022_reconciliation_exception_resolution_outbox_pair.sql", "SELECT 'outbox authority';"),
-    ("retention", "0023_reconciliation_authority_outbox_retention.sql", "SELECT 'outbox retention';"),
-    ("orphan_guard", "0024_reconciliation_authority_outbox_orphan_guard.sql", "SELECT 'outbox orphan guard';"),
-    ("control_time", "0025_reconciliation_control_recording_time_authority.sql", "SELECT 'control recording time';"),
-    ("lifecycle_time", "0026_reconciliation_lifecycle_recording_time_authority.sql", "SELECT 'lifecycle recording time';"),
-    ("source_payload", "0027_reconciliation_lifecycle_source_payload_identity.sql", "SELECT 'source payload identity';"),
-    ("session_lock", "0028_reconciliation_lifecycle_session_lock_authority.sql", "SELECT 'session lock authority';"),
-    ("capability", "0029_reconciliation_lifecycle_capability_privileges.sql", "SELECT 'capability privileges';"),
+    ("parent_completion", "0020_reconciliation_run_completion_evidence.sql", "SELECT 'parent completion';"),
+    ("parent_snapshot", "0021_reconciliation_run_database_snapshot_authority.sql", "SELECT 'parent authority';"),
+    ("resolution", "0022_reconciliation_exception_resolution_command.sql", "SELECT 'resolution authority';"),
+    ("outbox", "0023_reconciliation_exception_resolution_outbox_pair.sql", "SELECT 'outbox authority';"),
+    ("retention", "0024_reconciliation_authority_outbox_retention.sql", "SELECT 'outbox retention';"),
+    ("orphan_guard", "0025_reconciliation_authority_outbox_orphan_guard.sql", "SELECT 'outbox orphan guard';"),
+    ("control_time", "0026_reconciliation_control_recording_time_authority.sql", "SELECT 'control recording time';"),
+    ("lifecycle_time", "0027_reconciliation_lifecycle_recording_time_authority.sql", "SELECT 'lifecycle recording time';"),
+    ("source_payload", "0028_reconciliation_lifecycle_source_payload_identity.sql", "SELECT 'source payload identity';"),
+    ("session_lock", "0029_reconciliation_lifecycle_session_lock_authority.sql", "SELECT 'session lock authority';"),
+    ("capability", "0030_reconciliation_lifecycle_capability_privileges.sql", "SELECT 'capability privileges';"),
 )
 
 
@@ -75,8 +76,10 @@ class ReconciliationExceptionResolutionInstallTests(unittest.TestCase):
             base_loader = Mock()
             with patch.object(
                 migration_install, "_base_foundation_chain_is_complete", return_value=True
-            ), patch.object(migration_install, "_apply_foundation_migration", base_loader):
-                with self.assertRaisesRegex(AccountingValidationError, "0021"):
+            ), patch.object(
+                migration_install, "_apply_base_foundation_migration", base_loader
+            ):
+                with self.assertRaisesRegex(AccountingValidationError, "0022"):
                     migration_install.apply_foundation_migration(
                         "postgresql://unused", base
                     )
@@ -102,9 +105,9 @@ class ReconciliationExceptionResolutionInstallTests(unittest.TestCase):
             with patch.object(
                 migration_install, "_base_foundation_chain_is_complete", return_value=True
             ), patch.object(
-                migration_install, "_apply_foundation_migration", base_loader
+                migration_install, "_apply_base_foundation_migration", base_loader
             ), patch.object(
-                migration_install,
+                migration_install._persistence,
                 "_import_psycopg",
                 return_value=_Psycopg(ordered_connection),
             ):
@@ -112,7 +115,10 @@ class ReconciliationExceptionResolutionInstallTests(unittest.TestCase):
                     "postgresql://example", base
                 )
 
-            expected = ["base", *[statement for _key, _filename, statement in _FORWARD_MIGRATIONS]]
+            expected = [
+                "base",
+                *[statement for _key, _filename, statement in _FORWARD_MIGRATIONS],
+            ]
             self.assertEqual(calls, expected)
             self.assertEqual(ordered_connection.executed, expected[1:])
 
@@ -123,15 +129,15 @@ class ReconciliationExceptionResolutionInstallTests(unittest.TestCase):
             with patch.object(
                 migration_install, "_base_foundation_chain_is_complete", return_value=True
             ), patch.object(
-                migration_install, "_apply_foundation_migration", return_value=None
+                migration_install, "_apply_base_foundation_migration", return_value=None
             ), patch.object(
-                migration_install,
+                migration_install._persistence,
                 "_import_psycopg",
                 return_value=_Psycopg(_Connection(fail=True)),
             ):
                 with self.assertRaisesRegex(
                     AccountingValidationError,
-                    "Reconciliation authority migration failed",
+                    "Reconciliation lifecycle migration failed",
                 ) as raised:
                     migration_install.apply_foundation_migration(
                         "postgresql://example", base
