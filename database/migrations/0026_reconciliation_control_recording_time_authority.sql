@@ -2,20 +2,20 @@ BEGIN;
 
 -- Exception and retained review evidence carry both valid/business time and
 -- system/recording time. The latter is database provenance, not caller input.
--- Migration 0020 already makes resolution-command recorded_at database-owned;
+-- Migration 0022 already makes resolution-command recorded_at database-owned;
 -- apply the same rule to the maker evidence and retained artifact rows whose
 -- system time is later used for temporal admission. This migration does not
 -- alter effective_at and grants no posting, period-close, or policy authority.
 --
--- Migrations before 0024 allowed callers to supply recorded_at explicitly. The
--- database cannot later prove whether a pre-0024 value came from the column
+-- Migrations before 0026 allowed callers to supply recorded_at explicitly. The
+-- database cannot later prove whether a pre-0026 value came from the column
 -- default or from a caller. Preserve unresolved source rows and timestamps
 -- exactly as legacy_unverified, but do not grandfather a resolution command that
 -- already made those rows authority-bearing. Such a command may already have
 -- terminalized its exception and can feed a later lifecycle transition, so the
 -- upgrade must fail before durable schema change until that authority is handled
 -- by an explicitly reviewed audited remediation. Never manufacture database-
--- clock provenance for a pre-0024 resolution command.
+-- clock provenance for a pre-0026 resolution command.
 --
 -- The resolution-command table is FORCE RLS. Give only the current migration
 -- role transaction-scoped all-tenant SELECT visibility for this preflight and
@@ -34,7 +34,7 @@ BEGIN
         FROM accounting_core.reconciliation_exception_resolution_command
     ) THEN
         RAISE EXCEPTION
-            'pre-0024 reconciliation resolution commands have unverifiable source recording-time authority; perform audited remediation before migration 0024 (reconciliation_resolution_legacy_recording_time_preflight)'
+            'pre-0026 reconciliation resolution commands have unverifiable source recording-time authority; perform audited remediation before migration 0026 (reconciliation_resolution_legacy_recording_time_preflight)'
             USING ERRCODE = '23514';
     END IF;
 END;
@@ -43,7 +43,7 @@ $$;
 DROP POLICY reconciliation_resolution_recording_time_upgrade_visibility
     ON accounting_core.reconciliation_exception_resolution_command;
 
--- Unresolved pre-0024 source rows remain audit evidence. Mark their chronology
+-- Unresolved pre-0026 source rows remain audit evidence. Mark their chronology
 -- as unverified rather than rewriting it; only post-migration rows can acquire
 -- database_clock authority through the INSERT guards below.
 ALTER TABLE accounting_core.reconciliation_exception
@@ -94,13 +94,13 @@ BEGIN
 END;
 $$;
 
-CREATE TRIGGER accounting_reconciliation_exception_recording_time_immutable_guard
+CREATE TRIGGER reconciliation_exception_recording_time_immutable_guard
     BEFORE UPDATE OF recorded_at, recording_time_authority_code
     ON accounting_core.reconciliation_exception
     FOR EACH ROW
     EXECUTE FUNCTION accounting_core.reject_reconciliation_control_recording_time_mutation();
 
-CREATE TRIGGER accounting_reconciliation_evidence_recording_time_immutable_guard
+CREATE TRIGGER reconciliation_evidence_recording_time_immutable_guard
     BEFORE UPDATE OF recorded_at, recording_time_authority_code
     ON accounting_core.reconciliation_evidence
     FOR EACH ROW
@@ -142,7 +142,7 @@ $$;
 -- resolves NEW.reconciliation_evidence_id before this recording-time authority
 -- guard runs, so this check binds the exact retained artifact selected by the
 -- command rather than a caller-selected reference alone.
-CREATE TRIGGER accounting_reconciliation_exception_resolution_recording_time_authority_guard
+CREATE TRIGGER reconciliation_resolution_recording_time_authority_guard
     BEFORE INSERT ON accounting_core.reconciliation_exception_resolution_command
     FOR EACH ROW
     EXECUTE FUNCTION accounting_core.require_reconciliation_exception_resolution_recording_time_authority();

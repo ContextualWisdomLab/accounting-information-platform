@@ -312,9 +312,9 @@ class ReconciliationRecordingTimeUpgradePostgresTests(unittest.TestCase):
                     WHERE tgname IN (
                         'reconciliation_exception_recording_time_guard',
                         'reconciliation_evidence_recording_time_guard',
-                        'accounting_reconciliation_exception_recording_time_immutable_guard',
-                        'accounting_reconciliation_evidence_recording_time_immutable_guard',
-                        'accounting_reconciliation_exception_resolution_recording_time_authority_guard'
+                        'reconciliation_exception_recording_time_immutable_guard',
+                        'reconciliation_evidence_recording_time_immutable_guard',
+                        'reconciliation_resolution_recording_time_authority_guard'
                     )
                       AND NOT tgisinternal
                     ORDER BY tgname
@@ -325,17 +325,11 @@ class ReconciliationRecordingTimeUpgradePostgresTests(unittest.TestCase):
             self.assertEqual(
                 triggers,
                 [
-                    (
-                        "accounting_reconciliation_evidence_recording_time_immutable_guard",
-                    ),
-                    (
-                        "accounting_reconciliation_exception_recording_time_immutable_guard",
-                    ),
-                    (
-                        "accounting_reconciliation_exception_resolution_recording_time_authority_guard",
-                    ),
                     ("reconciliation_evidence_recording_time_guard",),
+                    ("reconciliation_evidence_recording_time_immutable_guard",),
                     ("reconciliation_exception_recording_time_guard",),
+                    ("reconciliation_exception_recording_time_immutable_guard",),
+                    ("reconciliation_resolution_recording_time_authority_guard",),
                 ],
             )
         finally:
@@ -384,9 +378,9 @@ class ReconciliationRecordingTimeUpgradePostgresTests(unittest.TestCase):
                     WHERE tgname IN (
                         'reconciliation_exception_recording_time_guard',
                         'reconciliation_evidence_recording_time_guard',
-                        'accounting_reconciliation_exception_recording_time_immutable_guard',
-                        'accounting_reconciliation_evidence_recording_time_immutable_guard',
-                        'accounting_reconciliation_exception_resolution_recording_time_authority_guard'
+                        'reconciliation_exception_recording_time_immutable_guard',
+                        'reconciliation_evidence_recording_time_immutable_guard',
+                        'reconciliation_resolution_recording_time_authority_guard'
                     )
                       AND NOT tgisinternal
                     ORDER BY tgname
@@ -404,17 +398,11 @@ class ReconciliationRecordingTimeUpgradePostgresTests(unittest.TestCase):
             self.assertEqual(
                 triggers,
                 [
-                    (
-                        "accounting_reconciliation_evidence_recording_time_immutable_guard",
-                    ),
-                    (
-                        "accounting_reconciliation_exception_recording_time_immutable_guard",
-                    ),
-                    (
-                        "accounting_reconciliation_exception_resolution_recording_time_authority_guard",
-                    ),
                     ("reconciliation_evidence_recording_time_guard",),
+                    ("reconciliation_evidence_recording_time_immutable_guard",),
                     ("reconciliation_exception_recording_time_guard",),
+                    ("reconciliation_exception_recording_time_immutable_guard",),
+                    ("reconciliation_resolution_recording_time_authority_guard",),
                 ],
             )
         finally:
