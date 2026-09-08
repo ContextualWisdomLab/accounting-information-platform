@@ -32,7 +32,7 @@ class OperabilityDocumentationContractTests(unittest.TestCase):
         )
 
         self.assertIn(
-            "reconciliation-run commands acquire tenant-scoped transaction advisory locks",
+            "reconciliation-run, and ordinary command paths acquire tenant-scoped transaction advisory locks",
             operability,
         )
 
