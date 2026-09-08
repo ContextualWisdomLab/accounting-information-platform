@@ -17,6 +17,7 @@ class ReconciliationLifecycleDatabaseAuthorityDocumentationTests(unittest.TestCa
         text = (_ROOT / "docs/adr/0060-reconciliation-run-lifecycle-authority.md").read_text(
             encoding="utf-8"
         )
+        self.assertIn("0021_reconciliation_run_database_snapshot_authority.sql", text)
         self.assertIn("reconciliation_run_database_snapshot_authority", text)
         self.assertIn("accounting_reconciliation_transition_database_authority_guard", text)
         self.assertIn("accounting_reconciliation_transition_evidence_snapshot_guard", text)
@@ -31,8 +32,9 @@ class ReconciliationLifecycleDatabaseAuthorityDocumentationTests(unittest.TestCa
         )
         self.assertIn("accounting_reconciliation_transition_database_authority_guard", text)
         self.assertIn("accounting_reconciliation_transition_evidence_snapshot_guard", text)
-        self.assertIn("0020_reconciliation_run_database_snapshot_authority.sql", text)
-        self.assertIn("test_reconciliation_lifecycle_database_authority_postgres.py", text)
+        self.assertIn("0021_reconciliation_run_database_snapshot_authority.sql", text)
+        self.assertIn("0023_reconciliation_exception_resolution_outbox_pair.sql", text)
+        self.assertIn("tests/test_reconciliation_lifecycle_database_authority_postgres.py", text)
         self.assertNotIn("accounting_reconciliation_transition_authority_snapshot_guard", text)
 
 
