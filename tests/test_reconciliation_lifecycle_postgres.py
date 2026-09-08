@@ -140,7 +140,7 @@ class ReconciliationLifecyclePostgresTests(unittest.TestCase):
                 purpose_code,
                 effective_at
             )
-            VALUES (%s, %s, %s, 'reconciled', %s, %s, %s, %s,
+            VALUES (%s, %s, %s, 'reconciled', %s, %s, %s, %s, %s,
                     'urn:cwl:principal:test_controller',
                     'month_end_reconciliation', %s)
             RETURNING reconciliation_run_transition_command_id,

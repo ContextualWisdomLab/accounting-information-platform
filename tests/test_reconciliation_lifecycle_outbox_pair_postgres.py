@@ -129,7 +129,7 @@ class ReconciliationLifecycleOutboxPairPostgresTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(
                 psycopg.Error,
-                "reconciliation_lifecycle_atomic_outbox",
+                "reconciliation_lifecycle_outbox_required",
             ):
                 connection.commit()
             connection.rollback()

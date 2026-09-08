@@ -13,15 +13,15 @@ class ReconciliationAuthorityChangelogContractTests(unittest.TestCase):
     """Keep unreleased reconciliation authority changes visible to operators."""
 
     def test_unreleased_changelog_names_complete_reconciliation_authority_chain(self) -> None:
-        """Migrations 0021 through 0025 must be release-visible in dependency order."""
+        """Migrations 0023 through 0027 must be release-visible in dependency order."""
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
         unreleased = changelog.split("## [Unreleased]", 1)[1].split("## [0.1.0]", 1)[0]
         migrations = (
-            "0021_reconciliation_exception_resolution_outbox_pair.sql",
-            "0022_reconciliation_authority_outbox_retention.sql",
-            "0023_reconciliation_authority_outbox_orphan_guard.sql",
-            "0024_reconciliation_control_recording_time_authority.sql",
-            "0025_reconciliation_lifecycle_recording_time_authority.sql",
+            "0023_reconciliation_exception_resolution_outbox_pair.sql",
+            "0024_reconciliation_authority_outbox_retention.sql",
+            "0025_reconciliation_authority_outbox_orphan_guard.sql",
+            "0026_reconciliation_control_recording_time_authority.sql",
+            "0027_reconciliation_lifecycle_recording_time_authority.sql",
         )
         positions = []
         for migration in migrations:
