@@ -153,10 +153,7 @@ class ReconciliationClosePackageActiveStateDefensiveTests(unittest.TestCase):
     def test_database_snapshot_must_match_packaged_approval(self) -> None:
         approval = self._approval()
         with self.assertRaisesRegex(ValueError, "approval snapshot"):
-            self._load(
-                [self._row(approval, snapshot_hash="sha256:" + "d" * 64)],
-                (approval,),
-            )
+            self._load([self._row(approval, snapshot_hash="sha256:" + "d" * 64)], (approval,))
 
     def test_database_state_evidence_is_deterministic_and_query_is_run_scoped(self) -> None:
         second = self._approval("match-2")
@@ -288,6 +285,7 @@ class ReconciliationClosePackageActiveStateDefensiveTests(unittest.TestCase):
             evidence_reference="database-owned:approved",
             sha256_digest="sha256:" + "1" * 64,
         )
+
         sentinel = object()
         with (
             mock.patch.object(close_package, "PostgresPostingLedger", _Ledger),
@@ -350,6 +348,38 @@ class ReconciliationClosePackageActiveStateDefensiveTests(unittest.TestCase):
             _Ledger.connection.query or "",
         )
         verified_input = verified_builder.call_args.args[0]
+        self.assertEqual(
+            verified_input.projection.statement_population_reference,
+            authoritative_projection.statement_population_reference,
+        )
+        self.assertEqual(
+            verified_input.projection.book_population_reference,
+            authoritative_projection.book_population_reference,
+        )
+        self.assertEqual(
+            verified_input.projection.bank_closing_balance,
+            authoritative_projection.statement_closing_balance,
+        )
+        self.assertEqual(
+            verified_input.projection.posted_book_cash_balance,
+            authoritative_projection.book_closing_balance,
+        )
+        self.assertEqual(
+            verified_input.projection.reconciled_balance,
+            authoritative_projection.reconciled_book_balance,
+        )
+        self.assertEqual(
+            verified_input.projection.outstanding_bank_items,
+            authoritative_projection.outstanding_bank_items,
+        )
+        self.assertEqual(
+            verified_input.projection.outstanding_book_items,
+            authoritative_projection.outstanding_book_items,
+        )
+        self.assertEqual(
+            verified_input.projection.unexplained_difference,
+            authoritative_projection.unexplained_difference,
+        )
         self.assertEqual(
             tuple(
                 (evidence.evidence_kind_code, evidence.evidence_reference)

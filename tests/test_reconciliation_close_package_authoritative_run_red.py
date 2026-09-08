@@ -146,6 +146,11 @@ class ReconciliationClosePackageAuthoritativeRunTests(unittest.TestCase):
             ),
             mock.patch.object(
                 close_package,
+                "_database_owned_close_projection_evidence",
+                projection_loader,
+            ),
+            mock.patch.object(
+                close_package,
                 "_validate_database_owned_exception_state",
                 exception_validator,
             ),

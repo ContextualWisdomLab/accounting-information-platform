@@ -421,7 +421,10 @@ class ReconciliationRunApiTests(unittest.TestCase):
 
         def execute(sql: str, _parameters: object) -> mock.Mock:
             result = mock.Mock()
-            if "reconciliation_run_command" in sql:
+            if (
+                "reconciliation_run_command" in sql
+                or "reconciliation_command_identity" in sql
+            ):
                 result.fetchone.return_value = None
             else:
                 result.fetchall.return_value = [
