@@ -69,6 +69,28 @@ class ReconciliationExceptionResolutionFutureEffectivePostgresTests(unittest.Tes
                     datetime(2026, 9, 2, 0, 10, tzinfo=timezone.utc),
                 ),
             ).fetchone()[0]
+            connection.execute(
+                """
+                INSERT INTO accounting_core.reconciliation_evidence (
+                    tenant_account_id,
+                    reconciliation_run_id,
+                    reconciliation_exception_id,
+                    evidence_type_code,
+                    evidence_reference,
+                    evidence_payload_hash,
+                    effective_at
+                )
+                VALUES (%s, %s, %s, 'exception_resolution_review', %s, %s, %s)
+                """,
+                (
+                    tenant_id,
+                    self.opened["reconciliation_run_id"],
+                    self.exception_id,
+                    f"urn:cwl:evidence:reconciliation_exception:{self.exception_id}:future-review",
+                    _EVIDENCE_HASH,
+                    datetime(2026, 9, 2, 0, 15, tzinfo=timezone.utc),
+                ),
+            )
             connection.commit()
 
     def _tenant_id(self, connection: psycopg.Connection) -> object:
