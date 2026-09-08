@@ -66,6 +66,19 @@ class ReconciliationLifecycleOutboxPairPostgresTests(unittest.TestCase):
             (self.fixture.case.policy.tenant_reference, lifecycle_scope),
         )
 
+    def _release_safe_raw_transition(self, connection: psycopg.Connection) -> None:
+        """Release the test lease after the intentionally rejected transaction."""
+        released = connection.execute(
+            "SELECT accounting_core.release_reconciliation_lifecycle_session(%s, %s)",
+            (
+                self.fixture.case.policy.tenant_reference,
+                self.opened["reconciliation_run_id"],
+            ),
+        ).fetchone()
+        self.assertIsNotNone(released)
+        self.assertTrue(bool(released[0]))
+        connection.commit()
+
     def test_direct_transition_and_status_cannot_commit_without_outbox(self) -> None:
         """Direct SQL cannot create reconciled authority while omitting its event receipt."""
         transition_key = f"missing-outbox-{uuid.uuid4().hex}"
@@ -118,6 +131,7 @@ class ReconciliationLifecycleOutboxPairPostgresTests(unittest.TestCase):
             ):
                 connection.commit()
             connection.rollback()
+            self._release_safe_raw_transition(connection)
 
         with psycopg.connect(posting.DATABASE_URL) as connection:
             tenant_id = self._tenant_id(connection)
