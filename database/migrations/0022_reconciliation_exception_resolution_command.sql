@@ -48,6 +48,19 @@ ALTER TABLE accounting_core.reconciliation_command_identity
         )
     );
 
+-- The resolution command must bind retained evidence through the complete
+-- tenant/run/exception aggregate scope. The evidence UUID is globally unique,
+-- but a UUID-only foreign key would not make the ownership boundary explicit
+-- in the database contract.
+ALTER TABLE accounting_core.reconciliation_evidence
+    ADD CONSTRAINT reconciliation_evidence_scope_identity
+    UNIQUE (
+        tenant_account_id,
+        reconciliation_run_id,
+        reconciliation_exception_id,
+        reconciliation_evidence_id
+    );
+
 CREATE TABLE accounting_core.reconciliation_exception_resolution_command (
     reconciliation_exception_resolution_command_id uuid PRIMARY KEY DEFAULT uuidv7(),
     tenant_account_id uuid NOT NULL,
@@ -83,8 +96,17 @@ CREATE TABLE accounting_core.reconciliation_exception_resolution_command (
             reconciliation_run_id,
             reconciliation_exception_id
         ),
-    FOREIGN KEY (reconciliation_evidence_id)
+    CONSTRAINT reconciliation_exception_resolution_evidence_scope_fk
+        FOREIGN KEY (
+            tenant_account_id,
+            reconciliation_run_id,
+            reconciliation_exception_id,
+            reconciliation_evidence_id
+        )
         REFERENCES accounting_core.reconciliation_evidence (
+            tenant_account_id,
+            reconciliation_run_id,
+            reconciliation_exception_id,
             reconciliation_evidence_id
         ),
     UNIQUE (
