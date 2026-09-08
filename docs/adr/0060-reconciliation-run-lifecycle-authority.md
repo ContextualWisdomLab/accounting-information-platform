@@ -30,6 +30,8 @@ Review evidence has immutable aggregate membership. Candidate, match, statement 
 
 Migration `0021_reconciliation_run_database_snapshot_authority.sql` recomputes transition authority from PostgreSQL facts immediately before the transition row is stored. It resolves the retained statement scope, validates exactly one opening and closing balance, reconstructs immutable statement entries, reconstructs assigned cash-account journals, checks currency scope, checks statement arithmetic, recomputes statement and journal allocation capacities, recomputes outstanding bank/book amounts, rejects an unexplained book-to-bank bridge, and includes reviewed-match and exception populations in the final snapshot.
 
+The parent `accounting_reconciliation_transition_database_authority_guard` invokes `reconciliation_run_database_snapshot_authority` before the child `accounting_reconciliation_transition_evidence_snapshot_guard` composes maker-checker evidence. This ordering preserves the database-derived reconciliation snapshot and its statement/book population identities before the final transition hash is assigned.
+
 The database overwrites caller-supplied `reconciliation_snapshot_hash`, `statement_population_reference`, and `book_population_reference` before the transition-command hash is assigned. Application calculations remain useful for buyer-facing diagnostics, but they are not the final transition authority.
 
 Every `timestamptz` value that participates in the hashed database JSON is serialized explicitly in UTC before hashing. The current hashed timestamp population is:
