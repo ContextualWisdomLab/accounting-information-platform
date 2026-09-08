@@ -41,17 +41,18 @@ class ReconciliationRecordingTimeLegacyCommandPostgresTests(unittest.TestCase):
 
         try:
             helper._apply_pre_recording_time_chain(migration_url)
-            with mock.patch.object(posting, "DATABASE_URL", migration_url):
+            with mock.patch.object(posting, "DATABASE_URL", admin_url):
                 fixture = ReconciliationRunApiTests(
                     "test_open_run_binds_statement_scope_and_replays"
                 )
                 fixture.setUp()
                 _statement, opening_command = fixture._statement_and_command()
-                opened = accept_reconciliation_run(
-                    opening_command,
-                    migration_url,
-                    fixture.case.policy.tenant_reference,
-                )
+            helper._bind_role_to_tenant(admin_url, role_name, fixture.case.tenant_id)
+            opened = accept_reconciliation_run(
+                opening_command,
+                migration_url,
+                fixture.case.policy.tenant_reference,
+            )
 
             with psycopg.connect(admin_url, autocommit=True) as admin_database:
                 tenant_id = admin_database.execute(
