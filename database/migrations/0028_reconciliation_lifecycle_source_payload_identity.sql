@@ -18,7 +18,7 @@ BEGIN
         FROM accounting_core.reconciliation_run_transition_command
     ) THEN
         RAISE EXCEPTION
-            'pre-0026 reconciliation lifecycle transitions lack complete source-payload identity; perform audited remediation before migration 0026 (reconciliation_lifecycle_source_payload_preflight)'
+            'pre-0028 reconciliation lifecycle transitions lack complete source-payload identity; perform audited remediation before migration 0028 (reconciliation_lifecycle_source_payload_preflight)'
             USING ERRCODE = '23514';
     END IF;
 END;
