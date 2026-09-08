@@ -10,6 +10,7 @@ import psycopg
 from tests import test_postgres_posting as posting
 from tests.test_postgres_financial_report_source_registry import (
     PostgresFinancialReportSourceRegistryTests,
+    materialize_seeded_book_period_control,
 )
 
 
@@ -22,11 +23,13 @@ class PostgresFinancialReportSourcePopulationFreezeTests(unittest.TestCase):
         posting.PostgresPostingTests.setUpClass()
 
     def setUp(self) -> None:
-        """Seed the canonical tenant/entity/book/period fixture used by reporting tests."""
+        """Seed the canonical tenant/entity/book/period fixture and owner control."""
         self.case = posting.PostgresPostingTests("setUp")
         self.case.setUp()
         self.addCleanup(self.case.doCleanups)
         self.addCleanup(self.case.tearDown)
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            materialize_seeded_book_period_control(connection, self.case)
 
     def test_linked_snapshot_header_cannot_be_rewritten(self) -> None:
         """A retained report source must keep the exact snapshot header it admitted."""
