@@ -28,6 +28,15 @@ CREATE TABLE accounting_core.reconciliation_lifecycle_session_lease (
         )
 );
 
+ALTER TABLE accounting_core.reconciliation_lifecycle_session_lease
+    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE accounting_core.reconciliation_lifecycle_session_lease
+    FORCE ROW LEVEL SECURITY;
+CREATE POLICY reconciliation_lifecycle_session_lease_isolation
+    ON accounting_core.reconciliation_lifecycle_session_lease
+    USING (tenant_account_id = accounting_core.current_tenant_account_id())
+    WITH CHECK (tenant_account_id = accounting_core.current_tenant_account_id());
+
 REVOKE ALL ON accounting_core.reconciliation_lifecycle_session_lease FROM PUBLIC;
 
 CREATE OR REPLACE FUNCTION accounting_core.acquire_reconciliation_lifecycle_session(
@@ -78,7 +87,9 @@ BEGIN
 
     -- Clean leases left by disconnected backends. Session locks themselves are
     -- released automatically at disconnect; backend_start prevents PID reuse
-    -- from inheriting stale lease authority before this cleanup runs.
+    -- from inheriting stale lease authority before this cleanup runs. Forced RLS
+    -- limits cleanup to the authenticated tenant; no runtime can inspect another
+    -- tenant's lease rows through this SECURITY DEFINER boundary.
     DELETE FROM accounting_core.reconciliation_lifecycle_session_lease AS lease
     WHERE NOT EXISTS (
         SELECT 1
@@ -233,7 +244,7 @@ DECLARE
     lifecycle_scope text;
     tenant_lock_key bigint;
     lifecycle_lock_key bigint;
-    session_lock_owned boolean;
+    session_lock_owned boolean := false;
     transaction_lock_still_owned boolean;
     current_backend_start timestamptz;
     lease_transaction_id xid8;
@@ -255,12 +266,17 @@ BEGIN
     tenant_lock_key := hashtext(tenant_reference)::bigint & 4294967295::bigint;
     lifecycle_lock_key := hashtext(lifecycle_scope)::bigint & 4294967295::bigint;
 
-    -- pg_advisory_unlock releases only a session-level advisory lock. Probe one
-    -- session hold, while the required transaction-level hold prevents another
-    -- backend from entering the key between this probe and the immediate
-    -- re-acquisition below.
-    SELECT pg_advisory_unlock(hashtext(tenant_reference), hashtext(lifecycle_scope))
-    INTO session_lock_owned;
+    -- pg_locks does not identify whether an advisory-lock row is session- or
+    -- transaction-scoped. Remove every session-level hold first. Only a matching
+    -- advisory row that remains afterwards can prove the required xact hold.
+    -- A genuine xact lock keeps competing backends excluded throughout this
+    -- normalization; exactly one session hold is restored before returning.
+    WHILE pg_advisory_unlock(
+        hashtext(tenant_reference),
+        hashtext(lifecycle_scope)
+    ) LOOP
+        session_lock_owned := true;
+    END LOOP;
 
     IF NOT session_lock_owned THEN
         RAISE EXCEPTION
@@ -286,9 +302,6 @@ BEGIN
     )
     INTO transaction_lock_still_owned;
 
-    -- Restore the session hold before either returning or rejecting. When the
-    -- transaction lock is present this re-acquisition is reentrant and cannot
-    -- create an inter-backend window on the lifecycle key.
     PERFORM pg_advisory_lock(hashtext(tenant_reference), hashtext(lifecycle_scope));
 
     IF NOT transaction_lock_still_owned
