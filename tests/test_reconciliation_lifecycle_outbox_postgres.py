@@ -47,6 +47,38 @@ class ReconciliationLifecycleOutboxPostgresTests(unittest.TestCase):
             (self.opened["reconciliation_run_id"],),
         ).fetchone()[0]
 
+    def _begin_safe_raw_transition(self, connection: psycopg.Connection) -> None:
+        """Enter the database-proven lease/fresh-snapshot lifecycle protocol."""
+        lifecycle_scope = (
+            "reconciliation_run_lifecycle:" + self.opened["reconciliation_run_id"]
+        )
+        connection.execute(
+            "SELECT accounting_core.acquire_reconciliation_lifecycle_session(%s, %s)",
+            (
+                self.fixture.case.policy.tenant_reference,
+                self.opened["reconciliation_run_id"],
+            ),
+        )
+        connection.commit()
+        connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        connection.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+            (self.fixture.case.policy.tenant_reference, lifecycle_scope),
+        )
+
+    def _release_safe_raw_transition(self, connection: psycopg.Connection) -> None:
+        """Release the test session lease so fixture teardown has no stale FK row."""
+        released = connection.execute(
+            "SELECT accounting_core.release_reconciliation_lifecycle_session(%s, %s)",
+            (
+                self.fixture.case.policy.tenant_reference,
+                self.opened["reconciliation_run_id"],
+            ),
+        ).fetchone()
+        self.assertIsNotNone(released)
+        self.assertTrue(bool(released[0]))
+        connection.commit()
+
     def _insert_transition(self, connection: psycopg.Connection) -> tuple[object, str]:
         """Insert a lawful transition command and return its database-owned identity and hash."""
         return connection.execute(
@@ -87,6 +119,7 @@ class ReconciliationLifecycleOutboxPostgresTests(unittest.TestCase):
     ) -> tuple[object, object, str]:
         """Commit the exact raw three-way lifecycle fact and return its event identity."""
         run_id = self.opened["reconciliation_run_id"]
+        self._begin_safe_raw_transition(connection)
         tenant_id = self._tenant_id(connection)
         transition_id, transition_hash = self._insert_transition(connection)
         connection.execute(
@@ -118,12 +151,14 @@ class ReconciliationLifecycleOutboxPostgresTests(unittest.TestCase):
             ),
         ).fetchone()[0]
         connection.commit()
+        self._release_safe_raw_transition(connection)
         return tenant_id, outbox_event_id, str(transition_hash)
 
     def test_reconciled_transition_cannot_commit_without_lifecycle_outbox(self) -> None:
         """Authority-bearing reconciled state cannot commit without its exact publication evidence."""
         run_id = self.opened["reconciliation_run_id"]
         with psycopg.connect(posting.DATABASE_URL) as connection:
+            self._begin_safe_raw_transition(connection)
             self._insert_transition(connection)
             connection.execute(
                 """
@@ -137,6 +172,7 @@ class ReconciliationLifecycleOutboxPostgresTests(unittest.TestCase):
             with self.assertRaisesRegex(psycopg.Error, "outbox"):
                 connection.commit()
             connection.rollback()
+            self._release_safe_raw_transition(connection)
 
         with psycopg.connect(posting.DATABASE_URL) as connection:
             tenant_id = self._tenant_id(connection)
@@ -222,6 +258,7 @@ class ReconciliationLifecycleOutboxPostgresTests(unittest.TestCase):
         """A lifecycle event with a wrong transition hash cannot satisfy publication authority."""
         run_id = self.opened["reconciliation_run_id"]
         with psycopg.connect(posting.DATABASE_URL) as connection:
+            self._begin_safe_raw_transition(connection)
             tenant_id = self._tenant_id(connection)
             transition_id, _transition_hash = self._insert_transition(connection)
             connection.execute(
@@ -254,6 +291,7 @@ class ReconciliationLifecycleOutboxPostgresTests(unittest.TestCase):
             with self.assertRaisesRegex(psycopg.Error, "outbox"):
                 connection.commit()
             connection.rollback()
+            self._release_safe_raw_transition(connection)
 
 
 if __name__ == "__main__":
