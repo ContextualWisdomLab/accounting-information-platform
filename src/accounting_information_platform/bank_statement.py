@@ -36,6 +36,7 @@ MAX_ATTRIBUTE_COUNT = 20_000
 MAX_TEXT_BYTES = 262_144
 MAX_STATEMENT_COUNT = 1
 MAX_ENTRY_COUNT = 500
+MAX_BALANCE_COUNT = 64
 MAX_REMITTANCE_CHARS = 256
 _PAGE_DEFAULT = 50
 _PAGE_MAXIMUM = 100
@@ -43,8 +44,16 @@ _ADAPTER_ROOT = Path(__file__).resolve().parent / "iso20022"
 _MANIFEST_PATH = _ADAPTER_ROOT / "adapter_manifest.json"
 
 
+class ArtifactStoreError(AccountingValidationError):
+    """Expected artifact-store retrieval or persistence failure."""
+
+
 class ArtifactStore(Protocol):
-    """Host-owned immutable store for original bank-statement bytes."""
+    """Host-owned immutable store for original bank-statement bytes.
+
+    Implementations must translate expected backend failures into
+    ``ArtifactStoreError``; unexpected programming errors must propagate.
+    """
 
     def put_artifact(self, source_artifact_hash: str, payload: bytes) -> str:
         """Persist *payload* under *source_artifact_hash* and return a locator."""
@@ -64,7 +73,7 @@ class MemoryArtifactStore:
         """Retain *payload* by hash and return a memory locator."""
         existing = self._artifacts.get(source_artifact_hash)
         if existing is not None and existing != payload:
-            raise AccountingValidationError(
+            raise ArtifactStoreError(
                 "artifact store already holds different bytes for this source hash. "
                 "Supply the original statement bytes, then retry ingest."
             )
@@ -74,13 +83,13 @@ class MemoryArtifactStore:
     def get_artifact(self, artifact_store_reference: str) -> bytes:
         """Return stored bytes for a memory locator."""
         if not artifact_store_reference.startswith("memory:"):
-            raise AccountingValidationError(
+            raise ArtifactStoreError(
                 "artifact store reference is not a memory locator. "
                 "Use the host evidence store for that locator, then retry the read."
             )
         payload = self._artifacts.get(artifact_store_reference.removeprefix("memory:"))
         if payload is None:
-            raise AccountingValidationError(
+            raise ArtifactStoreError(
                 "statement artifact is not retained in the host evidence store. "
                 "Restore the original artifact, then retry the read."
             )
@@ -129,6 +138,21 @@ class NormalizedStatementEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class NormalizedStatementBalance:
+    """One exact camt.053 balance fact with its source locator and hash."""
+
+    balance_sequence_number: int
+    balance_type_code: str | None
+    balance_type_source_code: str | None
+    balance_amount: Decimal
+    balance_currency_code: str
+    credit_debit_code: str
+    balance_effective_at: datetime | None
+    source_locator_path: str
+    source_balance_hash: str
+
+
+@dataclass(frozen=True, slots=True)
 class NormalizedBankStatement:
     """One accepted camt.053.001.14 statement after fail-closed parse."""
 
@@ -144,6 +168,7 @@ class NormalizedBankStatement:
     account_identifier_hash: str
     source_artifact_hash: str
     normalized_payload_hash: str
+    balances: tuple[NormalizedStatementBalance, ...]
     entries: tuple[NormalizedStatementEntry, ...]
 
 
@@ -547,23 +572,37 @@ def accept_bank_statement_evidence(
                 "statement account identifier does not match the registered bank account. "
                 "Register the matching account identifier, then retry ingest."
             )
-        _require_entry_currencies(statement)
+        _require_statement_currencies(statement)
         ledger._acquire_command_lock(
             connection,
             f"bank_statement_identity:{account_row[0]}:{statement.statement_identity_reference}",
         )
         prior_key = connection.execute(
             """
-            SELECT bank_statement_record_id, source_artifact_hash, normalized_payload_hash
+            SELECT bank_statement_record_id, source_artifact_hash,
+                   normalized_payload_hash,
+                   EXISTS (
+                       SELECT 1
+                       FROM accounting_integration.bank_statement_balance AS balance
+                       WHERE balance.tenant_account_id = bank_statement_record.tenant_account_id
+                         AND balance.bank_statement_record_id = bank_statement_record.bank_statement_record_id
+                   ) AS has_balance_evidence
             FROM accounting_integration.bank_statement_record
             WHERE tenant_account_id = %s AND ingestion_idempotency_key = %s
             """,
             (tenant_id, idempotency_key),
         ).fetchone()
         if prior_key is not None:
+            normalized_hash_matches = (
+                prior_key[2] == statement.normalized_payload_hash
+                or (
+                    not prior_key[3]
+                    and prior_key[2] == _legacy_normalized_payload_hash(statement)
+                )
+            )
             if (
                 prior_key[1] != statement.source_artifact_hash
-                or prior_key[2] != statement.normalized_payload_hash
+                or not normalized_hash_matches
             ):
                 raise IdempotencyConflictError(
                     "ingestion idempotency key was already used with a different statement artifact"
@@ -585,16 +624,41 @@ def accept_bank_statement_evidence(
             )
         prior_identity = connection.execute(
             """
-            SELECT bank_statement_record_id, normalized_payload_hash
+            SELECT bank_statement_record.bank_statement_record_id,
+                   bank_statement_record.normalized_payload_hash,
+                   bank_statement_record.source_artifact_hash,
+                   EXISTS (
+                       SELECT 1
+                       FROM accounting_integration.bank_statement_balance AS balance
+                       WHERE balance.tenant_account_id = bank_statement_record.tenant_account_id
+                         AND balance.bank_statement_record_id = bank_statement_record.bank_statement_record_id
+                   ) AS has_balance_evidence,
+                   artifact.artifact_store_reference
             FROM accounting_integration.bank_statement_record
-            WHERE tenant_account_id = %s
-              AND bank_account_record_id = %s
-              AND statement_identity_reference = %s
+            JOIN accounting_integration.bank_statement_artifact AS artifact
+              ON artifact.tenant_account_id = bank_statement_record.tenant_account_id
+             AND artifact.bank_statement_artifact_id = bank_statement_record.bank_statement_artifact_id
+            WHERE bank_statement_record.tenant_account_id = %s
+              AND bank_statement_record.bank_account_record_id = %s
+              AND bank_statement_record.statement_identity_reference = %s
             """,
             (tenant_id, account_row[0], statement.statement_identity_reference),
         ).fetchone()
         if prior_identity is not None:
-            if prior_identity[1] != statement.normalized_payload_hash:
+            normalized_hash_matches = (
+                prior_identity[1] == statement.normalized_payload_hash
+                or (
+                    not prior_identity[3]
+                    and prior_identity[1] == _legacy_normalized_payload_hash(statement)
+                    and _legacy_statement_matches_artifact(
+                        statement,
+                        prior_identity[2],
+                        prior_identity[4],
+                        store,
+                    )
+                )
+            )
+            if not normalized_hash_matches:
                 raise AccountingValidationError(
                     "statement identity already exists with different entry evidence. "
                     "Use an explicit correction contract, then retry ingest."
@@ -643,6 +707,32 @@ def accept_bank_statement_evidence(
                 idempotency_key,
             ),
         ).fetchone()[0]
+        for balance in statement.balances:
+            connection.execute(
+                """
+                INSERT INTO accounting_integration.bank_statement_balance (
+                    tenant_account_id, bank_statement_record_id,
+                    balance_sequence_number, balance_type_code, balance_type_source_code,
+                    balance_amount,
+                    balance_currency_code, credit_debit_code, source_locator_path,
+                    source_balance_hash, balance_effective_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    tenant_id,
+                    statement_id,
+                    balance.balance_sequence_number,
+                    balance.balance_type_code,
+                    balance.balance_type_source_code,
+                    balance.balance_amount,
+                    balance.balance_currency_code,
+                    balance.credit_debit_code,
+                    balance.source_locator_path,
+                    balance.source_balance_hash,
+                    balance.balance_effective_at,
+                ),
+            )
         for entry in statement.entries:
             entry_id = connection.execute(
                 """
@@ -985,6 +1075,18 @@ def _load_statement_document(
         """,
         (tenant_id, statement_id),
     ).fetchone()
+    balance_rows = connection.execute(
+        """
+        SELECT balance_sequence_number, balance_type_code, balance_type_source_code,
+               balance_amount,
+               balance_currency_code, credit_debit_code, source_locator_path,
+               source_balance_hash, balance_effective_at
+        FROM accounting_integration.bank_statement_balance
+        WHERE tenant_account_id = %s AND bank_statement_record_id = %s
+        ORDER BY balance_sequence_number ASC
+        """,
+        (tenant_id, statement_id),
+    ).fetchall()
     return {
         "tenant_reference": tenant_reference,
         "bank_account_reference": row[12],
@@ -1000,6 +1102,22 @@ def _load_statement_document(
         "opening_balance_hash": row[9],
         "closing_balance_hash": row[10],
         "artifact_store_reference": row[11],
+        "balances": [
+            {
+                "balance_sequence_number": int(balance[0]),
+                "balance_type_code": balance[1],
+                "balance_type_source_code": balance[2],
+                "balance_amount": _decimal_text(balance[3]),
+                "balance_currency_code": balance[4],
+                "credit_debit_code": balance[5],
+                "source_locator_path": balance[6],
+                "source_balance_hash": balance[7],
+                "balance_effective_at": None
+                if balance[8] is None
+                else _format_timestamp(balance[8]),
+            }
+            for balance in balance_rows
+        ],
         "entry_count": int(totals[0]),
         "credit_total_amount": _decimal_text(totals[1]),
         "debit_total_amount": _decimal_text(totals[2]),
@@ -1235,9 +1353,32 @@ def _normalize_statement(statement: "_XmlElement", payload: bytes) -> Normalized
             "statement contains no Ntry elements. "
             "Supply at least one entry, then retry ingest."
         )
-    balances = [_normalize_balance(node) for node in _direct_children(statement, "Bal")]
-    opening = next((item[1] for item in balances if item[0] == "OPBD"), None)
-    closing = next((item[1] for item in balances if item[0] == "CLBD"), None)
+    balances = []
+    for index, balance_node in enumerate(
+        _direct_children(statement, "Bal"), start=1
+    ):
+        if index > MAX_BALANCE_COUNT:
+            raise AccountingValidationError(
+                "statement balance count exceeds the adapter bound. "
+                "Send fewer balances, then retry ingest."
+            )
+        balances.append(_normalize_balance(balance_node, index))
+    opening = next(
+        (
+            item.source_balance_hash
+            for item in balances
+            if item.balance_type_code == "OPBD" and item.balance_type_source_code == "cd"
+        ),
+        None,
+    )
+    closing = next(
+        (
+            item.source_balance_hash
+            for item in balances
+            if item.balance_type_code == "CLBD" and item.balance_type_source_code == "cd"
+        ),
+        None,
+    )
     period = _required_child(statement, "FrToDt", "statement period") if _direct_children(statement, "FrToDt") else None
     normalized = NormalizedBankStatement(
         message_definition_identifier=CAMT053_MESSAGE_DEFINITION,
@@ -1252,6 +1393,7 @@ def _normalize_statement(statement: "_XmlElement", payload: bytes) -> Normalized
         account_identifier_hash=_sha256_digest(account_id_text.encode("utf-8")),
         source_artifact_hash=_sha256_digest(payload),
         normalized_payload_hash="",
+        balances=tuple(balances),
         entries=tuple(entries),
     )
     digest = _sha256_digest(
@@ -1272,18 +1414,27 @@ def _normalize_statement(statement: "_XmlElement", payload: bytes) -> Normalized
         account_identifier_hash=normalized.account_identifier_hash,
         source_artifact_hash=normalized.source_artifact_hash,
         normalized_payload_hash=digest,
+        balances=normalized.balances,
         entries=normalized.entries,
     )
 
 
-def _require_entry_currencies(statement: NormalizedBankStatement) -> None:
-    """Fail closed when an entry currency leaves the registered account scope.
+def _require_statement_currencies(statement: NormalizedBankStatement) -> None:
+    """Fail closed when statement facts leave the registered account scope.
 
     Foreign-exchange accounting is explicitly rejected until rate source, rate
     type, rounding, remeasurement, and translation policy exist (TRD), so every
     entry on an accepted statement must carry the statement's own currency.
     """
 
+    for balance in statement.balances:
+        if balance.balance_currency_code != statement.account_currency_code:
+            raise AccountingValidationError(
+                f"statement balance {balance.balance_sequence_number} uses currency "
+                f"{balance.balance_currency_code}, but this registry accepts only "
+                f"{statement.account_currency_code} evidence. Register a matching-currency "
+                "account or correct the statement, then retry ingest."
+            )
     for entry in statement.entries:
         if entry.entry_currency_code != statement.account_currency_code:
             raise AccountingValidationError(
@@ -1442,21 +1593,54 @@ def _normalize_detail(
     )
 
 
-def _normalize_balance(node: "_XmlElement") -> tuple[str | None, str]:
-    code = _first_text(node, ("Tp", "CdOrPrtry", "Cd"))
+def _normalize_balance(
+    node: "_XmlElement", sequence: int
+) -> NormalizedStatementBalance:
+    standard_code = _first_text(node, ("Tp", "CdOrPrtry", "Cd"))
+    proprietary_code = _first_text(node, ("Tp", "CdOrPrtry", "Prtry"))
+    if standard_code is not None and proprietary_code is not None:
+        raise AccountingValidationError(
+            "balance type must contain either Cd or Prtry, not both. "
+            "Correct Bal/Tp/CdOrPrtry, then retry ingest."
+        )
+    code = standard_code or proprietary_code
+    type_source = "cd" if standard_code else "prtry" if proprietary_code else None
     amount, currency = _required_amount(node, "Bal/Amt", allow_zero=True)
     indicator = _required_text(node, ("CdtDbtInd",), "balance credit/debit indicator")
-    return code, _sha256_digest(
+    effective_at = _optional_timestamp(
+        _first_text(node, ("Dt", "DtTm")) or _first_text(node, ("Dt", "Dt"))
+    )
+    if indicator not in {"CRDT", "DBIT"}:
+        raise AccountingValidationError(
+            "balance credit/debit indicator must be CRDT or DBIT. "
+            "Correct Bal/CdtDbtInd, then retry ingest."
+        )
+    source_hash = _sha256_digest(
         json.dumps(
             {
                 "code": code,
+                "code_source": type_source,
                 "amount": _decimal_text(amount),
                 "currency": currency,
                 "credit_debit": indicator,
+                "effective_at": None
+                if effective_at is None
+                else _format_timestamp(effective_at),
             },
             separators=(",", ":"),
             sort_keys=True,
         ).encode("utf-8")
+    )
+    return NormalizedStatementBalance(
+        balance_sequence_number=sequence,
+        balance_type_code=code,
+        balance_type_source_code=type_source,
+        balance_amount=amount,
+        balance_currency_code=currency,
+        credit_debit_code=indicator,
+        balance_effective_at=effective_at,
+        source_locator_path=f"Document/BkToCstmrStmt/Stmt/Bal[{sequence}]",
+        source_balance_hash=source_hash,
     )
 
 
@@ -1475,7 +1659,87 @@ def _normalized_payload(statement: NormalizedBankStatement) -> dict[str, object]
         "opening_balance_hash": statement.opening_balance_hash,
         "closing_balance_hash": statement.closing_balance_hash,
         "account_currency_code": statement.account_currency_code,
+        "balances": [_balance_payload(balance) for balance in statement.balances],
         "entries": [_entry_payload(entry) for entry in statement.entries],
+    }
+
+
+def _legacy_normalized_payload_hash(statement: NormalizedBankStatement) -> str:
+    """Return the pre-0018 normalized hash used by legacy statement rows."""
+    payload = _normalized_payload(statement)
+    payload.pop("balances")
+    for field_name, balance_code in (
+        ("opening_balance_hash", "OPBD"),
+        ("closing_balance_hash", "CLBD"),
+    ):
+        balance = next(
+            (
+                item
+                for item in statement.balances
+                if item.balance_type_code == balance_code
+                and item.balance_type_source_code == "cd"
+            ),
+            None,
+        )
+        payload[field_name] = (
+            None if balance is None else _legacy_balance_hash(balance)
+        )
+    return _sha256_digest(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    )
+
+
+def _legacy_balance_hash(balance: NormalizedStatementBalance) -> str:
+    """Return the pre-0018 hash shape for one standard balance fact."""
+    return _sha256_digest(
+        json.dumps(
+            {
+                "code": balance.balance_type_code,
+                "amount": _decimal_text(balance.balance_amount),
+                "currency": balance.balance_currency_code,
+                "credit_debit": balance.credit_debit_code,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    )
+
+
+def _legacy_statement_matches_artifact(
+    statement: NormalizedBankStatement,
+    source_artifact_hash: str,
+    artifact_store_reference: str,
+    store: ArtifactStore,
+) -> bool:
+    """Prove a legacy identity replay preserves every normalized fact."""
+    try:
+        original_bytes = store.get_artifact(artifact_store_reference)
+    except ArtifactStoreError:
+        return False
+    if _sha256_digest(original_bytes) != source_artifact_hash:
+        return False
+    try:
+        original = parse_bank_statement_payload(
+            original_bytes, CAMT053_MESSAGE_DEFINITION
+        )
+    except AccountingValidationError:
+        return False
+    return _normalized_payload(original) == _normalized_payload(statement)
+
+
+def _balance_payload(balance: NormalizedStatementBalance) -> dict[str, object]:
+    return {
+        "balance_sequence_number": balance.balance_sequence_number,
+        "balance_type_code": balance.balance_type_code,
+        "balance_type_source_code": balance.balance_type_source_code,
+        "balance_amount": _decimal_text(balance.balance_amount),
+        "balance_currency_code": balance.balance_currency_code,
+        "credit_debit_code": balance.credit_debit_code,
+        "balance_effective_at": None
+        if balance.balance_effective_at is None
+        else _format_timestamp(balance.balance_effective_at),
+        "source_locator_path": balance.source_locator_path,
+        "source_balance_hash": balance.source_balance_hash,
     }
 
 
@@ -1543,6 +1807,11 @@ def _amount_from_element(
     try:
         amount = _parse_amount(text)
     except AccountingValidationError as error:
+        if "storage bound" in str(error):
+            raise AccountingValidationError(
+                f"{label} exceeds the numeric(38,6) storage bound. "
+                "Correct the amount, then retry ingest."
+            ) from error
         raise AccountingValidationError(
             f"{label} must be an exact decimal with at most six fractional digits. "
             "Correct the amount, then retry ingest."

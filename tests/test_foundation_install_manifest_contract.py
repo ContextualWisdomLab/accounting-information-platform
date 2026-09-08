@@ -87,6 +87,175 @@ class FoundationInstallManifestContractTests(unittest.TestCase):
                 self.assertIn(migration_thirteen, text)
                 self.assertLess(text.index(migration_twelve), text.index(migration_thirteen))
 
+    def test_required_files_and_install_docs_include_multi_match_conservation(self) -> None:
+        """Migration 0015 must extend the canonical install chain after candidate allocation."""
+        migration_fourteen = "database/migrations/0014_reconciliation_candidate_allocation.sql"
+        migration_fifteen = "database/migrations/0015_reconciliation_multi_match_conservation.sql"
+        self.assertIn(migration_fifteen, set(REQUIRED_FILES))
+        for relative_path in ("docs/OPERABILITY.md", "docs/ARCHITECTURE.md"):
+            with self.subTest(relative_path=relative_path):
+                text = (ROOT / relative_path).read_text(encoding="utf-8")
+                self.assertIn(migration_fourteen, text)
+                self.assertIn(migration_fifteen, text)
+                self.assertLess(text.index(migration_fourteen), text.index(migration_fifteen))
+
+    def test_required_files_and_install_docs_include_approval_snapshot_binding(self) -> None:
+        """Approval snapshot evidence follows multi-match conservation in the install chain."""
+        migration_fifteen = "database/migrations/0015_reconciliation_multi_match_conservation.sql"
+        migration_sixteen = "database/migrations/0016_reconciliation_approval_evidence.sql"
+        self.assertIn(migration_sixteen, set(REQUIRED_FILES))
+        for relative_path in ("docs/OPERABILITY.md", "docs/ARCHITECTURE.md"):
+            with self.subTest(relative_path=relative_path):
+                text = (ROOT / relative_path).read_text(encoding="utf-8")
+                self.assertIn(migration_fifteen, text)
+                self.assertIn(migration_sixteen, text)
+                self.assertLess(text.index(migration_fifteen), text.index(migration_sixteen))
+
+    def test_required_files_and_install_docs_include_approval_lock_order(self) -> None:
+        """Approval lock-order repair follows the approval snapshot migration."""
+        migration_sixteen = "database/migrations/0016_reconciliation_approval_evidence.sql"
+        migration_seventeen = "database/migrations/0017_reconciliation_approval_lock_order.sql"
+        self.assertIn(migration_seventeen, set(REQUIRED_FILES))
+        for relative_path in ("docs/OPERABILITY.md", "docs/ARCHITECTURE.md"):
+            with self.subTest(relative_path=relative_path):
+                text = (ROOT / relative_path).read_text(encoding="utf-8")
+                self.assertIn(migration_sixteen, text)
+                self.assertIn(migration_seventeen, text)
+                self.assertLess(text.index(migration_sixteen), text.index(migration_seventeen))
+
+    def test_required_files_and_install_docs_include_balance_evidence(self) -> None:
+        """Numeric bank-statement balance evidence follows the reconciliation controls."""
+        migration_seventeen = "database/migrations/0017_reconciliation_approval_lock_order.sql"
+        migration_eighteen = "database/migrations/0018_bank_statement_balance_evidence.sql"
+        self.assertIn(migration_eighteen, set(REQUIRED_FILES))
+        for relative_path in ("docs/OPERABILITY.md", "docs/ARCHITECTURE.md"):
+            with self.subTest(relative_path=relative_path):
+                text = (ROOT / relative_path).read_text(encoding="utf-8")
+                self.assertIn(migration_seventeen, text)
+                self.assertIn(migration_eighteen, text)
+                self.assertLess(text.index(migration_seventeen), text.index(migration_eighteen))
+
+    def test_required_files_and_install_docs_include_run_command_evidence(self) -> None:
+        """Run opening evidence follows exact persisted statement balances."""
+        migration_eighteen = "database/migrations/0018_bank_statement_balance_evidence.sql"
+        migration_nineteen = "database/migrations/0019_reconciliation_run_command_evidence.sql"
+        self.assertIn(migration_nineteen, set(REQUIRED_FILES))
+        for relative_path in ("docs/OPERABILITY.md", "docs/ARCHITECTURE.md"):
+            with self.subTest(relative_path=relative_path):
+                text = (ROOT / relative_path).read_text(encoding="utf-8")
+                if relative_path == "docs/OPERABILITY.md":
+                    install_section = text.split("## Database installation", 1)[1]
+                    install_block = install_section.split("```text", 1)[1].split("```", 1)[0]
+                else:
+                    install_section = text.split("## Persistence and migration order", 1)[1]
+                    install_block = install_section.split("`0005_closed_period_guard.sql` makes", 1)[0]
+                self.assertIn(migration_eighteen, install_block)
+                self.assertIn(migration_nineteen, install_block)
+                self.assertLess(
+                    install_block.index(migration_eighteen),
+                    install_block.index(migration_nineteen),
+                )
+
+    def test_install_fails_closed_when_approval_snapshot_migration_is_missing(self) -> None:
+        """The canonical loader may not silently stop before database-owned approval evidence."""
+        original_is_file = Path.is_file
+
+        def is_file(path: Path) -> bool:
+            if path.name == "0016_reconciliation_approval_evidence.sql":
+                return False
+            return original_is_file(path)
+
+        with patch.object(Path, "is_file", is_file):
+            with self.assertRaises(AccountingValidationError):
+                apply_foundation_migration(
+                    "postgresql://unused",
+                    ROOT / "database/migrations/0001_accounting_foundation.sql",
+                )
+
+    def test_install_fails_closed_when_approval_lock_order_migration_is_missing(self) -> None:
+        """The canonical loader must apply the forward lock-order repair."""
+        original_is_file = Path.is_file
+
+        def is_file(path: Path) -> bool:
+            if path.name == "0017_reconciliation_approval_lock_order.sql":
+                return False
+            return original_is_file(path)
+
+        with patch.object(Path, "is_file", is_file):
+            with self.assertRaises(AccountingValidationError):
+                apply_foundation_migration(
+                    "postgresql://unused",
+                    ROOT / "database/migrations/0001_accounting_foundation.sql",
+                )
+
+    def test_install_fails_closed_when_balance_evidence_migration_is_missing(self) -> None:
+        """The canonical loader may not install reconciliation without numeric balance facts."""
+        original_is_file = Path.is_file
+
+        def is_file(path: Path) -> bool:
+            if path.name == "0018_bank_statement_balance_evidence.sql":
+                return False
+            return original_is_file(path)
+
+        with patch.object(Path, "is_file", is_file):
+            with self.assertRaises(AccountingValidationError):
+                apply_foundation_migration(
+                    "postgresql://unused",
+                    ROOT / "database/migrations/0001_accounting_foundation.sql",
+                )
+
+    def test_install_fails_closed_when_run_command_migration_is_missing(self) -> None:
+        """The canonical loader may not open runs without command provenance."""
+        original_is_file = Path.is_file
+
+        def is_file(path: Path) -> bool:
+            if path.name == "0019_reconciliation_run_command_evidence.sql":
+                return False
+            return original_is_file(path)
+
+        with patch.object(Path, "is_file", is_file):
+            with self.assertRaises(AccountingValidationError):
+                apply_foundation_migration(
+                    "postgresql://unused",
+                    ROOT / "database/migrations/0001_accounting_foundation.sql",
+                )
+
+    def test_canonical_persistence_loader_fails_closed_when_conservation_is_missing(self) -> None:
+        """Real PostgreSQL fixtures may not silently stop the authoritative chain at 0014."""
+        from accounting_information_platform.persistence import (
+            apply_foundation_migration as apply_persistence_foundation_migration,
+        )
+
+        original_is_file = Path.is_file
+
+        def is_file(path: Path) -> bool:
+            if path.name == "0015_reconciliation_multi_match_conservation.sql":
+                return False
+            return original_is_file(path)
+
+        with patch.object(Path, "is_file", is_file):
+            with self.assertRaises(AccountingValidationError):
+                apply_persistence_foundation_migration(
+                    "postgresql://unused",
+                    ROOT / "database/migrations/0001_accounting_foundation.sql",
+                )
+
+    def test_public_loader_fails_closed_when_conservation_is_missing(self) -> None:
+        """The exported install boundary must delegate to the same complete canonical chain."""
+        original_is_file = Path.is_file
+
+        def is_file(path: Path) -> bool:
+            if path.name == "0015_reconciliation_multi_match_conservation.sql":
+                return False
+            return original_is_file(path)
+
+        with patch.object(Path, "is_file", is_file):
+            with self.assertRaises(AccountingValidationError):
+                apply_foundation_migration(
+                    "postgresql://unused",
+                    ROOT / "database/migrations/0001_accounting_foundation.sql",
+                )
+
     def test_install_fails_closed_when_reconciliation_control_migration_is_missing(self) -> None:
         """The public foundation loader may not silently omit migration 0013."""
         original_is_file = Path.is_file

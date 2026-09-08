@@ -7,6 +7,7 @@ import hashlib
 import json
 import unittest
 import uuid
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from unittest import mock
@@ -21,8 +22,6 @@ from accounting_information_platform import (
 )
 from accounting_information_platform.http_api import _bank_statement_status
 from accounting_information_platform.bank_statement import (
-    MAX_ATTRIBUTE_COUNT,
-    MAX_ELEMENT_COUNT,
     MAX_ENTRY_COUNT,
     MAX_TEXT_BYTES,
     MAX_XML_DEPTH,
@@ -401,6 +400,117 @@ class BankStatementAdapterTests(unittest.TestCase):
         statement = parse_bank_statement_payload(payload, CAMT053_MESSAGE_DEFINITION)
         self.assertEqual(statement.statement_identity_reference, "BANK-STMT-2026-08-24")
         self.assertIsNotNone(statement.opening_balance_hash)
+
+    def test_statement_preserves_exact_balance_evidence(self) -> None:
+        """Opening and closing balances remain exact evidence for reconciliation."""
+        statement = parse_bank_statement_payload(
+            load_canonical_statement_fixture(), CAMT053_MESSAGE_DEFINITION
+        )
+        self.assertEqual(
+            [
+                (
+                    balance.balance_type_code,
+                    balance.balance_amount,
+                    balance.balance_currency_code,
+                    balance.credit_debit_code,
+                    balance.balance_effective_at,
+                )
+                for balance in statement.balances
+            ],
+            [
+                ("OPBD", Decimal("100000.00"), "KRW", "CRDT", datetime(2026, 8, 23, tzinfo=timezone.utc)),
+                ("CLBD", Decimal("115000.00"), "KRW", "CRDT", datetime(2026, 8, 24, tzinfo=timezone.utc)),
+            ],
+        )
+
+    def test_balance_effective_date_is_material_evidence(self) -> None:
+        """A balance date is typed evidence and changes its source and payload hashes."""
+        baseline_payload = load_canonical_statement_fixture()
+        changed_payload = baseline_payload.replace(
+            b"<Dt>2026-08-23</Dt>", b"<Dt>2026-08-22</Dt>", 1
+        )
+        baseline = parse_bank_statement_payload(
+            baseline_payload, CAMT053_MESSAGE_DEFINITION
+        )
+        changed = parse_bank_statement_payload(
+            changed_payload, CAMT053_MESSAGE_DEFINITION
+        )
+        self.assertEqual(
+            baseline.balances[0].balance_effective_at,
+            datetime(2026, 8, 23, tzinfo=timezone.utc),
+        )
+        self.assertNotEqual(
+            baseline.balances[0].source_balance_hash,
+            changed.balances[0].source_balance_hash,
+        )
+        self.assertNotEqual(
+            baseline.normalized_payload_hash,
+            changed.normalized_payload_hash,
+        )
+        timestamp_payload = baseline_payload.replace(
+            b"<Dt>2026-08-23</Dt>",
+            b"<DtTm>2026-08-23T05:00:00+09:00</DtTm>",
+            1,
+        )
+        timestamped = parse_bank_statement_payload(
+            timestamp_payload, CAMT053_MESSAGE_DEFINITION
+        )
+        self.assertEqual(
+            timestamped.balances[0].balance_effective_at,
+            datetime(2026, 8, 22, 20, tzinfo=timezone.utc),
+        )
+
+        missing_date_payload = baseline_payload.replace(
+            b"        <Dt>\n          <Dt>2026-08-23</Dt>\n        </Dt>\n",
+            b"",
+            1,
+        )
+        missing_date = parse_bank_statement_payload(
+            missing_date_payload, CAMT053_MESSAGE_DEFINITION
+        )
+        self.assertIsNone(missing_date.balances[0].balance_effective_at)
+
+    def test_proprietary_balance_type_is_material_evidence(self) -> None:
+        """CdOrPrtry/Prtry survives normalization instead of collapsing to no type."""
+        baseline_payload = load_canonical_statement_fixture()
+        proprietary_payload = baseline_payload.replace(
+            b"<Cd>OPBD</Cd>", b"<Prtry>OPENING_CUSTOM</Prtry>", 1
+        )
+
+        baseline = parse_bank_statement_payload(
+            baseline_payload, CAMT053_MESSAGE_DEFINITION
+        )
+        proprietary = parse_bank_statement_payload(
+            proprietary_payload, CAMT053_MESSAGE_DEFINITION
+        )
+
+        self.assertEqual(proprietary.balances[0].balance_type_code, "OPENING_CUSTOM")
+        self.assertNotEqual(
+            baseline.balances[0].source_balance_hash,
+            proprietary.balances[0].source_balance_hash,
+        )
+        self.assertNotEqual(
+            baseline.normalized_payload_hash,
+            proprietary.normalized_payload_hash,
+        )
+
+    def test_balance_population_has_a_domain_bound(self) -> None:
+        """A statement cannot create an unbounded number of relational balance rows."""
+        with mock.patch(
+            "accounting_information_platform.bank_statement.MAX_BALANCE_COUNT", 1
+        ):
+            with self.assertRaisesRegex(AccountingValidationError, "balance count"):
+                parse_bank_statement_payload(
+                    load_canonical_statement_fixture(), CAMT053_MESSAGE_DEFINITION
+                )
+
+    def test_invalid_balance_direction_fails_closed(self) -> None:
+        """A balance with an unknown economic direction is not accepted as evidence."""
+        payload = FIXTURE.read_text(encoding="utf-8").replace(
+            "<CdtDbtInd>CRDT</CdtDbtInd>", "<CdtDbtInd>UNKNOWN</CdtDbtInd>", 1
+        ).encode("utf-8")
+        with self.assertRaisesRegex(AccountingValidationError, "balance credit/debit"):
+            parse_bank_statement_payload(payload, CAMT053_MESSAGE_DEFINITION)
 
     def test_helper_boundaries_fail_closed(self) -> None:
         """List cursors, hashes, and foreign-key detection stay fail-closed."""

@@ -23,7 +23,7 @@ concurrency:
 jobs:
   exact-head-sast:
     name: Exact-head SAST
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -60,7 +60,7 @@ jobs:
 
   exact-head-security:
     name: Exact-head security
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read
@@ -103,7 +103,7 @@ jobs:
   exact-head-dependency-diff:
     name: Exact-head dependency diff
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -174,7 +174,7 @@ jobs:
 
   accounting-foundation:
     name: Accounting foundation
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read
@@ -228,11 +228,42 @@ jobs:
       - name: Run behavior and repository tests
         env:
           PYTHONPATH: src:.
-        run: python -m unittest discover -s tests -p 'test_*.py' -v
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          behavior_log="${RUNNER_TEMP}/accounting-behavior-tests-${EXPECTED_SHA}.log"
+          python -m unittest discover -s tests -p 'test_*.py' -v 2>&1 | tee "$behavior_log"
+      - name: Upload behavior-test evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: accounting-behavior-tests-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/accounting-behavior-tests-${{ github.event.pull_request.head.sha || github.sha }}.log
+          if-no-files-found: error
+          retention-days: 14
       - name: Run complete production branch coverage
         env:
           PYTHONPATH: src:.
         run: python -m coverage run --branch -m unittest discover -s tests -p 'test_*.py'
+      - name: Publish coverage diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m coverage report --fail-under=0 --show-missing | tee coverage.txt
+          python -m coverage json --fail-under=0 -o coverage.json
+          python -m coverage xml --fail-under=0 -o coverage.xml
+      - name: Upload coverage diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: accounting-coverage-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            coverage.txt
+            coverage.json
+            coverage.xml
+          if-no-files-found: error
+          retention-days: 14
       - name: Enforce complete coverage and publish denominator evidence
         shell: bash
         run: |
@@ -323,7 +354,7 @@ jobs:
     name: Integrated-head attestations
     if: github.event_name == 'push'
     needs: accounting-foundation
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read

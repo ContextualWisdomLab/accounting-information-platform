@@ -52,6 +52,10 @@ Korea Legislation Research Institute. (2024b). *Income Tax Act* [Unofficial tran
 
 Korea Legislation Research Institute. (2024a). *Value-Added Tax Act* [Unofficial translation]. https://elaw.klri.re.kr/eng_service/lawView.do?hseq=53110&lang=ENG
 
+National Institute of Standards and Technology. (2015). *Secure Hash Standard (SHS)* (FIPS PUB 180-4). https://doi.org/10.6028/NIST.FIPS.180-4
+
+National Institute of Standards and Technology. (2023, March 7). *Decision to revise FIPS 180-4, Secure Hash Standard (SHS)*. https://csrc.nist.gov/news/2023/decision-to-revise-fips-180-4
+
 PostgreSQL Global Development Group. (2026). *PostgreSQL 18.4 release notes*. https://www.postgresql.org/docs/release/18.4/
 
 PostgreSQL Global Development Group. (2026a). *PostgreSQL 18 documentation: Advisory locks*. https://www.postgresql.org/docs/18/functions-admin.html
@@ -71,6 +75,12 @@ PostgreSQL Global Development Group. (2026g). *PostgreSQL 18 documentation: CREA
 PostgreSQL Global Development Group. (2026h). *PostgreSQL 18 documentation: Constraints*. https://www.postgresql.org/docs/18/ddl-constraints.html
 
 PostgreSQL Global Development Group. (2026i). *PostgreSQL 18 documentation: Errors and messages*. https://www.postgresql.org/docs/18/plpgsql-errors-and-messages.html
+
+PostgreSQL Global Development Group. (2026j). *PostgreSQL 18 documentation: Binary string functions and operators*. https://www.postgresql.org/docs/18/functions-binarystring.html
+
+PostgreSQL Global Development Group. (2026k). *PostgreSQL 18 documentation: CREATE TRIGGER*. https://www.postgresql.org/docs/18/sql-createtrigger.html
+
+PostgreSQL Global Development Group. (2026l). *PostgreSQL 18 documentation: Transaction isolation*. https://www.postgresql.org/docs/18/transaction-iso.html
 
 SPDX Workgroup. (n.d.). *SPDX specifications*. https://spdx.dev/use/specifications/
 
