@@ -16,17 +16,20 @@ class _Connection:
     def __init__(self) -> None:
         self.events: list[tuple[str, str]] = []
         self.fail_session_lock = False
-        self.unlock_result: tuple[bool] | None = (True,)
+        self.release_result: tuple[bool] | None = (True,)
 
     def execute(self, statement: str, _parameters: object = None) -> "_Connection":
         normalized = " ".join(statement.split())
         self.events.append(("execute", normalized))
-        if self.fail_session_lock and "pg_advisory_lock(" in normalized:
+        if (
+            self.fail_session_lock
+            and "accounting_core.acquire_reconciliation_lifecycle_session" in normalized
+        ):
             raise RuntimeError("session lock acquisition failed")
         return self
 
     def fetchone(self) -> tuple[bool] | None:
-        return self.unlock_result
+        return self.release_result
 
     def commit(self) -> None:
         self.events.append(("commit", ""))
@@ -65,13 +68,14 @@ class ReconciliationLifecycleSnapshotLockOrderTests(unittest.TestCase):
             ledger.connection.events.append(("authority-read", ""))
 
         events = ledger.connection.events
-        session_lock = next(
+        acquisition = next(
             index
             for index, event in enumerate(events)
-            if event[0] == "execute" and "pg_advisory_lock(" in event[1]
+            if event[0] == "execute"
+            and "accounting_core.acquire_reconciliation_lifecycle_session" in event[1]
         )
         acquisition_commit = next(
-            index for index, event in enumerate(events) if index > session_lock and event[0] == "commit"
+            index for index, event in enumerate(events) if index > acquisition and event[0] == "commit"
         )
         repeatable_read = next(
             index
@@ -87,21 +91,22 @@ class ReconciliationLifecycleSnapshotLockOrderTests(unittest.TestCase):
         authority_commit = next(
             index for index, event in enumerate(events) if index > authority_read and event[0] == "commit"
         )
-        unlock = next(
+        release = next(
             index
             for index, event in enumerate(events)
-            if event[0] == "execute" and "pg_advisory_unlock(" in event[1]
+            if event[0] == "execute"
+            and "accounting_core.release_reconciliation_lifecycle_session" in event[1]
         )
 
-        self.assertLess(session_lock, acquisition_commit)
+        self.assertLess(acquisition, acquisition_commit)
         self.assertLess(acquisition_commit, repeatable_read)
         self.assertLess(repeatable_read, transaction_lock)
         self.assertLess(transaction_lock, authority_read)
         self.assertLess(authority_read, authority_commit)
-        self.assertLess(authority_commit, unlock)
+        self.assertLess(authority_commit, release)
 
-    def test_session_lock_acquisition_failure_rolls_back_without_unlock_attempt(self) -> None:
-        """A failed admission writes nothing and does not pretend to release an unowned lock."""
+    def test_session_lock_acquisition_failure_rolls_back_without_release_attempt(self) -> None:
+        """A failed admission writes nothing and does not pretend to release an unowned lease."""
         ledger = _Ledger()
         ledger.connection.fail_session_lock = True
 
@@ -113,7 +118,10 @@ class ReconciliationLifecycleSnapshotLockOrderTests(unittest.TestCase):
 
         self.assertIn(("rollback", ""), ledger.connection.events)
         self.assertFalse(
-            any("pg_advisory_unlock(" in event[1] for event in ledger.connection.events)
+            any(
+                "accounting_core.release_reconciliation_lifecycle_session" in event[1]
+                for event in ledger.connection.events
+            )
         )
 
     def test_authority_error_rolls_back_before_releasing_session_lock(self) -> None:
@@ -127,17 +135,18 @@ class ReconciliationLifecycleSnapshotLockOrderTests(unittest.TestCase):
                 raise ValueError("authority failed")
 
         rollback = ledger.connection.events.index(("rollback", ""))
-        unlock = next(
+        release = next(
             index
             for index, event in enumerate(ledger.connection.events)
-            if event[0] == "execute" and "pg_advisory_unlock(" in event[1]
+            if event[0] == "execute"
+            and "accounting_core.release_reconciliation_lifecycle_session" in event[1]
         )
-        self.assertLess(rollback, unlock)
+        self.assertLess(rollback, release)
 
     def test_missing_owned_session_lock_fails_closed_after_successful_authority_work(self) -> None:
-        """An unexpected false unlock result cannot be reported as a successful command return."""
+        """An unexpected false release result cannot be reported as a successful command return."""
         ledger = _Ledger()
-        ledger.connection.unlock_result = (False,)
+        ledger.connection.release_result = (False,)
 
         with self.assertRaisesRegex(AccountingValidationError, "could not be released"):
             with reconciliation_lifecycle._lifecycle_authority_session(
@@ -150,7 +159,7 @@ class ReconciliationLifecycleSnapshotLockOrderTests(unittest.TestCase):
     def test_cleanup_failure_does_not_replace_original_authority_error(self) -> None:
         """Cleanup diagnostics must preserve the accounting failure that caused rollback."""
         ledger = _Ledger()
-        ledger.connection.unlock_result = None
+        ledger.connection.release_result = None
 
         with self.assertRaisesRegex(ValueError, "authority failed"):
             with reconciliation_lifecycle._lifecycle_authority_session(
