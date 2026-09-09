@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from inspect import signature
 import unittest
 
 from accounting_information_platform.persistence import AccountingValidationError
@@ -186,6 +187,11 @@ class PostgresAccountingBookEffectiveResolutionRedTests(unittest.TestCase):
             ).fetchone()[0]
 
             self.assertNotEqual(historical_id, successor_id)
+            self.assertIn(
+                "effective_at",
+                signature(self.case.ledger._require_book_for_close).parameters,
+                "book-reference resolution must accept the owning use case's accounting-effective instant",
+            )
             self.assertEqual(
                 self.case.ledger._require_book_for_close(
                     connection,
