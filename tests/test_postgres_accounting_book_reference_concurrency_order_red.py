@@ -61,7 +61,7 @@ class PostgresAccountingBookReferenceConcurrencyOrderRedTests(unittest.TestCase)
         with (
             psycopg.connect(posting.DATABASE_URL) as first_connection,
             psycopg.connect(posting.DATABASE_URL) as second_connection,
-            psycopg.connect(posting.DATABASE_URL) as observer_connection,
+            psycopg.connect(posting.DATABASE_URL, autocommit=True) as observer_connection,
         ):
             for connection in (first_connection, second_connection):
                 connection.execute(
