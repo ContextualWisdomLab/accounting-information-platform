@@ -8,6 +8,7 @@ import urllib.parse
 
 import psycopg
 
+from accounting_information_platform.accept import lookup_account_ledger
 from tests import test_postgres_posting as posting
 
 
@@ -25,6 +26,27 @@ class PostgresAccountLedgerBookScopeRedTests(unittest.TestCase):
         self.case.setUp()
         self.addCleanup(self.case.doCleanups)
         self.addCleanup(self.case.tearDown)
+
+    def test_library_account_ledger_accepts_explicit_book_reference(self) -> None:
+        """The public library inquiry must make accounting-book identity explicit."""
+        primary = self.case._two_line_proposal()
+        primary_receipt = self.case.ledger.post(primary, self.case.policy)
+
+        document = lookup_account_ledger(
+            database_url=posting.DATABASE_URL,
+            tenant_reference=self.case.policy.tenant_reference,
+            legal_entity_reference=self.case.policy.legal_entity_reference,
+            book_reference=self.case.policy.accounting_book_reference,
+            chart_account_code="110100",
+        )
+
+        self.assertEqual(document["period_debit_total"], "25000")
+        self.assertEqual(document["period_credit_total"], "0")
+        self.assertEqual(len(document["ledger_lines"]), 1)
+        self.assertEqual(
+            document["ledger_lines"][0]["journal_reference"],
+            primary_receipt.journal_reference,
+        )
 
     def test_http_account_ledger_requires_book_reference(self) -> None:
         """A ledger inquiry must identify one accounting book before reading facts."""
