@@ -20,10 +20,12 @@ This is an AIS accounting-master-data identity defect. IFRS does not prescribe t
 
 Within one tenant and legal entity, an externally durable `book_name` / `book_reference` must identify at most one Accounting Book Entity at any effective instant. Historical effective-dated rows may retain the same reference only when their validity intervals do not overlap. Preserving non-overlapping history is required so posted facts and prior evidence are not rewritten merely because the current book catalog changes.
 
+For this amendment an Accounting Book validity interval is half-open: `[valid_from, valid_to)`, with `valid_to IS NULL` extending to positive infinity. `valid_to` is therefore the first instant at which that Entity is no longer effective. Two same-reference intervals that only touch at one boundary are lawful; treating the shared endpoint as overlap would reject a lossless effective-dated handoff without improving identity safety.
+
 The canonical repair should therefore:
 
 - enforce non-overlapping effective-time identity for `(tenant_account_id, legal_entity_id, book_name)` in PostgreSQL, including open-ended and finite validity intervals;
-- retain expired or superseded historical rows with the same `book_name` only when their effective intervals do not overlap;
+- retain expired or superseded historical rows with the same `book_name` only when their effective intervals do not overlap, including lawful `[a, b)` / `[b, c)` adjacency;
 - make public resolvers fail closed on zero or multiple effective matches rather than selecting a row by ordering or role inference;
 - preserve `accounting_book_id` as the immutable relational Entity key used by journals, chart accounts, close evidence, reconciliation and reporting sources;
 - preserve tenant RLS/composite-FK boundaries, reporting-currency facts and effective/system-time evidence;
@@ -33,13 +35,13 @@ A database-owned temporal non-overlap constraint or equivalent invariant is pref
 
 ## Alternatives rejected
 
-Making `book_role_code` part of the public identity is rejected because ADR 0022 already exposes `book_name` as the durable reference and callers should not have to infer an accounting role to disambiguate one identifier. Selecting the first match is rejected because result identity would depend on query order. A current-row-only uniqueness rule is rejected because it does not protect effective-time reads from overlapping historical/future intervals. Making `book_name` globally unique for all history is rejected because it would prevent lawful non-overlapping effective-dated history. Rewriting posted journals or retained evidence to a newly chosen book is rejected because posted accounting facts are immutable.
+Making `book_role_code` part of the public identity is rejected because ADR 0022 already exposes `book_name` as the durable reference and callers should not have to infer an accounting role to disambiguate one identifier. Selecting the first match is rejected because result identity would depend on query order. A current-row-only uniqueness rule is rejected because it does not protect effective-time reads from overlapping historical/future intervals. Making `book_name` globally unique for all history is rejected because it would prevent lawful non-overlapping effective-dated history. Closed-interval semantics are rejected because they would make a row ending at `t` conflict with its successor beginning at `t`, despite no instant having two effective Entities under the repository's established `valid_from <= t` / `valid_to > t` convention. Rewriting posted journals or retained evidence to a newly chosen book is rejected because posted accounting facts are immutable.
 
 ## Implementation and evidence boundary
 
-The amendment remains **Proposed**. Draft #59 carries real-PostgreSQL REDs requiring an open-ended duplicate durable reference and a finite overlapping validity interval to fail closed, while a non-overlapping expired historical row remains lawful. The RED expects database integrity enforcement without pinning the implementation to a unique-index SQLSTATE; an exclusion constraint or another database-owned temporal mechanism remains available.
+The amendment remains **Proposed**. Draft #59 carries real-PostgreSQL REDs requiring an open-ended duplicate durable reference, an open-ended/finite overlap, and two overlapping finite historical intervals to fail closed. Positive cases retain non-overlapping expired history and require exact-boundary adjacency to remain lawful. The RED expects database integrity enforcement without pinning the implementation to a unique-index SQLSTATE; an exclusion constraint or another database-owned temporal mechanism remains available.
 
-Review descendant `7d8ea2e1d5acdff81e0db62621cf64ef09c8c8a4` explicitly sets `app.tenant_account_id` on both direct PostgreSQL sessions so the oracle remains valid under future non-BYPASSRLS execution. Successor `446b3c93ce7d1d1d7348eecebdf06e771f64af5c` adds the finite-overlap RED and removes the earlier accidental coupling to `UniqueViolation`. Production migration/resolver behavior is still intentionally absent.
+Review descendant `7d8ea2e1d5acdff81e0db62621cf64ef09c8c8a4` explicitly sets `app.tenant_account_id` on direct PostgreSQL sessions so the oracle remains valid under future non-BYPASSRLS execution. Successor `446b3c93ce7d1d1d7348eecebdf06e771f64af5c` adds the first finite-overlap RED and removes the earlier accidental coupling to `UniqueViolation`. Descendant `c887c7890094ba11646c31fbb69a3a362169c0a7` closes the remaining temporal edge coverage by adding finite/finite overlap RED and exact-boundary adjacency GREEN. Production migration/resolver behavior is still intentionally absent.
 
 Do not allocate an apparently free migration number from protected `develop`, which currently ends at migration 0014, while #29/#47/#53 own the live unreleased forward migration stack. After those prerequisites integrate, non-force reconcile #59 on the exact protected parent, allocate the next canonical migration identity, add upgrade/preflight/rollback/recovery evidence, and reacquire all exact-head gates.
 
