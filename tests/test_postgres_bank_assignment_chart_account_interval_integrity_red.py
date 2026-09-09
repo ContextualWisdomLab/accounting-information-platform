@@ -48,7 +48,7 @@ class BankAssignmentChartAccountIntervalIntegrityRedTests(unittest.TestCase):
                 chart_valid_to=chart_valid_to,
                 assignment_valid_from=assignment_valid_from,
                 assignment_valid_to=assignment_valid_to,
-                fixture_name="chart-parent",
+                fixture_name="chart-parent-end",
             )
 
             self.assertLess(assignment_valid_from, shortened_chart_valid_to)
@@ -66,6 +66,52 @@ class BankAssignmentChartAccountIntervalIntegrityRedTests(unittest.TestCase):
                     """,
                     (
                         shortened_chart_valid_to,
+                        tenant_id,
+                        chart_account_id,
+                    ),
+                )
+            connection.rollback()
+
+    def test_chart_account_start_cannot_strand_existing_bank_assignment(self) -> None:
+        """Moving a chart-account start forward may not strand its assignment before it."""
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            tenant_id, legal_entity_id = self._tenant_scope(connection)
+            anchor = connection.execute("SELECT clock_timestamp()").fetchone()[0]
+            book_valid_from = anchor - timedelta(days=10)
+            book_valid_to = anchor + timedelta(days=10)
+            chart_valid_from = anchor - timedelta(days=8)
+            chart_valid_to = anchor + timedelta(days=8)
+            assignment_valid_from = anchor - timedelta(days=5)
+            assignment_valid_to = anchor + timedelta(days=5)
+            moved_chart_valid_from = anchor - timedelta(days=3)
+            _, chart_account_id, assignment_id = self._insert_assignment_fixture(
+                connection,
+                tenant_id=tenant_id,
+                legal_entity_id=legal_entity_id,
+                book_valid_from=book_valid_from,
+                book_valid_to=book_valid_to,
+                chart_valid_from=chart_valid_from,
+                chart_valid_to=chart_valid_to,
+                assignment_valid_from=assignment_valid_from,
+                assignment_valid_to=assignment_valid_to,
+                fixture_name="chart-parent-start",
+            )
+
+            self.assertLess(book_valid_from, assignment_valid_from)
+            self.assertLess(assignment_valid_from, moved_chart_valid_from)
+            self.assertLess(moved_chart_valid_from, assignment_valid_to)
+            self.assertLess(assignment_valid_to, book_valid_to)
+            self.assertIsNotNone(assignment_id)
+            with self.assertRaises(psycopg.IntegrityError):
+                connection.execute(
+                    """
+                    UPDATE accounting_core.chart_account
+                    SET valid_from = %s
+                    WHERE tenant_account_id = %s
+                      AND chart_account_id = %s
+                    """,
+                    (
+                        moved_chart_valid_from,
                         tenant_id,
                         chart_account_id,
                     ),
