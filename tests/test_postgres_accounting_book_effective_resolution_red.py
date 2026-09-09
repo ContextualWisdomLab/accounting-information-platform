@@ -6,7 +6,6 @@ from inspect import signature
 import unittest
 
 from accounting_information_platform.persistence import AccountingValidationError
-import psycopg
 
 from tests import test_postgres_posting as posting
 
