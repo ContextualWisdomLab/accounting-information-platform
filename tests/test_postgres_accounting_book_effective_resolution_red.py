@@ -11,7 +11,7 @@ from tests import test_postgres_posting as posting
 
 
 class PostgresAccountingBookEffectiveResolutionRedTests(unittest.TestCase):
-    """Require durable book references to resolve by the current effective interval."""
+    """Require durable book references to resolve by the selected effective interval."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -118,6 +118,84 @@ class PostgresAccountingBookEffectiveResolutionRedTests(unittest.TestCase):
                     "the effective accounting-book read",
                 ),
                 (book_id, "KRW"),
+            )
+
+    def test_explicit_historical_effective_instant_selects_historical_entity(self) -> None:
+        """Historical accounting reads must resolve the Entity effective at their own instant."""
+        historical_reference = f"{self.case.policy.accounting_book_reference}-historical"
+
+        with self.case.ledger._session() as connection:
+            legal_entity_id = self._legal_entity_id(connection)
+            effective_at = connection.execute(
+                "SELECT clock_timestamp() - interval '36 hours'"
+            ).fetchone()[0]
+            historical_id = connection.execute(
+                """
+                INSERT INTO accounting_core.accounting_book (
+                    tenant_account_id,
+                    legal_entity_id,
+                    book_role_code,
+                    book_name,
+                    reporting_currency_code,
+                    valid_from,
+                    valid_to
+                ) VALUES (
+                    %s,
+                    %s,
+                    'management',
+                    %s,
+                    'KRW',
+                    %s - interval '1 hour',
+                    %s + interval '1 hour'
+                )
+                RETURNING accounting_book_id
+                """,
+                (
+                    self.case.tenant_id,
+                    legal_entity_id,
+                    historical_reference,
+                    effective_at,
+                    effective_at,
+                ),
+            ).fetchone()[0]
+            successor_id = connection.execute(
+                """
+                INSERT INTO accounting_core.accounting_book (
+                    tenant_account_id,
+                    legal_entity_id,
+                    book_role_code,
+                    book_name,
+                    reporting_currency_code,
+                    valid_from
+                ) VALUES (
+                    %s,
+                    %s,
+                    'statutory',
+                    %s,
+                    'KRW',
+                    %s + interval '1 hour'
+                )
+                RETURNING accounting_book_id
+                """,
+                (
+                    self.case.tenant_id,
+                    legal_entity_id,
+                    historical_reference,
+                    effective_at,
+                ),
+            ).fetchone()[0]
+
+            self.assertNotEqual(historical_id, successor_id)
+            self.assertEqual(
+                self.case.ledger._require_book_for_close(
+                    connection,
+                    self.case.tenant_id,
+                    legal_entity_id,
+                    historical_reference,
+                    "the historical accounting-book read",
+                    effective_at=effective_at,
+                ),
+                (historical_id, "KRW"),
             )
 
 
