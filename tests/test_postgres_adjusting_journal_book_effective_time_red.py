@@ -38,7 +38,7 @@ class PostgresAdjustingJournalBookEffectiveTimeRedTests(unittest.TestCase):
                 WHERE tenant_account_id = %s
                   AND book_name = %s
                   AND valid_to IS NULL
-                RETURNING accounting_book_id
+                RETURNING accounting_book_id, valid_from, clock_timestamp()
                 """,
                 (
                     tenant_id,
@@ -46,6 +46,12 @@ class PostgresAdjustingJournalBookEffectiveTimeRedTests(unittest.TestCase):
                 ),
             ).fetchall()
             self.assertEqual(len(rows), 1)
+            _, book_valid_from, database_now = rows[0]
+            self.assertGreater(
+                database_now,
+                book_valid_from,
+                "the RED requires database-current time to see the book as already effective",
+            )
 
         journals_before = self.case._count_table("accounting_core.general_journal")
         payload = self.case._adjusting_journal_payload(
