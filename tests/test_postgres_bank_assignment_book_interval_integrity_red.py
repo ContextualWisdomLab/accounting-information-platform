@@ -55,6 +55,7 @@ class BankAssignmentBookIntervalIntegrityRedTests(unittest.TestCase):
             shortened_book_valid_to = anchor + timedelta(days=3)
             book_reference = f"urn:cwl:accounting_book:assignment_parent_{uuid.uuid4().hex}"
             bank_account_reference = f"urn:cwl:bank_account:assignment_parent_{uuid.uuid4().hex}"
+            assignment_key = f"assignment-parent-{uuid.uuid4().hex}"
 
             book_id = connection.execute(
                 """
@@ -123,8 +124,10 @@ class BankAssignmentBookIntervalIntegrityRedTests(unittest.TestCase):
                     accounting_book_id,
                     chart_account_id,
                     valid_from,
-                    valid_to
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    valid_to,
+                    assignment_idempotency_key,
+                    assignment_command_hash
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     self.case.tenant_id,
@@ -134,6 +137,8 @@ class BankAssignmentBookIntervalIntegrityRedTests(unittest.TestCase):
                     chart_account_id,
                     assignment_valid_from,
                     assignment_valid_to,
+                    assignment_key,
+                    "sha256:" + "9" * 64,
                 ),
             )
 
