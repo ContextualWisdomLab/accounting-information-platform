@@ -76,9 +76,8 @@ class PostgresAccountLedgerBookScopeRedTests(unittest.TestCase):
 
     def _seed_management_book(self) -> str:
         """Create a sibling book that deliberately reuses the statutory account codes."""
-        book_reference = (
-            f"urn:cwl:accounting_book:management_{self.case.tenant_id.hex[:8]}"
-        )
+        tenant_suffix = str(self.case.tenant_id).replace("-", "")[:8]
+        book_reference = f"urn:cwl:accounting_book:management_{tenant_suffix}"
         with psycopg.connect(posting.DATABASE_URL) as connection:
             legal_entity_id = connection.execute(
                 """
