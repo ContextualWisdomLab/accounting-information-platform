@@ -16,9 +16,11 @@ class PostgresAccountLedgerBookScopeRedTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
+        """Reuse the canonical PostgreSQL integration fixture for this RED lane."""
         posting.PostgresPostingTests.setUpClass()
 
     def setUp(self) -> None:
+        """Create an isolated posting case while preserving its registered cleanups."""
         self.case = posting.PostgresPostingTests("setUp")
         self.case.setUp()
         self.addCleanup(self.case.doCleanups)
