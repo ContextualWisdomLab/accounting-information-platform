@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import threading
 import unittest
 
 import psycopg
@@ -186,6 +187,118 @@ class PostgresAccountingBookReferenceIdentityRedTests(unittest.TestCase):
                             current_valid_from - timedelta(days=1),
                         ),
                     )
+
+    def test_concurrent_overlapping_book_reference_inserts_are_serialized(self) -> None:
+        """Concurrent writers must not both commit overlapping durable-reference intervals."""
+        with psycopg.connect(posting.DATABASE_URL) as lookup_connection:
+            lookup_connection.execute(
+                "SELECT set_config('app.tenant_account_id', %s, false)",
+                (str(self.case.tenant_id),),
+            )
+            legal_entity_id = lookup_connection.execute(
+                """
+                SELECT legal_entity_id
+                FROM accounting_core.legal_entity_record
+                WHERE tenant_account_id = %s
+                  AND legal_entity_code = %s
+                  AND valid_to IS NULL
+                """,
+                (
+                    self.case.tenant_id,
+                    self.case.policy.legal_entity_reference,
+                ),
+            ).fetchone()[0]
+
+        concurrent_reference = f"{self.case.policy.accounting_book_reference}-concurrency"
+        first_start = posting.VALID_FROM + timedelta(days=10)
+        first_end = posting.VALID_FROM + timedelta(days=20)
+        second_start = posting.VALID_FROM + timedelta(days=15)
+        second_end = posting.VALID_FROM + timedelta(days=25)
+        second_started = threading.Event()
+        second_outcome: dict[str, object] = {}
+
+        with (
+            psycopg.connect(posting.DATABASE_URL) as first_connection,
+            psycopg.connect(posting.DATABASE_URL) as second_connection,
+        ):
+            for connection in (first_connection, second_connection):
+                connection.execute(
+                    "SELECT set_config('app.tenant_account_id', %s, false)",
+                    (str(self.case.tenant_id),),
+                )
+                connection.commit()
+
+            first_connection.execute(
+                """
+                INSERT INTO accounting_core.accounting_book (
+                    tenant_account_id,
+                    legal_entity_id,
+                    book_role_code,
+                    book_name,
+                    reporting_currency_code,
+                    valid_from,
+                    valid_to
+                ) VALUES (%s, %s, 'management', %s, 'KRW', %s, %s)
+                """,
+                (
+                    self.case.tenant_id,
+                    legal_entity_id,
+                    concurrent_reference,
+                    first_start,
+                    first_end,
+                ),
+            )
+
+            def write_overlapping_book() -> None:
+                try:
+                    with second_connection.transaction():
+                        second_started.set()
+                        second_connection.execute(
+                            """
+                            INSERT INTO accounting_core.accounting_book (
+                                tenant_account_id,
+                                legal_entity_id,
+                                book_role_code,
+                                book_name,
+                                reporting_currency_code,
+                                valid_from,
+                                valid_to
+                            ) VALUES (%s, %s, 'statutory', %s, 'KRW', %s, %s)
+                            """,
+                            (
+                                self.case.tenant_id,
+                                legal_entity_id,
+                                concurrent_reference,
+                                second_start,
+                                second_end,
+                            ),
+                        )
+                except psycopg.IntegrityError as error:
+                    second_outcome["integrity_error"] = error
+                except Exception as error:  # pragma: no cover - surfaced explicitly below
+                    second_outcome["unexpected_error"] = error
+                else:
+                    second_outcome["committed"] = True
+
+            writer = threading.Thread(target=write_overlapping_book, daemon=True)
+            writer.start()
+            self.assertTrue(second_started.wait(timeout=5), "second writer did not start")
+            first_connection.commit()
+            writer.join(timeout=10)
+
+            if writer.is_alive():
+                second_connection.cancel()
+                writer.join(timeout=5)
+                self.fail("second writer did not reach a terminal database outcome")
+            if "unexpected_error" in second_outcome:
+                raise second_outcome["unexpected_error"]  # type: ignore[misc]
+
+            self.assertIn(
+                "integrity_error",
+                second_outcome,
+                "both concurrent writers committed overlapping durable-reference intervals",
+            )
+            self.assertNotIn("committed", second_outcome)
 
     def test_touching_book_reference_intervals_are_allowed(self) -> None:
         """A historical interval may end exactly when the current one begins."""
