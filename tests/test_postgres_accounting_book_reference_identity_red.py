@@ -28,6 +28,10 @@ class PostgresAccountingBookReferenceIdentityRedTests(unittest.TestCase):
     def test_duplicate_active_book_reference_is_rejected(self) -> None:
         """Two active Accounting Book Entities must not share one durable reference."""
         with psycopg.connect(posting.DATABASE_URL) as connection:
+            connection.execute(
+                "SELECT set_config('app.tenant_account_id', %s, false)",
+                (str(self.case.tenant_id),),
+            )
             legal_entity_id, existing_role = connection.execute(
                 """
                 SELECT book.legal_entity_id, book.book_role_code
@@ -73,6 +77,10 @@ class PostgresAccountingBookReferenceIdentityRedTests(unittest.TestCase):
     def test_expired_history_may_retain_the_same_book_reference(self) -> None:
         """Historical effective-time rows may reuse the reference when none is active."""
         with psycopg.connect(posting.DATABASE_URL) as connection:
+            connection.execute(
+                "SELECT set_config('app.tenant_account_id', %s, false)",
+                (str(self.case.tenant_id),),
+            )
             legal_entity_id = connection.execute(
                 """
                 SELECT legal_entity_id
