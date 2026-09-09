@@ -1,4 +1,4 @@
-"""Real PostgreSQL RED for conflicting account-ledger book query aliases."""
+"""Real PostgreSQL RED for ambiguous account-ledger book query identities."""
 
 from __future__ import annotations
 
@@ -35,6 +35,35 @@ class HttpAccountLedgerBookAliasRedTests(unittest.TestCase):
                     "accounting_book_reference": "urn:cwl:accounting_book:conflicting_alias",
                     "chart_account_code": "110100",
                 }
+            )
+            status, document = self.case._http_json(
+                "GET", f"/account-ledgers?{query}", None
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        self.assertEqual(status, 400)
+        self.assertIn("book_reference", str(document))
+
+    def test_http_rejects_multiple_distinct_book_reference_values(self) -> None:
+        """Repeated canonical query keys cannot choose one of two accounting scopes."""
+        self.case.ledger.post(self.case._two_line_proposal(), self.case.policy)
+        server = self.case._start_http_server()
+        try:
+            query = urllib.parse.urlencode(
+                [
+                    (
+                        "legal_entity_reference",
+                        self.case.policy.legal_entity_reference,
+                    ),
+                    ("book_reference", self.case.policy.accounting_book_reference),
+                    (
+                        "book_reference",
+                        "urn:cwl:accounting_book:conflicting_duplicate",
+                    ),
+                    ("chart_account_code", "110100"),
+                ]
             )
             status, document = self.case._http_json(
                 "GET", f"/account-ledgers?{query}", None
