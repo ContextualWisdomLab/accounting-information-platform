@@ -24,6 +24,28 @@ class PostgresAccountLedgerBookScopeRedTests(unittest.TestCase):
         self.addCleanup(self.case.doCleanups)
         self.addCleanup(self.case.tearDown)
 
+    def test_http_account_ledger_requires_book_reference(self) -> None:
+        """A ledger inquiry must identify one accounting book before reading facts."""
+        primary = self.case._two_line_proposal()
+        self.case.ledger.post(primary, self.case.policy)
+
+        server = self.case._start_http_server()
+        try:
+            query = urllib.parse.urlencode(
+                {
+                    "legal_entity_reference": self.case.policy.legal_entity_reference,
+                    "chart_account_code": "110100",
+                }
+            )
+            status, document = self.case._http_json(
+                "GET", f"/account-ledgers?{query}", None
+            )
+        finally:
+            server.shutdown()
+
+        self.assertEqual(status, 400)
+        self.assertIn("book_reference", str(document))
+
     def test_http_account_ledger_book_reference_excludes_sibling_book(self) -> None:
         """The requested book owns both ledger lines and full-scope totals."""
         primary = self.case._two_line_proposal()
