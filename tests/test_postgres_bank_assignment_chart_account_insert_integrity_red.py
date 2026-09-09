@@ -70,6 +70,55 @@ class BankAssignmentChartAccountInsertIntegrityRedTests(unittest.TestCase):
                 )
             connection.rollback()
 
+    def test_insert_rejects_open_ended_assignment_on_finite_chart_account(self) -> None:
+        """An open-ended assignment may not outlive a finite exact chart-account Entity."""
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            fixture = self._insert_parent_fixture(connection, "insert-open-ended")
+            connection.execute(
+                """
+                UPDATE accounting_core.accounting_book
+                SET valid_to = NULL
+                WHERE tenant_account_id = %s
+                  AND accounting_book_id = %s
+                """,
+                (fixture["tenant_id"], fixture["book_id"]),
+            )
+            valid_start = fixture["chart_valid_from"] + timedelta(days=2)
+            self.assertLess(valid_start, fixture["chart_valid_to"])
+
+            with self.assertRaises(psycopg.IntegrityError):
+                self._insert_assignment(
+                    connection,
+                    fixture=fixture,
+                    valid_from=valid_start,
+                    valid_to=None,
+                    fixture_name="insert-open-ended",
+                )
+            connection.rollback()
+
+    def test_insert_accepts_exact_chart_account_boundaries(self) -> None:
+        """An assignment exactly equal to the finite chart interval remains lawful."""
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            fixture = self._insert_parent_fixture(connection, "insert-exact-boundary")
+            self._insert_assignment(
+                connection,
+                fixture=fixture,
+                valid_from=fixture["chart_valid_from"],
+                valid_to=fixture["chart_valid_to"],
+                fixture_name="insert-exact-boundary",
+            )
+            count = connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM accounting_core.bank_account_assignment
+                WHERE tenant_account_id = %s
+                  AND bank_account_record_id = %s
+                """,
+                (fixture["tenant_id"], fixture["bank_account_id"]),
+            ).fetchone()[0]
+            self.assertEqual(count, 1)
+            connection.rollback()
+
     def _insert_parent_fixture(
         self,
         connection: psycopg.Connection[tuple[object, ...]],
