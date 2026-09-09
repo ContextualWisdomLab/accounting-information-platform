@@ -52,7 +52,7 @@ class PostgresAccountingBookReferenceIdentityRedTests(unittest.TestCase):
             ).fetchone()
             duplicate_role = "management" if existing_role != "management" else "statutory"
 
-            with self.assertRaises(psycopg.errors.UniqueViolation):
+            with self.assertRaises(psycopg.IntegrityError):
                 with connection.transaction():
                     connection.execute(
                         """
@@ -71,6 +71,50 @@ class PostgresAccountingBookReferenceIdentityRedTests(unittest.TestCase):
                             duplicate_role,
                             self.case.policy.accounting_book_reference,
                             posting.VALID_FROM + timedelta(seconds=1),
+                        ),
+                    )
+
+    def test_overlapping_book_reference_validity_is_rejected(self) -> None:
+        """Finite validity must not overlap another Entity carrying the same reference."""
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            connection.execute(
+                "SELECT set_config('app.tenant_account_id', %s, false)",
+                (str(self.case.tenant_id),),
+            )
+            legal_entity_id = connection.execute(
+                """
+                SELECT legal_entity_id
+                FROM accounting_core.legal_entity_record
+                WHERE tenant_account_id = %s
+                  AND legal_entity_code = %s
+                  AND valid_to IS NULL
+                """,
+                (
+                    self.case.tenant_id,
+                    self.case.policy.legal_entity_reference,
+                ),
+            ).fetchone()[0]
+
+            with self.assertRaises(psycopg.IntegrityError):
+                with connection.transaction():
+                    connection.execute(
+                        """
+                        INSERT INTO accounting_core.accounting_book (
+                            tenant_account_id,
+                            legal_entity_id,
+                            book_role_code,
+                            book_name,
+                            reporting_currency_code,
+                            valid_from,
+                            valid_to
+                        ) VALUES (%s, %s, 'management', %s, 'KRW', %s, %s)
+                        """,
+                        (
+                            self.case.tenant_id,
+                            legal_entity_id,
+                            self.case.policy.accounting_book_reference,
+                            posting.VALID_FROM + timedelta(days=1),
+                            posting.VALID_FROM + timedelta(days=2),
                         ),
                     )
 
