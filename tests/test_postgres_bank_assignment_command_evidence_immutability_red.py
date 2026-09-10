@@ -102,6 +102,47 @@ class BankAssignmentCommandEvidenceImmutabilityRedTests(unittest.TestCase):
                     (replacement_key, self.assignment_id),
                 )
 
+    def test_assignment_primary_identity_cannot_be_rewritten_in_place(self) -> None:
+        """The database-generated assignment identity remains stable for exact replay."""
+        replacement_assignment_id = uuid.uuid4()
+        self.assertNotEqual(replacement_assignment_id, self.assignment_id)
+
+        with self._tenant_connection() as connection:
+            with self.assertRaises(psycopg.IntegrityError):
+                connection.execute(
+                    """
+                    UPDATE accounting_core.bank_account_assignment
+                    SET bank_account_assignment_id = %s
+                    WHERE tenant_account_id = accounting_core.current_tenant_account_id()
+                      AND bank_account_assignment_id = %s
+                    """,
+                    (replacement_assignment_id, self.assignment_id),
+                )
+
+    def test_assignment_valid_from_cannot_be_rewritten_in_place(self) -> None:
+        """The accepted command start instant cannot drift while retained hash evidence stays fixed."""
+        with self._tenant_connection() as connection:
+            original_valid_from = connection.execute(
+                """
+                SELECT valid_from
+                FROM accounting_core.bank_account_assignment
+                WHERE tenant_account_id = accounting_core.current_tenant_account_id()
+                  AND bank_account_assignment_id = %s
+                """,
+                (self.assignment_id,),
+            ).fetchone()[0]
+
+            with self.assertRaises(psycopg.IntegrityError):
+                connection.execute(
+                    """
+                    UPDATE accounting_core.bank_account_assignment
+                    SET valid_from = %s
+                    WHERE tenant_account_id = accounting_core.current_tenant_account_id()
+                      AND bank_account_assignment_id = %s
+                    """,
+                    (original_valid_from + timedelta(seconds=1), self.assignment_id),
+                )
+
     def test_assignment_chart_account_identity_cannot_be_rebound_in_place(self) -> None:
         """The retained command cannot be detached from its accepted chart-account Entity."""
         with self._tenant_connection() as connection:
