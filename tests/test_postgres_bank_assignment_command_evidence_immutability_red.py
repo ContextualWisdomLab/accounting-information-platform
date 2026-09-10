@@ -102,6 +102,89 @@ class BankAssignmentCommandEvidenceImmutabilityRedTests(unittest.TestCase):
                     (replacement_key, self.assignment_id),
                 )
 
+    def test_assignment_chart_account_identity_cannot_be_rebound_in_place(self) -> None:
+        """The retained command cannot be detached from its accepted chart-account Entity."""
+        with self._tenant_connection() as connection:
+            replacement_chart_account_id = connection.execute(
+                """
+                SELECT chart_account.chart_account_id
+                FROM accounting_core.bank_account_assignment AS assignment
+                JOIN accounting_core.chart_account AS chart_account
+                  ON chart_account.tenant_account_id = assignment.tenant_account_id
+                 AND chart_account.accounting_book_id = assignment.accounting_book_id
+                WHERE assignment.tenant_account_id = accounting_core.current_tenant_account_id()
+                  AND assignment.bank_account_assignment_id = %s
+                  AND chart_account.chart_account_code = '110100'
+                """,
+                (self.assignment_id,),
+            ).fetchone()[0]
+            original_chart_account_id = connection.execute(
+                """
+                SELECT chart_account_id
+                FROM accounting_core.bank_account_assignment
+                WHERE tenant_account_id = accounting_core.current_tenant_account_id()
+                  AND bank_account_assignment_id = %s
+                """,
+                (self.assignment_id,),
+            ).fetchone()[0]
+            self.assertNotEqual(replacement_chart_account_id, original_chart_account_id)
+
+            with self.assertRaises(psycopg.IntegrityError):
+                connection.execute(
+                    """
+                    UPDATE accounting_core.bank_account_assignment
+                    SET chart_account_id = %s
+                    WHERE tenant_account_id = accounting_core.current_tenant_account_id()
+                      AND bank_account_assignment_id = %s
+                    """,
+                    (replacement_chart_account_id, self.assignment_id),
+                )
+
+    def test_assignment_bank_account_identity_cannot_be_rebound_in_place(self) -> None:
+        """The retained command cannot be detached from its accepted bank-account Entity."""
+        replacement_reference = f"urn:cwl:bank_account:evidence:replacement:{uuid.uuid4().hex}"
+        accept_bank_account_record(
+            {
+                "tenant_reference": self.case.policy.tenant_reference,
+                "bank_account_reference": replacement_reference,
+                "account_currency_code": "KRW",
+                "account_identifier": f"acct-evidence-replacement-{uuid.uuid4().hex}",
+            },
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+        )
+        with self._tenant_connection() as connection:
+            replacement_bank_account_id = connection.execute(
+                """
+                SELECT bank_account_record_id
+                FROM accounting_core.bank_account_record
+                WHERE tenant_account_id = accounting_core.current_tenant_account_id()
+                  AND bank_account_reference = %s
+                """,
+                (replacement_reference,),
+            ).fetchone()[0]
+            original_bank_account_id = connection.execute(
+                """
+                SELECT bank_account_record_id
+                FROM accounting_core.bank_account_assignment
+                WHERE tenant_account_id = accounting_core.current_tenant_account_id()
+                  AND bank_account_assignment_id = %s
+                """,
+                (self.assignment_id,),
+            ).fetchone()[0]
+            self.assertNotEqual(replacement_bank_account_id, original_bank_account_id)
+
+            with self.assertRaises(psycopg.IntegrityError):
+                connection.execute(
+                    """
+                    UPDATE accounting_core.bank_account_assignment
+                    SET bank_account_record_id = %s
+                    WHERE tenant_account_id = accounting_core.current_tenant_account_id()
+                      AND bank_account_assignment_id = %s
+                    """,
+                    (replacement_bank_account_id, self.assignment_id),
+                )
+
     def test_assignment_recorded_at_cannot_be_rewritten_in_place(self) -> None:
         """Database-owned creation time remains retained system-time evidence."""
         with self._tenant_connection() as connection:
