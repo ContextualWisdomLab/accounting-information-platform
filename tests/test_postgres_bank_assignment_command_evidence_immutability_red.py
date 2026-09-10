@@ -226,6 +226,84 @@ class BankAssignmentCommandEvidenceImmutabilityRedTests(unittest.TestCase):
                     (replacement_bank_account_id, self.assignment_id),
                 )
 
+    def test_assignment_accounting_book_identity_cannot_be_rebound_with_valid_chart_account(self) -> None:
+        """Rebinding book and chart together cannot detach retained public-reference evidence."""
+        with self._tenant_connection() as connection:
+            legal_entity_id = connection.execute(
+                """
+                SELECT legal_entity_id
+                FROM accounting_core.bank_account_assignment
+                WHERE tenant_account_id = accounting_core.current_tenant_account_id()
+                  AND bank_account_assignment_id = %s
+                """,
+                (self.assignment_id,),
+            ).fetchone()[0]
+            replacement_book_id, replacement_chart_account_id = self._create_alternate_book_scope(
+                connection,
+                legal_entity_id=legal_entity_id,
+                suffix=f"book-rebind-{uuid.uuid4().hex[:12]}",
+            )
+
+            with self.assertRaises(psycopg.IntegrityError):
+                connection.execute(
+                    """
+                    UPDATE accounting_core.bank_account_assignment
+                    SET accounting_book_id = %s,
+                        chart_account_id = %s
+                    WHERE tenant_account_id = accounting_core.current_tenant_account_id()
+                      AND bank_account_assignment_id = %s
+                    """,
+                    (replacement_book_id, replacement_chart_account_id, self.assignment_id),
+                )
+
+    def test_assignment_legal_entity_scope_cannot_be_rebound_with_valid_book_and_chart(self) -> None:
+        """A full valid parent-scope tuple cannot replace the command's accepted legal entity."""
+        with self._tenant_connection() as connection:
+            suffix = uuid.uuid4().hex[:12]
+            replacement_legal_entity_id = connection.execute(
+                """
+                INSERT INTO accounting_core.legal_entity_record (
+                    tenant_account_id,
+                    legal_entity_code,
+                    entity_name,
+                    functional_currency_code,
+                    valid_from
+                )
+                VALUES (
+                    accounting_core.current_tenant_account_id(),
+                    %s,
+                    'Assignment evidence replacement entity',
+                    'KRW',
+                    TIMESTAMPTZ '2025-01-01 00:00:00+00'
+                )
+                RETURNING legal_entity_id
+                """,
+                (f"assignment_rebind_{suffix}",),
+            ).fetchone()[0]
+            replacement_book_id, replacement_chart_account_id = self._create_alternate_book_scope(
+                connection,
+                legal_entity_id=replacement_legal_entity_id,
+                suffix=f"entity-rebind-{suffix}",
+            )
+
+            with self.assertRaises(psycopg.IntegrityError):
+                connection.execute(
+                    """
+                    UPDATE accounting_core.bank_account_assignment
+                    SET legal_entity_id = %s,
+                        accounting_book_id = %s,
+                        chart_account_id = %s
+                    WHERE tenant_account_id = accounting_core.current_tenant_account_id()
+                      AND bank_account_assignment_id = %s
+                    """,
+                    (
+                        replacement_legal_entity_id,
+                        replacement_book_id,
+                        replacement_chart_account_id,
+                        self.assignment_id,
+                    ),
+                )
+
     def test_assignment_recorded_at_cannot_be_rewritten_in_place(self) -> None:
         """Database-owned creation time remains retained system-time evidence."""
         with self._tenant_connection() as connection:
@@ -262,6 +340,62 @@ class BankAssignmentCommandEvidenceImmutabilityRedTests(unittest.TestCase):
                     """,
                     (self.assignment_id,),
                 )
+
+    def _create_alternate_book_scope(
+        self,
+        connection: psycopg.Connection[tuple[object, ...]],
+        *,
+        legal_entity_id: object,
+        suffix: str,
+    ) -> tuple[object, object]:
+        """Create a valid open-ended Book/chart tuple that contains the assignment interval."""
+        replacement_book_id = connection.execute(
+            """
+            INSERT INTO accounting_core.accounting_book (
+                tenant_account_id,
+                legal_entity_id,
+                book_role_code,
+                book_name,
+                reporting_currency_code,
+                valid_from
+            )
+            VALUES (
+                accounting_core.current_tenant_account_id(),
+                %s,
+                %s,
+                %s,
+                'KRW',
+                TIMESTAMPTZ '2025-01-01 00:00:00+00'
+            )
+            RETURNING accounting_book_id
+            """,
+            (legal_entity_id, f"assignment_rebind_{suffix}", f"Assignment rebind {suffix}"),
+        ).fetchone()[0]
+        replacement_chart_account_id = connection.execute(
+            """
+            INSERT INTO accounting_core.chart_account (
+                tenant_account_id,
+                accounting_book_id,
+                chart_account_code,
+                account_name,
+                normal_balance_code,
+                valid_from,
+                account_class_code
+            )
+            VALUES (
+                accounting_core.current_tenant_account_id(),
+                %s,
+                '110200',
+                'Assignment rebind cash',
+                'debit',
+                TIMESTAMPTZ '2025-01-01 00:00:00+00',
+                'asset'
+            )
+            RETURNING chart_account_id
+            """,
+            (replacement_book_id,),
+        ).fetchone()[0]
+        return replacement_book_id, replacement_chart_account_id
 
     def _tenant_connection(self) -> psycopg.Connection[tuple[object, ...]]:
         """Open a direct session with the fixture tenant RLS context installed."""
