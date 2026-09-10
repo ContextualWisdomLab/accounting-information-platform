@@ -30,6 +30,8 @@ class BankStatementRecordArtifactHashBindingRedTests(unittest.TestCase):
         """A retained statement cannot detach its source digest from the referenced artifact."""
         artifact_hash = self._fresh_hash()
         claimed_statement_hash = self._fresh_hash()
+        statement_identity_reference = f"statement-{uuid.uuid4().hex}"
+        ingestion_idempotency_key = f"ingest-{uuid.uuid4().hex}"
         self.assertNotEqual(artifact_hash, claimed_statement_hash)
 
         with self._tenant_connection() as connection:
@@ -78,6 +80,12 @@ class BankStatementRecordArtifactHashBindingRedTests(unittest.TestCase):
                     f"urn:cwl:bank_statement_artifact:{uuid.uuid4().hex}",
                 ),
             ).fetchone()[0]
+            self._assert_statement_identity_absent(
+                connection,
+                bank_account_record_id,
+                statement_identity_reference,
+            )
+            self._assert_ingestion_key_absent(connection, ingestion_idempotency_key)
 
             with self.assertRaises(psycopg.IntegrityError):
                 with connection.transaction():
@@ -107,10 +115,10 @@ class BankStatementRecordArtifactHashBindingRedTests(unittest.TestCase):
                         (
                             bank_account_record_id,
                             bank_statement_artifact_id,
-                            f"statement-{uuid.uuid4().hex}",
+                            statement_identity_reference,
                             claimed_statement_hash,
                             self._fresh_hash(),
-                            f"ingest-{uuid.uuid4().hex}",
+                            ingestion_idempotency_key,
                         ),
                     )
 
@@ -149,6 +157,42 @@ class BankStatementRecordArtifactHashBindingRedTests(unittest.TestCase):
               AND source_artifact_hash = %s
             """,
             (source_artifact_hash,),
+        ).fetchone()
+        self.assertIsNone(existing)
+
+    def _assert_statement_identity_absent(
+        self,
+        connection: psycopg.Connection[tuple[object, ...]],
+        bank_account_record_id: object,
+        statement_identity_reference: str,
+    ) -> None:
+        """Exclude statement-identity uniqueness as an incidental rejection path."""
+        existing = connection.execute(
+            """
+            SELECT 1
+            FROM accounting_integration.bank_statement_record
+            WHERE tenant_account_id = accounting_core.current_tenant_account_id()
+              AND bank_account_record_id = %s
+              AND statement_identity_reference = %s
+            """,
+            (bank_account_record_id, statement_identity_reference),
+        ).fetchone()
+        self.assertIsNone(existing)
+
+    def _assert_ingestion_key_absent(
+        self,
+        connection: psycopg.Connection[tuple[object, ...]],
+        ingestion_idempotency_key: str,
+    ) -> None:
+        """Exclude idempotency-key uniqueness as an incidental rejection path."""
+        existing = connection.execute(
+            """
+            SELECT 1
+            FROM accounting_integration.bank_statement_record
+            WHERE tenant_account_id = accounting_core.current_tenant_account_id()
+              AND ingestion_idempotency_key = %s
+            """,
+            (ingestion_idempotency_key,),
         ).fetchone()
         self.assertIsNone(existing)
 
