@@ -14,6 +14,7 @@ from accounting_information_platform import (
     accept_bank_account_record,
     accept_bank_statement_evidence,
     load_canonical_statement_fixture,
+    lookup_bank_statement_entries,
     parse_bank_statement_payload,
 )
 from tests import test_postgres_posting as posting
@@ -135,6 +136,27 @@ class BankStatementDetailServicerReferenceHashRedTests(unittest.TestCase):
                 (tenant_id, uuid.UUID(str(first["bank_statement_record_id"]))),
             ).fetchall()
         self.assertEqual(rows, [("DETAIL-ASV-FIRST",)])
+
+    def test_entry_lookup_preserves_retained_detail_account_servicer_reference(self) -> None:
+        """Buyer-visible entry reads expose the retained detail servicer-reference evidence."""
+        accepted = accept_bank_statement_evidence(
+            self._command(self.first_payload, "lookup"),
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            artifact_store=self.store,
+        )
+
+        document = lookup_bank_statement_entries(
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            str(accepted["bank_statement_record_id"]),
+        )
+
+        first_detail = document["bank_statement_entries"][0]["entry_details"][0]
+        self.assertEqual(
+            first_detail["account_servicer_reference"],
+            "DETAIL-ASV-FIRST",
+        )
 
     def _command(self, payload: bytes, suffix: str) -> dict[str, object]:
         """Return one supported ingest command with a fresh replay key."""
