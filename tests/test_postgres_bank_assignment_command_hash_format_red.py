@@ -1,4 +1,4 @@
-"""PostgreSQL REDs for canonical bank-assignment command-hash syntax."""
+"""PostgreSQL REDs for canonical bank-assignment command-hash syntax and binding."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from tests import test_postgres_posting as posting
 
 
 class BankAssignmentCommandHashFormatRedTests(unittest.TestCase):
-    """Require retained assignment command hashes to be exact canonical SHA-256 evidence."""
+    """Require retained assignment command hashes to be canonical and row-bound."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -92,12 +92,28 @@ class BankAssignmentCommandHashFormatRedTests(unittest.TestCase):
             with self.assertRaises(psycopg.IntegrityError):
                 self._insert_target_assignment(connection, "sha256:" + ("A" * 64))
 
+    def test_well_formed_hash_from_a_different_command_is_rejected_on_insert(self) -> None:
+        """Digest syntax alone cannot bind retained evidence to a different bank-account command."""
+        with self._tenant_connection() as connection:
+            seed_hash = connection.execute(
+                """
+                SELECT assignment_command_hash
+                FROM accounting_core.bank_account_assignment
+                WHERE tenant_account_id = accounting_core.current_tenant_account_id()
+                  AND bank_account_assignment_id = %s
+                """,
+                (self.seed_assignment_id,),
+            ).fetchone()[0]
+            self.assertRegex(str(seed_hash), r"^sha256:[0-9a-f]{64}$")
+            with self.assertRaises(psycopg.IntegrityError):
+                self._insert_target_assignment(connection, str(seed_hash))
+
     def _insert_target_assignment(
         self,
         connection: psycopg.Connection[tuple[object, ...]],
         assignment_command_hash: str,
     ) -> None:
-        """Insert an otherwise lawful assignment so only digest syntax can explain rejection."""
+        """Insert an otherwise lawful target row so only command-evidence validity can reject it."""
         parent = connection.execute(
             """
             SELECT
