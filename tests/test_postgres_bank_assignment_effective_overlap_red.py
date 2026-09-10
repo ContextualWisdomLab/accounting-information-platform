@@ -187,6 +187,7 @@ class BankAssignmentEffectiveOverlapRedTests(unittest.TestCase):
             tenant_id=tenant_id,
             book_id=book_id,
             valid_from=parent_valid_from,
+            chart_account_code="199901",
             fixture_name=f"{fixture_name}-first",
         )
         second_chart_account_id = self._insert_chart_account(
@@ -194,6 +195,7 @@ class BankAssignmentEffectiveOverlapRedTests(unittest.TestCase):
             tenant_id=tenant_id,
             book_id=book_id,
             valid_from=parent_valid_from,
+            chart_account_code="199902",
             fixture_name=f"{fixture_name}-second",
         )
         bank_account_id = connection.execute(
@@ -229,6 +231,7 @@ class BankAssignmentEffectiveOverlapRedTests(unittest.TestCase):
         tenant_id: object,
         book_id: object,
         valid_from: object,
+        chart_account_code: str,
         fixture_name: str,
     ) -> object:
         """Create one open-ended cash-account Entity that contains every test interval."""
@@ -249,7 +252,7 @@ class BankAssignmentEffectiveOverlapRedTests(unittest.TestCase):
             (
                 tenant_id,
                 book_id,
-                f"19{uuid.uuid4().int % 10000:04d}",
+                chart_account_code,
                 f"Assignment overlap {fixture_name}",
                 valid_from,
             ),
