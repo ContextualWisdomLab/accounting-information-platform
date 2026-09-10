@@ -1,4 +1,4 @@
-"""PostgreSQL RED for bank-statement replay bound to one registered bank account."""
+"""PostgreSQL REDs for bank-statement replay bound to one registered bank account."""
 
 from __future__ import annotations
 
@@ -41,16 +41,7 @@ class BankStatementCrossAccountReplayRedTests(unittest.TestCase):
         )
         self.first_reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
         self.second_reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
-        accept_bank_account_record(
-            {
-                "tenant_reference": self.case.policy.tenant_reference,
-                "bank_account_reference": self.first_reference,
-                "account_currency_code": self.statement.account_currency_code,
-                "account_identifier_hash": self.statement.account_identifier_hash,
-            },
-            posting.DATABASE_URL,
-            self.case.policy.tenant_reference,
-        )
+        self._register(self.first_reference)
 
     def test_identical_source_artifact_cannot_replay_under_another_bank_account(self) -> None:
         """Artifact replay stays bound to the bank-account Entity that first accepted it."""
@@ -62,19 +53,7 @@ class BankStatementCrossAccountReplayRedTests(unittest.TestCase):
         )
         self.assertEqual(first["bank_account_reference"], self.first_reference)
 
-        try:
-            accept_bank_account_record(
-                {
-                    "tenant_reference": self.case.policy.tenant_reference,
-                    "bank_account_reference": self.second_reference,
-                    "account_currency_code": self.statement.account_currency_code,
-                    "account_identifier_hash": self.statement.account_identifier_hash,
-                },
-                posting.DATABASE_URL,
-                self.case.policy.tenant_reference,
-            )
-        except AccountingValidationError:
-            self._assert_source_remains_bound(first)
+        if not self._register_second_or_assert_safe_rejection(first):
             return
 
         with self.assertRaises(AccountingValidationError):
@@ -86,6 +65,52 @@ class BankStatementCrossAccountReplayRedTests(unittest.TestCase):
             )
 
         self._assert_source_remains_bound(first)
+
+    def test_ingestion_idempotency_key_cannot_replay_under_another_bank_account(self) -> None:
+        """Exact ingest-key replay also stays bound to the originally accepted account Entity."""
+        replay_key = f"cross-account-key-{uuid.uuid4().hex}"
+        first = accept_bank_statement_evidence(
+            self._command(self.first_reference, "first", idempotency_key=replay_key),
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            artifact_store=MemoryArtifactStore(),
+        )
+        self.assertEqual(first["bank_account_reference"], self.first_reference)
+
+        if not self._register_second_or_assert_safe_rejection(first):
+            return
+
+        with self.assertRaises(AccountingValidationError):
+            accept_bank_statement_evidence(
+                self._command(self.second_reference, "second", idempotency_key=replay_key),
+                posting.DATABASE_URL,
+                self.case.policy.tenant_reference,
+                artifact_store=MemoryArtifactStore(),
+            )
+
+        self._assert_source_remains_bound(first)
+
+    def _register(self, bank_account_reference: str) -> None:
+        """Register one bank-account Entity with the exact source-account evidence."""
+        accept_bank_account_record(
+            {
+                "tenant_reference": self.case.policy.tenant_reference,
+                "bank_account_reference": bank_account_reference,
+                "account_currency_code": self.statement.account_currency_code,
+                "account_identifier_hash": self.statement.account_identifier_hash,
+            },
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+        )
+
+    def _register_second_or_assert_safe_rejection(self, first: dict[str, object]) -> bool:
+        """Accept product-safe duplicate-account rejection as an earlier lawful boundary."""
+        try:
+            self._register(self.second_reference)
+        except AccountingValidationError:
+            self._assert_source_remains_bound(first)
+            return False
+        return True
 
     def _assert_source_remains_bound(self, first: dict[str, object]) -> None:
         """Prove the retained source artifact still names only the first accepted account."""
@@ -119,12 +144,22 @@ class BankStatementCrossAccountReplayRedTests(unittest.TestCase):
             [(self.first_reference, uuid.UUID(str(first["bank_statement_record_id"])))],
         )
 
-    def _command(self, bank_account_reference: str, suffix: str) -> dict[str, object]:
+    def _command(
+        self,
+        bank_account_reference: str,
+        suffix: str,
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict[str, object]:
         """Return one supported ingest command for the canonical fixture."""
         return {
             "tenant_reference": self.case.policy.tenant_reference,
             "bank_account_reference": bank_account_reference,
-            "ingestion_idempotency_key": f"cross-account-replay-{suffix}-{uuid.uuid4().hex}",
+            "ingestion_idempotency_key": (
+                idempotency_key
+                if idempotency_key is not None
+                else f"cross-account-replay-{suffix}-{uuid.uuid4().hex}"
+            ),
             "message_definition_identifier": CAMT053_MESSAGE_DEFINITION,
             "statement_payload": self.payload.decode("utf-8"),
             "source_artifact_hash": "sha256:" + hashlib.sha256(self.payload).hexdigest(),
