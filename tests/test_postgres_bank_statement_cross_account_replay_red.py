@@ -29,7 +29,7 @@ class BankStatementCrossAccountReplayRedTests(unittest.TestCase):
         posting.PostgresPostingTests.setUpClass()
 
     def setUp(self) -> None:
-        """Create two distinct bank-account records that match the same source account evidence."""
+        """Create one registered account whose source identity matches the canonical fixture."""
         self.case = posting.PostgresPostingTests("setUp")
         self.case.setUp()
         self.addCleanup(self.case.doCleanups)
@@ -41,17 +41,16 @@ class BankStatementCrossAccountReplayRedTests(unittest.TestCase):
         )
         self.first_reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
         self.second_reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
-        for reference in (self.first_reference, self.second_reference):
-            accept_bank_account_record(
-                {
-                    "tenant_reference": self.case.policy.tenant_reference,
-                    "bank_account_reference": reference,
-                    "account_currency_code": self.statement.account_currency_code,
-                    "account_identifier_hash": self.statement.account_identifier_hash,
-                },
-                posting.DATABASE_URL,
-                self.case.policy.tenant_reference,
-            )
+        accept_bank_account_record(
+            {
+                "tenant_reference": self.case.policy.tenant_reference,
+                "bank_account_reference": self.first_reference,
+                "account_currency_code": self.statement.account_currency_code,
+                "account_identifier_hash": self.statement.account_identifier_hash,
+            },
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+        )
 
     def test_identical_source_artifact_cannot_replay_under_another_bank_account(self) -> None:
         """Artifact replay stays bound to the bank-account Entity that first accepted it."""
@@ -63,6 +62,21 @@ class BankStatementCrossAccountReplayRedTests(unittest.TestCase):
         )
         self.assertEqual(first["bank_account_reference"], self.first_reference)
 
+        try:
+            accept_bank_account_record(
+                {
+                    "tenant_reference": self.case.policy.tenant_reference,
+                    "bank_account_reference": self.second_reference,
+                    "account_currency_code": self.statement.account_currency_code,
+                    "account_identifier_hash": self.statement.account_identifier_hash,
+                },
+                posting.DATABASE_URL,
+                self.case.policy.tenant_reference,
+            )
+        except AccountingValidationError:
+            self._assert_source_remains_bound(first)
+            return
+
         with self.assertRaises(AccountingValidationError):
             accept_bank_statement_evidence(
                 self._command(self.second_reference, "second"),
@@ -71,6 +85,10 @@ class BankStatementCrossAccountReplayRedTests(unittest.TestCase):
                 artifact_store=MemoryArtifactStore(),
             )
 
+        self._assert_source_remains_bound(first)
+
+    def _assert_source_remains_bound(self, first: dict[str, object]) -> None:
+        """Prove the retained source artifact still names only the first accepted account."""
         with psycopg.connect(posting.DATABASE_URL) as connection:
             tenant_id = connection.execute(
                 """
@@ -96,7 +114,10 @@ class BankStatementCrossAccountReplayRedTests(unittest.TestCase):
                 """,
                 (tenant_id, self.statement.source_artifact_hash),
             ).fetchall()
-        self.assertEqual(rows, [(self.first_reference, uuid.UUID(first["bank_statement_record_id"]))])
+        self.assertEqual(
+            rows,
+            [(self.first_reference, uuid.UUID(str(first["bank_statement_record_id"])))],
+        )
 
     def _command(self, bank_account_reference: str, suffix: str) -> dict[str, object]:
         """Return one supported ingest command for the canonical fixture."""
