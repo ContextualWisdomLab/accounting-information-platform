@@ -134,6 +134,88 @@ class BankAssignmentEffectiveOverlapRedTests(unittest.TestCase):
             self.assertEqual(rows[1][0], fixture["second_chart_account_id"])
             connection.rollback()
 
+    def test_moving_successor_start_backward_cannot_create_assignment_overlap(self) -> None:
+        """A lawful handoff may not become ambiguous by moving the successor start backward."""
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            fixture = self._insert_parent_fixture(connection, "update-successor-start")
+            first_start = fixture["anchor"] - timedelta(days=4)
+            shared_boundary = fixture["anchor"]
+            second_end = fixture["anchor"] + timedelta(days=4)
+            first_id = self._insert_assignment(
+                connection,
+                fixture=fixture,
+                chart_account_id=fixture["first_chart_account_id"],
+                valid_from=first_start,
+                valid_to=shared_boundary,
+                fixture_name="update-successor-start-first",
+            )
+            second_id = self._insert_assignment(
+                connection,
+                fixture=fixture,
+                chart_account_id=fixture["second_chart_account_id"],
+                valid_from=shared_boundary,
+                valid_to=second_end,
+                fixture_name="update-successor-start-second",
+            )
+            self.assertNotEqual(first_id, second_id)
+
+            with self.assertRaises(psycopg.IntegrityError):
+                connection.execute(
+                    """
+                    UPDATE accounting_core.bank_account_assignment
+                    SET valid_from = %s
+                    WHERE tenant_account_id = %s
+                      AND bank_account_assignment_id = %s
+                    """,
+                    (
+                        shared_boundary - timedelta(days=1),
+                        fixture["tenant_id"],
+                        second_id,
+                    ),
+                )
+            connection.rollback()
+
+    def test_extending_predecessor_end_cannot_create_assignment_overlap(self) -> None:
+        """A lawful handoff may not become ambiguous by extending the predecessor end."""
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            fixture = self._insert_parent_fixture(connection, "update-predecessor-end")
+            first_start = fixture["anchor"] - timedelta(days=4)
+            shared_boundary = fixture["anchor"]
+            second_end = fixture["anchor"] + timedelta(days=4)
+            first_id = self._insert_assignment(
+                connection,
+                fixture=fixture,
+                chart_account_id=fixture["first_chart_account_id"],
+                valid_from=first_start,
+                valid_to=shared_boundary,
+                fixture_name="update-predecessor-end-first",
+            )
+            second_id = self._insert_assignment(
+                connection,
+                fixture=fixture,
+                chart_account_id=fixture["second_chart_account_id"],
+                valid_from=shared_boundary,
+                valid_to=second_end,
+                fixture_name="update-predecessor-end-second",
+            )
+            self.assertNotEqual(first_id, second_id)
+
+            with self.assertRaises(psycopg.IntegrityError):
+                connection.execute(
+                    """
+                    UPDATE accounting_core.bank_account_assignment
+                    SET valid_to = %s
+                    WHERE tenant_account_id = %s
+                      AND bank_account_assignment_id = %s
+                    """,
+                    (
+                        shared_boundary + timedelta(days=1),
+                        fixture["tenant_id"],
+                        first_id,
+                    ),
+                )
+            connection.rollback()
+
     def _insert_parent_fixture(
         self,
         connection: psycopg.Connection[tuple[object, ...]],
@@ -267,9 +349,9 @@ class BankAssignmentEffectiveOverlapRedTests(unittest.TestCase):
         valid_from: object,
         valid_to: object,
         fixture_name: str,
-    ) -> None:
+    ) -> object:
         """Insert one assignment with independent immutable command evidence."""
-        connection.execute(
+        return connection.execute(
             """
             INSERT INTO accounting_core.bank_account_assignment (
                 tenant_account_id,
@@ -282,6 +364,7 @@ class BankAssignmentEffectiveOverlapRedTests(unittest.TestCase):
                 assignment_idempotency_key,
                 assignment_command_hash
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING bank_account_assignment_id
             """,
             (
                 fixture["tenant_id"],
@@ -294,7 +377,7 @@ class BankAssignmentEffectiveOverlapRedTests(unittest.TestCase):
                 f"{fixture_name}-{uuid.uuid4().hex}",
                 "sha256:" + uuid.uuid4().hex.ljust(64, "0"),
             ),
-        )
+        ).fetchone()[0]
 
 
 if __name__ == "__main__":
