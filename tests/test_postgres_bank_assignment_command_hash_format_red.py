@@ -69,16 +69,28 @@ class BankAssignmentCommandHashFormatRedTests(unittest.TestCase):
         )
 
     def test_short_sha256_assignment_command_hash_is_rejected_on_insert(self) -> None:
-        """A prefix-only or short digest is not canonical SHA-256 command evidence."""
+        """A short digest is not canonical SHA-256 command evidence."""
         with self._tenant_connection() as connection:
             with self.assertRaises(psycopg.IntegrityError):
                 self._insert_target_assignment(connection, "sha256:" + ("0" * 63))
+
+    def test_long_sha256_assignment_command_hash_is_rejected_on_insert(self) -> None:
+        """An overlong digest is not canonical SHA-256 command evidence."""
+        with self._tenant_connection() as connection:
+            with self.assertRaises(psycopg.IntegrityError):
+                self._insert_target_assignment(connection, "sha256:" + ("0" * 65))
 
     def test_non_hex_assignment_command_hash_is_rejected_on_insert(self) -> None:
         """Sixty-four non-hex characters cannot masquerade as SHA-256 evidence."""
         with self._tenant_connection() as connection:
             with self.assertRaises(psycopg.IntegrityError):
                 self._insert_target_assignment(connection, "sha256:" + ("g" * 64))
+
+    def test_uppercase_sha256_assignment_command_hash_is_rejected_on_insert(self) -> None:
+        """Canonical retained SHA-256 evidence uses lowercase hexadecimal characters."""
+        with self._tenant_connection() as connection:
+            with self.assertRaises(psycopg.IntegrityError):
+                self._insert_target_assignment(connection, "sha256:" + ("A" * 64))
 
     def _insert_target_assignment(
         self,
