@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 import uuid
+from datetime import timedelta
 from uuid import UUID
 
 import psycopg
@@ -99,6 +100,43 @@ class BankAssignmentCommandEvidenceImmutabilityRedTests(unittest.TestCase):
                       AND bank_account_assignment_id = %s
                     """,
                     (replacement_key, self.assignment_id),
+                )
+
+    def test_assignment_recorded_at_cannot_be_rewritten_in_place(self) -> None:
+        """Database-owned creation time remains retained system-time evidence."""
+        with self._tenant_connection() as connection:
+            recorded_at = connection.execute(
+                """
+                SELECT recorded_at
+                FROM accounting_core.bank_account_assignment
+                WHERE tenant_account_id = accounting_core.current_tenant_account_id()
+                  AND bank_account_assignment_id = %s
+                """,
+                (self.assignment_id,),
+            ).fetchone()[0]
+
+            with self.assertRaises(psycopg.IntegrityError):
+                connection.execute(
+                    """
+                    UPDATE accounting_core.bank_account_assignment
+                    SET recorded_at = %s
+                    WHERE tenant_account_id = accounting_core.current_tenant_account_id()
+                      AND bank_account_assignment_id = %s
+                    """,
+                    (recorded_at + timedelta(seconds=1), self.assignment_id),
+                )
+
+    def test_assignment_history_cannot_be_deleted_in_place(self) -> None:
+        """Accepted effective-dated assignment history is retired by validity, not deletion."""
+        with self._tenant_connection() as connection:
+            with self.assertRaises(psycopg.IntegrityError):
+                connection.execute(
+                    """
+                    DELETE FROM accounting_core.bank_account_assignment
+                    WHERE tenant_account_id = accounting_core.current_tenant_account_id()
+                      AND bank_account_assignment_id = %s
+                    """,
+                    (self.assignment_id,),
                 )
 
     def _tenant_connection(self) -> psycopg.Connection[tuple[object, ...]]:
