@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import threading
+import time
 import unittest
 import uuid
 
@@ -215,6 +217,123 @@ class BankAssignmentEffectiveOverlapRedTests(unittest.TestCase):
                     ),
                 )
             connection.rollback()
+
+    def test_concurrent_finite_overlap_reaches_postgres_before_first_commit(self) -> None:
+        """Concurrent overlapping assignments must serialize at the database boundary."""
+        with psycopg.connect(posting.DATABASE_URL) as setup_connection:
+            fixture = self._insert_parent_fixture(setup_connection, "concurrent-overlap")
+            setup_connection.commit()
+
+        first_start = fixture["anchor"] - timedelta(days=4)
+        first_end = fixture["anchor"] + timedelta(days=2)
+        second_start = fixture["anchor"] - timedelta(days=1)
+        second_end = fixture["anchor"] + timedelta(days=4)
+        second_started = threading.Event()
+        second_insert_returned = threading.Event()
+        allow_second_commit = threading.Event()
+        second_outcome: dict[str, object] = {}
+
+        with (
+            psycopg.connect(posting.DATABASE_URL) as first_connection,
+            psycopg.connect(posting.DATABASE_URL) as second_connection,
+            psycopg.connect(posting.DATABASE_URL, autocommit=True) as observer_connection,
+        ):
+            for connection in (first_connection, second_connection):
+                connection.execute(
+                    "SELECT set_config('app.tenant_account_id', %s, false)",
+                    (str(fixture["tenant_id"]),),
+                )
+                connection.commit()
+
+            second_backend_pid = second_connection.execute(
+                "SELECT pg_backend_pid()"
+            ).fetchone()[0]
+            second_connection.commit()
+            self._insert_assignment(
+                first_connection,
+                fixture=fixture,
+                chart_account_id=fixture["first_chart_account_id"],
+                valid_from=first_start,
+                valid_to=first_end,
+                fixture_name="concurrent-overlap-first",
+            )
+
+            def write_overlapping_assignment() -> None:
+                try:
+                    with second_connection.transaction():
+                        second_started.set()
+                        self._insert_assignment(
+                            second_connection,
+                            fixture=fixture,
+                            chart_account_id=fixture["second_chart_account_id"],
+                            valid_from=second_start,
+                            valid_to=second_end,
+                            fixture_name="concurrent-overlap-second",
+                        )
+                        second_insert_returned.set()
+                        if not allow_second_commit.wait(timeout=10):
+                            raise AssertionError("second writer commit gate was not released")
+                except psycopg.IntegrityError as error:
+                    second_outcome["integrity_error"] = error
+                except Exception as error:  # pragma: no cover - surfaced explicitly below
+                    second_outcome["unexpected_error"] = error
+                else:
+                    second_outcome["committed"] = True
+
+            writer = threading.Thread(target=write_overlapping_assignment, daemon=True)
+            writer.start()
+            self.assertTrue(second_started.wait(timeout=5), "second writer did not start")
+
+            competing_insert_reached_database = second_insert_returned.is_set()
+            deadline = time.monotonic() + 5
+            while not competing_insert_reached_database and time.monotonic() < deadline:
+                activity = observer_connection.execute(
+                    """
+                    SELECT state, query
+                    FROM pg_stat_activity
+                    WHERE pid = %s
+                    """,
+                    (second_backend_pid,),
+                ).fetchone()
+                if (
+                    activity is not None
+                    and activity[0] == "active"
+                    and "INSERT INTO accounting_core.bank_account_assignment" in activity[1]
+                ):
+                    competing_insert_reached_database = True
+                    break
+                if second_insert_returned.wait(timeout=0.02):
+                    competing_insert_reached_database = True
+                    break
+
+            if not competing_insert_reached_database:
+                first_connection.rollback()
+                allow_second_commit.set()
+                second_connection.cancel()
+                writer.join(timeout=5)
+                self.fail(
+                    "second writer did not reach the bank_account_assignment INSERT "
+                    "before first-writer release"
+                )
+
+            first_connection.commit()
+            allow_second_commit.set()
+            writer.join(timeout=10)
+
+            if writer.is_alive():
+                second_connection.cancel()
+                writer.join(timeout=5)
+                self.fail("second writer did not reach a terminal database outcome")
+            if "unexpected_error" in second_outcome:
+                raise second_outcome["unexpected_error"]  # type: ignore[misc]
+
+            self.assertIn(
+                "integrity_error",
+                second_outcome,
+                "both overlapping assignment writers committed after the competing INSERT "
+                "reached PostgreSQL",
+            )
+            self.assertNotIn("committed", second_outcome)
 
     def _insert_parent_fixture(
         self,
