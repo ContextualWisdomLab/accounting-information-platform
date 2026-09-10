@@ -40,6 +40,39 @@ class BankAccountRecordCommandEvidenceImmutabilityRedTests(unittest.TestCase):
         )
         self.bank_account_record_id = UUID(str(document["bank_account_record_id"]))
 
+    def test_accepted_bank_account_reference_cannot_be_rewritten_in_place(self) -> None:
+        """Durable replay identity cannot be renamed after accepted registration."""
+        replacement_reference = (
+            f"urn:cwl:bank_account:retained-account-evidence:replacement:{uuid.uuid4().hex}"
+        )
+        with self._tenant_connection() as connection:
+            original_reference = self._record_reference(connection)
+            self.assertEqual(original_reference, self.bank_account_reference)
+            duplicate = connection.execute(
+                """
+                SELECT 1
+                FROM accounting_core.bank_account_record
+                WHERE tenant_account_id = accounting_core.current_tenant_account_id()
+                  AND bank_account_reference = %s
+                """,
+                (replacement_reference,),
+            ).fetchone()
+            self.assertIsNone(duplicate)
+
+            with self.assertRaises(psycopg.IntegrityError):
+                with connection.transaction():
+                    connection.execute(
+                        """
+                        UPDATE accounting_core.bank_account_record
+                        SET bank_account_reference = %s
+                        WHERE tenant_account_id = accounting_core.current_tenant_account_id()
+                          AND bank_account_record_id = %s
+                        """,
+                        (replacement_reference, self.bank_account_record_id),
+                    )
+
+            self.assertEqual(self._record_reference(connection), original_reference)
+
     def test_accepted_bank_account_currency_cannot_be_rewritten_in_place(self) -> None:
         """A canonical alternate currency cannot replace accepted command evidence."""
         with self._tenant_connection() as connection:
@@ -154,6 +187,20 @@ class BankAccountRecordCommandEvidenceImmutabilityRedTests(unittest.TestCase):
                     )
 
             self.assertEqual(self._record_evidence(connection), original)
+
+    def _record_reference(self, connection: psycopg.Connection[tuple[object, ...]]) -> str:
+        """Return the durable bank-account replay identity."""
+        row = connection.execute(
+            """
+            SELECT bank_account_reference
+            FROM accounting_core.bank_account_record
+            WHERE tenant_account_id = accounting_core.current_tenant_account_id()
+              AND bank_account_record_id = %s
+            """,
+            (self.bank_account_record_id,),
+        ).fetchone()
+        self.assertIsNotNone(row)
+        return str(row[0])
 
     def _record_evidence(
         self, connection: psycopg.Connection[tuple[object, ...]]
