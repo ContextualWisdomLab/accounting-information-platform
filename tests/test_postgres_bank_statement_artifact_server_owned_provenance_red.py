@@ -110,7 +110,7 @@ class BankStatementArtifactServerOwnedProvenanceRedTests(unittest.TestCase):
         connection: psycopg.Connection[tuple[object, ...]],
         source_artifact_hash: str,
     ) -> None:
-        """Exclude existing source-hash uniqueness as an incidental rejection path."""
+        """Exclude tenant-scoped source-hash uniqueness as an incidental rejection path."""
         existing = connection.execute(
             """
             SELECT 1
@@ -127,21 +127,20 @@ class BankStatementArtifactServerOwnedProvenanceRedTests(unittest.TestCase):
         connection: psycopg.Connection[tuple[object, ...]],
         bank_statement_artifact_id: UUID,
     ) -> int:
-        """Count a proposed artifact UUID before the direct admission attempt."""
+        """Count a proposed globally unique artifact UUID before direct admission."""
         return int(
             connection.execute(
                 """
                 SELECT count(*)
                 FROM accounting_integration.bank_statement_artifact
-                WHERE tenant_account_id = accounting_core.current_tenant_account_id()
-                  AND bank_statement_artifact_id = %s
+                WHERE bank_statement_artifact_id = %s
                 """,
                 (bank_statement_artifact_id,),
             ).fetchone()[0]
         )
 
     def _tenant_connection(self) -> psycopg.Connection[tuple[object, ...]]:
-        """Open a direct session with the fixture tenant RLS context installed."""
+        """Open the fixture admin session with the tenant RLS context installed."""
         connection = psycopg.connect(posting.DATABASE_URL)
         tenant_id = connection.execute(
             """
