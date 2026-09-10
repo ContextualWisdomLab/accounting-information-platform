@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import unittest
 import uuid
+from uuid import UUID
 
 import psycopg
 
@@ -28,10 +29,13 @@ class BankAccountRecordServerOwnedProvenanceRedTests(unittest.TestCase):
 
     def test_direct_insert_cannot_claim_database_owned_record_id(self) -> None:
         """A caller-supplied UUID cannot become the accepted registration identity."""
-        forged_record_id = uuid.uuid4()
-        reference = f"urn:cwl:bank_account:forged-record-id:{uuid.uuid4().hex}"
+        supplied_record_id = uuid.uuid4()
+        reference = f"urn:cwl:bank_account:direct-record-id:{uuid.uuid4().hex}"
 
         with self._tenant_connection() as connection:
+            self._assert_reference_absent(connection, reference)
+            self.assertEqual(self._record_id_count(connection, supplied_record_id), 0)
+
             try:
                 with connection.transaction():
                     retained_record_id = connection.execute(
@@ -52,19 +56,21 @@ class BankAccountRecordServerOwnedProvenanceRedTests(unittest.TestCase):
                         )
                         RETURNING bank_account_record_id
                         """,
-                        (forged_record_id, reference, "sha256:" + ("a" * 64)),
+                        (supplied_record_id, reference, "sha256:" + ("a" * 64)),
                     ).fetchone()[0]
             except psycopg.IntegrityError:
                 return
 
-            self.assertNotEqual(retained_record_id, forged_record_id)
+            self.assertNotEqual(retained_record_id, supplied_record_id)
 
     def test_direct_insert_cannot_claim_postgresql_owned_recorded_at(self) -> None:
         """A caller-supplied timestamp cannot become registration system-time evidence."""
-        forged_recorded_at = datetime(2000, 1, 1, tzinfo=timezone.utc)
-        reference = f"urn:cwl:bank_account:forged-recorded-at:{uuid.uuid4().hex}"
+        supplied_recorded_at = datetime(2000, 1, 1, tzinfo=timezone.utc)
+        reference = f"urn:cwl:bank_account:direct-recorded-at:{uuid.uuid4().hex}"
 
         with self._tenant_connection() as connection:
+            self._assert_reference_absent(connection, reference)
+
             try:
                 with connection.transaction():
                     retained_recorded_at = connection.execute(
@@ -85,12 +91,47 @@ class BankAccountRecordServerOwnedProvenanceRedTests(unittest.TestCase):
                         )
                         RETURNING recorded_at
                         """,
-                        (reference, "sha256:" + ("b" * 64), forged_recorded_at),
+                        (reference, "sha256:" + ("b" * 64), supplied_recorded_at),
                     ).fetchone()[0]
             except psycopg.IntegrityError:
                 return
 
-            self.assertNotEqual(retained_recorded_at, forged_recorded_at)
+            self.assertNotEqual(retained_recorded_at, supplied_recorded_at)
+
+    def _assert_reference_absent(
+        self,
+        connection: psycopg.Connection[tuple[object, ...]],
+        bank_account_reference: str,
+    ) -> None:
+        """Prove a fresh reference cannot satisfy the RED through uniqueness alone."""
+        existing = connection.execute(
+            """
+            SELECT 1
+            FROM accounting_core.bank_account_record
+            WHERE tenant_account_id = accounting_core.current_tenant_account_id()
+              AND bank_account_reference = %s
+            """,
+            (bank_account_reference,),
+        ).fetchone()
+        self.assertIsNone(existing)
+
+    def _record_id_count(
+        self,
+        connection: psycopg.Connection[tuple[object, ...]],
+        bank_account_record_id: UUID,
+    ) -> int:
+        """Count a proposed registration UUID before the direct admission attempt."""
+        return int(
+            connection.execute(
+                """
+                SELECT count(*)
+                FROM accounting_core.bank_account_record
+                WHERE tenant_account_id = accounting_core.current_tenant_account_id()
+                  AND bank_account_record_id = %s
+                """,
+                (bank_account_record_id,),
+            ).fetchone()[0]
+        )
 
     def _tenant_connection(self) -> psycopg.Connection[tuple[object, ...]]:
         """Open a direct session with the fixture tenant RLS context installed."""
