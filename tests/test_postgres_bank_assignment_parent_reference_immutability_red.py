@@ -88,15 +88,16 @@ class BankAssignmentParentReferenceImmutabilityRedTests(unittest.TestCase):
             self.assertIsNone(duplicate)
 
             with self.assertRaises(psycopg.IntegrityError):
-                connection.execute(
-                    """
-                    UPDATE accounting_core.bank_account_record
-                    SET bank_account_reference = %s
-                    WHERE tenant_account_id = accounting_core.current_tenant_account_id()
-                      AND bank_account_record_id = %s
-                    """,
-                    (replacement_reference, self.bank_account_record_id),
-                )
+                with connection.transaction():
+                    connection.execute(
+                        """
+                        UPDATE accounting_core.bank_account_record
+                        SET bank_account_reference = %s
+                        WHERE tenant_account_id = accounting_core.current_tenant_account_id()
+                          AND bank_account_record_id = %s
+                        """,
+                        (replacement_reference, self.bank_account_record_id),
+                    )
 
             retained_hash = connection.execute(
                 """
