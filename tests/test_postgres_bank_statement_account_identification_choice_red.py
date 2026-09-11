@@ -86,7 +86,7 @@ class BankStatementAccountIdentificationChoiceRedTests(unittest.TestCase):
         """Populate both IBAN and Other alternatives under the statement account Id choice."""
         replacement = (
             "<Id>\n"
-            f"          <IBAN>{self.iban if hasattr(self, 'iban') else 'DE89370400440532013000'}</IBAN>\n"
+            f"          <IBAN>{self.iban}</IBAN>\n"
             "          <Othr>\n"
             "            <Id>acct-opaque-fixture-only</Id>\n"
             "          </Othr>\n"
