@@ -18,7 +18,7 @@ from tests import test_postgres_posting as posting
 
 
 class BankStatementBalanceDateEvidenceRedTests(unittest.TestCase):
-    """Retain the effective date of a reported balance in canonical evidence."""
+    """Retain and validate the reported date of each source balance."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -26,38 +26,37 @@ class BankStatementBalanceDateEvidenceRedTests(unittest.TestCase):
         posting.PostgresPostingTests.setUpClass()
 
     def setUp(self) -> None:
-        """Create two source-real statements differing only in the OPBD balance date."""
+        """Create source-real statements differing only in one balance date."""
         self.case = posting.PostgresPostingTests("setUp")
         self.case.setUp()
         self.addCleanup(self.case.doCleanups)
         self.addCleanup(self.case.tearDown)
-        fixture = load_canonical_statement_fixture().decode("utf-8")
-        marker = (
+        self.fixture = load_canonical_statement_fixture().decode("utf-8")
+        self.opening_marker = (
             "        <CdtDbtInd>CRDT</CdtDbtInd>\n"
             "        <Dt>\n"
             "          <Dt>2026-08-23</Dt>\n"
             "        </Dt>"
         )
-        self.assertEqual(fixture.count(marker), 1)
+        self.closing_marker = (
+            "        <CdtDbtInd>CRDT</CdtDbtInd>\n"
+            "        <Dt>\n"
+            "          <Dt>2026-08-24</Dt>\n"
+            "        </Dt>"
+        )
+        self.assertEqual(self.fixture.count(self.opening_marker), 1)
+        self.assertEqual(self.fixture.count(self.closing_marker), 1)
+
         self.first_balance_date = "2026-08-22"
         self.second_balance_date = "2026-08-21"
-        self.first_payload = fixture.replace(
-            marker,
-            "        <CdtDbtInd>CRDT</CdtDbtInd>\n"
-            "        <Dt>\n"
-            f"          <Dt>{self.first_balance_date}</Dt>\n"
-            "        </Dt>",
-            1,
-        ).encode("utf-8")
-        self.second_payload = fixture.replace(
-            marker,
-            "        <CdtDbtInd>CRDT</CdtDbtInd>\n"
-            "        <Dt>\n"
-            f"          <Dt>{self.second_balance_date}</Dt>\n"
-            "        </Dt>",
-            1,
-        ).encode("utf-8")
-
+        self.first_payload = self._replace_balance_date(
+            self.opening_marker,
+            self.first_balance_date,
+        )
+        self.second_payload = self._replace_balance_date(
+            self.opening_marker,
+            self.second_balance_date,
+        )
         self.first_statement = parse_bank_statement_payload(
             self.first_payload,
             CAMT053_MESSAGE_DEFINITION,
@@ -80,7 +79,7 @@ class BankStatementBalanceDateEvidenceRedTests(unittest.TestCase):
         self.store = MemoryArtifactStore()
 
     def test_opening_balance_date_changes_balance_and_statement_digest(self) -> None:
-        """Changing only Bal/Dt changes the opening-balance and statement evidence identity."""
+        """Changing only OPBD Bal/Dt changes that balance and statement evidence identity."""
         self.assertNotEqual(self.first_payload, self.second_payload)
         self.assertNotEqual(
             self.first_statement.source_artifact_hash,
@@ -99,6 +98,36 @@ class BankStatementBalanceDateEvidenceRedTests(unittest.TestCase):
             self.second_statement.normalized_payload_hash,
         )
 
+    def test_closing_balance_date_changes_balance_and_statement_digest(self) -> None:
+        """Changing only CLBD Bal/Dt changes that balance and statement evidence identity."""
+        first_payload = self._replace_balance_date(self.closing_marker, "2026-08-25")
+        second_payload = self._replace_balance_date(self.closing_marker, "2026-08-26")
+        first_statement = parse_bank_statement_payload(
+            first_payload,
+            CAMT053_MESSAGE_DEFINITION,
+        )
+        second_statement = parse_bank_statement_payload(
+            second_payload,
+            CAMT053_MESSAGE_DEFINITION,
+        )
+
+        self.assertNotEqual(
+            first_statement.source_artifact_hash,
+            second_statement.source_artifact_hash,
+        )
+        self.assertEqual(
+            first_statement.opening_balance_hash,
+            second_statement.opening_balance_hash,
+        )
+        self.assertNotEqual(
+            first_statement.closing_balance_hash,
+            second_statement.closing_balance_hash,
+        )
+        self.assertNotEqual(
+            first_statement.normalized_payload_hash,
+            second_statement.normalized_payload_hash,
+        )
+
     def test_same_statement_identity_cannot_replay_changed_opening_balance_date(self) -> None:
         """A changed reported balance date requires correction, not silent replay."""
         accept_bank_statement_evidence(
@@ -115,6 +144,34 @@ class BankStatementBalanceDateEvidenceRedTests(unittest.TestCase):
                 self.case.policy.tenant_reference,
                 artifact_store=self.store,
             )
+
+    def test_invalid_balance_date_is_rejected_before_evidence_admission(self) -> None:
+        """An invalid Bal/Dt lexical value cannot become retained balance evidence."""
+        invalid_payload = self._replace_balance_date(
+            self.opening_marker,
+            "2026-99-99",
+        )
+
+        with self.assertRaises(AccountingValidationError):
+            parse_bank_statement_payload(
+                invalid_payload,
+                CAMT053_MESSAGE_DEFINITION,
+            )
+        with self.assertRaises(AccountingValidationError):
+            accept_bank_statement_evidence(
+                self._command(invalid_payload, "invalid"),
+                posting.DATABASE_URL,
+                self.case.policy.tenant_reference,
+                artifact_store=self.store,
+            )
+
+    def _replace_balance_date(self, marker: str, reported_date: str) -> bytes:
+        """Replace exactly one canonical balance-date marker."""
+        prefix, _, suffix = marker.partition("2026-08-")
+        original_day = "23" if marker == self.opening_marker else "24"
+        self.assertEqual(suffix, f"{original_day}</Dt>\n        </Dt>")
+        replacement = f"{prefix}{reported_date}</Dt>\n        </Dt>"
+        return self.fixture.replace(marker, replacement, 1).encode("utf-8")
 
     def _command(self, payload: bytes, suffix: str) -> dict[str, object]:
         """Return one supported ingest command with a fresh replay key."""
