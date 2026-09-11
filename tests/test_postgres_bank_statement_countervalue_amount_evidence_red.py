@@ -34,10 +34,12 @@ class BankStatementCountervalueAmountEvidenceRedTests(unittest.TestCase):
         self.addCleanup(self.case.tearDown)
         fixture = load_canonical_statement_fixture().decode("utf-8")
         marker = (
+            "              <TxAmt>\n"
+            "                <Amt Ccy=\"KRW\">25000.00</Amt>\n"
             "              </TxAmt>\n"
             "            </AmtDtls>"
         )
-        self.assertGreaterEqual(fixture.count(marker), 1)
+        self.assertEqual(fixture.count(marker), 1)
         self.first_countervalue_amount = "18.75"
         self.second_countervalue_amount = "18.76"
         self.countervalue_currency_code = "USD"
@@ -138,6 +140,8 @@ class BankStatementCountervalueAmountEvidenceRedTests(unittest.TestCase):
         """Insert one schema-shaped countervalue amount after the first transaction amount."""
         return fixture.replace(
             marker,
+            "              <TxAmt>\n"
+            "                <Amt Ccy=\"KRW\">25000.00</Amt>\n"
             "              </TxAmt>\n"
             "              <CntrValAmt>\n"
             f"                <Amt Ccy=\"{self.countervalue_currency_code}\">{value}</Amt>\n"
