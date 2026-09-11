@@ -41,8 +41,9 @@ class BankStatementReturnReasonEvidenceRedTests(unittest.TestCase):
             1,
         )
         detail_marker = (
-            "            </RltdPties>\n"
-            "            <RmtInf>"
+            "            <RmtInf>\n"
+            "              <Ustrd>Invoice 1001</Ustrd>\n"
+            "            </RmtInf>"
         )
         self.assertEqual(fixture.count(detail_marker), 1)
         self.first_payload = self._with_return_reason(
@@ -128,15 +129,15 @@ class BankStatementReturnReasonEvidenceRedTests(unittest.TestCase):
 
     @staticmethod
     def _with_return_reason(fixture: str, marker: str, reason_code: str) -> bytes:
-        """Insert one return reason beside the existing first-detail related parties."""
+        """Insert one return reason after the existing first-detail remittance evidence."""
         replacement = (
-            "            </RltdPties>\n"
+            marker
+            + "\n"
             "            <RtrInf>\n"
             "              <Rsn>\n"
             f"                <Cd>{reason_code}</Cd>\n"
             "              </Rsn>\n"
-            "            </RtrInf>\n"
-            "            <RmtInf>"
+            "            </RtrInf>"
         )
         return fixture.replace(marker, replacement, 1).encode("utf-8")
 
