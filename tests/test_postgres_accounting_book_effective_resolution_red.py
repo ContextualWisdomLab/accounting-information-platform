@@ -42,9 +42,21 @@ class PostgresAccountingBookEffectiveResolutionRedTests(unittest.TestCase):
             ),
         ).fetchone()[0]
 
+    def _delete_book_reference(self, book_reference: str) -> None:
+        """Remove test-owned Accounting Book rows after a committed fixture session."""
+        with self.case.ledger._session() as connection:
+            connection.execute(
+                """
+                DELETE FROM accounting_core.accounting_book
+                WHERE tenant_account_id = %s AND book_name = %s
+                """,
+                (self.case.tenant_id, book_reference),
+            )
+
     def test_future_open_ended_book_reference_is_not_effective_yet(self) -> None:
         """A scheduled future book must not resolve merely because ``valid_to`` is NULL."""
         future_reference = f"{self.case.policy.accounting_book_reference}-future"
+        self.addCleanup(self._delete_book_reference, future_reference)
 
         with self.case.ledger._session() as connection:
             legal_entity_id = self._legal_entity_id(connection)
@@ -78,6 +90,7 @@ class PostgresAccountingBookEffectiveResolutionRedTests(unittest.TestCase):
     def test_finite_book_reference_effective_now_resolves(self) -> None:
         """A currently effective finite interval must resolve before its scheduled end."""
         finite_reference = f"{self.case.policy.accounting_book_reference}-finite"
+        self.addCleanup(self._delete_book_reference, finite_reference)
 
         with self.case.ledger._session() as connection:
             legal_entity_id = self._legal_entity_id(connection)
@@ -123,6 +136,7 @@ class PostgresAccountingBookEffectiveResolutionRedTests(unittest.TestCase):
     def test_explicit_historical_effective_instant_selects_historical_entity(self) -> None:
         """Historical accounting reads must resolve the Entity effective at their own instant."""
         historical_reference = f"{self.case.policy.accounting_book_reference}-historical"
+        self.addCleanup(self._delete_book_reference, historical_reference)
 
         with self.case.ledger._session() as connection:
             legal_entity_id = self._legal_entity_id(connection)
