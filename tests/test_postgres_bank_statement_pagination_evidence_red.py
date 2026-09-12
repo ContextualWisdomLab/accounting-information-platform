@@ -106,22 +106,30 @@ class BankStatementPaginationEvidenceRedTests(unittest.TestCase):
 
     def test_supported_ingest_rejects_or_preserves_statement_pagination(self) -> None:
         """Supported PostgreSQL admission must fail closed or expose exact page provenance."""
-        try:
-            accepted = accept_bank_statement_evidence(
-                {
-                    "tenant_reference": self.case.policy.tenant_reference,
-                    "bank_account_reference": self.bank_account_reference,
-                    "ingestion_idempotency_key": f"statement-pagination-{uuid.uuid4().hex}",
-                    "message_definition_identifier": CAMT053_MESSAGE_DEFINITION,
-                    "statement_payload": self.page_one_payload.decode("utf-8"),
-                },
-                posting.DATABASE_URL,
-                self.case.policy.tenant_reference,
-                artifact_store=self.store,
-            )
-        except AccountingValidationError:
+        parsed = self._parse_or_reject(self.page_one_payload)
+        command = {
+            "tenant_reference": self.case.policy.tenant_reference,
+            "bank_account_reference": self.bank_account_reference,
+            "ingestion_idempotency_key": f"statement-pagination-{uuid.uuid4().hex}",
+            "message_definition_identifier": CAMT053_MESSAGE_DEFINITION,
+            "statement_payload": self.page_one_payload.decode("utf-8"),
+        }
+        if parsed is None:
+            with self.assertRaises(AccountingValidationError):
+                accept_bank_statement_evidence(
+                    command,
+                    posting.DATABASE_URL,
+                    self.case.policy.tenant_reference,
+                    artifact_store=self.store,
+                )
             return
 
+        accepted = accept_bank_statement_evidence(
+            command,
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            artifact_store=self.store,
+        )
         document = lookup_bank_statement(
             posting.DATABASE_URL,
             self.case.policy.tenant_reference,
