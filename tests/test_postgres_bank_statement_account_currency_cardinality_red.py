@@ -80,7 +80,13 @@ class BankStatementAccountCurrencyCardinalityRedTests(unittest.TestCase):
             )
 
     def test_supported_ingest_rejects_conflicting_account_currency(self) -> None:
-        """Do not retain ambiguous account currency merely because the first value is registered."""
+        """Require parser rejection before accepting the supported-ingest rejection oracle."""
+        with self.assertRaises(AccountingValidationError):
+            parse_bank_statement_payload(
+                self.payload,
+                CAMT053_MESSAGE_DEFINITION,
+            )
+
         with self.assertRaises(AccountingValidationError):
             accept_bank_statement_evidence(
                 {
