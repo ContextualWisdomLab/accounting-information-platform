@@ -49,7 +49,7 @@ class BankAssignmentBookIntervalIntegrityRedTests(unittest.TestCase):
             anchor = connection.execute("SELECT clock_timestamp()").fetchone()[0]
             book_valid_from = anchor - timedelta(days=10)
             book_valid_to = anchor + timedelta(days=10)
-            chart_valid_to = anchor + timedelta(days=2)
+            chart_valid_to = anchor + timedelta(days=8)
             assignment_valid_from = anchor - timedelta(days=1)
             assignment_valid_to = anchor + timedelta(days=5)
             shortened_book_valid_to = anchor + timedelta(days=3)
@@ -142,8 +142,8 @@ class BankAssignmentBookIntervalIntegrityRedTests(unittest.TestCase):
                 ),
             )
 
-            self.assertLess(chart_valid_to, shortened_book_valid_to)
             self.assertLess(shortened_book_valid_to, assignment_valid_to)
+            self.assertLess(assignment_valid_to, chart_valid_to)
             with self.assertRaises(psycopg.IntegrityError):
                 connection.execute(
                     """
