@@ -16,6 +16,7 @@ from accounting_information_platform import (
     accept_bank_account_record,
     accept_bank_statement_evidence,
     load_canonical_statement_fixture,
+    parse_bank_statement_payload,
 )
 from tests import test_postgres_posting as posting
 
@@ -34,13 +35,15 @@ class BankStatementPopulationClosureRedTests(unittest.TestCase):
         self.case.setUp()
         self.addCleanup(self.case.doCleanups)
         self.addCleanup(self.case.tearDown)
+        payload = load_canonical_statement_fixture()
+        canonical = parse_bank_statement_payload(payload, CAMT053_MESSAGE_DEFINITION)
         self.account_reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
         accept_bank_account_record(
             {
                 "tenant_reference": self.case.policy.tenant_reference,
                 "bank_account_reference": self.account_reference,
-                "account_currency_code": "KRW",
-                "account_identifier": f"population-closure-{uuid.uuid4().hex}",
+                "account_currency_code": canonical.account_currency_code,
+                "account_identifier_hash": canonical.account_identifier_hash,
             },
             posting.DATABASE_URL,
             self.case.policy.tenant_reference,
@@ -58,7 +61,6 @@ class BankStatementPopulationClosureRedTests(unittest.TestCase):
             posting.DATABASE_URL,
             self.case.policy.tenant_reference,
         )
-        payload = load_canonical_statement_fixture()
         self.document = accept_bank_statement_evidence(
             {
                 "tenant_reference": self.case.policy.tenant_reference,
