@@ -68,7 +68,13 @@ class BankStatementElectronicSequenceCardinalityRedTests(unittest.TestCase):
             )
 
     def test_supported_ingest_rejects_conflicting_electronic_sequence_numbers(self) -> None:
-        """Do not retain an ambiguous statement sequence merely because the first value parses."""
+        """Require parser rejection before accepting the supported-ingest rejection oracle."""
+        with self.assertRaises(AccountingValidationError):
+            parse_bank_statement_payload(
+                self.payload,
+                CAMT053_MESSAGE_DEFINITION,
+            )
+
         with self.assertRaises(AccountingValidationError):
             accept_bank_statement_evidence(
                 {
