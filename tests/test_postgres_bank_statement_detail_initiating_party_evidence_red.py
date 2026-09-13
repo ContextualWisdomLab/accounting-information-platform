@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import unittest
 import uuid
 
@@ -114,7 +115,7 @@ class BankStatementDetailInitiatingPartyEvidenceRedTests(unittest.TestCase):
             )
 
     def test_entry_lookup_preserves_initiating_party_evidence_hash(self) -> None:
-        """Buyer-visible detail reads retain purpose-bound initiating-party evidence."""
+        """Buyer detail reads retain a digest without disclosing the reported party name."""
         accepted = accept_bank_statement_evidence(
             self._command(self.first_payload, "lookup"),
             posting.DATABASE_URL,
@@ -132,6 +133,8 @@ class BankStatementDetailInitiatingPartyEvidenceRedTests(unittest.TestCase):
             self.first_initiating_party_name.encode("utf-8")
         ).hexdigest()
         self.assertEqual(first_detail["initiating_party_evidence_hash"], expected_hash)
+        serialized_document = json.dumps(document, sort_keys=True, default=str)
+        self.assertNotIn(self.first_initiating_party_name, serialized_document)
 
     @staticmethod
     def _with_initiating_party(fixture: str, marker: str, value: str) -> bytes:
