@@ -11,7 +11,6 @@ from accounting_information_platform import (
     CAMT053_MESSAGE_DEFINITION,
     load_adapter_manifest,
     load_canonical_statement_fixture,
-    parse_bank_statement_payload,
 )
 
 
@@ -83,8 +82,8 @@ class BankStatementXsdAdmissionRedTests(unittest.TestCase):
 
         self.assertEqual(len(validation_calls), 1)
 
-    def test_unknown_iso_element_fails_before_normalization(self) -> None:
-        """Required-path presence cannot substitute for the message schema grammar."""
+    def test_unknown_iso_element_is_rejected_by_manifest_selected_schema(self) -> None:
+        """The hostile payload itself reaches schema admission before normalization."""
         fixture = load_canonical_statement_fixture()
         marker = b"      <Id>BANK-STMT-2026-08-24</Id>\n"
         self.assertEqual(fixture.count(marker), 1)
@@ -93,8 +92,58 @@ class BankStatementXsdAdmissionRedTests(unittest.TestCase):
             marker + b"      <CwlUnexpectedEvidence>not-in-camt053</CwlUnexpectedEvidence>\n",
             1,
         )
-        with self.assertRaises(AccountingValidationError):
-            parse_bank_statement_payload(hostile, CAMT053_MESSAGE_DEFINITION)
+        schema_artifact = {
+            "local_package_path": "iso20022/fixtures/camt.053.001.14.xsd",
+            "artifact_role": "message_schema",
+            "sha256": "b" * 64,
+            "byte_length": 456,
+        }
+        controlled_manifest = {
+            "message_definition_identifier": CAMT053_MESSAGE_DEFINITION,
+            "artifacts": [schema_artifact],
+        }
+        validation_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+        def reject_hostile_from_schema(*args: object, **kwargs: object) -> None:
+            rendered_contract = repr((args, kwargs))
+            self.assertIn(schema_artifact["local_package_path"], rendered_contract)
+            self.assertIn(schema_artifact["sha256"], rendered_contract)
+            supplied_values = (*args, *kwargs.values())
+            self.assertTrue(
+                any(value == hostile for value in supplied_values),
+                "the manifest-selected schema validator must receive the hostile statement payload",
+            )
+            validation_calls.append((args, kwargs))
+            raise AccountingValidationError("hostile-schema-admission-sentinel")
+
+        with (
+            patch.object(
+                bank_statement,
+                "load_adapter_manifest",
+                return_value=controlled_manifest,
+            ),
+            patch.object(
+                bank_statement,
+                "_validate_message_schema",
+                side_effect=reject_hostile_from_schema,
+                create=True,
+            ),
+            patch.object(
+                bank_statement,
+                "_normalize_statement",
+                side_effect=AssertionError(
+                    "normalization ran before hostile payload schema admission"
+                ),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                AccountingValidationError, "hostile-schema-admission-sentinel"
+            ):
+                bank_statement.parse_bank_statement_payload(
+                    hostile, CAMT053_MESSAGE_DEFINITION
+                )
+
+        self.assertEqual(len(validation_calls), 1)
 
 
 if __name__ == "__main__":
