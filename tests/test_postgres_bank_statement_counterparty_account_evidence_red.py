@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import unittest
 import uuid
 
@@ -108,7 +109,7 @@ class BankStatementCounterpartyAccountEvidenceRedTests(unittest.TestCase):
             )
 
     def test_entry_lookup_preserves_debtor_account_evidence_hash(self) -> None:
-        """Buyer-visible detail reads retain purpose-bound debtor-account evidence."""
+        """Buyer reads retain the digest without disclosing the reported account."""
         accepted = accept_bank_statement_evidence(
             self._command(self.first_payload, "lookup"),
             posting.DATABASE_URL,
@@ -126,6 +127,8 @@ class BankStatementCounterpartyAccountEvidenceRedTests(unittest.TestCase):
             self.first_debtor_account_iban.encode("utf-8")
         ).hexdigest()
         self.assertEqual(first_detail["debtor_account_evidence_hash"], expected_hash)
+        serialized_document = json.dumps(document, sort_keys=True, default=str)
+        self.assertNotIn(self.first_debtor_account_iban, serialized_document)
 
     @staticmethod
     def _with_debtor_account(fixture: str, marker: str, iban: str) -> bytes:
