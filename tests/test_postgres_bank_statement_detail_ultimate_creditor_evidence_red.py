@@ -129,9 +129,40 @@ class BankStatementDetailUltimateCreditorEvidenceRedTests(unittest.TestCase):
         expected_hash = "sha256:" + hashlib.sha256(
             self.first_ultimate_creditor_name.encode("utf-8")
         ).hexdigest()
-        self.assertEqual(first_detail["ultimate_creditor_evidence_hash"], expected_hash)
-        serialized_document = json.dumps(document, sort_keys=True, default=str)
-        self.assertNotIn(self.first_ultimate_creditor_name, serialized_document)
+        self._assert_digest_only_detail_projection(
+            first_detail,
+            "ultimate_creditor_evidence_hash",
+            expected_hash,
+            self.first_ultimate_creditor_name,
+        )
+
+    def _assert_digest_only_detail_projection(
+        self,
+        detail: dict[str, object],
+        evidence_key: str,
+        expected_hash: str,
+        raw_name: str,
+    ) -> None:
+        """Allow ordinary detail facts plus irreversible evidence digests only."""
+        plain_fields = {
+            "detail_sequence_number",
+            "source_locator_path",
+            "detail_amount",
+            "detail_currency_code",
+            "credit_debit_code",
+            "end_to_end_reference",
+            "remittance_evidence_text",
+            "source_detail_hash",
+        }
+        evidence_fields = {key for key in detail if key.endswith("_evidence_hash")}
+        self.assertEqual(set(detail) - plain_fields - evidence_fields, set())
+        for key in evidence_fields:
+            value = detail[key]
+            self.assertIsInstance(value, str)
+            self.assertRegex(value, r"\Asha256:[0-9a-f]{64}\Z")
+        self.assertEqual(detail[evidence_key], expected_hash)
+        serialized_document = json.dumps(detail, sort_keys=True, default=str)
+        self.assertNotIn(raw_name, serialized_document)
 
     @staticmethod
     def _with_ultimate_creditor(fixture: str, marker: str, value: str) -> bytes:
