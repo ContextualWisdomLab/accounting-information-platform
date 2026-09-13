@@ -182,6 +182,7 @@ class BankStatementExternalCodeAdmissionRedTests(unittest.TestCase):
             for artifact in (external_code_artifact, transaction_code_artifact):
                 self.assertIn(artifact["local_package_path"], rendered_contract)
                 self.assertIn(artifact["sha256"], rendered_contract)
+                self.assertIn(artifact["source_version"], rendered_contract)
             self.assertTrue(any(value == hostile for value in (*args, *kwargs.values())))
             self.assertEqual(len(schema_calls), 1)
             semantic_calls.append((args, kwargs))
