@@ -81,6 +81,10 @@ class BankStatementDetailServicerReferenceHashRedTests(unittest.TestCase):
         second_detail = self.second_statement.entries[0].entry_details[0]
         self.assertEqual(first_detail.account_servicer_reference, "DETAIL-ASV-FIRST")
         self.assertEqual(second_detail.account_servicer_reference, "DETAIL-ASV-SECOND")
+        self.assertNotEqual(
+            self.first_statement.source_artifact_hash,
+            self.second_statement.source_artifact_hash,
+        )
         self.assertNotEqual(first_detail.source_detail_hash, second_detail.source_detail_hash)
         self.assertNotEqual(
             self.first_statement.entries[0].source_entry_hash,
