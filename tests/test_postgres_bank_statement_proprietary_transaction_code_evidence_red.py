@@ -27,7 +27,7 @@ class BankStatementProprietaryTransactionCodeEvidenceRedTests(unittest.TestCase)
         posting.PostgresPostingTests.setUpClass()
 
     def setUp(self) -> None:
-        """Create same-identity statements that differ only in proprietary code evidence."""
+        """Create same-identity statements that vary only proprietary code evidence."""
         self.case = posting.PostgresPostingTests("setUp")
         self.case.setUp()
         self.addCleanup(self.case.doCleanups)
@@ -53,6 +53,9 @@ class BankStatementProprietaryTransactionCodeEvidenceRedTests(unittest.TestCase)
         self.code_only_payload = self._with_proprietary_code(
             fixture, marker, code=self.first_code, issuer=None
         )
+        self.proprietary_only_payload = self._with_proprietary_only_code(
+            fixture, code=self.first_code, issuer=self.first_issuer
+        )
 
         self.first_statement = parse_bank_statement_payload(
             self.first_payload, CAMT053_MESSAGE_DEFINITION
@@ -65,6 +68,9 @@ class BankStatementProprietaryTransactionCodeEvidenceRedTests(unittest.TestCase)
         )
         self.code_only_statement = parse_bank_statement_payload(
             self.code_only_payload, CAMT053_MESSAGE_DEFINITION
+        )
+        self.proprietary_only_statement = parse_bank_statement_payload(
+            self.proprietary_only_payload, CAMT053_MESSAGE_DEFINITION
         )
 
         self.bank_account_reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
@@ -113,7 +119,6 @@ class BankStatementProprietaryTransactionCodeEvidenceRedTests(unittest.TestCase)
             self.case.policy.tenant_reference,
             artifact_store=self.store,
         )
-
         with self.assertRaises(AccountingValidationError):
             accept_bank_statement_evidence(
                 self._command(self.changed_code_payload, "changed-code"),
@@ -156,6 +161,33 @@ class BankStatementProprietaryTransactionCodeEvidenceRedTests(unittest.TestCase)
         self.assertEqual(first_entry["bank_transaction_proprietary_code"], self.first_code)
         self.assertIsNone(first_entry["bank_transaction_proprietary_issuer"])
 
+    def test_proprietary_only_transaction_code_remains_supported_evidence(self) -> None:
+        """BkTxCd may carry Prtry without Domn and still retain exact evidence."""
+        parsed_entry = self.proprietary_only_statement.entries[0]
+        self.assertIsNone(parsed_entry.bank_transaction_domain_code)
+        self.assertIsNone(parsed_entry.bank_transaction_family_code)
+        self.assertIsNone(parsed_entry.bank_transaction_subfamily_code)
+
+        accepted = accept_bank_statement_evidence(
+            self._command(self.proprietary_only_payload, "proprietary-only"),
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            artifact_store=self.store,
+        )
+        document = lookup_bank_statement_entries(
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            str(accepted["bank_statement_record_id"]),
+        )
+        stored_entry = document["bank_statement_entries"][0]
+        self.assertIsNone(stored_entry["bank_transaction_domain_code"])
+        self.assertIsNone(stored_entry["bank_transaction_family_code"])
+        self.assertIsNone(stored_entry["bank_transaction_subfamily_code"])
+        self.assertEqual(stored_entry["bank_transaction_proprietary_code"], self.first_code)
+        self.assertEqual(
+            stored_entry["bank_transaction_proprietary_issuer"], self.first_issuer
+        )
+
     @staticmethod
     def _with_proprietary_code(
         fixture: str,
@@ -175,6 +207,37 @@ class BankStatementProprietaryTransactionCodeEvidenceRedTests(unittest.TestCase)
             "        </BkTxCd>"
         )
         return fixture.replace(marker, replacement, 1).encode("utf-8")
+
+    @staticmethod
+    def _with_proprietary_only_code(
+        fixture: str,
+        *,
+        code: str,
+        issuer: str,
+    ) -> bytes:
+        """Replace the first domain code with schema-valid proprietary-only evidence."""
+        domain = (
+            "        <BkTxCd>\n"
+            "          <Domn>\n"
+            "            <Cd>PMNT</Cd>\n"
+            "            <Fmly>\n"
+            "              <Cd>RCDT</Cd>\n"
+            "              <SubFmlyCd>ESCT</SubFmlyCd>\n"
+            "            </Fmly>\n"
+            "          </Domn>\n"
+            "        </BkTxCd>"
+        )
+        if fixture.count(domain) != 1:
+            raise AssertionError("expected one first-entry BkTxCd domain anchor")
+        proprietary = (
+            "        <BkTxCd>\n"
+            "          <Prtry>\n"
+            f"            <Cd>{code}</Cd>\n"
+            f"            <Issr>{issuer}</Issr>\n"
+            "          </Prtry>\n"
+            "        </BkTxCd>"
+        )
+        return fixture.replace(domain, proprietary, 1).encode("utf-8")
 
     def _command(self, payload: bytes, suffix: str) -> dict[str, object]:
         """Return one supported ingest command with a fresh replay key."""
