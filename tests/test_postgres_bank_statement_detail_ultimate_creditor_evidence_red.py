@@ -28,7 +28,7 @@ class BankStatementDetailUltimateCreditorEvidenceRedTests(unittest.TestCase):
         posting.PostgresPostingTests.setUpClass()
 
     def setUp(self) -> None:
-        """Create statements differing only in one ultimate-credititor name."""
+        """Create statements differing only in one ultimate-creditor name."""
         self.case = posting.PostgresPostingTests("setUp")
         self.case.setUp()
         self.addCleanup(self.case.doCleanups)
