@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import unittest
 import uuid
 
@@ -12,6 +13,7 @@ from accounting_information_platform import (
     accept_bank_account_record,
     accept_bank_statement_evidence,
     load_canonical_statement_fixture,
+    lookup_bank_statement_entries,
     parse_bank_statement_payload,
 )
 from tests import test_postgres_posting as posting
@@ -37,15 +39,17 @@ class BankStatementCounterpartyAgentEvidenceRedTests(unittest.TestCase):
             "            <RmtInf>"
         )
         self.assertEqual(fixture.count(marker), 1)
+        self.first_debtor_agent_bicfi = "DEUTDEFF"
+        self.second_debtor_agent_bicfi = "COBADEFF"
         self.first_payload = self._with_debtor_agent(
             fixture,
             marker,
-            "DEUTDEFF",
+            self.first_debtor_agent_bicfi,
         )
         self.second_payload = self._with_debtor_agent(
             fixture,
             marker,
-            "COBADEFF",
+            self.second_debtor_agent_bicfi,
         )
         self.first_statement = parse_bank_statement_payload(
             self.first_payload,
@@ -102,6 +106,26 @@ class BankStatementCounterpartyAgentEvidenceRedTests(unittest.TestCase):
                 self.case.policy.tenant_reference,
                 artifact_store=self.store,
             )
+
+    def test_entry_lookup_preserves_debtor_agent_evidence_hash(self) -> None:
+        """Buyer-visible detail reads retain purpose-bound debtor-agent evidence."""
+        accepted = accept_bank_statement_evidence(
+            self._command(self.first_payload, "lookup"),
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            artifact_store=self.store,
+        )
+
+        document = lookup_bank_statement_entries(
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            str(accepted["bank_statement_record_id"]),
+        )
+        first_detail = document["bank_statement_entries"][0]["entry_details"][0]
+        expected_hash = "sha256:" + hashlib.sha256(
+            self.first_debtor_agent_bicfi.encode("utf-8")
+        ).hexdigest()
+        self.assertEqual(first_detail["debtor_agent_evidence_hash"], expected_hash)
 
     @staticmethod
     def _with_debtor_agent(fixture: str, marker: str, bicfi: str) -> bytes:
