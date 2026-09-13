@@ -5,6 +5,8 @@ from __future__ import annotations
 import unittest
 import uuid
 
+import psycopg
+
 from accounting_information_platform import (
     AccountingValidationError,
     CAMT053_MESSAGE_DEFINITION,
@@ -74,7 +76,7 @@ class BankStatementDetailAccountServicerReferenceEvidenceRedTests(unittest.TestC
         self.store = MemoryArtifactStore()
 
     def test_present_detail_account_servicer_reference_changes_canonical_hashes(self) -> None:
-        """Changing only TxDtls/Refs/AcctSvcrRef changes detail, entry, and statement hashes."""
+        """Changing only TxDtls/Refs/AcctSvcrRef changes raw and normalized evidence hashes."""
         self.assertEqual(
             self.first_statement.entries[0].entry_details[0].account_servicer_reference,
             self.first_reference,
@@ -82,6 +84,10 @@ class BankStatementDetailAccountServicerReferenceEvidenceRedTests(unittest.TestC
         self.assertEqual(
             self.second_statement.entries[0].entry_details[0].account_servicer_reference,
             self.second_reference,
+        )
+        self.assertNotEqual(
+            self.first_statement.source_artifact_hash,
+            self.second_statement.source_artifact_hash,
         )
         self.assertNotEqual(
             self.first_statement.entries[0].entry_details[0].source_detail_hash,
@@ -98,7 +104,7 @@ class BankStatementDetailAccountServicerReferenceEvidenceRedTests(unittest.TestC
 
     def test_same_statement_identity_cannot_replay_changed_detail_account_servicer_reference(self) -> None:
         """Changed bank-assigned transaction reference requires correction, not silent replay."""
-        accept_bank_statement_evidence(
+        first = accept_bank_statement_evidence(
             self._command(self.first_payload, "first"),
             posting.DATABASE_URL,
             self.case.policy.tenant_reference,
@@ -112,6 +118,35 @@ class BankStatementDetailAccountServicerReferenceEvidenceRedTests(unittest.TestC
                 self.case.policy.tenant_reference,
                 artifact_store=self.store,
             )
+
+        with psycopg.connect(posting.DATABASE_URL) as connection:
+            tenant_id = connection.execute(
+                """
+                SELECT tenant_account_id
+                FROM accounting_core.tenant_account
+                WHERE tenant_account_code = %s
+                """,
+                (self.case.policy.tenant_reference,),
+            ).fetchone()[0]
+            connection.execute(
+                "SELECT set_config('app.tenant_account_id', %s, false)",
+                (str(tenant_id),),
+            )
+            rows = connection.execute(
+                """
+                SELECT detail.account_servicer_reference
+                FROM accounting_integration.bank_statement_entry_detail AS detail
+                JOIN accounting_integration.bank_statement_entry AS entry
+                  ON entry.tenant_account_id = detail.tenant_account_id
+                 AND entry.bank_statement_entry_id = detail.bank_statement_entry_id
+                WHERE detail.tenant_account_id = %s
+                  AND entry.bank_statement_record_id = %s
+                  AND detail.account_servicer_reference IS NOT NULL
+                ORDER BY detail.detail_sequence_number
+                """,
+                (tenant_id, uuid.UUID(str(first["bank_statement_record_id"]))),
+            ).fetchall()
+        self.assertEqual(rows, [(self.first_reference,)])
 
     def test_entry_lookup_preserves_detail_account_servicer_reference(self) -> None:
         """Buyer-visible detail reads expose the exact bank-assigned transaction reference."""
