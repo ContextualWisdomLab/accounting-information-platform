@@ -111,7 +111,7 @@ class JournalProposalServer(ThreadingHTTPServer):
 
 
 class JournalProposalHandler(BaseHTTPRequestHandler):
-    """Serve proposal POST, reverse, reversal list, pull, receipt GET, close, TB, catalog, journal, leftover-cash rollforward, VAT period register, receivable aging, payable aging, period-close package, bank-statement evidence, outbox, audit history, and healthz."""
+    """Serve proposal POST, reverse, reversal list, pull, receipt GET, close, TB, catalog, journal, leftover-cash rollforward, reversal list, close list, outbox, audit history, aging, bank-statement evidence, and healthz."""
 
     server: JournalProposalServer
 
@@ -941,7 +941,7 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
         tenant_header = self._bound_tenant_header("account-ledger read")
         if tenant_header is None:
             return
-        fields = parse_qs(query)
+        fields = parse_qs(query, keep_blank_values=True)
         legal_entity_reference = _first_query(fields, "legal_entity_reference")
         chart_account_code = _first_query(fields, "chart_account_code")
         if not legal_entity_reference or not chart_account_code:
@@ -950,6 +950,11 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
                 "legal_entity_reference and chart_account_code are required. "
                 "Supply those ledger fields, then retry the account-ledger read.",
             )
+            return
+        try:
+            book_reference = _account_ledger_book_reference(fields)
+        except AccountingValidationError as error:
+            self._write_error(400, str(error))
             return
         raw_limit = _first_query(fields, "page_limit")
         page_limit: int | None = None
@@ -972,10 +977,11 @@ class JournalProposalHandler(BaseHTTPRequestHandler):
                 fiscal_period_reference=_first_query(fields, "fiscal_period_reference"),
                 page_limit=page_limit,
                 cursor=_first_query(fields, "cursor"),
+                book_reference=book_reference,
             )
         except AccountingValidationError as error:
             message = str(error)
-            if "page_limit" in message or "cursor" in message:
+            if "page_limit" in message or "cursor" in message or "book_reference" in message:
                 self._write_error(_query_validation_status(error), message)
                 return
             self._write_error(404, message)
@@ -1762,6 +1768,26 @@ def _query_validation_status(error: AccountingValidationError) -> int:
     if "UTC offset" in str(error):
         return 422
     return 400
+
+
+def _account_ledger_book_reference(fields: dict[str, list[str]]) -> str:
+    """Normalize one book identity without first/last-value parameter selection."""
+    values = fields.get("book_reference", []) + fields.get(
+        "accounting_book_reference", []
+    )
+    if not values:
+        raise AccountingValidationError(
+            "book_reference is required. "
+            "Supply one accounting-book identity, then retry the account-ledger read."
+        )
+    if any(not value for value in values) or len(set(values)) != 1:
+        raise AccountingValidationError(
+            "book_reference must identify exactly one accounting book. "
+            "Supply one canonical book_reference, or the identical accounting_book_reference alias, then retry."
+        )
+    book_reference = values[0]
+    _require_reference(book_reference, "book_reference")
+    return book_reference
 
 
 def _first_query(fields: dict[str, list[str]], name: str) -> str:
