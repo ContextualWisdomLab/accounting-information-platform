@@ -18,6 +18,7 @@ from .core import (
     _HASH_PATTERN,
     _parse_amount,
     _require_currency,
+    _require_reference,
 )
 from .bank_statement import (
     accept_bank_account_assignment,
@@ -634,8 +635,10 @@ def lookup_account_ledger(
     fiscal_period_reference: str = "",
     page_limit: int | None = None,
     cursor: str = "",
+    *,
+    book_reference: str = "",
 ) -> dict[str, object]:
-    """Return posted journal lines for one tenant entity and statutory chart account."""
+    """Admit one explicit accounting book before reading posted account-ledger lines."""
     if not legal_entity_reference:
         raise AccountingValidationError(
             "legal_entity_reference is required. "
@@ -646,13 +649,16 @@ def lookup_account_ledger(
             "chart_account_code is required. "
             "Supply that ledger field, then retry the account-ledger read."
         )
+    resolved_page_limit = _resolve_account_ledger_page_limit(page_limit)
+    cursor_after = _parse_account_ledger_cursor(cursor)
+    _require_reference(book_reference, "book_reference")
     ledger = PostgresPostingLedger(database_url, tenant_reference)
     return ledger.load_account_ledger(
         legal_entity_reference,
         chart_account_code,
         fiscal_period_reference,
-        page_limit=_resolve_account_ledger_page_limit(page_limit),
-        cursor_after=_parse_account_ledger_cursor(cursor),
+        page_limit=resolved_page_limit,
+        cursor_after=cursor_after,
     )
 
 
