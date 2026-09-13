@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import unittest
 import uuid
 
@@ -111,7 +112,7 @@ class BankStatementDetailUltimateCreditorEvidenceRedTests(unittest.TestCase):
             )
 
     def test_entry_lookup_preserves_ultimate_creditor_evidence_hash(self) -> None:
-        """Buyer-visible detail reads retain purpose-bound ultimate-creditor evidence."""
+        """Buyer detail reads retain a digest without disclosing the reported party name."""
         accepted = accept_bank_statement_evidence(
             self._command(self.first_payload, "lookup"),
             posting.DATABASE_URL,
@@ -129,6 +130,8 @@ class BankStatementDetailUltimateCreditorEvidenceRedTests(unittest.TestCase):
             self.first_ultimate_creditor_name.encode("utf-8")
         ).hexdigest()
         self.assertEqual(first_detail["ultimate_creditor_evidence_hash"], expected_hash)
+        serialized_document = json.dumps(document, sort_keys=True, default=str)
+        self.assertNotIn(self.first_ultimate_creditor_name, serialized_document)
 
     @staticmethod
     def _with_ultimate_creditor(fixture: str, marker: str, value: str) -> bytes:
