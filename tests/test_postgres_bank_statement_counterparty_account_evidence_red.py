@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import unittest
 import uuid
 
@@ -12,6 +13,7 @@ from accounting_information_platform import (
     accept_bank_account_record,
     accept_bank_statement_evidence,
     load_canonical_statement_fixture,
+    lookup_bank_statement_entries,
     parse_bank_statement_payload,
 )
 from tests import test_postgres_posting as posting
@@ -37,15 +39,17 @@ class BankStatementCounterpartyAccountEvidenceRedTests(unittest.TestCase):
             "            </RltdPties>"
         )
         self.assertEqual(fixture.count(marker), 1)
+        self.first_debtor_account_iban = "DE89370400440532013000"
+        self.second_debtor_account_iban = "DE12500105170648489890"
         self.first_payload = self._with_debtor_account(
             fixture,
             marker,
-            "DE89370400440532013000",
+            self.first_debtor_account_iban,
         )
         self.second_payload = self._with_debtor_account(
             fixture,
             marker,
-            "DE12500105170648489890",
+            self.second_debtor_account_iban,
         )
         self.first_statement = parse_bank_statement_payload(
             self.first_payload,
@@ -102,6 +106,26 @@ class BankStatementCounterpartyAccountEvidenceRedTests(unittest.TestCase):
                 self.case.policy.tenant_reference,
                 artifact_store=self.store,
             )
+
+    def test_entry_lookup_preserves_debtor_account_evidence_hash(self) -> None:
+        """Buyer-visible detail reads retain purpose-bound debtor-account evidence."""
+        accepted = accept_bank_statement_evidence(
+            self._command(self.first_payload, "lookup"),
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            artifact_store=self.store,
+        )
+
+        document = lookup_bank_statement_entries(
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            str(accepted["bank_statement_record_id"]),
+        )
+        first_detail = document["bank_statement_entries"][0]["entry_details"][0]
+        expected_hash = "sha256:" + hashlib.sha256(
+            self.first_debtor_account_iban.encode("utf-8")
+        ).hexdigest()
+        self.assertEqual(first_detail["debtor_account_evidence_hash"], expected_hash)
 
     @staticmethod
     def _with_debtor_account(fixture: str, marker: str, iban: str) -> bytes:
