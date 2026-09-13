@@ -42,35 +42,29 @@ class BankStatementProprietaryTransactionCodeEvidenceRedTests(unittest.TestCase)
         self.first_issuer = "Fixture Bank A"
         self.second_issuer = "Fixture Bank B"
         self.first_payload = self._with_proprietary_code(
-            fixture,
-            marker,
-            code=self.first_code,
-            issuer=self.first_issuer,
+            fixture, marker, code=self.first_code, issuer=self.first_issuer
         )
         self.changed_code_payload = self._with_proprietary_code(
-            fixture,
-            marker,
-            code=self.second_code,
-            issuer=self.first_issuer,
+            fixture, marker, code=self.second_code, issuer=self.first_issuer
         )
         self.changed_issuer_payload = self._with_proprietary_code(
-            fixture,
-            marker,
-            code=self.first_code,
-            issuer=self.second_issuer,
+            fixture, marker, code=self.first_code, issuer=self.second_issuer
+        )
+        self.code_only_payload = self._with_proprietary_code(
+            fixture, marker, code=self.first_code, issuer=None
         )
 
         self.first_statement = parse_bank_statement_payload(
-            self.first_payload,
-            CAMT053_MESSAGE_DEFINITION,
+            self.first_payload, CAMT053_MESSAGE_DEFINITION
         )
         self.changed_code_statement = parse_bank_statement_payload(
-            self.changed_code_payload,
-            CAMT053_MESSAGE_DEFINITION,
+            self.changed_code_payload, CAMT053_MESSAGE_DEFINITION
         )
         self.changed_issuer_statement = parse_bank_statement_payload(
-            self.changed_issuer_payload,
-            CAMT053_MESSAGE_DEFINITION,
+            self.changed_issuer_payload, CAMT053_MESSAGE_DEFINITION
+        )
+        self.code_only_statement = parse_bank_statement_payload(
+            self.code_only_payload, CAMT053_MESSAGE_DEFINITION
         )
 
         self.bank_account_reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
@@ -136,22 +130,31 @@ class BankStatementProprietaryTransactionCodeEvidenceRedTests(unittest.TestCase)
             self.case.policy.tenant_reference,
             artifact_store=self.store,
         )
-
         document = lookup_bank_statement_entries(
             posting.DATABASE_URL,
             self.case.policy.tenant_reference,
             str(accepted["bank_statement_record_id"]),
         )
-
         first_entry = document["bank_statement_entries"][0]
-        self.assertEqual(
-            first_entry["bank_transaction_proprietary_code"],
-            self.first_code,
+        self.assertEqual(first_entry["bank_transaction_proprietary_code"], self.first_code)
+        self.assertEqual(first_entry["bank_transaction_proprietary_issuer"], self.first_issuer)
+
+    def test_proprietary_issuer_remains_optional_on_supported_ingest(self) -> None:
+        """Prtry/Cd remains usable evidence when optional Prtry/Issr is absent."""
+        accepted = accept_bank_statement_evidence(
+            self._command(self.code_only_payload, "code-only"),
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            artifact_store=self.store,
         )
-        self.assertEqual(
-            first_entry["bank_transaction_proprietary_issuer"],
-            self.first_issuer,
+        document = lookup_bank_statement_entries(
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            str(accepted["bank_statement_record_id"]),
         )
+        first_entry = document["bank_statement_entries"][0]
+        self.assertEqual(first_entry["bank_transaction_proprietary_code"], self.first_code)
+        self.assertIsNone(first_entry["bank_transaction_proprietary_issuer"])
 
     @staticmethod
     def _with_proprietary_code(
@@ -159,14 +162,15 @@ class BankStatementProprietaryTransactionCodeEvidenceRedTests(unittest.TestCase)
         marker: str,
         *,
         code: str,
-        issuer: str,
+        issuer: str | None,
     ) -> bytes:
         """Add one schema-shaped proprietary BkTxCd beside the first domain code."""
+        issuer_element = "" if issuer is None else f"          <Issr>{issuer}</Issr>\n"
         replacement = (
             "        </Domn>\n"
             "        <Prtry>\n"
             f"          <Cd>{code}</Cd>\n"
-            f"          <Issr>{issuer}</Issr>\n"
+            f"{issuer_element}"
             "        </Prtry>\n"
             "        </BkTxCd>"
         )
