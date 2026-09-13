@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import unittest
 import uuid
 
@@ -29,13 +28,14 @@ class BankStatementDetailUltimateCreditorEvidenceRedTests(unittest.TestCase):
         posting.PostgresPostingTests.setUpClass()
 
     def setUp(self) -> None:
-        """Create statements differing only in one ultimate-creditor name."""
+        """Create statements differing only in one ultimate-credititor name."""
         self.case = posting.PostgresPostingTests("setUp")
         self.case.setUp()
         self.addCleanup(self.case.doCleanups)
         self.addCleanup(self.case.tearDown)
 
         fixture = load_canonical_statement_fixture().decode("utf-8")
+        self.baseline_payload = fixture.encode("utf-8")
         marker = (
             "              </Dbtr>\n"
             "            </RltdPties>"
@@ -64,16 +64,7 @@ class BankStatementDetailUltimateCreditorEvidenceRedTests(unittest.TestCase):
         )
 
         self.bank_account_reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
-        accept_bank_account_record(
-            {
-                "tenant_reference": self.case.policy.tenant_reference,
-                "bank_account_reference": self.bank_account_reference,
-                "account_currency_code": self.first_statement.account_currency_code,
-                "account_identifier_hash": self.first_statement.account_identifier_hash,
-            },
-            posting.DATABASE_URL,
-            self.case.policy.tenant_reference,
-        )
+        self._register_bank_account(self.bank_account_reference)
         self.store = MemoryArtifactStore()
 
     def test_ultimate_creditor_change_changes_detail_entry_and_statement_hashes(self) -> None:
@@ -112,57 +103,78 @@ class BankStatementDetailUltimateCreditorEvidenceRedTests(unittest.TestCase):
             )
 
     def test_entry_lookup_preserves_ultimate_creditor_evidence_hash(self) -> None:
-        """Buyer detail reads retain a digest without disclosing the reported party name."""
+        """Buyer detail reads expose only the ultimate-creditor digest delta."""
+        first_detail = self._ingest_and_read_first_detail(
+            self.first_payload,
+            self.bank_account_reference,
+            "lookup",
+        )
+        baseline_account_reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
+        self._register_bank_account(baseline_account_reference)
+        baseline_detail = self._ingest_and_read_first_detail(
+            self.baseline_payload,
+            baseline_account_reference,
+            "baseline",
+        )
+        expected_hash = "sha256:" + hashlib.sha256(
+            self.first_ultimate_creditor_name.encode("utf-8")
+        ).hexdigest()
+        self._assert_digest_only_projection_delta(
+            first_detail,
+            baseline_detail,
+            "ultimate_creditor_evidence_hash",
+            expected_hash,
+        )
+
+    def _register_bank_account(self, bank_account_reference: str) -> None:
+        """Register one test account for the fixture's immutable account evidence."""
+        accept_bank_account_record(
+            {
+                "tenant_reference": self.case.policy.tenant_reference,
+                "bank_account_reference": bank_account_reference,
+                "account_currency_code": self.first_statement.account_currency_code,
+                "account_identifier_hash": self.first_statement.account_identifier_hash,
+            },
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+        )
+
+    def _ingest_and_read_first_detail(
+        self,
+        payload: bytes,
+        bank_account_reference: str,
+        suffix: str,
+    ) -> dict[str, object]:
+        """Ingest one fixture on an isolated account and return its first detail projection."""
         accepted = accept_bank_statement_evidence(
-            self._command(self.first_payload, "lookup"),
+            self._command(payload, suffix, bank_account_reference),
             posting.DATABASE_URL,
             self.case.policy.tenant_reference,
             artifact_store=self.store,
         )
-
         document = lookup_bank_statement_entries(
             posting.DATABASE_URL,
             self.case.policy.tenant_reference,
             str(accepted["bank_statement_record_id"]),
         )
-        first_detail = document["bank_statement_entries"][0]["entry_details"][0]
-        expected_hash = "sha256:" + hashlib.sha256(
-            self.first_ultimate_creditor_name.encode("utf-8")
-        ).hexdigest()
-        self._assert_digest_only_detail_projection(
-            first_detail,
-            "ultimate_creditor_evidence_hash",
-            expected_hash,
-            self.first_ultimate_creditor_name,
-        )
+        return document["bank_statement_entries"][0]["entry_details"][0]
 
-    def _assert_digest_only_detail_projection(
+    def _assert_digest_only_projection_delta(
         self,
         detail: dict[str, object],
+        baseline_detail: dict[str, object],
         evidence_key: str,
         expected_hash: str,
-        raw_name: str,
     ) -> None:
-        """Allow ordinary detail facts plus irreversible evidence digests only."""
-        plain_fields = {
-            "detail_sequence_number",
-            "source_locator_path",
-            "detail_amount",
-            "detail_currency_code",
-            "credit_debit_code",
-            "end_to_end_reference",
-            "remittance_evidence_text",
-            "source_detail_hash",
-        }
-        evidence_fields = {key for key in detail if key.endswith("_evidence_hash")}
-        self.assertEqual(set(detail) - plain_fields - evidence_fields, set())
-        for key in evidence_fields:
-            value = detail[key]
-            self.assertIsInstance(value, str)
-            self.assertRegex(value, r"\Asha256:[0-9a-f]{64}\Z")
+        """Require the party-bearing projection to differ only by digest and detail identity."""
         self.assertEqual(detail[evidence_key], expected_hash)
-        serialized_document = json.dumps(detail, sort_keys=True, default=str)
-        self.assertNotIn(raw_name, serialized_document)
+        actual_projection = dict(detail)
+        baseline_projection = dict(baseline_detail)
+        actual_projection.pop(evidence_key)
+        baseline_projection.pop(evidence_key, None)
+        actual_projection.pop("source_detail_hash")
+        baseline_projection.pop("source_detail_hash")
+        self.assertEqual(actual_projection, baseline_projection)
 
     @staticmethod
     def _with_ultimate_creditor(fixture: str, marker: str, value: str) -> bytes:
@@ -178,11 +190,16 @@ class BankStatementDetailUltimateCreditorEvidenceRedTests(unittest.TestCase):
         )
         return fixture.replace(marker, replacement, 1).encode("utf-8")
 
-    def _command(self, payload: bytes, suffix: str) -> dict[str, object]:
+    def _command(
+        self,
+        payload: bytes,
+        suffix: str,
+        bank_account_reference: str | None = None,
+    ) -> dict[str, object]:
         """Return one supported ingest command with a fresh replay key."""
         return {
             "tenant_reference": self.case.policy.tenant_reference,
-            "bank_account_reference": self.bank_account_reference,
+            "bank_account_reference": bank_account_reference or self.bank_account_reference,
             "ingestion_idempotency_key": f"ultimate-creditor-{suffix}-{uuid.uuid4().hex}",
             "message_definition_identifier": CAMT053_MESSAGE_DEFINITION,
             "statement_payload": payload.decode("utf-8"),
