@@ -40,8 +40,8 @@ class PostgresAccountLedgerBookScopeRedTests(unittest.TestCase):
             chart_account_code="110100",
         )
 
-        self.assertEqual(document["period_debit_total"], "25000")
-        self.assertEqual(document["period_credit_total"], "0")
+        self.assertEqual(document["period_debit_total"], "25000.000000")
+        self.assertEqual(document["period_credit_total"], "0.000000")
         self.assertEqual(len(document["ledger_lines"]), 1)
         self.assertEqual(
             document["ledger_lines"][0]["journal_reference"],
@@ -112,8 +112,8 @@ class PostgresAccountLedgerBookScopeRedTests(unittest.TestCase):
             server.shutdown()
 
         self.assertEqual(status, 200)
-        self.assertEqual(document["period_debit_total"], "25000")
-        self.assertEqual(document["period_credit_total"], "0")
+        self.assertEqual(document["period_debit_total"], "25000.000000")
+        self.assertEqual(document["period_credit_total"], "0.000000")
         self.assertEqual(len(document["ledger_lines"]), 1)
         self.assertEqual(
             document["ledger_lines"][0]["journal_reference"],
