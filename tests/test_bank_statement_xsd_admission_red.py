@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
+import accounting_information_platform.bank_statement as bank_statement
 from accounting_information_platform import (
     AccountingValidationError,
     CAMT053_MESSAGE_DEFINITION,
@@ -29,6 +31,57 @@ class BankStatementXsdAdmissionRedTests(unittest.TestCase):
             any("camt.053.001.14" in path for path in schema_paths),
             "camt.053.001.14 admission must retain its vendored XSD in the hash-checked adapter manifest",
         )
+
+    def test_parser_routes_manifest_xsd_to_validator_before_normalization(self) -> None:
+        """Parser admission consumes the manifest-selected XSD before normalization."""
+        fixture = load_canonical_statement_fixture()
+        schema_artifact = {
+            "local_package_path": "iso20022/fixtures/camt.053.001.14.xsd",
+            "artifact_role": "message_schema",
+            "sha256": "a" * 64,
+            "byte_length": 123,
+        }
+        controlled_manifest = {
+            "message_definition_identifier": CAMT053_MESSAGE_DEFINITION,
+            "artifacts": [schema_artifact],
+        }
+        validation_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+        def reject_from_schema_validator(*args: object, **kwargs: object) -> None:
+            rendered_contract = repr((args, kwargs))
+            self.assertIn(schema_artifact["local_package_path"], rendered_contract)
+            self.assertIn(schema_artifact["sha256"], rendered_contract)
+            validation_calls.append((args, kwargs))
+            raise AccountingValidationError("schema-admission-sentinel")
+
+        with (
+            patch.object(
+                bank_statement,
+                "load_adapter_manifest",
+                return_value=controlled_manifest,
+            ),
+            patch.object(
+                bank_statement,
+                "_validate_message_schema",
+                side_effect=reject_from_schema_validator,
+                create=True,
+            ),
+            patch.object(
+                bank_statement,
+                "_normalize_statement",
+                side_effect=AssertionError(
+                    "normalization ran before manifest-selected XSD admission"
+                ),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                AccountingValidationError, "schema-admission-sentinel"
+            ):
+                bank_statement.parse_bank_statement_payload(
+                    fixture, CAMT053_MESSAGE_DEFINITION
+                )
+
+        self.assertEqual(len(validation_calls), 1)
 
     def test_unknown_iso_element_fails_before_normalization(self) -> None:
         """Required-path presence cannot substitute for the message schema grammar."""
