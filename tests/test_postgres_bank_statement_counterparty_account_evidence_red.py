@@ -84,7 +84,7 @@ class BankStatementCounterpartyAccountEvidenceRedTests(unittest.TestCase):
         )
 
     def test_same_statement_identity_cannot_replay_changed_debtor_account(self) -> None:
-        """Changed reported counterparty account requires correction, not silent replay."""
+        """Changed reported counterparty account reaches the correction boundary."""
         accept_bank_statement_evidence(
             self._command(self.first_payload, "first"),
             posting.DATABASE_URL,
@@ -92,7 +92,10 @@ class BankStatementCounterpartyAccountEvidenceRedTests(unittest.TestCase):
             artifact_store=self.store,
         )
 
-        with self.assertRaises(AccountingValidationError):
+        with self.assertRaisesRegex(
+            AccountingValidationError,
+            r"statement identity already exists with different entry evidence",
+        ):
             accept_bank_statement_evidence(
                 self._command(self.second_payload, "second"),
                 posting.DATABASE_URL,
