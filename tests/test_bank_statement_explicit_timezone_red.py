@@ -5,6 +5,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timezone
 
+import accounting_information_platform.bank_statement as bank_statement
 from accounting_information_platform import (
     AccountingValidationError,
     CAMT053_MESSAGE_DEFINITION,
@@ -12,9 +13,24 @@ from accounting_information_platform import (
     parse_bank_statement_payload,
 )
 
+_EXPLICIT_TIMEZONE_ERROR = (
+    r"^statement timestamp must include an explicit timezone offset\."
+)
+
 
 class BankStatementExplicitTimezoneRedTests(unittest.TestCase):
     """Do not invent UTC for source timestamps that carry no timezone."""
+
+    def test_timestamp_parser_rejects_missing_timezone_before_utc_normalization(self) -> None:
+        """Bind the rejection contract directly to the timestamp admission helper."""
+        with self.assertRaisesRegex(
+            AccountingValidationError,
+            _EXPLICIT_TIMEZONE_ERROR,
+        ):
+            bank_statement._parse_timestamp(
+                "2026-08-23T00:00:00",
+                "statement timestamp",
+            )
 
     def test_timezone_less_source_datetimes_fail_closed(self) -> None:
         """A local ISO dateTime cannot become an authoritative UTC instant by assumption."""
@@ -47,7 +63,7 @@ class BankStatementExplicitTimezoneRedTests(unittest.TestCase):
                 self.assertNotEqual(hostile, fixture)
                 with self.assertRaisesRegex(
                     AccountingValidationError,
-                    r"(?i:timezone)",
+                    _EXPLICIT_TIMEZONE_ERROR,
                 ):
                     parse_bank_statement_payload(
                         hostile,
