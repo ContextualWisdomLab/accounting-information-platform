@@ -170,17 +170,63 @@ class BankStatementXsdAdmissionRedTests(unittest.TestCase):
         self.assertEqual(hostile_document.children[0].local_name, "BkToCstmrStmt")
         self.assertEqual(hostile_document.children[0].namespace, foreign_namespace)
 
-        with patch.object(
-            bank_statement,
-            "_normalize_statement",
-            side_effect=AssertionError(
-                "foreign-namespace local-name lookalikes reached normalization before schema admission"
+        schema_artifact = {
+            "local_package_path": "iso20022/fixtures/camt.053.001.14.xsd",
+            "artifact_role": "message_schema",
+            "sha256": "c" * 64,
+            "byte_length": 789,
+        }
+        controlled_manifest = {
+            "message_definition_identifier": CAMT053_MESSAGE_DEFINITION,
+            "artifacts": [schema_artifact],
+        }
+        validation_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+        def reject_foreign_namespace_from_schema(
+            *args: object, **kwargs: object
+        ) -> None:
+            rendered_contract = repr((args, kwargs))
+            self.assertIn(schema_artifact["local_package_path"], rendered_contract)
+            self.assertIn(schema_artifact["sha256"], rendered_contract)
+            supplied_values = (*args, *kwargs.values())
+            self.assertTrue(
+                any(value == hostile for value in supplied_values),
+                "the manifest-selected schema validator must receive the foreign-namespace payload",
+            )
+            validation_calls.append((args, kwargs))
+            raise AccountingValidationError(
+                "foreign-namespace-schema-admission-sentinel"
+            )
+
+        with (
+            patch.object(
+                bank_statement,
+                "load_adapter_manifest",
+                return_value=controlled_manifest,
+            ),
+            patch.object(
+                bank_statement,
+                "_validate_message_schema",
+                side_effect=reject_foreign_namespace_from_schema,
+                create=True,
+            ),
+            patch.object(
+                bank_statement,
+                "_normalize_statement",
+                side_effect=AssertionError(
+                    "foreign-namespace local-name lookalikes reached normalization before schema admission"
+                ),
             ),
         ):
-            with self.assertRaisesRegex(AccountingValidationError, "schema|namespace"):
+            with self.assertRaisesRegex(
+                AccountingValidationError,
+                "foreign-namespace-schema-admission-sentinel",
+            ):
                 bank_statement.parse_bank_statement_payload(
                     hostile, CAMT053_MESSAGE_DEFINITION
                 )
+
+        self.assertEqual(len(validation_calls), 1)
 
 
 if __name__ == "__main__":
