@@ -18,6 +18,7 @@ from accounting_information_platform import (
     lookup_bank_statement,
     parse_bank_statement_payload,
 )
+from accounting_information_platform import bank_statement
 from tests import test_postgres_posting as posting
 
 _HASH_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -158,7 +159,7 @@ class BankStatementAccountTypeEvidenceRedTests(unittest.TestCase):
         right_choice: str,
         right_value: str,
     ) -> None:
-        """Bind each digest to the canonical account-type choice and value."""
+        """Bind type and statement digests to the canonical parsed Acct/Tp evidence."""
         left_hash = getattr(left, "account_type_evidence_hash", None)
         right_hash = getattr(right, "account_type_evidence_hash", None)
         expected_left = self._expected_account_type_hash(left_choice, left_value)
@@ -171,6 +172,14 @@ class BankStatementAccountTypeEvidenceRedTests(unittest.TestCase):
         self.assertEqual(left_hash, expected_left)
         self.assertEqual(right_hash, expected_right)
         self.assertNotEqual(expected_left, expected_right)
+        self.assertEqual(
+            left.normalized_payload_hash,
+            self._expected_normalized_payload_hash(left, expected_left),
+        )
+        self.assertEqual(
+            right.normalized_payload_hash,
+            self._expected_normalized_payload_hash(right, expected_right),
+        )
         self.assertNotEqual(left.normalized_payload_hash, right.normalized_payload_hash)
 
     @staticmethod
@@ -182,6 +191,18 @@ class BankStatementAccountTypeEvidenceRedTests(unittest.TestCase):
                 "evidence_type": _ACCOUNT_TYPE_EVIDENCE_PURPOSE,
                 "value": value,
             },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        return f"sha256:{hashlib.sha256(preimage).hexdigest()}"
+
+    @staticmethod
+    def _expected_normalized_payload_hash(statement: object, type_hash: str) -> str:
+        """Require the canonical statement projection to bind the admitted type digest."""
+        projection = dict(bank_statement._normalized_payload(statement))
+        projection["account_type_evidence_hash"] = type_hash
+        preimage = json.dumps(
+            projection,
             separators=(",", ":"),
             sort_keys=True,
         ).encode("utf-8")
