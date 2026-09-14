@@ -73,7 +73,10 @@ class BankStatementAccountOwnerEvidenceRedTests(unittest.TestCase):
         self.store = MemoryArtifactStore()
 
     def test_account_owner_is_material_statement_evidence_not_account_identifier_identity(self) -> None:
-        """A changed reported owner changes statement evidence without changing Acct/Id identity."""
+        """A changed reported owner changes owner/statement evidence, not Acct/Id identity."""
+        first_owner_hash = getattr(self.first_statement, "account_owner_evidence_hash", None)
+        second_owner_hash = getattr(self.second_statement, "account_owner_evidence_hash", None)
+
         self.assertNotEqual(
             self.first_statement.source_artifact_hash,
             self.second_statement.source_artifact_hash,
@@ -82,6 +85,11 @@ class BankStatementAccountOwnerEvidenceRedTests(unittest.TestCase):
             self.first_statement.account_identifier_hash,
             self.second_statement.account_identifier_hash,
         )
+        self.assertIsInstance(first_owner_hash, str)
+        self.assertIsInstance(second_owner_hash, str)
+        self.assertRegex(first_owner_hash or "", _HASH_PATTERN)
+        self.assertRegex(second_owner_hash or "", _HASH_PATTERN)
+        self.assertNotEqual(first_owner_hash, second_owner_hash)
         self.assertNotEqual(
             self.first_statement.normalized_payload_hash,
             self.second_statement.normalized_payload_hash,
@@ -111,8 +119,12 @@ class BankStatementAccountOwnerEvidenceRedTests(unittest.TestCase):
                 artifact_store=self.store,
             )
 
-    def test_statement_lookup_exposes_purpose_bound_account_owner_evidence_hash(self) -> None:
-        """Buyer reads expose a digest of present Acct/Ownr evidence, not an untracked omission."""
+    def test_statement_lookup_exposes_same_purpose_bound_account_owner_hash(self) -> None:
+        """Buyer reads expose the exact owner-evidence digest admitted during normalization."""
+        owner_hash = getattr(self.first_statement, "account_owner_evidence_hash", None)
+        self.assertIsInstance(owner_hash, str)
+        self.assertRegex(owner_hash or "", _HASH_PATTERN)
+
         accepted = accept_bank_statement_evidence(
             self._command(self.first_payload, "lookup"),
             posting.DATABASE_URL,
@@ -125,9 +137,7 @@ class BankStatementAccountOwnerEvidenceRedTests(unittest.TestCase):
             str(accepted["bank_statement_record_id"]),
         )
 
-        owner_hash = document.get("account_owner_evidence_hash")
-        self.assertIsInstance(owner_hash, str)
-        self.assertRegex(owner_hash or "", _HASH_PATTERN)
+        self.assertEqual(document.get("account_owner_evidence_hash"), owner_hash)
 
     @staticmethod
     def _with_account_owner(fixture: str, marker: str, owner_name: str) -> bytes:
