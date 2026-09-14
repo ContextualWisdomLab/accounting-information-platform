@@ -110,10 +110,14 @@ class BankStatementCrossAccountReplayRedTests(unittest.TestCase):
         )
 
     def _register_second_or_assert_safe_rejection(self, first: dict[str, object]) -> bool:
-        """Accept product-safe duplicate-account rejection as an earlier lawful boundary."""
+        """Accept only the explicit duplicate-account boundary as an earlier lawful rejection."""
         try:
             self._register(self.second_reference)
-        except AccountingValidationError:
+        except AccountingValidationError as error:
+            self.assertRegex(
+                str(error),
+                r"^bank account evidence is already registered under a different bank account reference\.",
+            )
             self._assert_source_remains_bound(first)
             return False
         return True
