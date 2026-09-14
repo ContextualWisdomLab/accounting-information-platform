@@ -157,6 +157,83 @@ class BankStatementAdapterProvenanceRedTests(unittest.TestCase):
                     ):
                         load_adapter_manifest()
 
+    def test_loader_requires_complete_role_bound_artifact_inventory(self) -> None:
+        """A hash-valid subset or role-relabelled set cannot redefine adapter evidence."""
+        baseline = json.loads(
+            bank_statement._MANIFEST_PATH.read_text(encoding="utf-8")
+        )
+        baseline.update(
+            {
+                "message_definition_name": "BankToCustomerStatementV14",
+                "submitting_organization": "ISTH",
+                "source_message_set_last_updated": "2026-03-19",
+                "official_source_url": (
+                    "https://www.iso20022.org/iso-20022-message-definitions?search=camt.053"
+                ),
+            }
+        )
+        expected_inventory = {
+            "provenance_notice": "iso20022/NOTICE",
+            "canonical_valid_fixture": (
+                "iso20022/fixtures/camt.053.001.14.valid.xml"
+            ),
+            "cwl_derived_structural_profile": (
+                "iso20022/fixtures/camt.053.001.14.structural-profile.json"
+            ),
+        }
+        observed_inventory = {
+            str(artifact["artifact_role"]): str(artifact["local_package_path"])
+            for artifact in baseline["artifacts"]
+        }
+        self.assertEqual(observed_inventory, expected_inventory)
+
+        with mock.patch.object(
+            bank_statement,
+            "_MANIFEST_PATH",
+            self._manifest_path_for(baseline),
+        ):
+            accepted = load_adapter_manifest()
+        self.assertEqual(len(accepted["artifacts"]), len(expected_inventory))
+
+        hostile_manifests: dict[str, dict[str, object]] = {}
+
+        missing_profile = json.loads(json.dumps(baseline))
+        missing_profile["artifacts"] = [
+            artifact
+            for artifact in missing_profile["artifacts"]
+            if artifact["artifact_role"] != "cwl_derived_structural_profile"
+        ]
+        hostile_manifests["missing_required_profile"] = missing_profile
+
+        duplicate_fixture = json.loads(json.dumps(baseline))
+        duplicate_fixture["artifacts"].append(
+            dict(
+                next(
+                    artifact
+                    for artifact in duplicate_fixture["artifacts"]
+                    if artifact["artifact_role"] == "canonical_valid_fixture"
+                )
+            )
+        )
+        hostile_manifests["duplicate_role_and_path"] = duplicate_fixture
+
+        relabelled_notice = json.loads(json.dumps(baseline))
+        relabelled_notice["artifacts"][0]["artifact_role"] = "canonical_valid_fixture"
+        hostile_manifests["role_path_relabel"] = relabelled_notice
+
+        for attack, hostile in hostile_manifests.items():
+            with self.subTest(attack=attack):
+                with mock.patch.object(
+                    bank_statement,
+                    "_MANIFEST_PATH",
+                    self._manifest_path_for(hostile),
+                ):
+                    with self.assertRaisesRegex(
+                        AccountingValidationError,
+                        "adapter artifact inventory",
+                    ):
+                        load_adapter_manifest()
+
     @staticmethod
     def _manifest_path_for(manifest: dict[str, object]) -> mock.Mock:
         """Supply controlled manifest bytes without intercepting other file reads."""
