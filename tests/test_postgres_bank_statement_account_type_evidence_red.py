@@ -58,8 +58,20 @@ class BankStatementAccountTypeEvidenceRedTests(unittest.TestCase):
             marker,
             "          <Cd>SVGS</Cd>",
         )
+        formatting_anchor = b"        <Tp>\n          <Cd>CACC</Cd>\n"
+        self.assertEqual(self.code_payload.count(formatting_anchor), 1)
+        self.reformatted_code_payload = self.code_payload.replace(
+            formatting_anchor,
+            b"        <Tp>\n          \n          <Cd>CACC</Cd>\n",
+            1,
+        )
+
         self.code_statement = parse_bank_statement_payload(
             self.code_payload,
+            CAMT053_MESSAGE_DEFINITION,
+        )
+        self.reformatted_code_statement = parse_bank_statement_payload(
+            self.reformatted_code_payload,
             CAMT053_MESSAGE_DEFINITION,
         )
         self.proprietary_statement = parse_bank_statement_payload(
@@ -103,6 +115,36 @@ class BankStatementAccountTypeEvidenceRedTests(unittest.TestCase):
             left_value="CACC",
             right_choice="Prtry",
             right_value="CACC",
+        )
+
+    def test_source_formatting_cannot_change_semantically_equal_normalized_evidence(self) -> None:
+        """Raw XML formatting must not leak into normalized account-type evidence identity."""
+        expected_hash = self._expected_account_type_hash("Cd", "CACC")
+
+        self.assertNotEqual(
+            self.code_statement.source_artifact_hash,
+            self.reformatted_code_statement.source_artifact_hash,
+        )
+        self.assertEqual(
+            self.code_statement.account_identifier_hash,
+            self.reformatted_code_statement.account_identifier_hash,
+        )
+        self.assertEqual(
+            getattr(self.code_statement, "account_type_evidence_hash", None),
+            expected_hash,
+        )
+        self.assertEqual(
+            getattr(self.reformatted_code_statement, "account_type_evidence_hash", None),
+            expected_hash,
+        )
+        self._assert_normalized_hash_binding(self.code_statement, expected_hash)
+        self._assert_normalized_hash_binding(
+            self.reformatted_code_statement,
+            expected_hash,
+        )
+        self.assertEqual(
+            self.code_statement.normalized_payload_hash,
+            self.reformatted_code_statement.normalized_payload_hash,
         )
 
     def test_changed_account_type_requires_statement_correction(self) -> None:
@@ -172,15 +214,33 @@ class BankStatementAccountTypeEvidenceRedTests(unittest.TestCase):
         self.assertEqual(left_hash, expected_left)
         self.assertEqual(right_hash, expected_right)
         self.assertNotEqual(expected_left, expected_right)
-        self.assertEqual(
-            left.normalized_payload_hash,
-            self._expected_normalized_payload_hash(left, expected_left),
-        )
-        self.assertEqual(
-            right.normalized_payload_hash,
-            self._expected_normalized_payload_hash(right, expected_right),
-        )
+        self._assert_normalized_hash_binding(left, expected_left)
+        self._assert_normalized_hash_binding(right, expected_right)
         self.assertNotEqual(left.normalized_payload_hash, right.normalized_payload_hash)
+
+    @staticmethod
+    def _assert_normalized_hash_binding(statement: object, type_hash: str) -> None:
+        """Bind the statement hash to type evidence while rejecting raw-source coupling."""
+        projection = dict(bank_statement._normalized_payload(statement))
+        if projection.get("account_type_evidence_hash") != type_hash:
+            raise AssertionError(
+                "canonical normalized statement projection must carry the exact "
+                "account_type_evidence_hash"
+            )
+        if "source_artifact_hash" in projection:
+            raise AssertionError(
+                "canonical normalized statement projection must not carry raw artifact identity"
+            )
+        preimage = json.dumps(
+            projection,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        expected_statement_hash = f"sha256:{hashlib.sha256(preimage).hexdigest()}"
+        if statement.normalized_payload_hash != expected_statement_hash:
+            raise AssertionError(
+                "normalized_payload_hash must be the digest of the canonical normalized projection"
+            )
 
     @staticmethod
     def _expected_account_type_hash(choice: str, value: str) -> str:
@@ -191,18 +251,6 @@ class BankStatementAccountTypeEvidenceRedTests(unittest.TestCase):
                 "evidence_type": _ACCOUNT_TYPE_EVIDENCE_PURPOSE,
                 "value": value,
             },
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-        return f"sha256:{hashlib.sha256(preimage).hexdigest()}"
-
-    @staticmethod
-    def _expected_normalized_payload_hash(statement: object, type_hash: str) -> str:
-        """Require the canonical statement projection to bind the admitted type digest."""
-        projection = dict(bank_statement._normalized_payload(statement))
-        projection["account_type_evidence_hash"] = type_hash
-        preimage = json.dumps(
-            projection,
             separators=(",", ":"),
             sort_keys=True,
         ).encode("utf-8")
