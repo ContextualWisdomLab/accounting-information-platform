@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import unittest
-from pathlib import Path
 from unittest import mock
 
 import accounting_information_platform.bank_statement as bank_statement
@@ -57,7 +56,11 @@ class BankStatementAdapterProvenanceRedTests(unittest.TestCase):
             }
         )
 
-        with mock.patch.object(Path, "read_text", return_value=json.dumps(baseline)):
+        with mock.patch.object(
+            bank_statement,
+            "_MANIFEST_PATH",
+            self._manifest_path_for(baseline),
+        ):
             accepted = load_adapter_manifest()
         self.assertEqual(accepted["submitting_organization"], "ISTH")
         self.assertEqual(accepted["source_message_set_last_updated"], "2026-03-19")
@@ -73,15 +76,22 @@ class BankStatementAdapterProvenanceRedTests(unittest.TestCase):
                 hostile = dict(baseline)
                 hostile[field] = hostile_value
                 with mock.patch.object(
-                    Path,
-                    "read_text",
-                    return_value=json.dumps(hostile),
+                    bank_statement,
+                    "_MANIFEST_PATH",
+                    self._manifest_path_for(hostile),
                 ):
                     with self.assertRaisesRegex(
                         AccountingValidationError,
                         "adapter catalogue provenance",
                     ):
                         load_adapter_manifest()
+
+    @staticmethod
+    def _manifest_path_for(manifest: dict[str, object]) -> mock.Mock:
+        """Supply controlled manifest bytes without intercepting other file reads."""
+        manifest_path = mock.Mock()
+        manifest_path.read_text.return_value = json.dumps(manifest)
+        return manifest_path
 
 
 if __name__ == "__main__":
