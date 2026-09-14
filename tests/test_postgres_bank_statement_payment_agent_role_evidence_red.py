@@ -101,7 +101,8 @@ class BankStatementPaymentAgentRoleEvidenceRedTests(unittest.TestCase):
 
     def test_payment_agent_role_readback_is_digest_only_and_role_specific(self) -> None:
         """Buyer reads expose only one purpose-bound digest for each reported agent role."""
-        for element_name, (digest_key, first_bicfi, _) in self.CASES.items():
+        for baseline_variant, (element_name, case) in enumerate(self.CASES.items(), start=1):
+            digest_key, first_bicfi, _ = case
             with self.subTest(element_name=element_name):
                 private_payload = self._with_agent(element_name, first_bicfi)
                 private_statement = self._statement(private_payload)
@@ -115,7 +116,10 @@ class BankStatementPaymentAgentRoleEvidenceRedTests(unittest.TestCase):
                     f"private-{element_name}",
                 )
 
-                baseline_payload = load_canonical_statement_fixture()
+                # A tenant-wide source_artifact_hash is replay authority. Vary only
+                # trailing XML whitespace so each baseline has distinct source bytes
+                # while preserving the same normalized no-private-evidence projection.
+                baseline_payload = load_canonical_statement_fixture() + (b"\n" * baseline_variant)
                 baseline_statement = self._statement(baseline_payload)
                 baseline_account = self._register_account(
                     baseline_statement,
