@@ -54,9 +54,16 @@ class BankStatementAdapterManifestJsonRedTests(unittest.TestCase):
         )
         self.assertNotEqual(duplicate_role, baseline_text)
 
+        self.assertTrue(baseline_text.endswith("}"))
+        nested_duplicate = (
+            baseline_text[:-1]
+            + ',"duplicate_depth_probe":{"sentinel":"same","sentinel":"same"}}'
+        )
+
         for location, hostile_text in {
             "top_level": duplicate_version,
             "artifact_object": duplicate_role,
+            "nested_unknown_object": nested_duplicate,
         }.items():
             with self.subTest(location=location):
                 with mock.patch.object(
