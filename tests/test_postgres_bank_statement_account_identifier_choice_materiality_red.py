@@ -56,6 +56,12 @@ class BankStatementAccountIdentifierChoiceMaterialityRedTests(unittest.TestCase)
         self.other_upic_payload = self._payload_with_account_identifier(
             self._other_identifier_xml(scheme_code="UPIC", issuer="BANK-A")
         )
+        self.other_bban_proprietary_payload = self._payload_with_account_identifier(
+            self._other_identifier_xml(
+                scheme_proprietary="BBAN",
+                issuer="BANK-A",
+            )
+        )
         self.other_other_issuer_payload = self._payload_with_account_identifier(
             self._other_identifier_xml(scheme_code="BBAN", issuer="BANK-B")
         )
@@ -63,6 +69,9 @@ class BankStatementAccountIdentifierChoiceMaterialityRedTests(unittest.TestCase)
         self.other_statement = self._parse(self.other_payload)
         self.other_bban_statement = self._parse(self.other_bban_payload)
         self.other_upic_statement = self._parse(self.other_upic_payload)
+        self.other_bban_proprietary_statement = self._parse(
+            self.other_bban_proprietary_payload
+        )
         self.other_other_issuer_statement = self._parse(
             self.other_other_issuer_payload
         )
@@ -81,6 +90,13 @@ class BankStatementAccountIdentifierChoiceMaterialityRedTests(unittest.TestCase)
         self._assert_material_identity_difference(
             self.other_bban_statement,
             self.other_upic_statement,
+        )
+
+    def test_other_scheme_choice_is_material_to_account_and_statement_identity(self) -> None:
+        """Coded and proprietary schemes with equal text remain distinct evidence."""
+        self._assert_material_identity_difference(
+            self.other_bban_statement,
+            self.other_bban_proprietary_statement,
         )
 
     def test_other_issuer_is_material_to_account_and_statement_identity(self) -> None:
@@ -108,6 +124,16 @@ class BankStatementAccountIdentifierChoiceMaterialityRedTests(unittest.TestCase)
             hostile_payload=self.other_upic_payload,
             registered_suffix="other-bban",
             hostile_suffix="other-upic",
+        )
+
+    def test_other_scheme_choice_cannot_reuse_an_account_registered_from_code(self) -> None:
+        """Supported ingest binds the durable account to the scheme choice itself."""
+        self._assert_variant_rejected_from_registered_identity(
+            registered_statement=self.other_bban_statement,
+            registered_payload=self.other_bban_payload,
+            hostile_payload=self.other_bban_proprietary_payload,
+            registered_suffix="scheme-code",
+            hostile_suffix="scheme-proprietary",
         )
 
     def test_other_issuer_cannot_reuse_an_account_registered_from_another_issuer(self) -> None:
@@ -177,22 +203,26 @@ class BankStatementAccountIdentifierChoiceMaterialityRedTests(unittest.TestCase)
         self,
         *,
         scheme_code: str | None = None,
+        scheme_proprietary: str | None = None,
         issuer: str | None = None,
     ) -> str:
         """Build one schema-shaped GenericAccountIdentification1 fixture fragment."""
+        self.assertFalse(
+            scheme_code is not None and scheme_proprietary is not None,
+            "AccountSchemeName1Choice fixture must select exactly one scheme form.",
+        )
         lines = [
             "<Id>",
             "          <Othr>",
             f"            <Id>{self.same_identifier}</Id>",
         ]
-        if scheme_code is not None:
-            lines.extend(
-                [
-                    "            <SchmeNm>",
-                    f"              <Cd>{scheme_code}</Cd>",
-                    "            </SchmeNm>",
-                ]
-            )
+        if scheme_code is not None or scheme_proprietary is not None:
+            lines.append("            <SchmeNm>")
+            if scheme_code is not None:
+                lines.append(f"              <Cd>{scheme_code}</Cd>")
+            else:
+                lines.append(f"              <Prtry>{scheme_proprietary}</Prtry>")
+            lines.append("            </SchmeNm>")
         if issuer is not None:
             lines.append(f"            <Issr>{issuer}</Issr>")
         lines.extend(["          </Othr>", "        </Id>"])
