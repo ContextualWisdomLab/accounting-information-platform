@@ -182,7 +182,10 @@ class BankStatementAccountIdentifierChoiceMaterialityRedTests(unittest.TestCase)
 
         with self.assertRaisesRegex(
             AccountingValidationError,
-            r"^statement account identifier does not match the registered bank account\.",
+            (
+                r"^statement account identifier does not match the registered bank account\. "
+                r"Register the matching account identifier, then retry ingest\.$"
+            ),
         ):
             accept_bank_statement_evidence(
                 self._command(hostile_payload, hostile_suffix),
