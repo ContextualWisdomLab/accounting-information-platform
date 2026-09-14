@@ -96,7 +96,10 @@ class BankStatementDetailInstructionReferenceEvidenceRedTests(unittest.TestCase)
             artifact_store=self.store,
         )
 
-        with self.assertRaises(AccountingValidationError):
+        with self.assertRaisesRegex(
+            AccountingValidationError,
+            r"^statement identity already exists with different entry evidence\.",
+        ):
             accept_bank_statement_evidence(
                 self._command(self.second_payload, "second"),
                 posting.DATABASE_URL,
