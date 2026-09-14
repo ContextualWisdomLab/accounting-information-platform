@@ -119,7 +119,10 @@ class BankStatementProprietaryTransactionCodeEvidenceRedTests(unittest.TestCase)
             self.case.policy.tenant_reference,
             artifact_store=self.store,
         )
-        with self.assertRaises(AccountingValidationError):
+        with self.assertRaisesRegex(
+            AccountingValidationError,
+            r"^statement identity already exists with different entry evidence\.",
+        ):
             accept_bank_statement_evidence(
                 self._command(self.changed_code_payload, "changed-code"),
                 posting.DATABASE_URL,
