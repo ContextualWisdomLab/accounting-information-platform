@@ -56,7 +56,10 @@ class BankStatementCrossAccountReplayRedTests(unittest.TestCase):
         if not self._register_second_or_assert_safe_rejection(first):
             return
 
-        with self.assertRaises(AccountingValidationError):
+        with self.assertRaisesRegex(
+            AccountingValidationError,
+            r"^statement source artifact is already bound to a different bank account\.",
+        ):
             accept_bank_statement_evidence(
                 self._command(self.second_reference, "second"),
                 posting.DATABASE_URL,
@@ -80,7 +83,10 @@ class BankStatementCrossAccountReplayRedTests(unittest.TestCase):
         if not self._register_second_or_assert_safe_rejection(first):
             return
 
-        with self.assertRaises(AccountingValidationError):
+        with self.assertRaisesRegex(
+            AccountingValidationError,
+            r"^statement ingestion idempotency key is already bound to a different bank account\.",
+        ):
             accept_bank_statement_evidence(
                 self._command(self.second_reference, "second", idempotency_key=replay_key),
                 posting.DATABASE_URL,
