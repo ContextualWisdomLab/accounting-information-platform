@@ -70,8 +70,16 @@ class BankStatementAccountServicerIdentityRedTests(unittest.TestCase):
     def test_proprietary_account_identity_is_scoped_by_account_servicer(self) -> None:
         """The same Acct/Id/Othr at two servicers is not one bank-account identity."""
         self.assertNotEqual(
+            self.first_statement.source_artifact_hash,
+            self.second_statement.source_artifact_hash,
+        )
+        self.assertNotEqual(
             self.first_statement.account_identifier_hash,
             self.second_statement.account_identifier_hash,
+        )
+        self.assertNotEqual(
+            self.first_statement.normalized_payload_hash,
+            self.second_statement.normalized_payload_hash,
         )
 
     def test_registered_account_rejects_same_proprietary_id_from_another_servicer(self) -> None:
@@ -83,7 +91,13 @@ class BankStatementAccountServicerIdentityRedTests(unittest.TestCase):
             artifact_store=self.store,
         )
 
-        with self.assertRaises(AccountingValidationError):
+        with self.assertRaisesRegex(
+            AccountingValidationError,
+            (
+                r"^statement account identifier does not match the registered bank account\. "
+                r"Register the matching account identifier, then retry ingest\.$"
+            ),
+        ):
             accept_bank_statement_evidence(
                 self._command(self.second_payload, "second"),
                 posting.DATABASE_URL,
