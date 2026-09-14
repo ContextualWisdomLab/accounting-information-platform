@@ -134,6 +134,10 @@ class BankStatementCounterpartyPrivateProjectionRedTests(unittest.TestCase):
     ) -> None:
         """Require private-source buyer output to add no reversible projection field."""
         self.assertEqual(detail[evidence_key], expected_hash)
+        for projection in (detail, baseline_detail):
+            source_detail_hash = projection["source_detail_hash"]
+            self.assertIsInstance(source_detail_hash, str)
+            self.assertRegex(source_detail_hash, r"\Asha256:[0-9a-f]{64}\Z")
         actual_projection = dict(detail)
         baseline_projection = dict(baseline_detail)
         actual_projection.pop(evidence_key)
