@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import unittest
+from pathlib import Path
+from unittest import mock
 
+import accounting_information_platform.bank_statement as bank_statement
 from accounting_information_platform import (
+    AccountingValidationError,
     CAMT053_MESSAGE_DEFINITION,
     load_adapter_manifest,
 )
@@ -35,6 +40,48 @@ class BankStatementAdapterProvenanceRedTests(unittest.TestCase):
             "2026-03-19",
             "retain the ISO catalogue edition separately from local retrieval_time",
         )
+
+    def test_loader_rejects_catalogue_provenance_drift(self) -> None:
+        """Hash-valid adapter bytes do not make contradictory catalogue metadata trustworthy."""
+        baseline = json.loads(
+            bank_statement._MANIFEST_PATH.read_text(encoding="utf-8")
+        )
+        baseline.update(
+            {
+                "message_definition_name": "BankToCustomerStatementV14",
+                "submitting_organization": "ISTH",
+                "source_message_set_last_updated": "2026-03-19",
+                "official_source_url": (
+                    "https://www.iso20022.org/iso-20022-message-definitions?search=camt.053"
+                ),
+            }
+        )
+
+        with mock.patch.object(Path, "read_text", return_value=json.dumps(baseline)):
+            accepted = load_adapter_manifest()
+        self.assertEqual(accepted["submitting_organization"], "ISTH")
+        self.assertEqual(accepted["source_message_set_last_updated"], "2026-03-19")
+
+        hostile_values = {
+            "message_definition_name": "BankToCustomerStatementV13",
+            "submitting_organization": "SWIFT",
+            "source_message_set_last_updated": "2026-03-18",
+            "official_source_url": "https://example.invalid/camt.053",
+        }
+        for field, hostile_value in hostile_values.items():
+            with self.subTest(field=field):
+                hostile = dict(baseline)
+                hostile[field] = hostile_value
+                with mock.patch.object(
+                    Path,
+                    "read_text",
+                    return_value=json.dumps(hostile),
+                ):
+                    with self.assertRaisesRegex(
+                        AccountingValidationError,
+                        "adapter catalogue provenance",
+                    ):
+                        load_adapter_manifest()
 
 
 if __name__ == "__main__":
