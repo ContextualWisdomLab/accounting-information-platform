@@ -145,6 +145,43 @@ class BankStatementXsdAdmissionRedTests(unittest.TestCase):
 
         self.assertEqual(len(validation_calls), 1)
 
+    def test_foreign_namespace_lookalike_subtree_is_rejected_before_normalization(self) -> None:
+        """A correct Document namespace cannot authorize local-name lookalikes in another namespace."""
+        fixture = load_canonical_statement_fixture()
+        baseline = bank_statement.parse_bank_statement_payload(
+            fixture, CAMT053_MESSAGE_DEFINITION
+        )
+        self.assertEqual(
+            baseline.message_definition_identifier, CAMT053_MESSAGE_DEFINITION
+        )
+
+        marker = b"  <BkToCstmrStmt>\n"
+        self.assertEqual(fixture.count(marker), 1)
+        foreign_namespace = "urn:cwl:test:foreign-camt053-lookalike"
+        hostile = fixture.replace(
+            marker,
+            f'  <BkToCstmrStmt xmlns="{foreign_namespace}">\n'.encode("utf-8"),
+            1,
+        )
+        self.assertNotEqual(hostile, fixture)
+
+        hostile_document = bank_statement._parse_bounded_xml(hostile)
+        self.assertEqual(hostile_document.namespace, bank_statement.CAMT053_NAMESPACE)
+        self.assertEqual(hostile_document.children[0].local_name, "BkToCstmrStmt")
+        self.assertEqual(hostile_document.children[0].namespace, foreign_namespace)
+
+        with patch.object(
+            bank_statement,
+            "_normalize_statement",
+            side_effect=AssertionError(
+                "foreign-namespace local-name lookalikes reached normalization before schema admission"
+            ),
+        ):
+            with self.assertRaisesRegex(AccountingValidationError, "schema|namespace"):
+                bank_statement.parse_bank_statement_payload(
+                    hostile, CAMT053_MESSAGE_DEFINITION
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
