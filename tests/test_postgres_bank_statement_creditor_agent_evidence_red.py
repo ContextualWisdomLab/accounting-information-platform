@@ -143,6 +143,10 @@ class BankStatementCreditorAgentEvidenceRedTests(unittest.TestCase):
 
         expected_hash = self._creditor_agent_evidence_hash()
         self.assertEqual(private_detail["creditor_agent_evidence_hash"], expected_hash)
+        for projection in (private_detail, baseline_detail):
+            source_detail_hash = projection["source_detail_hash"]
+            self.assertIsInstance(source_detail_hash, str)
+            self.assertRegex(source_detail_hash, r"\Asha256:[0-9a-f]{64}\Z")
         actual_projection = dict(private_detail)
         baseline_projection = dict(baseline_detail)
         actual_projection.pop("creditor_agent_evidence_hash")
