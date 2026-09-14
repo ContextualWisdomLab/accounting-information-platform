@@ -28,15 +28,19 @@ class BankStatementCreditorAccountEvidenceRedTests(unittest.TestCase):
         posting.PostgresPostingTests.setUpClass()
 
     def setUp(self) -> None:
-        """Create statements differing only in the first detail's creditor IBAN."""
+        """Create outgoing-payment details differing only in the creditor IBAN."""
         self.case = posting.PostgresPostingTests("setUp")
         self.case.setUp()
         self.addCleanup(self.case.doCleanups)
         self.addCleanup(self.case.tearDown)
         fixture = load_canonical_statement_fixture().decode("utf-8")
         marker = (
-            "              </Dbtr>\n"
-            "            </RltdPties>"
+            "            <AmtDtls>\n"
+            "              <TxAmt>\n"
+            "                <Amt Ccy=\"KRW\">6000.00</Amt>\n"
+            "              </TxAmt>\n"
+            "            </AmtDtls>\n"
+            "            <RmtInf>"
         )
         self.assertEqual(fixture.count(marker), 1)
         self.first_creditor_account_iban = "FR7630006000011234567890189"
@@ -74,13 +78,13 @@ class BankStatementCreditorAccountEvidenceRedTests(unittest.TestCase):
 
     def test_creditor_account_change_changes_detail_entry_and_statement_hashes(self) -> None:
         """Changing only CdtrAcct/Id/IBAN changes detail, entry, and statement identity."""
-        first_detail = self.first_statement.entries[0].entry_details[0]
-        second_detail = self.second_statement.entries[0].entry_details[0]
+        first_detail = self.first_statement.entries[1].entry_details[0]
+        second_detail = self.second_statement.entries[1].entry_details[0]
 
         self.assertNotEqual(first_detail.source_detail_hash, second_detail.source_detail_hash)
         self.assertNotEqual(
-            self.first_statement.entries[0].source_entry_hash,
-            self.second_statement.entries[0].source_entry_hash,
+            self.first_statement.entries[1].source_entry_hash,
+            self.second_statement.entries[1].source_entry_hash,
         )
         self.assertNotEqual(
             self.first_statement.normalized_payload_hash,
@@ -109,7 +113,7 @@ class BankStatementCreditorAccountEvidenceRedTests(unittest.TestCase):
 
     def test_entry_lookup_preserves_creditor_account_evidence_hash(self) -> None:
         """Buyer-visible detail reads retain purpose-bound creditor-account evidence."""
-        detail = self._ingest_and_read_first_detail(
+        detail = self._ingest_and_read_target_detail(
             self.first_payload,
             self.bank_account_reference,
             "lookup",
@@ -121,7 +125,7 @@ class BankStatementCreditorAccountEvidenceRedTests(unittest.TestCase):
 
     def test_creditor_account_projection_differs_from_baseline_only_by_digest(self) -> None:
         """Creditor-account source evidence adds no reversible buyer projection field."""
-        private_detail = self._ingest_and_read_first_detail(
+        private_detail = self._ingest_and_read_target_detail(
             self.first_payload,
             self.bank_account_reference,
             "private-projection",
@@ -137,7 +141,7 @@ class BankStatementCreditorAccountEvidenceRedTests(unittest.TestCase):
             posting.DATABASE_URL,
             self.case.policy.tenant_reference,
         )
-        baseline_detail = self._ingest_and_read_first_detail(
+        baseline_detail = self._ingest_and_read_target_detail(
             load_canonical_statement_fixture(),
             baseline_account_reference,
             "baseline",
@@ -159,25 +163,31 @@ class BankStatementCreditorAccountEvidenceRedTests(unittest.TestCase):
 
     @staticmethod
     def _with_creditor_account(fixture: str, marker: str, iban: str) -> bytes:
-        """Insert one reported creditor account beside the existing debtor party."""
+        """Insert one payee account into the first detail of the debit entry."""
         replacement = (
-            "              </Dbtr>\n"
+            "            <AmtDtls>\n"
+            "              <TxAmt>\n"
+            "                <Amt Ccy=\"KRW\">6000.00</Amt>\n"
+            "              </TxAmt>\n"
+            "            </AmtDtls>\n"
+            "            <RltdPties>\n"
             "              <CdtrAcct>\n"
             "                <Id>\n"
             f"                  <IBAN>{iban}</IBAN>\n"
             "                </Id>\n"
             "              </CdtrAcct>\n"
-            "            </RltdPties>"
+            "            </RltdPties>\n"
+            "            <RmtInf>"
         )
         return fixture.replace(marker, replacement, 1).encode("utf-8")
 
-    def _ingest_and_read_first_detail(
+    def _ingest_and_read_target_detail(
         self,
         payload: bytes,
         bank_account_reference: str,
         suffix: str,
     ) -> dict[str, object]:
-        """Ingest one fixture and return its first supported detail projection."""
+        """Ingest one fixture and return the first detail of its debit entry."""
         accepted = accept_bank_statement_evidence(
             {
                 "tenant_reference": self.case.policy.tenant_reference,
@@ -197,7 +207,7 @@ class BankStatementCreditorAccountEvidenceRedTests(unittest.TestCase):
             self.case.policy.tenant_reference,
             str(accepted["bank_statement_record_id"]),
         )
-        return document["bank_statement_entries"][0]["entry_details"][0]
+        return document["bank_statement_entries"][1]["entry_details"][0]
 
     def _creditor_account_evidence_hash(self) -> str:
         """Return the purpose-bound digest expected by the buyer projection."""
