@@ -1,4 +1,4 @@
-"""PostgreSQL REDs for remaining camt.053 transaction-agent role evidence."""
+"""PostgreSQL REDs for additional camt.053 transaction-agent role evidence."""
 
 from __future__ import annotations
 
