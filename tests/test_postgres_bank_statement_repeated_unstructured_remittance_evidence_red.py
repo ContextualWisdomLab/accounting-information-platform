@@ -93,13 +93,18 @@ class BankStatementRepeatedUnstructuredRemittanceEvidenceRedTests(unittest.TestC
             artifact_store=self.store,
         )
 
-        with self.assertRaises(AccountingValidationError):
+        with self.assertRaises(AccountingValidationError) as captured:
             accept_bank_statement_evidence(
                 self._command(self.second_payload, "second"),
                 posting.DATABASE_URL,
                 self.case.policy.tenant_reference,
                 artifact_store=self.store,
             )
+        self.assertEqual(
+            str(captured.exception),
+            "statement identity already exists with different entry evidence. "
+            "Use an explicit correction contract, then retry ingest.",
+        )
 
     def _command(self, payload: bytes, suffix: str) -> dict[str, object]:
         """Return one supported ingest command with a fresh replay key."""
