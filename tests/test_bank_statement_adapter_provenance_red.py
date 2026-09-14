@@ -221,6 +221,19 @@ class BankStatementAdapterProvenanceRedTests(unittest.TestCase):
         relabelled_notice["artifacts"][0]["artifact_role"] = "canonical_valid_fixture"
         hostile_manifests["role_path_relabel"] = relabelled_notice
 
+        extra_path = bank_statement._ADAPTER_ROOT / "adapter_manifest.json"
+        extra_payload = extra_path.read_bytes()
+        unregistered_extra = json.loads(json.dumps(baseline))
+        unregistered_extra["artifacts"].append(
+            {
+                "local_package_path": "iso20022/adapter_manifest.json",
+                "artifact_role": "unregistered_extra_evidence",
+                "sha256": hashlib.sha256(extra_payload).hexdigest(),
+                "byte_length": len(extra_payload),
+            }
+        )
+        hostile_manifests["unregistered_extra_role_and_path"] = unregistered_extra
+
         for attack, hostile in hostile_manifests.items():
             with self.subTest(attack=attack):
                 with mock.patch.object(
