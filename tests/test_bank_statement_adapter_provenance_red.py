@@ -157,6 +157,43 @@ class BankStatementAdapterProvenanceRedTests(unittest.TestCase):
                     ):
                         load_adapter_manifest()
 
+    def test_loader_rejects_unsupported_manifest_version(self) -> None:
+        """Inventory semantics must not silently drift behind an unvalidated manifest version."""
+        baseline = json.loads(
+            bank_statement._MANIFEST_PATH.read_text(encoding="utf-8")
+        )
+        baseline.update(
+            {
+                "message_definition_name": "BankToCustomerStatementV14",
+                "submitting_organization": "ISTH",
+                "source_message_set_last_updated": "2026-03-19",
+                "official_source_url": (
+                    "https://www.iso20022.org/iso-20022-message-definitions?search=camt.053"
+                ),
+            }
+        )
+        self.assertEqual(baseline.get("adapter_version"), "1")
+        with mock.patch.object(
+            bank_statement,
+            "_MANIFEST_PATH",
+            self._manifest_path_for(baseline),
+        ):
+            accepted = load_adapter_manifest()
+        self.assertEqual(accepted["adapter_version"], "1")
+
+        hostile = json.loads(json.dumps(baseline))
+        hostile["adapter_version"] = "2"
+        with mock.patch.object(
+            bank_statement,
+            "_MANIFEST_PATH",
+            self._manifest_path_for(hostile),
+        ):
+            with self.assertRaisesRegex(
+                AccountingValidationError,
+                "adapter manifest version",
+            ):
+                load_adapter_manifest()
+
     def test_loader_requires_complete_role_bound_artifact_inventory(self) -> None:
         """A hash-valid subset or role-relabelled set cannot redefine adapter evidence."""
         baseline = json.loads(
@@ -172,6 +209,7 @@ class BankStatementAdapterProvenanceRedTests(unittest.TestCase):
                 ),
             }
         )
+        self.assertEqual(baseline.get("adapter_version"), "1")
         expected_inventory = {
             "provenance_notice": "iso20022/NOTICE",
             "canonical_valid_fixture": (
