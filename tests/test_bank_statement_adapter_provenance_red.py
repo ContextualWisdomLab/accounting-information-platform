@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import accounting_information_platform.bank_statement as bank_statement
@@ -102,7 +103,21 @@ class BankStatementAdapterProvenanceRedTests(unittest.TestCase):
                 ),
             }
         )
-        outside_path = (bank_statement._ADAPTER_ROOT.parent / "bank_statement.py").resolve()
+        with mock.patch.object(
+            bank_statement,
+            "_MANIFEST_PATH",
+            self._manifest_path_for(baseline),
+        ):
+            accepted = load_adapter_manifest()
+        self.assertEqual(
+            accepted["message_definition_identifier"],
+            CAMT053_MESSAGE_DEFINITION,
+        )
+        self.assertEqual(accepted["submitting_organization"], "ISTH")
+        self.assertEqual(accepted["source_message_set_last_updated"], "2026-03-19")
+
+        adapter_root = bank_statement._ADAPTER_ROOT.resolve()
+        outside_path = (adapter_root.parent / "bank_statement.py").resolve()
         outside_payload = outside_path.read_bytes()
         outside_digest = hashlib.sha256(outside_payload).hexdigest()
         hostile_paths = {
@@ -112,6 +127,15 @@ class BankStatementAdapterProvenanceRedTests(unittest.TestCase):
 
         for attack, local_package_path in hostile_paths.items():
             with self.subTest(attack=attack):
+                raw_path = Path(local_package_path)
+                resolved_path = (
+                    raw_path
+                    if raw_path.is_absolute()
+                    else adapter_root.parent / raw_path
+                ).resolve()
+                with self.assertRaises(ValueError):
+                    resolved_path.relative_to(adapter_root)
+
                 hostile = json.loads(json.dumps(baseline))
                 artifact = dict(hostile["artifacts"][0])
                 artifact.update(
