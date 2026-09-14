@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import unittest
 from unittest import mock
@@ -83,6 +84,52 @@ class BankStatementAdapterProvenanceRedTests(unittest.TestCase):
                     with self.assertRaisesRegex(
                         AccountingValidationError,
                         "adapter catalogue provenance",
+                    ):
+                        load_adapter_manifest()
+
+    def test_loader_rejects_hash_valid_artifact_path_escape(self) -> None:
+        """A valid digest cannot authorize manifest reads outside the ISO adapter root."""
+        baseline = json.loads(
+            bank_statement._MANIFEST_PATH.read_text(encoding="utf-8")
+        )
+        baseline.update(
+            {
+                "message_definition_name": "BankToCustomerStatementV14",
+                "submitting_organization": "ISTH",
+                "source_message_set_last_updated": "2026-03-19",
+                "official_source_url": (
+                    "https://www.iso20022.org/iso-20022-message-definitions?search=camt.053"
+                ),
+            }
+        )
+        outside_path = (bank_statement._ADAPTER_ROOT.parent / "bank_statement.py").resolve()
+        outside_payload = outside_path.read_bytes()
+        outside_digest = hashlib.sha256(outside_payload).hexdigest()
+        hostile_paths = {
+            "relative_traversal": "iso20022/../bank_statement.py",
+            "absolute_bypass": str(outside_path),
+        }
+
+        for attack, local_package_path in hostile_paths.items():
+            with self.subTest(attack=attack):
+                hostile = json.loads(json.dumps(baseline))
+                artifact = dict(hostile["artifacts"][0])
+                artifact.update(
+                    {
+                        "local_package_path": local_package_path,
+                        "sha256": outside_digest,
+                        "byte_length": len(outside_payload),
+                    }
+                )
+                hostile["artifacts"][0] = artifact
+                with mock.patch.object(
+                    bank_statement,
+                    "_MANIFEST_PATH",
+                    self._manifest_path_for(hostile),
+                ):
+                    with self.assertRaisesRegex(
+                        AccountingValidationError,
+                        "adapter artifact path",
                     ):
                         load_adapter_manifest()
 
