@@ -100,7 +100,10 @@ class BankStatementDetailInterbankSettlementDateEvidenceRedTests(unittest.TestCa
 
         with self.assertRaisesRegex(
             AccountingValidationError,
-            r"^statement identity already exists with different entry evidence\.",
+            (
+                r"^statement identity already exists with different entry evidence\. "
+                r"Use an explicit correction contract, then retry ingest\.$"
+            ),
         ):
             accept_bank_statement_evidence(
                 self._command(self.second_payload, "second"),
