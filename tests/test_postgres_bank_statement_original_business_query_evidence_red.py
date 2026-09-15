@@ -37,35 +37,43 @@ class BankStatementOriginalBusinessQueryEvidenceRedTests(unittest.TestCase):
         self.fixture = load_canonical_statement_fixture().decode("utf-8")
         self.first_query_message_identity_reference = "QUERY-REQUEST-2026-08-24-001"
         self.second_query_message_identity_reference = "QUERY-REQUEST-2026-08-24-002"
-        self.query_message_name_identifier = "camt.060.001.06"
+        self.query_message_name_identifier = "camt.060.001.07"
+        self.second_query_message_name_identifier = "camt.060.001.06"
         self.query_created_at = "2026-08-24T08:55:00+00:00"
         self.query_created_at_equivalent = "2026-08-24T17:55:00+09:00"
+        self.second_query_created_at = "2026-08-24T08:55:01+00:00"
 
         self.first_payload = self._with_original_business_query(
             message_identity_reference=self.first_query_message_identity_reference,
+            message_name_identifier=self.query_message_name_identifier,
             created_at=self.query_created_at,
         )
         self.second_payload = self._with_original_business_query(
             message_identity_reference=self.second_query_message_identity_reference,
+            message_name_identifier=self.query_message_name_identifier,
             created_at=self.query_created_at,
+        )
+        self.name_changed_payload = self._with_original_business_query(
+            message_identity_reference=self.first_query_message_identity_reference,
+            message_name_identifier=self.second_query_message_name_identifier,
+            created_at=self.query_created_at,
+        )
+        self.instant_changed_payload = self._with_original_business_query(
+            message_identity_reference=self.first_query_message_identity_reference,
+            message_name_identifier=self.query_message_name_identifier,
+            created_at=self.second_query_created_at,
         )
         self.equivalent_instant_payload = self._with_original_business_query(
             message_identity_reference=self.first_query_message_identity_reference,
+            message_name_identifier=self.query_message_name_identifier,
             created_at=self.query_created_at_equivalent,
         )
 
-        self.first_statement = parse_bank_statement_payload(
-            self.first_payload,
-            CAMT053_MESSAGE_DEFINITION,
-        )
-        self.second_statement = parse_bank_statement_payload(
-            self.second_payload,
-            CAMT053_MESSAGE_DEFINITION,
-        )
-        self.equivalent_instant_statement = parse_bank_statement_payload(
-            self.equivalent_instant_payload,
-            CAMT053_MESSAGE_DEFINITION,
-        )
+        self.first_statement = self._parse(self.first_payload)
+        self.second_statement = self._parse(self.second_payload)
+        self.name_changed_statement = self._parse(self.name_changed_payload)
+        self.instant_changed_statement = self._parse(self.instant_changed_payload)
+        self.equivalent_instant_statement = self._parse(self.equivalent_instant_payload)
 
         self.bank_account_reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
         accept_bank_account_record(
@@ -80,21 +88,26 @@ class BankStatementOriginalBusinessQueryEvidenceRedTests(unittest.TestCase):
         )
         self.store = MemoryArtifactStore()
 
-    def test_original_business_query_changes_normalized_statement_identity(self) -> None:
-        """Changing only OrgnlBizQry/MsgId changes normalized statement evidence."""
-        self.assertNotEqual(self.first_payload, self.second_payload)
-        self.assertEqual(
-            self.first_statement.account_identifier_hash,
-            self.second_statement.account_identifier_hash,
-        )
-        self.assertNotEqual(
-            self.first_statement.source_artifact_hash,
-            self.second_statement.source_artifact_hash,
-        )
-        self.assertNotEqual(
-            self.first_statement.normalized_payload_hash,
-            self.second_statement.normalized_payload_hash,
-        )
+    def test_original_business_query_fields_change_normalized_statement_identity(self) -> None:
+        """MsgId, MsgNmId, and the query creation instant are material provenance."""
+        for label, changed_statement in (
+            ("message-identity", self.second_statement),
+            ("message-name", self.name_changed_statement),
+            ("creation-instant", self.instant_changed_statement),
+        ):
+            with self.subTest(field=label):
+                self.assertEqual(
+                    self.first_statement.account_identifier_hash,
+                    changed_statement.account_identifier_hash,
+                )
+                self.assertNotEqual(
+                    self.first_statement.source_artifact_hash,
+                    changed_statement.source_artifact_hash,
+                )
+                self.assertNotEqual(
+                    self.first_statement.normalized_payload_hash,
+                    changed_statement.normalized_payload_hash,
+                )
 
     def test_original_business_query_datetime_is_instant_semantic(self) -> None:
         """Equivalent ISODateTime offsets retain one normalized query provenance instant."""
@@ -160,6 +173,10 @@ class BankStatementOriginalBusinessQueryEvidenceRedTests(unittest.TestCase):
         expected_created_at = datetime.fromisoformat(self.query_created_at)
         self.assertEqual(actual_created_at, expected_created_at)
 
+    def _parse(self, payload: bytes):
+        """Parse one test payload through the supported adapter."""
+        return parse_bank_statement_payload(payload, CAMT053_MESSAGE_DEFINITION)
+
     def _command(self, payload: bytes, suffix: str) -> dict[str, object]:
         """Build one supported ingest command with a fresh replay identity."""
         return {
@@ -174,6 +191,7 @@ class BankStatementOriginalBusinessQueryEvidenceRedTests(unittest.TestCase):
         self,
         *,
         message_identity_reference: str,
+        message_name_identifier: str,
         created_at: str,
     ) -> bytes:
         """Insert one schema-shaped OriginalBusinessQuery1 after GroupHeader creation time."""
@@ -188,7 +206,7 @@ class BankStatementOriginalBusinessQueryEvidenceRedTests(unittest.TestCase):
             "      <CreDtTm>2026-08-24T09:00:00+00:00</CreDtTm>\n"
             "      <OrgnlBizQry>\n"
             f"        <MsgId>{message_identity_reference}</MsgId>\n"
-            f"        <MsgNmId>{self.query_message_name_identifier}</MsgNmId>\n"
+            f"        <MsgNmId>{message_name_identifier}</MsgNmId>\n"
             f"        <CreDtTm>{created_at}</CreDtTm>\n"
             "      </OrgnlBizQry>\n"
             "    </GrpHdr>",
