@@ -1,4 +1,4 @@
-"""PostgreSQL REDs for uncontracted camt.053 statement supplementary data."""
+"""PostgreSQL REDs for uncontracted camt.053 message supplementary data."""
 
 from __future__ import annotations
 
@@ -17,13 +17,13 @@ from accounting_information_platform import (
 from tests import test_postgres_posting as posting
 
 _EXTENSION_ERROR = (
-    r"^Stmt/SplmtryData is unsupported until a versioned extension contract is configured\. "
+    r"^BkToCstmrStmt/SplmtryData is unsupported until a versioned extension contract is configured\. "
     r"Configure the extension contract, then retry ingest\.$"
 )
 
 
 class BankStatementSupplementaryDataFailClosedRedTests(unittest.TestCase):
-    """Reject statement extensions that AIP cannot yet retain and interpret safely."""
+    """Reject message extensions that AIP cannot yet retain and interpret safely."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -31,7 +31,7 @@ class BankStatementSupplementaryDataFailClosedRedTests(unittest.TestCase):
         posting.PostgresPostingTests.setUpClass()
 
     def setUp(self) -> None:
-        """Prepare one valid statement plus a schema-shaped statement extension."""
+        """Prepare one valid statement message plus a schema-shaped extension."""
         self.case = posting.PostgresPostingTests("setUp")
         self.case.setUp()
         self.addCleanup(self.case.doCleanups)
@@ -42,7 +42,7 @@ class BankStatementSupplementaryDataFailClosedRedTests(unittest.TestCase):
             self.baseline_payload,
             CAMT053_MESSAGE_DEFINITION,
         )
-        self.extended_payload = self._with_statement_supplementary_data(
+        self.extended_payload = self._with_message_supplementary_data(
             self.baseline_payload.decode("utf-8")
         )
         self.bank_account_reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
@@ -58,15 +58,15 @@ class BankStatementSupplementaryDataFailClosedRedTests(unittest.TestCase):
         )
         self.store = MemoryArtifactStore()
 
-    def test_statement_supplementary_data_fails_closed_before_normalization(self) -> None:
-        """Unknown Stmt/SplmtryData cannot disappear into the baseline statement identity."""
+    def test_message_supplementary_data_fails_closed_before_normalization(self) -> None:
+        """Unknown BkToCstmrStmt/SplmtryData cannot disappear from evidence identity."""
         with self.assertRaisesRegex(AccountingValidationError, _EXTENSION_ERROR):
             parse_bank_statement_payload(
                 self.extended_payload,
                 CAMT053_MESSAGE_DEFINITION,
             )
 
-    def test_rejected_statement_extension_is_not_retained_as_ingested_evidence(self) -> None:
+    def test_rejected_message_extension_is_not_retained_as_ingested_evidence(self) -> None:
         """Fail closed before an unsupported extension can become durable statement evidence."""
         with self.assertRaisesRegex(AccountingValidationError, _EXTENSION_ERROR):
             accept_bank_statement_evidence(
@@ -74,7 +74,7 @@ class BankStatementSupplementaryDataFailClosedRedTests(unittest.TestCase):
                     "tenant_reference": self.case.policy.tenant_reference,
                     "bank_account_reference": self.bank_account_reference,
                     "ingestion_idempotency_key": (
-                        f"statement-supplementary-data-{uuid.uuid4().hex}"
+                        f"message-supplementary-data-{uuid.uuid4().hex}"
                     ),
                     "message_definition_identifier": CAMT053_MESSAGE_DEFINITION,
                     "statement_payload": self.extended_payload.decode("utf-8"),
@@ -90,7 +90,7 @@ class BankStatementSupplementaryDataFailClosedRedTests(unittest.TestCase):
             "unsupported extension bytes must not be retained as accepted evidence",
         )
 
-    def test_supported_statement_without_extension_remains_parseable(self) -> None:
+    def test_supported_message_without_extension_remains_parseable(self) -> None:
         """The fail-closed boundary must not reject the canonical supported profile."""
         statement = parse_bank_statement_payload(
             self.baseline_payload,
@@ -103,23 +103,23 @@ class BankStatementSupplementaryDataFailClosedRedTests(unittest.TestCase):
         self.assertTrue(statement.entries)
 
     @staticmethod
-    def _with_statement_supplementary_data(fixture: str) -> bytes:
-        """Add one lawful SupplementaryData1 envelope at the end of Stmt."""
+    def _with_message_supplementary_data(fixture: str) -> bytes:
+        """Add one lawful SupplementaryData1 sibling after the final Stmt."""
         marker = "    </Stmt>\n  </BkToCstmrStmt>"
         if fixture.count(marker) != 1:
             raise AssertionError("canonical fixture must contain exactly one statement terminator")
         return fixture.replace(
             marker,
-            "      <SplmtryData>\n"
-            "        <PlcAndNm>/Document/BkToCstmrStmt/Stmt</PlcAndNm>\n"
-            "        <Envlp>\n"
-            "          <cwl:ReconciliationEvidence "
-            'xmlns:cwl="urn:contextualwisdomlab:accounting:statement-evidence:v1">\n'
-            "            <cwl:ControlReference>supplementary-control-001</cwl:ControlReference>\n"
-            "          </cwl:ReconciliationEvidence>\n"
-            "        </Envlp>\n"
-            "      </SplmtryData>\n"
             "    </Stmt>\n"
+            "    <SplmtryData>\n"
+            "      <PlcAndNm>/Document/BkToCstmrStmt</PlcAndNm>\n"
+            "      <Envlp>\n"
+            "        <cwl:ReconciliationEvidence "
+            'xmlns:cwl="urn:contextualwisdomlab:accounting:statement-evidence:v1">\n'
+            "          <cwl:ControlReference>supplementary-control-001</cwl:ControlReference>\n"
+            "        </cwl:ReconciliationEvidence>\n"
+            "      </Envlp>\n"
+            "    </SplmtryData>\n"
             "  </BkToCstmrStmt>",
             1,
         ).encode("utf-8")
