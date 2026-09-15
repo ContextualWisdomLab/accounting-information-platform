@@ -61,12 +61,8 @@ class BankStatementPaymentAgentRoleEvidenceRedTests(unittest.TestCase):
                 second = self._statement(self._with_agent(element_name, second_bicfi))
                 first_detail = first.entries[1].entry_details[0]
                 second_detail = second.entries[1].entry_details[0]
-
                 self.assertNotEqual(first_detail.source_detail_hash, second_detail.source_detail_hash)
-                self.assertNotEqual(
-                    first.entries[1].source_entry_hash,
-                    second.entries[1].source_entry_hash,
-                )
+                self.assertNotEqual(first.entries[1].source_entry_hash, second.entries[1].source_entry_hash)
                 self.assertNotEqual(first.normalized_payload_hash, second.normalized_payload_hash)
 
     def test_each_payment_agent_role_reaches_statement_correction_boundary(self) -> None:
@@ -76,12 +72,8 @@ class BankStatementPaymentAgentRoleEvidenceRedTests(unittest.TestCase):
                 first_payload = self._with_agent(element_name, first_bicfi)
                 second_payload = self._with_agent(element_name, second_bicfi)
                 statement = self._statement(first_payload)
-                account_reference = self._register_account(
-                    statement,
-                    f"correction-{element_name.lower()}",
-                )
+                account_reference = self._register_account(statement, f"correction-{element_name.lower()}")
                 store = MemoryArtifactStore()
-
                 accept_bank_statement_evidence(
                     self._command(first_payload, account_reference, f"first-{element_name}"),
                     posting.DATABASE_URL,
@@ -90,7 +82,10 @@ class BankStatementPaymentAgentRoleEvidenceRedTests(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(
                     AccountingValidationError,
-                    r"statement identity already exists with different entry evidence",
+                    (
+                        r"^statement identity already exists with different entry evidence\. "
+                        r"Use an explicit correction contract, then retry ingest\.$"
+                    ),
                 ):
                     accept_bank_statement_evidence(
                         self._command(second_payload, account_reference, f"second-{element_name}"),
@@ -106,38 +101,18 @@ class BankStatementPaymentAgentRoleEvidenceRedTests(unittest.TestCase):
             with self.subTest(element_name=element_name):
                 private_payload = self._with_agent(element_name, first_bicfi)
                 private_statement = self._statement(private_payload)
-                private_account = self._register_account(
-                    private_statement,
-                    f"private-{element_name.lower()}",
-                )
-                private_detail = self._ingest_and_read_target_detail(
-                    private_payload,
-                    private_account,
-                    f"private-{element_name}",
-                )
-
-                # A tenant-wide source_artifact_hash is replay authority. Vary only
-                # trailing XML whitespace so each baseline has distinct source bytes
-                # while preserving the same normalized no-private-evidence projection.
+                private_account = self._register_account(private_statement, f"private-{element_name.lower()}")
+                private_detail = self._ingest_and_read_target_detail(private_payload, private_account, f"private-{element_name}")
                 baseline_payload = load_canonical_statement_fixture() + (b"\n" * baseline_variant)
                 baseline_statement = self._statement(baseline_payload)
-                baseline_account = self._register_account(
-                    baseline_statement,
-                    f"baseline-{element_name.lower()}",
-                )
-                baseline_detail = self._ingest_and_read_target_detail(
-                    baseline_payload,
-                    baseline_account,
-                    f"baseline-{element_name}",
-                )
-
+                baseline_account = self._register_account(baseline_statement, f"baseline-{element_name.lower()}")
+                baseline_detail = self._ingest_and_read_target_detail(baseline_payload, baseline_account, f"baseline-{element_name}")
                 expected_hash = "sha256:" + hashlib.sha256(first_bicfi.encode("utf-8")).hexdigest()
                 self.assertEqual(private_detail[digest_key], expected_hash)
                 for projection in (private_detail, baseline_detail):
                     source_detail_hash = projection["source_detail_hash"]
                     self.assertIsInstance(source_detail_hash, str)
                     self.assertRegex(source_detail_hash, r"\Asha256:[0-9a-f]{64}\Z")
-
                 actual_projection = dict(private_detail)
                 baseline_projection = dict(baseline_detail)
                 actual_projection.pop(digest_key)
@@ -187,12 +162,7 @@ class BankStatementPaymentAgentRoleEvidenceRedTests(unittest.TestCase):
         )
         return reference
 
-    def _ingest_and_read_target_detail(
-        self,
-        payload: bytes,
-        account_reference: str,
-        suffix: str,
-    ) -> dict[str, object]:
+    def _ingest_and_read_target_detail(self, payload: bytes, account_reference: str, suffix: str) -> dict[str, object]:
         """Ingest one fixture and return the first detail of its debit entry."""
         accepted = accept_bank_statement_evidence(
             self._command(payload, account_reference, suffix),
@@ -207,12 +177,7 @@ class BankStatementPaymentAgentRoleEvidenceRedTests(unittest.TestCase):
         )
         return document["bank_statement_entries"][1]["entry_details"][0]
 
-    def _command(
-        self,
-        payload: bytes,
-        account_reference: str,
-        suffix: str,
-    ) -> dict[str, object]:
+    def _command(self, payload: bytes, account_reference: str, suffix: str) -> dict[str, object]:
         """Return one supported ingest command with an isolated replay key."""
         return {
             "tenant_reference": self.case.policy.tenant_reference,
