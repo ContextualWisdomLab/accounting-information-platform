@@ -35,35 +35,17 @@ class BankStatementReturnReasonEvidenceRedTests(unittest.TestCase):
         fixture = load_canonical_statement_fixture().decode("utf-8")
         reversal_marker = "        <RvslInd>false</RvslInd>"
         self.assertEqual(fixture.count(reversal_marker), 1)
-        fixture = fixture.replace(
-            reversal_marker,
-            "        <RvslInd>true</RvslInd>",
-            1,
-        )
+        fixture = fixture.replace(reversal_marker, "        <RvslInd>true</RvslInd>", 1)
         detail_marker = (
             "            <RmtInf>\n"
             "              <Ustrd>Invoice 1001</Ustrd>\n"
             "            </RmtInf>"
         )
         self.assertEqual(fixture.count(detail_marker), 1)
-        self.first_payload = self._with_return_reason(
-            fixture,
-            detail_marker,
-            "AM09",
-        )
-        self.second_payload = self._with_return_reason(
-            fixture,
-            detail_marker,
-            "AC04",
-        )
-        self.first_statement = parse_bank_statement_payload(
-            self.first_payload,
-            CAMT053_MESSAGE_DEFINITION,
-        )
-        self.second_statement = parse_bank_statement_payload(
-            self.second_payload,
-            CAMT053_MESSAGE_DEFINITION,
-        )
+        self.first_payload = self._with_return_reason(fixture, detail_marker, "AM09")
+        self.second_payload = self._with_return_reason(fixture, detail_marker, "AC04")
+        self.first_statement = parse_bank_statement_payload(self.first_payload, CAMT053_MESSAGE_DEFINITION)
+        self.second_statement = parse_bank_statement_payload(self.second_payload, CAMT053_MESSAGE_DEFINITION)
         self.bank_account_reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
         accept_bank_account_record(
             {
@@ -81,16 +63,9 @@ class BankStatementReturnReasonEvidenceRedTests(unittest.TestCase):
         """Changing only RtrInf/Rsn/Cd changes all retained evidence identities."""
         first_detail = self.first_statement.entries[0].entry_details[0]
         second_detail = self.second_statement.entries[0].entry_details[0]
-
         self.assertNotEqual(first_detail.source_detail_hash, second_detail.source_detail_hash)
-        self.assertNotEqual(
-            self.first_statement.entries[0].source_entry_hash,
-            self.second_statement.entries[0].source_entry_hash,
-        )
-        self.assertNotEqual(
-            self.first_statement.normalized_payload_hash,
-            self.second_statement.normalized_payload_hash,
-        )
+        self.assertNotEqual(self.first_statement.entries[0].source_entry_hash, self.second_statement.entries[0].source_entry_hash)
+        self.assertNotEqual(self.first_statement.normalized_payload_hash, self.second_statement.normalized_payload_hash)
 
     def test_same_statement_identity_cannot_replay_changed_return_reason(self) -> None:
         """Changed return evidence requires correction, not silent statement replay."""
@@ -100,10 +75,12 @@ class BankStatementReturnReasonEvidenceRedTests(unittest.TestCase):
             self.case.policy.tenant_reference,
             artifact_store=self.store,
         )
-
         with self.assertRaisesRegex(
             AccountingValidationError,
-            r"^statement identity already exists with different entry evidence\.",
+            (
+                r"^statement identity already exists with different entry evidence\. "
+                r"Use an explicit correction contract, then retry ingest\.$"
+            ),
         ):
             accept_bank_statement_evidence(
                 self._command(self.second_payload, "second"),
@@ -120,13 +97,11 @@ class BankStatementReturnReasonEvidenceRedTests(unittest.TestCase):
             self.case.policy.tenant_reference,
             artifact_store=self.store,
         )
-
         document = lookup_bank_statement_entries(
             posting.DATABASE_URL,
             self.case.policy.tenant_reference,
             str(accepted["bank_statement_record_id"]),
         )
-
         first_detail = document["bank_statement_entries"][0]["entry_details"][0]
         self.assertEqual(first_detail["return_reason_code"], "AM09")
 
