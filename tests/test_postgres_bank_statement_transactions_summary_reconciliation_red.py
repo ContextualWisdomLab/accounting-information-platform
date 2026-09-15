@@ -61,6 +61,13 @@ class BankStatementTransactionsSummaryReconciliationRedTests(unittest.TestCase):
             debit_count="1",
             debit_sum="10000.00",
         )
+        self.debit_count_mismatch_payload = self._with_summary(
+            fixture,
+            credit_count="1",
+            credit_sum="25000.00",
+            debit_count="2",
+            debit_sum="10000.00",
+        )
         self.debit_sum_mismatch_payload = self._with_summary(
             fixture,
             credit_count="1",
@@ -149,6 +156,16 @@ class BankStatementTransactionsSummaryReconciliationRedTests(unittest.TestCase):
         with self.assertRaisesRegex(AccountingValidationError, _SUMMARY_MISMATCH):
             accept_bank_statement_evidence(
                 self._command(self.credit_sum_mismatch_payload, "credit-sum"),
+                posting.DATABASE_URL,
+                self.case.policy.tenant_reference,
+                artifact_store=self.store,
+            )
+
+    def test_debit_count_mismatch_fails_closed(self) -> None:
+        """Reported debit count must equal the normalized DBIT entry population."""
+        with self.assertRaisesRegex(AccountingValidationError, _SUMMARY_MISMATCH):
+            accept_bank_statement_evidence(
+                self._command(self.debit_count_mismatch_payload, "debit-count"),
                 posting.DATABASE_URL,
                 self.case.policy.tenant_reference,
                 artifact_store=self.store,
