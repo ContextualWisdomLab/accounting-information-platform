@@ -8,6 +8,8 @@ import re
 import unittest
 import uuid
 
+import psycopg
+
 from accounting_information_platform import (
     AccountingValidationError,
     CAMT053_MESSAGE_DEFINITION,
@@ -203,13 +205,7 @@ class BankStatementGroupAdditionalInformationEvidenceRedTests(unittest.TestCase)
         self.assertEqual(actual.get("group_additional_information_evidence_hash"), expected_hash)
         serialized_actual = json.dumps(actual, sort_keys=True)
         self.assertNotIn(self.first_information, serialized_actual)
-        narrative_derived_id = uuid.UUID(
-            bytes=hashlib.sha256(self.first_information.encode("utf-8")).digest()[:16]
-        )
-        self.assertNotEqual(
-            uuid.UUID(str(actual["bank_statement_record_id"])),
-            narrative_derived_id,
-        )
+        self._assert_statement_record_identity_server_owned(actual)
 
         actual_without_evidence = dict(actual)
         baseline_without_evidence = dict(baseline)
@@ -258,6 +254,196 @@ class BankStatementGroupAdditionalInformationEvidenceRedTests(unittest.TestCase)
             + hashlib.sha256(serialized_projection.encode("utf-8")).hexdigest()
         )
         self.assertEqual(statement.normalized_payload_hash, expected_statement_hash)
+
+    def _assert_statement_record_identity_server_owned(
+        self,
+        document: dict[str, object],
+    ) -> None:
+        """Prove an excluded record UUID cannot be supplied from GroupHeader narrative."""
+        retained_record_id = uuid.UUID(str(document["bank_statement_record_id"]))
+        narrative_derived_id = uuid.UUID(
+            bytes=hashlib.sha256(self.first_information.encode("utf-8")).digest()[:16]
+        )
+        self.assertNotEqual(retained_record_id, narrative_derived_id)
+
+        connection = psycopg.connect(posting.DATABASE_URL)
+        try:
+            tenant_id = connection.execute(
+                """
+                SELECT tenant_account_id
+                FROM accounting_core.tenant_account
+                WHERE tenant_account_code = %s
+                """,
+                (self.case.policy.tenant_reference,),
+            ).fetchone()[0]
+            connection.execute(
+                "SELECT set_config('app.tenant_account_id', %s, false)",
+                (str(tenant_id),),
+            )
+            bank_account_record_id = connection.execute(
+                """
+                SELECT bank_account_record_id
+                FROM accounting_integration.bank_statement_record
+                WHERE tenant_account_id = accounting_core.current_tenant_account_id()
+                  AND bank_statement_record_id = %s
+                """,
+                (retained_record_id,),
+            ).fetchone()[0]
+
+            direct_source_hash = self._fresh_hash()
+            direct_statement_identity = (
+                f"group-additional-server-owned-statement-{uuid.uuid4().hex}"
+            )
+            direct_idempotency_key = (
+                f"group-additional-server-owned-ingest-{uuid.uuid4().hex}"
+            )
+            direct_normalized_hash = self._fresh_hash()
+            self._assert_direct_statement_uniqueness_absent(
+                connection,
+                narrative_derived_id,
+                bank_account_record_id,
+                direct_source_hash,
+                direct_statement_identity,
+                direct_idempotency_key,
+            )
+
+            direct_artifact_id = connection.execute(
+                """
+                INSERT INTO accounting_integration.bank_statement_artifact (
+                    tenant_account_id,
+                    source_artifact_hash,
+                    artifact_store_reference,
+                    artifact_byte_length
+                )
+                VALUES (
+                    accounting_core.current_tenant_account_id(),
+                    %s,
+                    %s,
+                    1
+                )
+                RETURNING bank_statement_artifact_id
+                """,
+                (
+                    direct_source_hash,
+                    f"memory:{direct_source_hash}",
+                ),
+            ).fetchone()[0]
+
+            try:
+                directly_retained_id = connection.execute(
+                    """
+                    INSERT INTO accounting_integration.bank_statement_record (
+                        bank_statement_record_id,
+                        tenant_account_id,
+                        bank_account_record_id,
+                        bank_statement_artifact_id,
+                        message_definition_identifier,
+                        statement_identity_reference,
+                        source_artifact_hash,
+                        normalized_payload_hash,
+                        ingestion_idempotency_key
+                    )
+                    VALUES (
+                        %s,
+                        accounting_core.current_tenant_account_id(),
+                        %s,
+                        %s,
+                        'camt.053.001.14',
+                        %s,
+                        %s,
+                        %s,
+                        %s
+                    )
+                    RETURNING bank_statement_record_id
+                    """,
+                    (
+                        narrative_derived_id,
+                        bank_account_record_id,
+                        direct_artifact_id,
+                        direct_statement_identity,
+                        direct_source_hash,
+                        direct_normalized_hash,
+                        direct_idempotency_key,
+                    ),
+                ).fetchone()[0]
+            except psycopg.IntegrityError:
+                connection.rollback()
+                return
+
+            connection.rollback()
+            self.assertNotEqual(directly_retained_id, narrative_derived_id)
+        finally:
+            connection.close()
+
+    def _assert_direct_statement_uniqueness_absent(
+        self,
+        connection: psycopg.Connection[tuple[object, ...]],
+        proposed_record_id: uuid.UUID,
+        bank_account_record_id: object,
+        source_artifact_hash: str,
+        statement_identity_reference: str,
+        ingestion_idempotency_key: str,
+    ) -> None:
+        """Exclude existing uniqueness keys before probing server-owned record identity."""
+        record_id_count = connection.execute(
+            """
+            SELECT count(*)
+            FROM accounting_integration.bank_statement_record
+            WHERE bank_statement_record_id = %s
+            """,
+            (proposed_record_id,),
+        ).fetchone()[0]
+        self.assertEqual(record_id_count, 0)
+
+        artifact_source = connection.execute(
+            """
+            SELECT 1
+            FROM accounting_integration.bank_statement_artifact
+            WHERE tenant_account_id = accounting_core.current_tenant_account_id()
+              AND source_artifact_hash = %s
+            """,
+            (source_artifact_hash,),
+        ).fetchone()
+        self.assertIsNone(artifact_source)
+
+        statement_source = connection.execute(
+            """
+            SELECT 1
+            FROM accounting_integration.bank_statement_record
+            WHERE tenant_account_id = accounting_core.current_tenant_account_id()
+              AND source_artifact_hash = %s
+            """,
+            (source_artifact_hash,),
+        ).fetchone()
+        self.assertIsNone(statement_source)
+
+        statement_identity = connection.execute(
+            """
+            SELECT 1
+            FROM accounting_integration.bank_statement_record
+            WHERE tenant_account_id = accounting_core.current_tenant_account_id()
+              AND bank_account_record_id = %s
+              AND statement_identity_reference = %s
+            """,
+            (bank_account_record_id, statement_identity_reference),
+        ).fetchone()
+        self.assertIsNone(statement_identity)
+
+        ingestion_identity = connection.execute(
+            """
+            SELECT 1
+            FROM accounting_integration.bank_statement_record
+            WHERE tenant_account_id = accounting_core.current_tenant_account_id()
+              AND ingestion_idempotency_key = %s
+            """,
+            (ingestion_idempotency_key,),
+        ).fetchone()
+        self.assertIsNone(ingestion_identity)
+
+    @staticmethod
+    def _fresh_hash() -> str:
+        """Return canonical SHA-256 evidence derived from fresh test entropy."""
+        return "sha256:" + hashlib.sha256(uuid.uuid4().bytes).hexdigest()
 
     def _expected_information_hash(self, information: str) -> str:
         """Return the canonical digest for GroupHeader AdditionalInformation text."""
