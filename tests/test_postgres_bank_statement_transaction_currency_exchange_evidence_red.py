@@ -44,24 +44,10 @@ class BankStatementTransactionCurrencyExchangeEvidenceRedTests(unittest.TestCase
         self.unit_currency_code = "USD"
         self.first_exchange_rate = "1333.333333"
         self.second_exchange_rate = "1333.333334"
-        self.first_payload = self._with_transaction_exchange_rate(
-            fixture,
-            marker,
-            self.first_exchange_rate,
-        )
-        self.second_payload = self._with_transaction_exchange_rate(
-            fixture,
-            marker,
-            self.second_exchange_rate,
-        )
-        self.first_statement = parse_bank_statement_payload(
-            self.first_payload,
-            CAMT053_MESSAGE_DEFINITION,
-        )
-        self.second_statement = parse_bank_statement_payload(
-            self.second_payload,
-            CAMT053_MESSAGE_DEFINITION,
-        )
+        self.first_payload = self._with_transaction_exchange_rate(fixture, marker, self.first_exchange_rate)
+        self.second_payload = self._with_transaction_exchange_rate(fixture, marker, self.second_exchange_rate)
+        self.first_statement = parse_bank_statement_payload(self.first_payload, CAMT053_MESSAGE_DEFINITION)
+        self.second_statement = parse_bank_statement_payload(self.second_payload, CAMT053_MESSAGE_DEFINITION)
         self.bank_account_reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
         accept_bank_account_record(
             {
@@ -81,14 +67,8 @@ class BankStatementTransactionCurrencyExchangeEvidenceRedTests(unittest.TestCase
             self.first_statement.entries[0].entry_details[0].source_detail_hash,
             self.second_statement.entries[0].entry_details[0].source_detail_hash,
         )
-        self.assertNotEqual(
-            self.first_statement.entries[0].source_entry_hash,
-            self.second_statement.entries[0].source_entry_hash,
-        )
-        self.assertNotEqual(
-            self.first_statement.normalized_payload_hash,
-            self.second_statement.normalized_payload_hash,
-        )
+        self.assertNotEqual(self.first_statement.entries[0].source_entry_hash, self.second_statement.entries[0].source_entry_hash)
+        self.assertNotEqual(self.first_statement.normalized_payload_hash, self.second_statement.normalized_payload_hash)
 
     def test_same_statement_identity_cannot_replay_changed_transaction_exchange_rate(self) -> None:
         """Changed bank-reported FX evidence requires correction, not silent replay."""
@@ -98,10 +78,12 @@ class BankStatementTransactionCurrencyExchangeEvidenceRedTests(unittest.TestCase
             self.case.policy.tenant_reference,
             artifact_store=self.store,
         )
-
         with self.assertRaisesRegex(
             AccountingValidationError,
-            r"^statement identity already exists with different entry evidence\.",
+            (
+                r"^statement identity already exists with different entry evidence\. "
+                r"Use an explicit correction contract, then retry ingest\.$"
+            ),
         ):
             accept_bank_statement_evidence(
                 self._command(self.second_payload, "second"),
@@ -118,37 +100,18 @@ class BankStatementTransactionCurrencyExchangeEvidenceRedTests(unittest.TestCase
             self.case.policy.tenant_reference,
             artifact_store=self.store,
         )
-
         document = lookup_bank_statement_entries(
             posting.DATABASE_URL,
             self.case.policy.tenant_reference,
             str(accepted["bank_statement_record_id"]),
         )
-
         first_detail = document["bank_statement_entries"][0]["entry_details"][0]
-        self.assertEqual(
-            first_detail["transaction_exchange_source_currency_code"],
-            self.source_currency_code,
-        )
-        self.assertEqual(
-            first_detail["transaction_exchange_target_currency_code"],
-            self.target_currency_code,
-        )
-        self.assertEqual(
-            first_detail["transaction_exchange_unit_currency_code"],
-            self.unit_currency_code,
-        )
-        self.assertEqual(
-            first_detail["transaction_exchange_rate"],
-            self.first_exchange_rate,
-        )
+        self.assertEqual(first_detail["transaction_exchange_source_currency_code"], self.source_currency_code)
+        self.assertEqual(first_detail["transaction_exchange_target_currency_code"], self.target_currency_code)
+        self.assertEqual(first_detail["transaction_exchange_unit_currency_code"], self.unit_currency_code)
+        self.assertEqual(first_detail["transaction_exchange_rate"], self.first_exchange_rate)
 
-    def _with_transaction_exchange_rate(
-        self,
-        fixture: str,
-        marker: str,
-        exchange_rate: str,
-    ) -> bytes:
+    def _with_transaction_exchange_rate(self, fixture: str, marker: str, exchange_rate: str) -> bytes:
         """Insert one schema-shaped currency-exchange block under the first TxAmt."""
         return fixture.replace(
             marker,
@@ -169,9 +132,7 @@ class BankStatementTransactionCurrencyExchangeEvidenceRedTests(unittest.TestCase
         return {
             "tenant_reference": self.case.policy.tenant_reference,
             "bank_account_reference": self.bank_account_reference,
-            "ingestion_idempotency_key": (
-                f"transaction-currency-exchange-{suffix}-{uuid.uuid4().hex}"
-            ),
+            "ingestion_idempotency_key": f"transaction-currency-exchange-{suffix}-{uuid.uuid4().hex}",
             "message_definition_identifier": CAMT053_MESSAGE_DEFINITION,
             "statement_payload": payload.decode("utf-8"),
         }
