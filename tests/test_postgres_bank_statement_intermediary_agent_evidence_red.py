@@ -45,24 +45,10 @@ class BankStatementIntermediaryAgentEvidenceRedTests(unittest.TestCase):
         self.assertEqual(fixture.count(marker), 1)
         self.first_intermediary_agent_bicfi = "CHASUS33"
         self.second_intermediary_agent_bicfi = "BOFAUS3N"
-        self.first_payload = self._with_intermediary_agent(
-            fixture,
-            marker,
-            self.first_intermediary_agent_bicfi,
-        )
-        self.second_payload = self._with_intermediary_agent(
-            fixture,
-            marker,
-            self.second_intermediary_agent_bicfi,
-        )
-        self.first_statement = parse_bank_statement_payload(
-            self.first_payload,
-            CAMT053_MESSAGE_DEFINITION,
-        )
-        self.second_statement = parse_bank_statement_payload(
-            self.second_payload,
-            CAMT053_MESSAGE_DEFINITION,
-        )
+        self.first_payload = self._with_intermediary_agent(fixture, marker, self.first_intermediary_agent_bicfi)
+        self.second_payload = self._with_intermediary_agent(fixture, marker, self.second_intermediary_agent_bicfi)
+        self.first_statement = parse_bank_statement_payload(self.first_payload, CAMT053_MESSAGE_DEFINITION)
+        self.second_statement = parse_bank_statement_payload(self.second_payload, CAMT053_MESSAGE_DEFINITION)
         self.bank_account_reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
         accept_bank_account_record(
             {
@@ -80,16 +66,9 @@ class BankStatementIntermediaryAgentEvidenceRedTests(unittest.TestCase):
         """Changing only RltdAgts/IntrmyAgt1 BICFI changes retained evidence identity."""
         first_detail = self.first_statement.entries[1].entry_details[0]
         second_detail = self.second_statement.entries[1].entry_details[0]
-
         self.assertNotEqual(first_detail.source_detail_hash, second_detail.source_detail_hash)
-        self.assertNotEqual(
-            self.first_statement.entries[1].source_entry_hash,
-            self.second_statement.entries[1].source_entry_hash,
-        )
-        self.assertNotEqual(
-            self.first_statement.normalized_payload_hash,
-            self.second_statement.normalized_payload_hash,
-        )
+        self.assertNotEqual(self.first_statement.entries[1].source_entry_hash, self.second_statement.entries[1].source_entry_hash)
+        self.assertNotEqual(self.first_statement.normalized_payload_hash, self.second_statement.normalized_payload_hash)
 
     def test_same_statement_identity_cannot_replay_changed_intermediary_agent(self) -> None:
         """Changed intermediary-agent evidence reaches the statement correction boundary."""
@@ -99,10 +78,12 @@ class BankStatementIntermediaryAgentEvidenceRedTests(unittest.TestCase):
             self.case.policy.tenant_reference,
             artifact_store=self.store,
         )
-
         with self.assertRaisesRegex(
             AccountingValidationError,
-            r"statement identity already exists with different entry evidence",
+            (
+                r"^statement identity already exists with different entry evidence\. "
+                r"Use an explicit correction contract, then retry ingest\.$"
+            ),
         ):
             accept_bank_statement_evidence(
                 self._command(self.second_payload, "second"),
@@ -113,23 +94,12 @@ class BankStatementIntermediaryAgentEvidenceRedTests(unittest.TestCase):
 
     def test_entry_lookup_preserves_intermediary_agent_evidence_hash(self) -> None:
         """Buyer-visible detail reads retain purpose-bound intermediary-agent evidence."""
-        detail = self._ingest_and_read_target_detail(
-            self.first_payload,
-            self.bank_account_reference,
-            "lookup",
-        )
-        self.assertEqual(
-            detail["intermediary_agent_1_evidence_hash"],
-            self._intermediary_agent_evidence_hash(),
-        )
+        detail = self._ingest_and_read_target_detail(self.first_payload, self.bank_account_reference, "lookup")
+        self.assertEqual(detail["intermediary_agent_1_evidence_hash"], self._intermediary_agent_evidence_hash())
 
     def test_intermediary_agent_projection_differs_from_baseline_only_by_digest(self) -> None:
         """Intermediary-agent evidence adds no reversible buyer projection field."""
-        private_detail = self._ingest_and_read_target_detail(
-            self.first_payload,
-            self.bank_account_reference,
-            "private-projection",
-        )
+        private_detail = self._ingest_and_read_target_detail(self.first_payload, self.bank_account_reference, "private-projection")
         baseline_account_reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
         accept_bank_account_record(
             {
@@ -141,17 +111,9 @@ class BankStatementIntermediaryAgentEvidenceRedTests(unittest.TestCase):
             posting.DATABASE_URL,
             self.case.policy.tenant_reference,
         )
-        baseline_detail = self._ingest_and_read_target_detail(
-            load_canonical_statement_fixture(),
-            baseline_account_reference,
-            "baseline",
-        )
-
+        baseline_detail = self._ingest_and_read_target_detail(load_canonical_statement_fixture(), baseline_account_reference, "baseline")
         expected_hash = self._intermediary_agent_evidence_hash()
-        self.assertEqual(
-            private_detail["intermediary_agent_1_evidence_hash"],
-            expected_hash,
-        )
+        self.assertEqual(private_detail["intermediary_agent_1_evidence_hash"], expected_hash)
         for projection in (private_detail, baseline_detail):
             source_detail_hash = projection["source_detail_hash"]
             self.assertIsInstance(source_detail_hash, str)
@@ -184,20 +146,13 @@ class BankStatementIntermediaryAgentEvidenceRedTests(unittest.TestCase):
         )
         return fixture.replace(marker, replacement, 1).encode("utf-8")
 
-    def _ingest_and_read_target_detail(
-        self,
-        payload: bytes,
-        bank_account_reference: str,
-        suffix: str,
-    ) -> dict[str, object]:
+    def _ingest_and_read_target_detail(self, payload: bytes, bank_account_reference: str, suffix: str) -> dict[str, object]:
         """Ingest one fixture and return the first detail of its debit entry."""
         accepted = accept_bank_statement_evidence(
             {
                 "tenant_reference": self.case.policy.tenant_reference,
                 "bank_account_reference": bank_account_reference,
-                "ingestion_idempotency_key": (
-                    f"intermediary-agent-{suffix}-{uuid.uuid4().hex}"
-                ),
+                "ingestion_idempotency_key": f"intermediary-agent-{suffix}-{uuid.uuid4().hex}",
                 "message_definition_identifier": CAMT053_MESSAGE_DEFINITION,
                 "statement_payload": payload.decode("utf-8"),
             },
@@ -214,18 +169,14 @@ class BankStatementIntermediaryAgentEvidenceRedTests(unittest.TestCase):
 
     def _intermediary_agent_evidence_hash(self) -> str:
         """Return the purpose-bound digest expected by the buyer projection."""
-        return "sha256:" + hashlib.sha256(
-            self.first_intermediary_agent_bicfi.encode("utf-8")
-        ).hexdigest()
+        return "sha256:" + hashlib.sha256(self.first_intermediary_agent_bicfi.encode("utf-8")).hexdigest()
 
     def _command(self, payload: bytes, suffix: str) -> dict[str, object]:
         """Return one supported ingest command with a fresh replay key."""
         return {
             "tenant_reference": self.case.policy.tenant_reference,
             "bank_account_reference": self.bank_account_reference,
-            "ingestion_idempotency_key": (
-                f"intermediary-agent-{suffix}-{uuid.uuid4().hex}"
-            ),
+            "ingestion_idempotency_key": f"intermediary-agent-{suffix}-{uuid.uuid4().hex}",
             "message_definition_identifier": CAMT053_MESSAGE_DEFINITION,
             "statement_payload": payload.decode("utf-8"),
         }
