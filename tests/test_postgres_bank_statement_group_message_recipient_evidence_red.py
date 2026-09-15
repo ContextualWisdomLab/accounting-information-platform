@@ -38,7 +38,7 @@ class BankStatementGroupMessageRecipientEvidenceRedTests(unittest.TestCase):
         posting.PostgresPostingTests.setUpClass()
 
     def setUp(self) -> None:
-        """Prepare statements that differ only in GroupHeader recipient semantics."""
+        """Prepare statements that isolate GroupHeader recipient semantics."""
         self.case = posting.PostgresPostingTests("setUp")
         self.case.setUp()
         self.addCleanup(self.case.doCleanups)
@@ -48,10 +48,21 @@ class BankStatementGroupMessageRecipientEvidenceRedTests(unittest.TestCase):
         self.baseline_payload = self.fixture.encode("utf-8")
         self.first_recipient_name = "Contextual Wisdom Treasury"
         self.second_recipient_name = "Contextual Wisdom Controller"
-        self.recipient_identifier = "CWL-REPORTING-RECIPIENT-001"
+        self.first_recipient_identifier = "CWL-REPORTING-RECIPIENT-001"
+        self.second_recipient_identifier = "CWL-REPORTING-RECIPIENT-002"
 
-        self.first_payload = self._with_message_recipient(self.first_recipient_name)
-        self.second_payload = self._with_message_recipient(self.second_recipient_name)
+        self.first_payload = self._with_message_recipient(
+            self.first_recipient_name,
+            self.first_recipient_identifier,
+        )
+        self.name_changed_payload = self._with_message_recipient(
+            self.second_recipient_name,
+            self.first_recipient_identifier,
+        )
+        self.identifier_changed_payload = self._with_message_recipient(
+            self.first_recipient_name,
+            self.second_recipient_identifier,
+        )
         formatting_anchor = (
             f"        <Nm>{self.first_recipient_name}</Nm>\n"
             "        <Id>\n"
@@ -69,7 +80,8 @@ class BankStatementGroupMessageRecipientEvidenceRedTests(unittest.TestCase):
 
         self.baseline_statement = self._parse(self.baseline_payload)
         self.first_statement = self._parse(self.first_payload)
-        self.second_statement = self._parse(self.second_payload)
+        self.name_changed_statement = self._parse(self.name_changed_payload)
+        self.identifier_changed_statement = self._parse(self.identifier_changed_payload)
         self.reformatted_first_statement = self._parse(self.reformatted_first_payload)
 
         self.bank_account_reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
@@ -85,40 +97,77 @@ class BankStatementGroupMessageRecipientEvidenceRedTests(unittest.TestCase):
         )
         self.store = MemoryArtifactStore()
 
-    def test_message_recipient_changes_purpose_bound_statement_evidence(self) -> None:
-        """Changing only MsgRcpt changes recipient evidence, never primary account identity."""
-        first_hash = self._expected_recipient_hash(self.first_recipient_name)
-        second_hash = self._expected_recipient_hash(self.second_recipient_name)
-
-        self.assertEqual(
-            self.first_statement.account_identifier_hash,
-            self.second_statement.account_identifier_hash,
+    def test_message_recipient_semantics_change_purpose_bound_statement_evidence(self) -> None:
+        """Recipient name and OrgId/Othr identifier are independently material provenance."""
+        first_hash = self._expected_recipient_hash(
+            self.first_recipient_name,
+            self.first_recipient_identifier,
         )
-        self.assertNotEqual(
-            self.first_statement.source_artifact_hash,
-            self.second_statement.source_artifact_hash,
-        )
-        self.assertRegex(first_hash, _HASH_PATTERN)
-        self.assertRegex(second_hash, _HASH_PATTERN)
-        self.assertEqual(
-            getattr(self.first_statement, "group_message_recipient_evidence_hash", None),
-            first_hash,
-        )
-        self.assertEqual(
-            getattr(self.second_statement, "group_message_recipient_evidence_hash", None),
-            second_hash,
-        )
-        self.assertNotEqual(first_hash, second_hash)
-        self._assert_normalized_projection_binding(self.first_statement, first_hash)
-        self._assert_normalized_projection_binding(self.second_statement, second_hash)
-        self.assertNotEqual(
-            self.first_statement.normalized_payload_hash,
-            self.second_statement.normalized_payload_hash,
-        )
+        for label, changed_statement, changed_name, changed_identifier in (
+            (
+                "name",
+                self.name_changed_statement,
+                self.second_recipient_name,
+                self.first_recipient_identifier,
+            ),
+            (
+                "organisation-identifier",
+                self.identifier_changed_statement,
+                self.first_recipient_name,
+                self.second_recipient_identifier,
+            ),
+        ):
+            with self.subTest(field=label):
+                changed_hash = self._expected_recipient_hash(
+                    changed_name,
+                    changed_identifier,
+                )
+                self.assertEqual(
+                    self.first_statement.account_identifier_hash,
+                    changed_statement.account_identifier_hash,
+                )
+                self.assertNotEqual(
+                    self.first_statement.source_artifact_hash,
+                    changed_statement.source_artifact_hash,
+                )
+                self.assertRegex(first_hash, _HASH_PATTERN)
+                self.assertRegex(changed_hash, _HASH_PATTERN)
+                self.assertEqual(
+                    getattr(
+                        self.first_statement,
+                        "group_message_recipient_evidence_hash",
+                        None,
+                    ),
+                    first_hash,
+                )
+                self.assertEqual(
+                    getattr(
+                        changed_statement,
+                        "group_message_recipient_evidence_hash",
+                        None,
+                    ),
+                    changed_hash,
+                )
+                self.assertNotEqual(first_hash, changed_hash)
+                self._assert_normalized_projection_binding(
+                    self.first_statement,
+                    first_hash,
+                )
+                self._assert_normalized_projection_binding(
+                    changed_statement,
+                    changed_hash,
+                )
+                self.assertNotEqual(
+                    self.first_statement.normalized_payload_hash,
+                    changed_statement.normalized_payload_hash,
+                )
 
     def test_message_recipient_formatting_is_not_semantic_identity(self) -> None:
         """Whitespace outside MsgRcpt values may change raw bytes but not recipient semantics."""
-        expected_hash = self._expected_recipient_hash(self.first_recipient_name)
+        expected_hash = self._expected_recipient_hash(
+            self.first_recipient_name,
+            self.first_recipient_identifier,
+        )
         self.assertNotEqual(self.first_payload, self.reformatted_first_payload)
         self.assertNotEqual(
             self.first_statement.source_artifact_hash,
@@ -152,7 +201,7 @@ class BankStatementGroupMessageRecipientEvidenceRedTests(unittest.TestCase):
 
         with self.assertRaisesRegex(AccountingValidationError, _CORRECTION_ERROR):
             accept_bank_statement_evidence(
-                self._command(self.second_payload, "second"),
+                self._command(self.identifier_changed_payload, "identifier-changed"),
                 posting.DATABASE_URL,
                 self.case.policy.tenant_reference,
                 artifact_store=self.store,
@@ -160,7 +209,10 @@ class BankStatementGroupMessageRecipientEvidenceRedTests(unittest.TestCase):
 
     def test_buyer_projection_exposes_only_recipient_digest(self) -> None:
         """General statement lookup must not disclose MsgRcpt name or client identifier."""
-        expected_hash = self._expected_recipient_hash(self.first_recipient_name)
+        expected_hash = self._expected_recipient_hash(
+            self.first_recipient_name,
+            self.first_recipient_identifier,
+        )
         actual = self._ingest_and_lookup(
             self.first_payload,
             self.first_statement,
@@ -191,7 +243,7 @@ class BankStatementGroupMessageRecipientEvidenceRedTests(unittest.TestCase):
         self.assertEqual(actual.get("group_message_recipient_evidence_hash"), expected_hash)
         serialized_actual = json.dumps(actual, sort_keys=True)
         self.assertNotIn(self.first_recipient_name, serialized_actual)
-        self.assertNotIn(self.recipient_identifier, serialized_actual)
+        self.assertNotIn(self.first_recipient_identifier, serialized_actual)
 
         actual_without_recipient = dict(actual)
         actual_without_recipient.pop("group_message_recipient_evidence_hash")
@@ -241,13 +293,17 @@ class BankStatementGroupMessageRecipientEvidenceRedTests(unittest.TestCase):
         )
         self.assertEqual(statement.normalized_payload_hash, expected_statement_hash)
 
-    def _expected_recipient_hash(self, recipient_name: str) -> str:
+    def _expected_recipient_hash(
+        self,
+        recipient_name: str,
+        recipient_identifier: str,
+    ) -> str:
         """Return the semantic digest for the admitted OrgId/Othr recipient branch."""
         preimage = {
             "evidence_type": _MESSAGE_RECIPIENT_PURPOSE,
             "name": recipient_name,
             "identification_choice": "OrgId/Othr",
-            "organisation_identifier": self.recipient_identifier,
+            "organisation_identifier": recipient_identifier,
         }
         canonical = json.dumps(preimage, separators=(",", ":"), sort_keys=True)
         return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -299,7 +355,11 @@ class BankStatementGroupMessageRecipientEvidenceRedTests(unittest.TestCase):
         self.assertEqual(document["normalized_payload_hash"], statement.normalized_payload_hash)
         return document
 
-    def _with_message_recipient(self, recipient_name: str) -> bytes:
+    def _with_message_recipient(
+        self,
+        recipient_name: str,
+        recipient_identifier: str,
+    ) -> bytes:
         """Insert one schema-shaped PartyIdentification recipient after group creation time."""
         marker = (
             "      <CreDtTm>2026-08-24T09:00:00+00:00</CreDtTm>\n"
@@ -314,7 +374,7 @@ class BankStatementGroupMessageRecipientEvidenceRedTests(unittest.TestCase):
             "        <Id>\n"
             "          <OrgId>\n"
             "            <Othr>\n"
-            f"              <Id>{self.recipient_identifier}</Id>\n"
+            f"              <Id>{recipient_identifier}</Id>\n"
             "            </Othr>\n"
             "          </OrgId>\n"
             "        </Id>\n"
