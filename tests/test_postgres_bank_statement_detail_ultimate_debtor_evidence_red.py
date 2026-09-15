@@ -33,36 +33,16 @@ class BankStatementDetailUltimateDebtorEvidenceRedTests(unittest.TestCase):
         self.case.setUp()
         self.addCleanup(self.case.doCleanups)
         self.addCleanup(self.case.tearDown)
-
         fixture = load_canonical_statement_fixture().decode("utf-8")
         self.baseline_payload = fixture.encode("utf-8")
-        marker = (
-            "              </Dbtr>\n"
-            "            </RltdPties>"
-        )
+        marker = "              </Dbtr>\n            </RltdPties>"
         self.assertEqual(fixture.count(marker), 1)
-
         self.first_ultimate_debtor_name = "Ultimate Debtor One"
         self.second_ultimate_debtor_name = "Ultimate Debtor Two"
-        self.first_payload = self._with_ultimate_debtor(
-            fixture,
-            marker,
-            self.first_ultimate_debtor_name,
-        )
-        self.second_payload = self._with_ultimate_debtor(
-            fixture,
-            marker,
-            self.second_ultimate_debtor_name,
-        )
-        self.first_statement = parse_bank_statement_payload(
-            self.first_payload,
-            CAMT053_MESSAGE_DEFINITION,
-        )
-        self.second_statement = parse_bank_statement_payload(
-            self.second_payload,
-            CAMT053_MESSAGE_DEFINITION,
-        )
-
+        self.first_payload = self._with_ultimate_debtor(fixture, marker, self.first_ultimate_debtor_name)
+        self.second_payload = self._with_ultimate_debtor(fixture, marker, self.second_ultimate_debtor_name)
+        self.first_statement = parse_bank_statement_payload(self.first_payload, CAMT053_MESSAGE_DEFINITION)
+        self.second_statement = parse_bank_statement_payload(self.second_payload, CAMT053_MESSAGE_DEFINITION)
         self.bank_account_reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
         self._register_bank_account(self.bank_account_reference)
         self.store = MemoryArtifactStore()
@@ -71,16 +51,9 @@ class BankStatementDetailUltimateDebtorEvidenceRedTests(unittest.TestCase):
         """Changing only UltmtDbtr/Pty/Nm changes all retained evidence identities."""
         first_detail = self.first_statement.entries[0].entry_details[0]
         second_detail = self.second_statement.entries[0].entry_details[0]
-
         self.assertNotEqual(first_detail.source_detail_hash, second_detail.source_detail_hash)
-        self.assertNotEqual(
-            self.first_statement.entries[0].source_entry_hash,
-            self.second_statement.entries[0].source_entry_hash,
-        )
-        self.assertNotEqual(
-            self.first_statement.normalized_payload_hash,
-            self.second_statement.normalized_payload_hash,
-        )
+        self.assertNotEqual(self.first_statement.entries[0].source_entry_hash, self.second_statement.entries[0].source_entry_hash)
+        self.assertNotEqual(self.first_statement.normalized_payload_hash, self.second_statement.normalized_payload_hash)
 
     def test_same_statement_identity_requires_correction_for_changed_ultimate_debtor(self) -> None:
         """Changed ultimate-debtor evidence reaches the statement correction boundary."""
@@ -90,10 +63,12 @@ class BankStatementDetailUltimateDebtorEvidenceRedTests(unittest.TestCase):
             self.case.policy.tenant_reference,
             artifact_store=self.store,
         )
-
         with self.assertRaisesRegex(
             AccountingValidationError,
-            r"statement identity already exists with different entry evidence",
+            (
+                r"^statement identity already exists with different entry evidence\. "
+                r"Use an explicit correction contract, then retry ingest\.$"
+            ),
         ):
             accept_bank_statement_evidence(
                 self._command(self.second_payload, "second"),
@@ -104,27 +79,12 @@ class BankStatementDetailUltimateDebtorEvidenceRedTests(unittest.TestCase):
 
     def test_entry_lookup_preserves_ultimate_debtor_evidence_hash(self) -> None:
         """Buyer detail reads expose only the ultimate-debtor digest delta."""
-        first_detail = self._ingest_and_read_first_detail(
-            self.first_payload,
-            self.bank_account_reference,
-            "lookup",
-        )
+        first_detail = self._ingest_and_read_first_detail(self.first_payload, self.bank_account_reference, "lookup")
         baseline_account_reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
         self._register_bank_account(baseline_account_reference)
-        baseline_detail = self._ingest_and_read_first_detail(
-            self.baseline_payload,
-            baseline_account_reference,
-            "baseline",
-        )
-        expected_hash = "sha256:" + hashlib.sha256(
-            self.first_ultimate_debtor_name.encode("utf-8")
-        ).hexdigest()
-        self._assert_digest_only_projection_delta(
-            first_detail,
-            baseline_detail,
-            "ultimate_debtor_evidence_hash",
-            expected_hash,
-        )
+        baseline_detail = self._ingest_and_read_first_detail(self.baseline_payload, baseline_account_reference, "baseline")
+        expected_hash = "sha256:" + hashlib.sha256(self.first_ultimate_debtor_name.encode("utf-8")).hexdigest()
+        self._assert_digest_only_projection_delta(first_detail, baseline_detail, "ultimate_debtor_evidence_hash", expected_hash)
 
     def _register_bank_account(self, bank_account_reference: str) -> None:
         """Register one test account for the fixture's immutable account evidence."""
@@ -139,12 +99,7 @@ class BankStatementDetailUltimateDebtorEvidenceRedTests(unittest.TestCase):
             self.case.policy.tenant_reference,
         )
 
-    def _ingest_and_read_first_detail(
-        self,
-        payload: bytes,
-        bank_account_reference: str,
-        suffix: str,
-    ) -> dict[str, object]:
+    def _ingest_and_read_first_detail(self, payload: bytes, bank_account_reference: str, suffix: str) -> dict[str, object]:
         """Ingest one fixture on an isolated account and return its first detail projection."""
         accepted = accept_bank_statement_evidence(
             self._command(payload, suffix, bank_account_reference),
@@ -159,13 +114,7 @@ class BankStatementDetailUltimateDebtorEvidenceRedTests(unittest.TestCase):
         )
         return document["bank_statement_entries"][0]["entry_details"][0]
 
-    def _assert_digest_only_projection_delta(
-        self,
-        detail: dict[str, object],
-        baseline_detail: dict[str, object],
-        evidence_key: str,
-        expected_hash: str,
-    ) -> None:
+    def _assert_digest_only_projection_delta(self, detail: dict[str, object], baseline_detail: dict[str, object], evidence_key: str, expected_hash: str) -> None:
         """Require the party-bearing projection to differ only by digest and detail identity."""
         self.assertEqual(detail[evidence_key], expected_hash)
         for projection in (detail, baseline_detail):
@@ -194,12 +143,7 @@ class BankStatementDetailUltimateDebtorEvidenceRedTests(unittest.TestCase):
         )
         return fixture.replace(marker, replacement, 1).encode("utf-8")
 
-    def _command(
-        self,
-        payload: bytes,
-        suffix: str,
-        bank_account_reference: str | None = None,
-    ) -> dict[str, object]:
+    def _command(self, payload: bytes, suffix: str, bank_account_reference: str | None = None) -> dict[str, object]:
         """Return one supported ingest command with a fresh replay key."""
         return {
             "tenant_reference": self.case.policy.tenant_reference,
