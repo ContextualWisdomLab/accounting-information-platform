@@ -33,31 +33,14 @@ class BankStatementEntryStatusEvidenceRedTests(unittest.TestCase):
         self.addCleanup(self.case.doCleanups)
         self.addCleanup(self.case.tearDown)
         fixture = load_canonical_statement_fixture().decode("utf-8")
-        marker = (
-            "        <RvslInd>false</RvslInd>\n"
-            "        <BookgDt>"
-        )
+        marker = "        <RvslInd>false</RvslInd>\n        <BookgDt>"
         self.assertEqual(fixture.count(marker), 1)
         self.first_entry_status_code = "BOOK"
         self.second_entry_status_code = "PDNG"
-        self.first_payload = self._with_entry_status(
-            fixture,
-            marker,
-            self.first_entry_status_code,
-        )
-        self.second_payload = self._with_entry_status(
-            fixture,
-            marker,
-            self.second_entry_status_code,
-        )
-        self.first_statement = parse_bank_statement_payload(
-            self.first_payload,
-            CAMT053_MESSAGE_DEFINITION,
-        )
-        self.second_statement = parse_bank_statement_payload(
-            self.second_payload,
-            CAMT053_MESSAGE_DEFINITION,
-        )
+        self.first_payload = self._with_entry_status(fixture, marker, self.first_entry_status_code)
+        self.second_payload = self._with_entry_status(fixture, marker, self.second_entry_status_code)
+        self.first_statement = parse_bank_statement_payload(self.first_payload, CAMT053_MESSAGE_DEFINITION)
+        self.second_statement = parse_bank_statement_payload(self.second_payload, CAMT053_MESSAGE_DEFINITION)
         self.bank_account_reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
         accept_bank_account_record(
             {
@@ -73,14 +56,8 @@ class BankStatementEntryStatusEvidenceRedTests(unittest.TestCase):
 
     def test_present_entry_status_changes_canonical_hashes(self) -> None:
         """Changing only Ntry/Sts/Cd changes entry and statement identity."""
-        self.assertNotEqual(
-            self.first_statement.entries[0].source_entry_hash,
-            self.second_statement.entries[0].source_entry_hash,
-        )
-        self.assertNotEqual(
-            self.first_statement.normalized_payload_hash,
-            self.second_statement.normalized_payload_hash,
-        )
+        self.assertNotEqual(self.first_statement.entries[0].source_entry_hash, self.second_statement.entries[0].source_entry_hash)
+        self.assertNotEqual(self.first_statement.normalized_payload_hash, self.second_statement.normalized_payload_hash)
 
     def test_same_statement_identity_cannot_replay_changed_entry_status(self) -> None:
         """Changed bank-reported status requires correction, not silent replay."""
@@ -90,10 +67,12 @@ class BankStatementEntryStatusEvidenceRedTests(unittest.TestCase):
             self.case.policy.tenant_reference,
             artifact_store=self.store,
         )
-
         with self.assertRaisesRegex(
             AccountingValidationError,
-            r"^statement identity already exists with different entry evidence\.",
+            (
+                r"^statement identity already exists with different entry evidence\. "
+                r"Use an explicit correction contract, then retry ingest\.$"
+            ),
         ):
             accept_bank_statement_evidence(
                 self._command(self.second_payload, "second"),
@@ -110,13 +89,11 @@ class BankStatementEntryStatusEvidenceRedTests(unittest.TestCase):
             self.case.policy.tenant_reference,
             artifact_store=self.store,
         )
-
         document = lookup_bank_statement_entries(
             posting.DATABASE_URL,
             self.case.policy.tenant_reference,
             str(accepted["bank_statement_record_id"]),
         )
-
         first_entry = document["bank_statement_entries"][0]
         self.assertEqual(first_entry["entry_status_code"], self.first_entry_status_code)
 
