@@ -1,4 +1,4 @@
-"""PostgreSQL REDs for camt.053 statement-pagination evidence."""
+"""PostgreSQL REDs for complete camt.053 statement-pagination evidence."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from tests import test_postgres_posting as posting
 
 
 class BankStatementPaginationEvidenceRedTests(unittest.TestCase):
-    """Reject or retain present StmtPgntn evidence instead of silently dropping it."""
+    """Do not admit a partial statement page as complete reconciliation evidence."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -27,7 +27,7 @@ class BankStatementPaginationEvidenceRedTests(unittest.TestCase):
         posting.PostgresPostingTests.setUpClass()
 
     def setUp(self) -> None:
-        """Create source-real statement pages that differ only in pagination evidence."""
+        """Create source-real pagination variants around one canonical statement."""
         self.case = posting.PostgresPostingTests("setUp")
         self.case.setUp()
         self.addCleanup(self.case.doCleanups)
@@ -51,9 +51,15 @@ class BankStatementPaginationEvidenceRedTests(unittest.TestCase):
             )
             return self.fixture.replace(marker, replacement, 1).encode("utf-8")
 
-        self.page_one_payload = with_pagination("1", "false")
-        self.page_two_payload = with_pagination("2", "false")
-        self.final_page_payload = with_pagination("1", "true")
+        # Page 1 explicitly says more statement pages follow. Page 2 may say it is
+        # final, but admitting it alone still omits page 1. Neither is a complete
+        # statement population for reconciliation or retained evidence.
+        self.first_nonfinal_payload = with_pagination("1", "false")
+        self.second_final_payload = with_pagination("2", "true")
+        # A one-page statement is complete. Production may either support this
+        # pagination form with exact provenance or fail closed on StmtPgntn until
+        # a pagination aggregate exists.
+        self.standalone_complete_payload = with_pagination("1", "true")
 
         canonical = parse_bank_statement_payload(
             self.fixture.encode("utf-8"),
@@ -74,58 +80,64 @@ class BankStatementPaginationEvidenceRedTests(unittest.TestCase):
 
     @staticmethod
     def _parse_or_reject(payload: bytes):
-        """Return a parsed page, or None when the adapter intentionally fails closed."""
+        """Return a parsed statement, or None when pagination is intentionally unsupported."""
         try:
             return parse_bank_statement_payload(payload, CAMT053_MESSAGE_DEFINITION)
         except AccountingValidationError:
             return None
 
-    def test_adapter_rejects_or_preserves_present_statement_pagination(self) -> None:
-        """Present page identity must never be silently accepted and discarded."""
-        statement = self._parse_or_reject(self.page_one_payload)
-        if statement is None:
-            return
-
-        self.assertTrue(hasattr(statement, "statement_page_number"))
-        self.assertTrue(hasattr(statement, "statement_last_page_indicator"))
-        self.assertEqual(str(statement.statement_page_number), "1")
-        self.assertIs(statement.statement_last_page_indicator, False)
-
-    def test_accepted_pagination_changes_normalized_statement_identity(self) -> None:
-        """If pagination is supported, both page number and final-page flag are evidence."""
-        page_one = self._parse_or_reject(self.page_one_payload)
-        page_two = self._parse_or_reject(self.page_two_payload)
-        final_page = self._parse_or_reject(self.final_page_payload)
-        parsed = (page_one, page_two, final_page)
-        if any(statement is None for statement in parsed):
-            self.assertTrue(all(statement is None for statement in parsed))
-            return
-
-        self.assertNotEqual(page_one.normalized_payload_hash, page_two.normalized_payload_hash)
-        self.assertNotEqual(page_one.normalized_payload_hash, final_page.normalized_payload_hash)
-
-    def test_supported_ingest_rejects_or_preserves_statement_pagination(self) -> None:
-        """Supported PostgreSQL admission must fail closed or expose exact page provenance."""
-        parsed = self._parse_or_reject(self.page_one_payload)
-        command = {
+    def _command(self, payload: bytes, suffix: str) -> dict[str, str]:
+        """Build one supported ingest command without changing accounting identity."""
+        return {
             "tenant_reference": self.case.policy.tenant_reference,
             "bank_account_reference": self.bank_account_reference,
-            "ingestion_idempotency_key": f"statement-pagination-{uuid.uuid4().hex}",
+            "ingestion_idempotency_key": f"statement-pagination-{suffix}-{uuid.uuid4().hex}",
             "message_definition_identifier": CAMT053_MESSAGE_DEFINITION,
-            "statement_payload": self.page_one_payload.decode("utf-8"),
+            "statement_payload": payload.decode("utf-8"),
         }
-        if parsed is None:
+
+    def test_parser_rejects_pages_that_are_not_a_complete_statement_population(self) -> None:
+        """A non-final page or a later final page must not become standalone statement truth."""
+        for payload in (self.first_nonfinal_payload, self.second_final_payload):
+            with self.subTest(payload=payload):
+                with self.assertRaises(AccountingValidationError):
+                    parse_bank_statement_payload(payload, CAMT053_MESSAGE_DEFINITION)
+
+    def test_supported_ingest_rejects_incomplete_pagination_before_retained_truth(self) -> None:
+        """Supported admission must not retain a partial page as a complete bank statement."""
+        for suffix, payload in (
+            ("first-nonfinal", self.first_nonfinal_payload),
+            ("second-final", self.second_final_payload),
+        ):
+            with self.subTest(suffix=suffix):
+                with self.assertRaises(AccountingValidationError):
+                    accept_bank_statement_evidence(
+                        self._command(payload, suffix),
+                        posting.DATABASE_URL,
+                        self.case.policy.tenant_reference,
+                        artifact_store=self.store,
+                    )
+
+    def test_standalone_complete_pagination_is_rejected_or_preserved_exactly(self) -> None:
+        """If page 1/last-page is supported, both pagination facts are immutable evidence."""
+        statement = self._parse_or_reject(self.standalone_complete_payload)
+        if statement is None:
             with self.assertRaises(AccountingValidationError):
                 accept_bank_statement_evidence(
-                    command,
+                    self._command(self.standalone_complete_payload, "standalone-rejected"),
                     posting.DATABASE_URL,
                     self.case.policy.tenant_reference,
                     artifact_store=self.store,
                 )
             return
 
+        self.assertTrue(hasattr(statement, "statement_page_number"))
+        self.assertTrue(hasattr(statement, "statement_last_page_indicator"))
+        self.assertEqual(str(statement.statement_page_number), "1")
+        self.assertIs(statement.statement_last_page_indicator, True)
+
         accepted = accept_bank_statement_evidence(
-            command,
+            self._command(self.standalone_complete_payload, "standalone-supported"),
             posting.DATABASE_URL,
             self.case.policy.tenant_reference,
             artifact_store=self.store,
@@ -136,7 +148,7 @@ class BankStatementPaginationEvidenceRedTests(unittest.TestCase):
             str(accepted["bank_statement_record_id"]),
         )
         self.assertEqual(str(document["statement_page_number"]), "1")
-        self.assertIs(document["statement_last_page_indicator"], False)
+        self.assertIs(document["statement_last_page_indicator"], True)
 
 
 if __name__ == "__main__":
