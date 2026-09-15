@@ -48,6 +48,7 @@ class BankStatementAdditionalStatementInformationEvidenceRedTests(unittest.TestC
         marker = "      </Ntry>\n    </Stmt>\n"
         self.assertEqual(fixture.count(marker), 1)
 
+        self.baseline_payload = fixture.encode("utf-8")
         self.first_information = "Bank statement note: sweep completed"
         self.second_information = "Bank statement note: sweep pending"
         self.first_payload = self._with_additional_statement_information(
@@ -76,6 +77,10 @@ class BankStatementAdditionalStatementInformationEvidenceRedTests(unittest.TestC
             1,
         )
 
+        self.baseline_statement = parse_bank_statement_payload(
+            self.baseline_payload,
+            CAMT053_MESSAGE_DEFINITION,
+        )
         self.first_statement = parse_bank_statement_payload(
             self.first_payload,
             CAMT053_MESSAGE_DEFINITION,
@@ -134,16 +139,8 @@ class BankStatementAdditionalStatementInformationEvidenceRedTests(unittest.TestC
             second_hash,
         )
         self.assertNotEqual(first_hash, second_hash)
-        self._assert_normalized_hash_binding(
-            self.first_statement,
-            first_hash,
-            self.first_information,
-        )
-        self._assert_normalized_hash_binding(
-            self.second_statement,
-            second_hash,
-            self.second_information,
-        )
+        self._assert_normalized_hash_binding(self.first_statement, first_hash)
+        self._assert_normalized_hash_binding(self.second_statement, second_hash)
         self.assertNotEqual(
             self.first_statement.normalized_payload_hash,
             self.second_statement.normalized_payload_hash,
@@ -176,15 +173,10 @@ class BankStatementAdditionalStatementInformationEvidenceRedTests(unittest.TestC
             ),
             expected_hash,
         )
-        self._assert_normalized_hash_binding(
-            self.first_statement,
-            expected_hash,
-            self.first_information,
-        )
+        self._assert_normalized_hash_binding(self.first_statement, expected_hash)
         self._assert_normalized_hash_binding(
             self.reformatted_first_statement,
             expected_hash,
-            self.first_information,
         )
         self.assertEqual(
             self.first_statement.normalized_payload_hash,
@@ -209,66 +201,125 @@ class BankStatementAdditionalStatementInformationEvidenceRedTests(unittest.TestC
                 artifact_store=self.store,
             )
 
-    def test_lookup_returns_digest_without_copying_statement_narrative(self) -> None:
-        """Buyer reads expose evidence identity, not unrestricted source free text."""
+    def test_buyer_projection_differs_from_no_information_baseline_only_by_digest(self) -> None:
+        """AddtlStmtInf may add its digest, never another reversible buyer projection."""
         expected_hash = self._expected_information_hash(self.first_information)
-        accepted = accept_bank_statement_evidence(
-            self._command(self.first_payload, "lookup"),
+        actual = self._ingest_and_lookup(
+            self.first_payload,
+            self.first_statement,
+            self.bank_account_reference,
+            "lookup",
+            self.store,
+        )
+
+        baseline_account_reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
+        accept_bank_account_record(
+            {
+                "tenant_reference": self.case.policy.tenant_reference,
+                "bank_account_reference": baseline_account_reference,
+                "account_currency_code": self.baseline_statement.account_currency_code,
+                "account_identifier_hash": self.baseline_statement.account_identifier_hash,
+            },
             posting.DATABASE_URL,
             self.case.policy.tenant_reference,
-            artifact_store=self.store,
+        )
+        baseline = self._ingest_and_lookup(
+            self.baseline_payload,
+            self.baseline_statement,
+            baseline_account_reference,
+            "baseline",
+            MemoryArtifactStore(),
+        )
+
+        self.assertEqual(
+            actual.get("statement_additional_information_evidence_hash"),
+            expected_hash,
+        )
+        baseline_without_evidence = dict(baseline)
+        baseline_without_evidence.pop("statement_additional_information_evidence_hash", None)
+        actual_without_evidence = dict(actual)
+        actual_without_evidence.pop("statement_additional_information_evidence_hash")
+
+        variable_identity_fields = (
+            "bank_account_reference",
+            "bank_statement_record_id",
+            "source_artifact_hash",
+            "normalized_payload_hash",
+            "artifact_store_reference",
+        )
+        for field in variable_identity_fields:
+            actual_without_evidence.pop(field)
+            baseline_without_evidence.pop(field)
+        self.assertEqual(actual_without_evidence, baseline_without_evidence)
+
+    def _assert_normalized_hash_binding(
+        self,
+        statement: object,
+        information_hash: str,
+    ) -> None:
+        """Allow only the purpose digest to distinguish normalized statement projection."""
+        projection = dict(bank_statement._normalized_payload(statement))
+        baseline_projection = dict(bank_statement._normalized_payload(self.baseline_statement))
+        self.assertEqual(
+            projection.get("statement_additional_information_evidence_hash"),
+            information_hash,
+        )
+        if "source_artifact_hash" in projection:
+            raise AssertionError(
+                "canonical normalized statement projection must not carry raw artifact identity"
+            )
+
+        actual_without_evidence = dict(projection)
+        baseline_without_evidence = dict(baseline_projection)
+        actual_without_evidence.pop("statement_additional_information_evidence_hash")
+        baseline_without_evidence.pop("statement_additional_information_evidence_hash", None)
+        self.assertEqual(actual_without_evidence, baseline_without_evidence)
+
+        serialized_projection = json.dumps(
+            projection,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        expected_statement_hash = (
+            "sha256:"
+            + hashlib.sha256(serialized_projection.encode("utf-8")).hexdigest()
+        )
+        self.assertEqual(statement.normalized_payload_hash, expected_statement_hash)
+
+    def _ingest_and_lookup(
+        self,
+        payload: bytes,
+        statement: object,
+        bank_account_reference: str,
+        suffix: str,
+        store: MemoryArtifactStore,
+    ) -> dict[str, object]:
+        """Ingest one statement and validate every buyer field allowed to vary by record."""
+        accepted = accept_bank_statement_evidence(
+            self._command(
+                payload,
+                suffix,
+                bank_account_reference=bank_account_reference,
+            ),
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            artifact_store=store,
         )
         document = lookup_bank_statement(
             posting.DATABASE_URL,
             self.case.policy.tenant_reference,
             str(accepted["bank_statement_record_id"]),
         )
-        self.assertEqual(
-            document.get("statement_additional_information_evidence_hash"),
-            expected_hash,
-        )
-        self.assertNotIn(
-            self.first_information,
-            json.dumps(document, default=str, sort_keys=True),
-        )
 
-    @staticmethod
-    def _assert_normalized_hash_binding(
-        statement: object,
-        information_hash: str,
-        information_text: str,
-    ) -> None:
-        """Bind normalized identity to the digest without copying source narrative."""
-        projection = dict(bank_statement._normalized_payload(statement))
-        if (
-            projection.get("statement_additional_information_evidence_hash")
-            != information_hash
-        ):
-            raise AssertionError(
-                "canonical normalized statement projection must carry the exact "
-                "statement_additional_information_evidence_hash"
-            )
-        serialized_projection = json.dumps(
-            projection,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
-        if information_text in serialized_projection:
-            raise AssertionError(
-                "canonical normalized statement projection must not copy AddtlStmtInf free text"
-            )
-        if "source_artifact_hash" in projection:
-            raise AssertionError(
-                "canonical normalized statement projection must not carry raw artifact identity"
-            )
-        expected_statement_hash = (
-            "sha256:"
-            + hashlib.sha256(serialized_projection.encode("utf-8")).hexdigest()
-        )
-        if statement.normalized_payload_hash != expected_statement_hash:
-            raise AssertionError(
-                "normalized_payload_hash must digest the canonical normalized projection"
-            )
+        source_hash = f"sha256:{hashlib.sha256(payload).hexdigest()}"
+        self.assertRegex(source_hash, _HASH_PATTERN)
+        self.assertEqual(document["source_artifact_hash"], source_hash)
+        self.assertEqual(document["normalized_payload_hash"], statement.normalized_payload_hash)
+        self.assertRegex(document["normalized_payload_hash"], _HASH_PATTERN)
+        self.assertEqual(document["artifact_store_reference"], f"memory:{source_hash}")
+        self.assertEqual(document["bank_account_reference"], bank_account_reference)
+        uuid.UUID(str(document["bank_statement_record_id"]))
+        return document
 
     @staticmethod
     def _expected_information_hash(value: str) -> str:
@@ -298,11 +349,17 @@ class BankStatementAdditionalStatementInformationEvidenceRedTests(unittest.TestC
             1,
         ).encode("utf-8")
 
-    def _command(self, payload: bytes, suffix: str) -> dict[str, object]:
+    def _command(
+        self,
+        payload: bytes,
+        suffix: str,
+        *,
+        bank_account_reference: str | None = None,
+    ) -> dict[str, object]:
         """Return one supported ingest command with an independent replay key."""
         return {
             "tenant_reference": self.case.policy.tenant_reference,
-            "bank_account_reference": self.bank_account_reference,
+            "bank_account_reference": bank_account_reference or self.bank_account_reference,
             "ingestion_idempotency_key": (
                 f"additional-statement-information-{suffix}-{uuid.uuid4().hex}"
             ),
