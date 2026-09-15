@@ -499,6 +499,7 @@ class BankStatementGroupAdditionalInformationEvidenceRedTests(unittest.TestCase)
             str(accepted["bank_statement_record_id"]),
         )
         source_hash = f"sha256:{hashlib.sha256(payload).hexdigest()}"
+        self.assertEqual(document["bank_account_reference"], bank_account_reference)
         self.assertEqual(document["source_artifact_hash"], source_hash)
         self.assertEqual(document["artifact_store_reference"], f"memory:{source_hash}")
         self.assertEqual(document["normalized_payload_hash"], statement.normalized_payload_hash)
