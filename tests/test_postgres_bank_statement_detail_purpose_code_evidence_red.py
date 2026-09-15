@@ -33,31 +33,14 @@ class BankStatementDetailPurposeCodeEvidenceRedTests(unittest.TestCase):
         self.addCleanup(self.case.doCleanups)
         self.addCleanup(self.case.tearDown)
         fixture = load_canonical_statement_fixture().decode("utf-8")
-        marker = (
-            "            </RltdPties>\n"
-            "            <RmtInf>"
-        )
+        marker = "            </RltdPties>\n            <RmtInf>"
         self.assertEqual(fixture.count(marker), 1)
         self.first_purpose_code = "SALA"
         self.second_purpose_code = "SUPP"
-        self.first_payload = self._with_purpose_code(
-            fixture,
-            marker,
-            self.first_purpose_code,
-        )
-        self.second_payload = self._with_purpose_code(
-            fixture,
-            marker,
-            self.second_purpose_code,
-        )
-        self.first_statement = parse_bank_statement_payload(
-            self.first_payload,
-            CAMT053_MESSAGE_DEFINITION,
-        )
-        self.second_statement = parse_bank_statement_payload(
-            self.second_payload,
-            CAMT053_MESSAGE_DEFINITION,
-        )
+        self.first_payload = self._with_purpose_code(fixture, marker, self.first_purpose_code)
+        self.second_payload = self._with_purpose_code(fixture, marker, self.second_purpose_code)
+        self.first_statement = parse_bank_statement_payload(self.first_payload, CAMT053_MESSAGE_DEFINITION)
+        self.second_statement = parse_bank_statement_payload(self.second_payload, CAMT053_MESSAGE_DEFINITION)
         self.bank_account_reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
         accept_bank_account_record(
             {
@@ -75,16 +58,9 @@ class BankStatementDetailPurposeCodeEvidenceRedTests(unittest.TestCase):
         """Changing only Purp/Cd changes detail, entry, and statement identity."""
         first_detail = self.first_statement.entries[0].entry_details[0]
         second_detail = self.second_statement.entries[0].entry_details[0]
-
         self.assertNotEqual(first_detail.source_detail_hash, second_detail.source_detail_hash)
-        self.assertNotEqual(
-            self.first_statement.entries[0].source_entry_hash,
-            self.second_statement.entries[0].source_entry_hash,
-        )
-        self.assertNotEqual(
-            self.first_statement.normalized_payload_hash,
-            self.second_statement.normalized_payload_hash,
-        )
+        self.assertNotEqual(self.first_statement.entries[0].source_entry_hash, self.second_statement.entries[0].source_entry_hash)
+        self.assertNotEqual(self.first_statement.normalized_payload_hash, self.second_statement.normalized_payload_hash)
 
     def test_same_statement_identity_cannot_replay_changed_purpose_code(self) -> None:
         """Changed purpose evidence requires correction, not silent replay."""
@@ -94,10 +70,12 @@ class BankStatementDetailPurposeCodeEvidenceRedTests(unittest.TestCase):
             self.case.policy.tenant_reference,
             artifact_store=self.store,
         )
-
         with self.assertRaisesRegex(
             AccountingValidationError,
-            r"^statement identity already exists with different entry evidence\.",
+            (
+                r"^statement identity already exists with different entry evidence\. "
+                r"Use an explicit correction contract, then retry ingest\.$"
+            ),
         ):
             accept_bank_statement_evidence(
                 self._command(self.second_payload, "second"),
@@ -114,13 +92,11 @@ class BankStatementDetailPurposeCodeEvidenceRedTests(unittest.TestCase):
             self.case.policy.tenant_reference,
             artifact_store=self.store,
         )
-
         document = lookup_bank_statement_entries(
             posting.DATABASE_URL,
             self.case.policy.tenant_reference,
             str(accepted["bank_statement_record_id"]),
         )
-
         first_detail = document["bank_statement_entries"][0]["entry_details"][0]
         self.assertEqual(first_detail["purpose_code"], self.first_purpose_code)
 
