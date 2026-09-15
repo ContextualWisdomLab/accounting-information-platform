@@ -82,6 +82,12 @@ class BankStatementEntryTechnicalInputChannelEvidenceRedTests(unittest.TestCase)
             channel_choice="Prtry",
             channel_value="WEBI",
         )
+        self.proprietary_unknown_payload = self._with_technical_input_channel(
+            fixture,
+            marker,
+            channel_choice="Prtry",
+            channel_value="ZZZZ",
+        )
 
         formatting_anchor = (
             "        <TechInptChanl>\n"
@@ -107,6 +113,10 @@ class BankStatementEntryTechnicalInputChannelEvidenceRedTests(unittest.TestCase)
         )
         self.proprietary_web_statement = parse_bank_statement_payload(
             self.proprietary_web_payload,
+            CAMT053_MESSAGE_DEFINITION,
+        )
+        self.proprietary_unknown_statement = parse_bank_statement_payload(
+            self.proprietary_unknown_payload,
             CAMT053_MESSAGE_DEFINITION,
         )
         self.reformatted_statement = parse_bank_statement_payload(
@@ -142,6 +152,10 @@ class BankStatementEntryTechnicalInputChannelEvidenceRedTests(unittest.TestCase)
                 self.proprietary_web_statement,
                 self._expected_channel_hash("Prtry", "WEBI"),
             ),
+            (
+                self.proprietary_unknown_statement,
+                self._expected_channel_hash("Prtry", "ZZZZ"),
+            ),
         )
 
         hashes: list[str] = []
@@ -160,6 +174,7 @@ class BankStatementEntryTechnicalInputChannelEvidenceRedTests(unittest.TestCase)
         for changed_statement in (
             self.fax_code_statement,
             self.proprietary_web_statement,
+            self.proprietary_unknown_statement,
         ):
             self.assertEqual(
                 self.web_code_statement.account_identifier_hash,
@@ -268,6 +283,16 @@ class BankStatementEntryTechnicalInputChannelEvidenceRedTests(unittest.TestCase)
 
         self.assertEqual(len(schema_calls), 1)
         self.assertEqual(len(semantic_calls), 1)
+
+    def test_proprietary_choice_does_not_require_external_code_membership(self) -> None:
+        """Prtry text remains valid even when the same token is not an external code."""
+        entry = self.proprietary_unknown_statement.entries[0]
+        expected_hash = self._expected_channel_hash("Prtry", "ZZZZ")
+        self.assertEqual(
+            getattr(entry, "entry_technical_input_channel_evidence_hash", None),
+            expected_hash,
+        )
+        self._assert_entry_hash_binding(entry, expected_hash)
 
     def test_xml_formatting_does_not_change_technical_input_channel_semantics(self) -> None:
         """Element layout differences must not alter normalized channel evidence."""
