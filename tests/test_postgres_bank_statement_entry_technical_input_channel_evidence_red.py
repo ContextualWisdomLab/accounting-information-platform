@@ -7,6 +7,7 @@ import json
 import re
 import unittest
 import uuid
+from unittest.mock import patch
 
 from accounting_information_platform import (
     AccountingValidationError,
@@ -14,7 +15,6 @@ from accounting_information_platform import (
     MemoryArtifactStore,
     accept_bank_account_record,
     accept_bank_statement_evidence,
-    load_adapter_manifest,
     load_canonical_statement_fixture,
     lookup_bank_statement_entries,
     parse_bank_statement_payload,
@@ -30,7 +30,6 @@ _CORRECTION_ERROR = (
     r"^statement identity already exists with different entry evidence\. "
     r"Use an explicit correction contract, then retry ingest\.$"
 )
-_CURRENT_EXTERNAL_CODE_SET_VERSION = "August 2026 (v3)"
 
 
 class BankStatementEntryTechnicalInputChannelEvidenceRedTests(unittest.TestCase):
@@ -179,54 +178,96 @@ class BankStatementEntryTechnicalInputChannelEvidenceRedTests(unittest.TestCase)
                 changed_statement.entries[1].source_entry_hash,
             )
 
-    def test_code_choice_is_bound_to_versioned_external_code_admission(self) -> None:
-        """Unknown Cd values fail under the pinned code set while Prtry stays distinct."""
-        manifest = load_adapter_manifest()
-        external_code_artifact = next(
-            artifact
-            for artifact in manifest["artifacts"]
-            if artifact.get("artifact_role") == "iso20022_external_code_sets"
-        )
-        self.assertEqual(
-            external_code_artifact.get("source_version"),
-            _CURRENT_EXTERNAL_CODE_SET_VERSION,
-        )
-        self.assertRegex(
-            str(external_code_artifact.get("sha256") or ""),
-            r"^[0-9a-f]{64}$",
-        )
-
-        hostile_code_payload = self._with_technical_input_channel(
+    def test_code_choice_routes_pinned_external_code_evidence_before_normalization(self) -> None:
+        """TechInptChanl/Cd participates in versioned external-code admission."""
+        hostile = self._with_technical_input_channel(
             self.fixture,
             self.marker,
             channel_choice="Cd",
             channel_value="ZZZZ",
         )
-        with self.assertRaises(AccountingValidationError):
-            parse_bank_statement_payload(
-                hostile_code_payload,
-                CAMT053_MESSAGE_DEFINITION,
-            )
+        schema_artifact = self._artifact(
+            "message_schema",
+            "iso20022/fixtures/camt.053.001.14.xsd",
+            "a",
+            "camt.053.001.14",
+        )
+        external_code_artifact = self._artifact(
+            "iso20022_external_code_sets",
+            "iso20022/fixtures/iso20022-external-code-sets.json",
+            "b",
+            "August 2026 (v3)",
+        )
+        transaction_code_artifact = self._artifact(
+            "bank_transaction_code_combinations",
+            "iso20022/fixtures/bank-transaction-code-combinations.xlsx",
+            "c",
+            "30 November 2025 (v1)",
+        )
+        controlled_manifest = {
+            "message_definition_identifier": CAMT053_MESSAGE_DEFINITION,
+            "artifacts": [
+                schema_artifact,
+                external_code_artifact,
+                transaction_code_artifact,
+            ],
+        }
+        schema_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+        semantic_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
-        proprietary_payload = self._with_technical_input_channel(
-            self.fixture,
-            self.marker,
-            channel_choice="Prtry",
-            channel_value="ZZZZ",
-        )
-        proprietary_statement = parse_bank_statement_payload(
-            proprietary_payload,
-            CAMT053_MESSAGE_DEFINITION,
-        )
-        expected_hash = self._expected_channel_hash("Prtry", "ZZZZ")
-        self.assertEqual(
-            getattr(
-                proprietary_statement.entries[0],
-                "entry_technical_input_channel_evidence_hash",
-                None,
+        def accept_schema(*args: object, **kwargs: object) -> None:
+            self.assertTrue(any(value == hostile for value in (*args, *kwargs.values())))
+            schema_calls.append((args, kwargs))
+
+        def reject_unknown_channel_code(*args: object, **kwargs: object) -> None:
+            rendered_contract = repr((args, kwargs))
+            self.assertIn(external_code_artifact["local_package_path"], rendered_contract)
+            self.assertIn(external_code_artifact["sha256"], rendered_contract)
+            self.assertIn(external_code_artifact["source_version"], rendered_contract)
+            self.assertTrue(any(value == hostile for value in (*args, *kwargs.values())))
+            self.assertIn(b"<TechInptChanl>", hostile)
+            self.assertIn(b"<Cd>ZZZZ</Cd>", hostile)
+            self.assertEqual(len(schema_calls), 1)
+            semantic_calls.append((args, kwargs))
+            raise AccountingValidationError("unknown-technical-input-channel-sentinel")
+
+        with (
+            patch.object(
+                bank_statement,
+                "load_adapter_manifest",
+                return_value=controlled_manifest,
             ),
-            expected_hash,
-        )
+            patch.object(
+                bank_statement,
+                "_validate_message_schema",
+                side_effect=accept_schema,
+                create=True,
+            ),
+            patch.object(
+                bank_statement,
+                "_validate_external_code_evidence",
+                side_effect=reject_unknown_channel_code,
+                create=True,
+            ),
+            patch.object(
+                bank_statement,
+                "_normalize_statement",
+                side_effect=AssertionError(
+                    "normalization ran before technical-input-channel code admission"
+                ),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                AccountingValidationError,
+                "unknown-technical-input-channel-sentinel",
+            ):
+                bank_statement.parse_bank_statement_payload(
+                    hostile,
+                    CAMT053_MESSAGE_DEFINITION,
+                )
+
+        self.assertEqual(len(schema_calls), 1)
+        self.assertEqual(len(semantic_calls), 1)
 
     def test_xml_formatting_does_not_change_technical_input_channel_semantics(self) -> None:
         """Element layout differences must not alter normalized channel evidence."""
@@ -337,6 +378,22 @@ class BankStatementEntryTechnicalInputChannelEvidenceRedTests(unittest.TestCase)
             sort_keys=True,
         ).encode("utf-8")
         return f"sha256:{hashlib.sha256(preimage).hexdigest()}"
+
+    @staticmethod
+    def _artifact(
+        role: str,
+        path: str,
+        digest_character: str,
+        source_version: str,
+    ) -> dict[str, object]:
+        """Build one controlled manifest artifact for admission-order assertions."""
+        return {
+            "local_package_path": path,
+            "artifact_role": role,
+            "sha256": digest_character * 64,
+            "byte_length": 123,
+            "source_version": source_version,
+        }
 
     @staticmethod
     def _with_technical_input_channel(
