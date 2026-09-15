@@ -285,14 +285,39 @@ class BankStatementEntryTechnicalInputChannelEvidenceRedTests(unittest.TestCase)
         self.assertEqual(len(semantic_calls), 1)
 
     def test_proprietary_choice_does_not_require_external_code_membership(self) -> None:
-        """Prtry text remains valid even when the same token is not an external code."""
-        entry = self.proprietary_unknown_statement.entries[0]
+        """Supported ingest retains proprietary text outside external-code membership."""
         expected_hash = self._expected_channel_hash("Prtry", "ZZZZ")
+        parsed_entry = self.proprietary_unknown_statement.entries[0]
         self.assertEqual(
-            getattr(entry, "entry_technical_input_channel_evidence_hash", None),
+            getattr(parsed_entry, "entry_technical_input_channel_evidence_hash", None),
             expected_hash,
         )
-        self._assert_entry_hash_binding(entry, expected_hash)
+        self._assert_entry_hash_binding(parsed_entry, expected_hash)
+
+        accepted = accept_bank_statement_evidence(
+            self._command(self.proprietary_unknown_payload, "proprietary-unknown"),
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            artifact_store=self.store,
+        )
+        self.assertFalse(accepted["replayed"])
+        document = lookup_bank_statement_entries(
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            str(accepted["bank_statement_record_id"]),
+        )
+        entry = document["bank_statement_entries"][0]
+        self.assertEqual(
+            entry.get("entry_technical_input_channel_evidence_hash"),
+            expected_hash,
+        )
+        self.assertEqual(
+            entry.get("technical_input_channel_evidence"),
+            {
+                "channel_choice": "Prtry",
+                "channel_value": "ZZZZ",
+            },
+        )
 
     def test_xml_formatting_does_not_change_technical_input_channel_semantics(self) -> None:
         """Element layout differences must not alter normalized channel evidence."""
