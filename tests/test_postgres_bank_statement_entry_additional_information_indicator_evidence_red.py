@@ -90,12 +90,8 @@ class BankStatementEntryAdditionalInformationIndicatorEvidenceRedTests(unittest.
         self.reformatted_payload = self.first_payload.replace(
             formatting_anchor,
             (
-                "        <AddtlInfInd>\n"
-                "          <MsgNmId>camt.054.001.14</MsgNmId>\n"
-                "          <MsgId>\n"
-                "            DETAIL-MSG-2026-08-24-001\n"
-                "          </MsgId>\n"
-                "        </AddtlInfInd>\n"
+                "        <AddtlInfInd><MsgNmId>camt.054.001.14</MsgNmId>\n"
+                "          <MsgId>DETAIL-MSG-2026-08-24-001</MsgId></AddtlInfInd>\n"
             ).encode("utf-8"),
             1,
         )
