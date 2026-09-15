@@ -57,12 +57,8 @@ class BankStatementIntermediaryAgentChainEvidenceRedTests(unittest.TestCase):
                 second = self._statement(self._with_intermediary_chain(slot, second_bicfi))
                 first_detail = first.entries[1].entry_details[0]
                 second_detail = second.entries[1].entry_details[0]
-
                 self.assertNotEqual(first_detail.source_detail_hash, second_detail.source_detail_hash)
-                self.assertNotEqual(
-                    first.entries[1].source_entry_hash,
-                    second.entries[1].source_entry_hash,
-                )
+                self.assertNotEqual(first.entries[1].source_entry_hash, second.entries[1].source_entry_hash)
                 self.assertNotEqual(first.normalized_payload_hash, second.normalized_payload_hash)
 
     def test_each_downstream_intermediary_reaches_statement_correction_boundary(self) -> None:
@@ -74,7 +70,6 @@ class BankStatementIntermediaryAgentChainEvidenceRedTests(unittest.TestCase):
                 statement = self._statement(first_payload)
                 account_reference = self._register_account(statement, f"correction-{slot}")
                 store = MemoryArtifactStore()
-
                 accept_bank_statement_evidence(
                     self._command(first_payload, account_reference, f"first-{slot}"),
                     posting.DATABASE_URL,
@@ -83,7 +78,10 @@ class BankStatementIntermediaryAgentChainEvidenceRedTests(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(
                     AccountingValidationError,
-                    r"statement identity already exists with different entry evidence",
+                    (
+                        r"^statement identity already exists with different entry evidence\. "
+                        r"Use an explicit correction contract, then retry ingest\.$"
+                    ),
                 ):
                     accept_bank_statement_evidence(
                         self._command(second_payload, account_reference, f"second-{slot}"),
@@ -98,38 +96,19 @@ class BankStatementIntermediaryAgentChainEvidenceRedTests(unittest.TestCase):
             with self.subTest(slot=slot):
                 private_payload = self._with_intermediary_chain(slot, first_bicfi)
                 private_statement = self._statement(private_payload)
-                private_account = self._register_account(
-                    private_statement,
-                    f"private-{slot}",
-                )
-                private_detail = self._ingest_and_read_target_detail(
-                    private_payload,
-                    private_account,
-                    f"private-{slot}",
-                )
-
+                private_account = self._register_account(private_statement, f"private-{slot}")
+                private_detail = self._ingest_and_read_target_detail(private_payload, private_account, f"private-{slot}")
                 baseline_payload = load_canonical_statement_fixture()
                 baseline_statement = self._statement(baseline_payload)
-                baseline_account = self._register_account(
-                    baseline_statement,
-                    f"baseline-{slot}",
-                )
-                baseline_detail = self._ingest_and_read_target_detail(
-                    baseline_payload,
-                    baseline_account,
-                    f"baseline-{slot}",
-                )
-
+                baseline_account = self._register_account(baseline_statement, f"baseline-{slot}")
+                baseline_detail = self._ingest_and_read_target_detail(baseline_payload, baseline_account, f"baseline-{slot}")
                 digest_key = f"intermediary_agent_{slot}_evidence_hash"
-                expected_hash = "sha256:" + hashlib.sha256(
-                    first_bicfi.encode("utf-8")
-                ).hexdigest()
+                expected_hash = "sha256:" + hashlib.sha256(first_bicfi.encode("utf-8")).hexdigest()
                 self.assertEqual(private_detail[digest_key], expected_hash)
                 for projection in (private_detail, baseline_detail):
                     source_detail_hash = projection["source_detail_hash"]
                     self.assertIsInstance(source_detail_hash, str)
                     self.assertRegex(source_detail_hash, r"\Asha256:[0-9a-f]{64}\Z")
-
                 actual_projection = dict(private_detail)
                 baseline_projection = dict(baseline_detail)
                 actual_projection.pop(digest_key)
@@ -190,12 +169,7 @@ class BankStatementIntermediaryAgentChainEvidenceRedTests(unittest.TestCase):
         )
         return reference
 
-    def _ingest_and_read_target_detail(
-        self,
-        payload: bytes,
-        account_reference: str,
-        suffix: str,
-    ) -> dict[str, object]:
+    def _ingest_and_read_target_detail(self, payload: bytes, account_reference: str, suffix: str) -> dict[str, object]:
         """Ingest one fixture and return the first detail of its debit entry."""
         accepted = accept_bank_statement_evidence(
             self._command(payload, account_reference, suffix),
@@ -210,19 +184,12 @@ class BankStatementIntermediaryAgentChainEvidenceRedTests(unittest.TestCase):
         )
         return document["bank_statement_entries"][1]["entry_details"][0]
 
-    def _command(
-        self,
-        payload: bytes,
-        account_reference: str,
-        suffix: str,
-    ) -> dict[str, object]:
+    def _command(self, payload: bytes, account_reference: str, suffix: str) -> dict[str, object]:
         """Return one supported ingest command with an isolated replay key."""
         return {
             "tenant_reference": self.case.policy.tenant_reference,
             "bank_account_reference": account_reference,
-            "ingestion_idempotency_key": (
-                f"intermediary-chain-{suffix}-{uuid.uuid4().hex}"
-            ),
+            "ingestion_idempotency_key": f"intermediary-chain-{suffix}-{uuid.uuid4().hex}",
             "message_definition_identifier": CAMT053_MESSAGE_DEFINITION,
             "statement_payload": payload.decode("utf-8"),
         }
