@@ -220,7 +220,7 @@ class BankStatementEntryInterestEvidenceRedTests(unittest.TestCase):
         )
 
     def test_changed_entry_interest_requires_explicit_statement_correction(self) -> None:
-        """Material interest provenance cannot silently replay one statement identity."""
+        """Every material interest fact must cross the supported correction boundary."""
         accepted = accept_bank_statement_evidence(
             self._command(self.base_payload, "base"),
             posting.DATABASE_URL,
@@ -229,13 +229,19 @@ class BankStatementEntryInterestEvidenceRedTests(unittest.TestCase):
         )
         self.assertFalse(accepted["replayed"])
 
-        with self.assertRaisesRegex(AccountingValidationError, _CORRECTION_ERROR):
-            accept_bank_statement_evidence(
-                self._command(self.changed_total_payload, "changed-total"),
-                posting.DATABASE_URL,
-                self.case.policy.tenant_reference,
-                artifact_store=self.store,
-            )
+        for suffix, changed_payload in (
+            ("changed-total", self.changed_total_payload),
+            ("changed-record-amount", self.changed_record_amount_payload),
+            ("changed-direction", self.changed_direction_payload),
+        ):
+            with self.subTest(suffix=suffix):
+                with self.assertRaisesRegex(AccountingValidationError, _CORRECTION_ERROR):
+                    accept_bank_statement_evidence(
+                        self._command(changed_payload, suffix),
+                        posting.DATABASE_URL,
+                        self.case.policy.tenant_reference,
+                        artifact_store=self.store,
+                    )
 
     def test_buyer_read_preserves_exact_entry_interest_provenance(self) -> None:
         """Supported reads retain exact reported interest semantics and purpose digest."""
