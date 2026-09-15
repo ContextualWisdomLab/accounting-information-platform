@@ -360,6 +360,22 @@ class BankStatementAdditionalStatementInformationEvidenceRedTests(unittest.TestC
             ).fetchone()[0]
 
             direct_source_hash = self._fresh_hash()
+            direct_statement_identity = (
+                f"additional-information-server-owned-statement-{uuid.uuid4().hex}"
+            )
+            direct_idempotency_key = (
+                f"additional-information-server-owned-ingest-{uuid.uuid4().hex}"
+            )
+            direct_normalized_hash = self._fresh_hash()
+            self._assert_direct_statement_uniqueness_absent(
+                connection,
+                narrative_derived_id,
+                bank_account_record_id,
+                direct_source_hash,
+                direct_statement_identity,
+                direct_idempotency_key,
+            )
+
             direct_artifact_id = connection.execute(
                 """
                 INSERT INTO accounting_integration.bank_statement_artifact (
@@ -413,10 +429,10 @@ class BankStatementAdditionalStatementInformationEvidenceRedTests(unittest.TestC
                         narrative_derived_id,
                         bank_account_record_id,
                         direct_artifact_id,
-                        f"additional-information-server-owned-{uuid.uuid4().hex}",
+                        direct_statement_identity,
                         direct_source_hash,
-                        self._fresh_hash(),
-                        f"additional-information-server-owned-{uuid.uuid4().hex}",
+                        direct_normalized_hash,
+                        direct_idempotency_key,
                     ),
                 ).fetchone()[0]
             except psycopg.IntegrityError:
@@ -427,6 +443,71 @@ class BankStatementAdditionalStatementInformationEvidenceRedTests(unittest.TestC
             self.assertNotEqual(directly_retained_id, narrative_derived_id)
         finally:
             connection.close()
+
+    def _assert_direct_statement_uniqueness_absent(
+        self,
+        connection: psycopg.Connection[tuple[object, ...]],
+        proposed_record_id: uuid.UUID,
+        bank_account_record_id: object,
+        source_artifact_hash: str,
+        statement_identity_reference: str,
+        ingestion_idempotency_key: str,
+    ) -> None:
+        """Exclude every existing uniqueness key before probing server-owned record identity."""
+        record_id_count = connection.execute(
+            """
+            SELECT count(*)
+            FROM accounting_integration.bank_statement_record
+            WHERE bank_statement_record_id = %s
+            """,
+            (proposed_record_id,),
+        ).fetchone()[0]
+        self.assertEqual(record_id_count, 0)
+
+        artifact_source = connection.execute(
+            """
+            SELECT 1
+            FROM accounting_integration.bank_statement_artifact
+            WHERE tenant_account_id = accounting_core.current_tenant_account_id()
+              AND source_artifact_hash = %s
+            """,
+            (source_artifact_hash,),
+        ).fetchone()
+        self.assertIsNone(artifact_source)
+
+        statement_source = connection.execute(
+            """
+            SELECT 1
+            FROM accounting_integration.bank_statement_record
+            WHERE tenant_account_id = accounting_core.current_tenant_account_id()
+              AND source_artifact_hash = %s
+            """,
+            (source_artifact_hash,),
+        ).fetchone()
+        self.assertIsNone(statement_source)
+
+        statement_identity = connection.execute(
+            """
+            SELECT 1
+            FROM accounting_integration.bank_statement_record
+            WHERE tenant_account_id = accounting_core.current_tenant_account_id()
+              AND bank_account_record_id = %s
+              AND statement_identity_reference = %s
+            """,
+            (bank_account_record_id, statement_identity_reference),
+        ).fetchone()
+        self.assertIsNone(statement_identity)
+
+        ingestion_identity = connection.execute(
+            """
+            SELECT 1
+            FROM accounting_integration.bank_statement_record
+            WHERE tenant_account_id = accounting_core.current_tenant_account_id()
+              AND ingestion_idempotency_key = %s
+            """,
+            (ingestion_idempotency_key,),
+        ).fetchone()
+        self.assertIsNone(ingestion_identity)
 
     @staticmethod
     def _fresh_hash() -> str:
