@@ -8,6 +8,8 @@ import re
 import unittest
 import uuid
 
+import psycopg
+
 from accounting_information_platform import (
     AccountingValidationError,
     CAMT053_MESSAGE_DEFINITION,
@@ -235,6 +237,7 @@ class BankStatementAdditionalStatementInformationEvidenceRedTests(unittest.TestC
             actual.get("statement_additional_information_evidence_hash"),
             expected_hash,
         )
+        self._assert_statement_record_identity_server_owned(actual)
         baseline_without_evidence = dict(baseline)
         baseline_without_evidence.pop("statement_additional_information_evidence_hash", None)
         actual_without_evidence = dict(actual)
@@ -320,6 +323,115 @@ class BankStatementAdditionalStatementInformationEvidenceRedTests(unittest.TestC
         self.assertEqual(document["bank_account_reference"], bank_account_reference)
         uuid.UUID(str(document["bank_statement_record_id"]))
         return document
+
+    def _assert_statement_record_identity_server_owned(
+        self,
+        document: dict[str, object],
+    ) -> None:
+        """Prove an excluded record UUID cannot be supplied through statement admission."""
+        retained_record_id = uuid.UUID(str(document["bank_statement_record_id"]))
+        narrative_derived_id = uuid.UUID(
+            bytes=hashlib.sha256(self.first_information.encode("utf-8")).digest()[:16]
+        )
+        self.assertNotEqual(retained_record_id, narrative_derived_id)
+
+        connection = psycopg.connect(posting.DATABASE_URL)
+        try:
+            tenant_id = connection.execute(
+                """
+                SELECT tenant_account_id
+                FROM accounting_core.tenant_account
+                WHERE tenant_account_code = %s
+                """,
+                (self.case.policy.tenant_reference,),
+            ).fetchone()[0]
+            connection.execute(
+                "SELECT set_config('app.tenant_account_id', %s, false)",
+                (str(tenant_id),),
+            )
+            bank_account_record_id = connection.execute(
+                """
+                SELECT bank_account_record_id
+                FROM accounting_integration.bank_statement_record
+                WHERE tenant_account_id = accounting_core.current_tenant_account_id()
+                  AND bank_statement_record_id = %s
+                """,
+                (retained_record_id,),
+            ).fetchone()[0]
+
+            direct_source_hash = self._fresh_hash()
+            direct_artifact_id = connection.execute(
+                """
+                INSERT INTO accounting_integration.bank_statement_artifact (
+                    tenant_account_id,
+                    source_artifact_hash,
+                    artifact_store_reference,
+                    artifact_byte_length
+                )
+                VALUES (
+                    accounting_core.current_tenant_account_id(),
+                    %s,
+                    %s,
+                    1
+                )
+                RETURNING bank_statement_artifact_id
+                """,
+                (
+                    direct_source_hash,
+                    f"memory:{direct_source_hash}",
+                ),
+            ).fetchone()[0]
+
+            try:
+                directly_retained_id = connection.execute(
+                    """
+                    INSERT INTO accounting_integration.bank_statement_record (
+                        bank_statement_record_id,
+                        tenant_account_id,
+                        bank_account_record_id,
+                        bank_statement_artifact_id,
+                        message_definition_identifier,
+                        statement_identity_reference,
+                        source_artifact_hash,
+                        normalized_payload_hash,
+                        ingestion_idempotency_key
+                    )
+                    VALUES (
+                        %s,
+                        accounting_core.current_tenant_account_id(),
+                        %s,
+                        %s,
+                        'camt.053.001.14',
+                        %s,
+                        %s,
+                        %s,
+                        %s
+                    )
+                    RETURNING bank_statement_record_id
+                    """,
+                    (
+                        narrative_derived_id,
+                        bank_account_record_id,
+                        direct_artifact_id,
+                        f"additional-information-server-owned-{uuid.uuid4().hex}",
+                        direct_source_hash,
+                        self._fresh_hash(),
+                        f"additional-information-server-owned-{uuid.uuid4().hex}",
+                    ),
+                ).fetchone()[0]
+            except psycopg.IntegrityError:
+                connection.rollback()
+                return
+
+            connection.rollback()
+            self.assertNotEqual(directly_retained_id, narrative_derived_id)
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _fresh_hash() -> str:
+        """Return canonical SHA-256 evidence derived from fresh test entropy."""
+        return "sha256:" + hashlib.sha256(uuid.uuid4().bytes).hexdigest()
 
     @staticmethod
     def _expected_information_hash(value: str) -> str:
