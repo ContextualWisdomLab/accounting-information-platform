@@ -14,10 +14,8 @@ from accounting_information_platform import (
     load_canonical_statement_fixture,
     parse_bank_statement_payload,
 )
+from tests import test_postgres_bank_statement_transactions_summary_reconciliation_red as summary_red
 from tests import test_postgres_posting as posting
-from tests.test_postgres_bank_statement_transactions_summary_reconciliation_red import (
-    BankStatementTransactionsSummaryReconciliationRedTests as SummaryRed,
-)
 
 _SUMMARY_MISMATCH = (
     r"^statement transaction summary does not reconcile to normalized entries\. "
@@ -41,12 +39,14 @@ class BankStatementTransactionsSummaryDebitCountRedTests(unittest.TestCase):
         self.addCleanup(self.case.tearDown)
 
         fixture = load_canonical_statement_fixture().decode("utf-8")
-        self.payload = SummaryRed._with_summary(
-            fixture,
-            credit_count="1",
-            credit_sum="25000.00",
-            debit_count="2",
-            debit_sum="10000.00",
+        self.payload = (
+            summary_red.BankStatementTransactionsSummaryReconciliationRedTests._with_summary(
+                fixture,
+                credit_count="1",
+                credit_sum="25000.00",
+                debit_count="2",
+                debit_sum="10000.00",
+            )
         )
         statement = parse_bank_statement_payload(
             self.payload,
