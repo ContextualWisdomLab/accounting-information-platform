@@ -73,6 +73,13 @@ class BankStatementEntryInterestEvidenceRedTests(unittest.TestCase):
             record_amount="100.00",
             credit_debit_code="CRDT",
         )
+        self.changed_record_amount_payload = self._with_interest(
+            fixture,
+            marker,
+            total_amount="125.00",
+            record_amount="101.00",
+            credit_debit_code="CRDT",
+        )
         self.changed_direction_payload = self._with_interest(
             fixture,
             marker,
@@ -107,6 +114,9 @@ class BankStatementEntryInterestEvidenceRedTests(unittest.TestCase):
         self.changed_total_statement = parse_bank_statement_payload(
             self.changed_total_payload, CAMT053_MESSAGE_DEFINITION
         )
+        self.changed_record_amount_statement = parse_bank_statement_payload(
+            self.changed_record_amount_payload, CAMT053_MESSAGE_DEFINITION
+        )
         self.changed_direction_statement = parse_bank_statement_payload(
             self.changed_direction_payload, CAMT053_MESSAGE_DEFINITION
         )
@@ -128,7 +138,7 @@ class BankStatementEntryInterestEvidenceRedTests(unittest.TestCase):
         self.store = MemoryArtifactStore()
 
     def test_entry_interest_amount_and_direction_are_material_evidence(self) -> None:
-        """Total amount and record direction must change canonical entry evidence."""
+        """Total amount, record amount, and record direction are independently material."""
         variants = (
             (
                 self.base_statement,
@@ -137,6 +147,10 @@ class BankStatementEntryInterestEvidenceRedTests(unittest.TestCase):
             (
                 self.changed_total_statement,
                 self._expected_hash("126.00", "100.00", "CRDT"),
+            ),
+            (
+                self.changed_record_amount_statement,
+                self._expected_hash("125.00", "101.00", "CRDT"),
             ),
             (
                 self.changed_direction_statement,
@@ -159,6 +173,7 @@ class BankStatementEntryInterestEvidenceRedTests(unittest.TestCase):
         self.assertEqual(len(set(expected_hashes)), len(expected_hashes))
         for changed in (
             self.changed_total_statement,
+            self.changed_record_amount_statement,
             self.changed_direction_statement,
         ):
             self.assertEqual(
