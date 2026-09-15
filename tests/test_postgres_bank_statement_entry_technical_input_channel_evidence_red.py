@@ -14,6 +14,7 @@ from accounting_information_platform import (
     MemoryArtifactStore,
     accept_bank_account_record,
     accept_bank_statement_evidence,
+    load_adapter_manifest,
     load_canonical_statement_fixture,
     lookup_bank_statement_entries,
     parse_bank_statement_payload,
@@ -29,6 +30,7 @@ _CORRECTION_ERROR = (
     r"^statement identity already exists with different entry evidence\. "
     r"Use an explicit correction contract, then retry ingest\.$"
 )
+_CURRENT_EXTERNAL_CODE_SET_VERSION = "August 2026 (v3)"
 
 
 class BankStatementEntryTechnicalInputChannelEvidenceRedTests(unittest.TestCase):
@@ -59,6 +61,8 @@ class BankStatementEntryTechnicalInputChannelEvidenceRedTests(unittest.TestCase)
             "        </BkTxCd>\n"
             "        <NtryDtls>\n"
         )
+        self.fixture = fixture
+        self.marker = marker
         self.assertEqual(fixture.count(marker), 1)
 
         self.web_code_payload = self._with_technical_input_channel(
@@ -174,6 +178,55 @@ class BankStatementEntryTechnicalInputChannelEvidenceRedTests(unittest.TestCase)
                 self.web_code_statement.entries[1].source_entry_hash,
                 changed_statement.entries[1].source_entry_hash,
             )
+
+    def test_code_choice_is_bound_to_versioned_external_code_admission(self) -> None:
+        """Unknown Cd values fail under the pinned code set while Prtry stays distinct."""
+        manifest = load_adapter_manifest()
+        external_code_artifact = next(
+            artifact
+            for artifact in manifest["artifacts"]
+            if artifact.get("artifact_role") == "iso20022_external_code_sets"
+        )
+        self.assertEqual(
+            external_code_artifact.get("source_version"),
+            _CURRENT_EXTERNAL_CODE_SET_VERSION,
+        )
+        self.assertRegex(
+            str(external_code_artifact.get("sha256") or ""),
+            r"^[0-9a-f]{64}$",
+        )
+
+        hostile_code_payload = self._with_technical_input_channel(
+            self.fixture,
+            self.marker,
+            channel_choice="Cd",
+            channel_value="ZZZZ",
+        )
+        with self.assertRaises(AccountingValidationError):
+            parse_bank_statement_payload(
+                hostile_code_payload,
+                CAMT053_MESSAGE_DEFINITION,
+            )
+
+        proprietary_payload = self._with_technical_input_channel(
+            self.fixture,
+            self.marker,
+            channel_choice="Prtry",
+            channel_value="ZZZZ",
+        )
+        proprietary_statement = parse_bank_statement_payload(
+            proprietary_payload,
+            CAMT053_MESSAGE_DEFINITION,
+        )
+        expected_hash = self._expected_channel_hash("Prtry", "ZZZZ")
+        self.assertEqual(
+            getattr(
+                proprietary_statement.entries[0],
+                "entry_technical_input_channel_evidence_hash",
+                None,
+            ),
+            expected_hash,
+        )
 
     def test_xml_formatting_does_not_change_technical_input_channel_semantics(self) -> None:
         """Element layout differences must not alter normalized channel evidence."""
