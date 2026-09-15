@@ -113,7 +113,10 @@ class BankStatementDetailProprietaryReferenceEvidenceRedTests(unittest.TestCase)
 
         with self.assertRaisesRegex(
             AccountingValidationError,
-            "statement identity already exists with different entry evidence",
+            (
+                r"^statement identity already exists with different entry evidence\. "
+                r"Use an explicit correction contract, then retry ingest\.$"
+            ),
         ):
             accept_bank_statement_evidence(
                 self._command(self.second_payload, "second"),
@@ -141,14 +144,8 @@ class BankStatementDetailProprietaryReferenceEvidenceRedTests(unittest.TestCase)
         self.assertEqual(
             first_detail["proprietary_transaction_references"],
             [
-                {
-                    "type": "ACQUIRER_TRACE",
-                    "reference": self.first_reference,
-                },
-                {
-                    "type": "TERMINAL_TRACE",
-                    "reference": self.stable_reference,
-                },
+                {"type": "ACQUIRER_TRACE", "reference": self.first_reference},
+                {"type": "TERMINAL_TRACE", "reference": self.stable_reference},
             ],
         )
 
@@ -157,9 +154,7 @@ class BankStatementDetailProprietaryReferenceEvidenceRedTests(unittest.TestCase)
         return {
             "tenant_reference": self.case.policy.tenant_reference,
             "bank_account_reference": self.bank_account_reference,
-            "ingestion_idempotency_key": (
-                f"detail-proprietary-reference-{suffix}-{uuid.uuid4().hex}"
-            ),
+            "ingestion_idempotency_key": f"detail-proprietary-reference-{suffix}-{uuid.uuid4().hex}",
             "message_definition_identifier": CAMT053_MESSAGE_DEFINITION,
             "statement_payload": payload.decode("utf-8"),
         }
