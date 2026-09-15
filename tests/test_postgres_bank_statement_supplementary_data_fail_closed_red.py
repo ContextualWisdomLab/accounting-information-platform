@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 import uuid
+from unittest.mock import patch
 
 from accounting_information_platform import (
     AccountingValidationError,
@@ -14,6 +15,7 @@ from accounting_information_platform import (
     load_canonical_statement_fixture,
     parse_bank_statement_payload,
 )
+from accounting_information_platform import bank_statement
 from tests import test_postgres_posting as posting
 
 _EXTENSION_ERROR = (
@@ -60,11 +62,18 @@ class BankStatementSupplementaryDataFailClosedRedTests(unittest.TestCase):
 
     def test_message_supplementary_data_fails_closed_before_normalization(self) -> None:
         """Unknown BkToCstmrStmt/SplmtryData cannot disappear from evidence identity."""
-        with self.assertRaisesRegex(AccountingValidationError, _EXTENSION_ERROR):
-            parse_bank_statement_payload(
-                self.extended_payload,
-                CAMT053_MESSAGE_DEFINITION,
-            )
+        with patch.object(
+            bank_statement,
+            "_normalize_statement",
+            side_effect=AssertionError(
+                "normalization ran before message supplementary-data extension admission"
+            ),
+        ):
+            with self.assertRaisesRegex(AccountingValidationError, _EXTENSION_ERROR):
+                parse_bank_statement_payload(
+                    self.extended_payload,
+                    CAMT053_MESSAGE_DEFINITION,
+                )
 
     def test_rejected_message_extension_is_not_retained_as_ingested_evidence(self) -> None:
         """Fail closed before an unsupported extension can become durable statement evidence."""
