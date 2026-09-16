@@ -18,6 +18,7 @@ from accounting_information_platform import (
     lookup_bank_statement_entries,
     parse_bank_statement_payload,
 )
+from accounting_information_platform import bank_statement
 from tests import test_postgres_posting as posting
 
 _HASH_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -140,6 +141,7 @@ class BankStatementDetailCashDepositEvidenceRedTests(unittest.TestCase):
                     getattr(detail, "cash_deposit_evidence_hash", None),
                     expected_hash,
                 )
+                self._assert_entry_hash_binding(statement.entries[0], expected_hash)
 
         for changed in (
             self.changed_breakdown_statement,
@@ -189,6 +191,8 @@ class BankStatementDetailCashDepositEvidenceRedTests(unittest.TestCase):
         self.assertEqual(
             getattr(reformatted_detail, "cash_deposit_evidence_hash", None), expected
         )
+        self._assert_entry_hash_binding(self.base_statement.entries[0], expected)
+        self._assert_entry_hash_binding(self.reformatted_statement.entries[0], expected)
         self.assertEqual(base_detail.source_detail_hash, reformatted_detail.source_detail_hash)
         self.assertEqual(
             self.base_statement.entries[0].source_entry_hash,
@@ -262,6 +266,32 @@ class BankStatementDetailCashDepositEvidenceRedTests(unittest.TestCase):
         self.assertEqual(entry["entry_currency_code"], "KRW")
         self.assertEqual(detail["detail_amount"], "25000")
         self.assertEqual(detail["detail_currency_code"], "KRW")
+
+    @staticmethod
+    def _assert_entry_hash_binding(entry: object, expected_hash: str) -> None:
+        """Bind source_entry_hash to the purpose digest, not parallel raw fields."""
+        projection = dict(bank_statement._entry_payload(entry))
+        details = projection.get("details")
+        if not isinstance(details, list) or not details:
+            raise AssertionError("canonical entry projection must retain transaction details")
+        first_detail = details[0]
+        if not isinstance(first_detail, dict):
+            raise AssertionError("canonical entry detail projection must be a mapping")
+        if first_detail.get("cash_deposit_evidence_hash") != expected_hash:
+            raise AssertionError(
+                "canonical entry projection must carry the exact cash_deposit_evidence_hash"
+            )
+        preimage = json.dumps(
+            projection,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        expected_entry_hash = f"sha256:{hashlib.sha256(preimage).hexdigest()}"
+        if getattr(entry, "source_entry_hash", None) != expected_entry_hash:
+            raise AssertionError(
+                "source_entry_hash must digest the canonical entry projection containing "
+                "cash_deposit_evidence_hash"
+            )
 
     @staticmethod
     def _expected_hash(records: tuple[tuple[str, str, str, str, str], ...]) -> str:
