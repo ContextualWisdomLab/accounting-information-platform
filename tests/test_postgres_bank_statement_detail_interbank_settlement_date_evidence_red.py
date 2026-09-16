@@ -8,6 +8,7 @@ import json
 import re
 import unittest
 import uuid
+from datetime import datetime, timezone
 
 from accounting_information_platform import (
     AccountingValidationError,
@@ -81,6 +82,34 @@ class BankStatementDetailRelatedDatesEvidenceRedTests(unittest.TestCase):
             for name, semantics in self.variant_semantics.items()
         }
 
+        self.equivalent_offset_semantics = copy.deepcopy(self.base_semantics)
+        self.equivalent_offset_semantics["acceptance_datetime"] = (
+            "2026-08-22T17:30:00+09:00"
+        )
+        self.equivalent_offset_semantics["transaction_datetime"] = (
+            "2026-08-22T17:31:00+09:00"
+        )
+        self.equivalent_offset_semantics["proprietary_dates"][0]["date_value"] = (
+            "2026-08-23T02:00:00+09:00"
+        )
+        self.equivalent_offset_payload = self._with_related_dates(
+            fixture,
+            marker,
+            self.equivalent_offset_semantics,
+        )
+
+        self.local_datetime_semantics = copy.deepcopy(self.base_semantics)
+        self.local_datetime_semantics["acceptance_datetime"] = "2026-08-22T08:30:00"
+        self.local_datetime_semantics["transaction_datetime"] = "2026-08-22T08:31:00"
+        self.local_datetime_semantics["proprietary_dates"][0]["date_value"] = (
+            "2026-08-22T17:00:00"
+        )
+        self.local_datetime_payload = self._with_related_dates(
+            fixture,
+            marker,
+            self.local_datetime_semantics,
+        )
+
         related_dates_xml = self._related_dates_xml(self.base_semantics)
         self.assertEqual(self.base_payload.count(related_dates_xml.encode("utf-8")), 1)
         reformatted = related_dates_xml.replace(
@@ -101,6 +130,14 @@ class BankStatementDetailRelatedDatesEvidenceRedTests(unittest.TestCase):
             name: parse_bank_statement_payload(payload, CAMT053_MESSAGE_DEFINITION)
             for name, payload in self.variant_payloads.items()
         }
+        self.equivalent_offset_statement = parse_bank_statement_payload(
+            self.equivalent_offset_payload,
+            CAMT053_MESSAGE_DEFINITION,
+        )
+        self.local_datetime_statement = parse_bank_statement_payload(
+            self.local_datetime_payload,
+            CAMT053_MESSAGE_DEFINITION,
+        )
         self.reformatted_statement = parse_bank_statement_payload(
             self.reformatted_payload, CAMT053_MESSAGE_DEFINITION
         )
@@ -161,6 +198,50 @@ class BankStatementDetailRelatedDatesEvidenceRedTests(unittest.TestCase):
                     statement.entries[1].source_entry_hash,
                 )
 
+    def test_iso_datetime_offsets_normalize_but_timezone_less_values_remain_local(self) -> None:
+        """Equivalent zoned instants converge, while absent timezone precision is never invented."""
+        base_hash = self._expected_hash(self.base_semantics)
+        offset_hash = self._expected_hash(self.equivalent_offset_semantics)
+        local_hash = self._expected_hash(self.local_datetime_semantics)
+        base_detail = self.base_statement.entries[0].entry_details[0]
+        offset_detail = self.equivalent_offset_statement.entries[0].entry_details[0]
+        local_detail = self.local_datetime_statement.entries[0].entry_details[0]
+
+        self.assertEqual(base_hash, offset_hash)
+        self.assertNotEqual(base_hash, local_hash)
+        self.assertNotEqual(
+            self.base_statement.source_artifact_hash,
+            self.equivalent_offset_statement.source_artifact_hash,
+        )
+        self.assertEqual(getattr(base_detail, "related_dates_evidence_hash", None), base_hash)
+        self.assertEqual(
+            getattr(offset_detail, "related_dates_evidence_hash", None), offset_hash
+        )
+        self.assertEqual(getattr(local_detail, "related_dates_evidence_hash", None), local_hash)
+        self._assert_entry_hash_binding(self.base_statement.entries[0], base_hash)
+        self._assert_entry_hash_binding(
+            self.equivalent_offset_statement.entries[0], offset_hash
+        )
+        self._assert_entry_hash_binding(self.local_datetime_statement.entries[0], local_hash)
+        self.assertEqual(base_detail.source_detail_hash, offset_detail.source_detail_hash)
+        self.assertEqual(
+            self.base_statement.entries[0].source_entry_hash,
+            self.equivalent_offset_statement.entries[0].source_entry_hash,
+        )
+        self.assertEqual(
+            self.base_statement.normalized_payload_hash,
+            self.equivalent_offset_statement.normalized_payload_hash,
+        )
+        self.assertNotEqual(base_detail.source_detail_hash, local_detail.source_detail_hash)
+        self.assertNotEqual(
+            self.base_statement.entries[0].source_entry_hash,
+            self.local_datetime_statement.entries[0].source_entry_hash,
+        )
+        self.assertNotEqual(
+            self.base_statement.normalized_payload_hash,
+            self.local_datetime_statement.normalized_payload_hash,
+        )
+
     def test_xml_layout_does_not_change_related_date_semantics(self) -> None:
         """Whitespace belongs to artifact provenance, not TransactionDates3 semantic identity."""
         expected = self._expected_hash(self.base_semantics)
@@ -197,7 +278,9 @@ class BankStatementDetailRelatedDatesEvidenceRedTests(unittest.TestCase):
         )
         self.assertFalse(accepted["replayed"])
 
-        for name, payload in self.variant_payloads.items():
+        material_payloads = dict(self.variant_payloads)
+        material_payloads["timezone-less-local"] = self.local_datetime_payload
+        for name, payload in material_payloads.items():
             with self.subTest(name=name):
                 with self.assertRaisesRegex(AccountingValidationError, _CORRECTION_ERROR):
                     accept_bank_statement_evidence(
@@ -225,7 +308,7 @@ class BankStatementDetailRelatedDatesEvidenceRedTests(unittest.TestCase):
         detail = entry["entry_details"][0]
 
         self.assertEqual(detail.get("related_dates_evidence_hash"), expected)
-        self.assertEqual(detail.get("related_dates"), self.base_semantics)
+        self.assertEqual(detail.get("related_dates"), self._canonical_semantics(self.base_semantics))
         self.assertEqual(
             detail.get("interbank_settlement_date"),
             self.base_semantics["interbank_settlement_date"],
@@ -234,6 +317,39 @@ class BankStatementDetailRelatedDatesEvidenceRedTests(unittest.TestCase):
         self.assertEqual(entry["entry_currency_code"], "KRW")
         self.assertEqual(detail["detail_amount"], "25000")
         self.assertEqual(detail["detail_currency_code"], "KRW")
+
+    def test_buyer_read_does_not_invent_timezone_for_local_iso_datetimes(self) -> None:
+        """Timezone-less ISODateTime evidence remains local in the buyer projection."""
+        expected = self._expected_hash(self.local_datetime_semantics)
+        accepted = accept_bank_statement_evidence(
+            self._command(self.local_datetime_payload, "local-lookup"),
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            artifact_store=self.store,
+        )
+        document = lookup_bank_statement_entries(
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            str(accepted["bank_statement_record_id"]),
+        )
+        detail = document["bank_statement_entries"][0]["entry_details"][0]
+        self.assertEqual(detail.get("related_dates_evidence_hash"), expected)
+        self.assertEqual(
+            detail.get("related_dates"),
+            self._canonical_semantics(self.local_datetime_semantics),
+        )
+        self.assertEqual(
+            detail["related_dates"]["acceptance_datetime"],
+            "2026-08-22T08:30:00",
+        )
+        self.assertEqual(
+            detail["related_dates"]["transaction_datetime"],
+            "2026-08-22T08:31:00",
+        )
+        self.assertEqual(
+            detail["related_dates"]["proprietary_dates"][0]["date_value"],
+            "2026-08-22T17:00:00",
+        )
 
     @staticmethod
     def _material_variants(base: dict[str, object]) -> dict[str, dict[str, object]]:
@@ -301,18 +417,48 @@ class BankStatementDetailRelatedDatesEvidenceRedTests(unittest.TestCase):
                 "related_dates_evidence_hash"
             )
 
-    @staticmethod
-    def _expected_hash(semantics: dict[str, object]) -> str:
-        """Digest the complete admitted TransactionDates3 semantics with proprietary source order."""
+    @classmethod
+    def _expected_hash(cls, semantics: dict[str, object]) -> str:
+        """Digest canonical TransactionDates3 semantics while retaining local time precision."""
         preimage = json.dumps(
             {
                 "evidence_type": _RELATED_DATES_PURPOSE,
-                "related_dates": semantics,
+                "related_dates": cls._canonical_semantics(semantics),
             },
             separators=(",", ":"),
             sort_keys=True,
         ).encode("utf-8")
         return f"sha256:{hashlib.sha256(preimage).hexdigest()}"
+
+    @classmethod
+    def _canonical_semantics(cls, semantics: dict[str, object]) -> dict[str, object]:
+        """Canonicalize zoned instants to UTC without inventing a zone for local ISODateTime."""
+        canonical = copy.deepcopy(semantics)
+        for field in ("acceptance_datetime", "transaction_datetime"):
+            value = canonical[field]
+            if not isinstance(value, str):
+                raise AssertionError(f"{field} fixture must be text")
+            canonical[field] = cls._canonical_datetime(value)
+        proprietary_dates = canonical["proprietary_dates"]
+        if not isinstance(proprietary_dates, list):
+            raise AssertionError("proprietary_dates fixture must be a list")
+        for item in proprietary_dates:
+            if not isinstance(item, dict):
+                raise AssertionError("proprietary date fixture must be a mapping")
+            if item["date_choice"] == "DtTm":
+                value = item["date_value"]
+                if not isinstance(value, str):
+                    raise AssertionError("proprietary DtTm fixture must be text")
+                item["date_value"] = cls._canonical_datetime(value)
+        return canonical
+
+    @staticmethod
+    def _canonical_datetime(value: str) -> str:
+        """Normalize offset-bearing ISODateTime to UTC while preserving timezone-less local time."""
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            return value
+        return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
     @staticmethod
     def _related_dates_xml(semantics: dict[str, object]) -> str:
