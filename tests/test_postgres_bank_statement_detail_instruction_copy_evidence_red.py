@@ -243,7 +243,7 @@ class BankStatementDetailInstructionCopyEvidenceRedTests(unittest.TestCase):
     ) -> bytes:
         """Insert one schema-positioned InstructionCopy after omitted optional siblings."""
         if cdata:
-            if "]] >".replace(" ", "") in value:
+            if "]]>" in value:
                 raise AssertionError("focused InstructionCopy cannot contain a CDATA terminator")
             serialized = f"<![CDATA[{value}]]>"
         else:
