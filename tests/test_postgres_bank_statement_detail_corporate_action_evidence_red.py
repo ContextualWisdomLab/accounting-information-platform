@@ -55,10 +55,17 @@ class BankStatementDetailCorporateActionEvidenceRedTests(unittest.TestCase):
         self.assertEqual(fixture.count(marker), 1)
 
         self.base = {
-            "event_type": "DIVIDEND",
+            "event_type": {"choice": "Cd", "value": "DVCA"},
             "corporate_action_event_identification": "EVT-2026-001",
         }
-        self.event_type_changed = {**self.base, "event_type": "BONUS"}
+        self.event_type_value_changed = {
+            **self.base,
+            "event_type": {"choice": "Cd", "value": "BONU"},
+        }
+        self.event_type_choice_changed = {
+            **self.base,
+            "event_type": {"choice": "Prtry", "value": "DVCA"},
+        }
         self.event_identification_changed = {
             **self.base,
             "corporate_action_event_identification": "EVT-2026-002",
@@ -67,9 +74,14 @@ class BankStatementDetailCorporateActionEvidenceRedTests(unittest.TestCase):
         self.base_payload = self._with_related_corporate_action(fixture, marker, self.base)
         self.base_statement = self._parse(self.base_payload)
         self.variants = {
-            "event_type": self._parse(
+            "event_type_value": self._parse(
                 self._with_related_corporate_action(
-                    fixture, marker, self.event_type_changed
+                    fixture, marker, self.event_type_value_changed
+                )
+            ),
+            "event_type_choice": self._parse(
+                self._with_related_corporate_action(
+                    fixture, marker, self.event_type_choice_changed
                 )
             ),
             "event_identification": self._parse(
@@ -105,7 +117,7 @@ class BankStatementDetailCorporateActionEvidenceRedTests(unittest.TestCase):
         self.store = MemoryArtifactStore()
 
     def test_each_related_corporate_action_semantic_is_material_to_identity(self) -> None:
-        """Event type and corporate-action event identification are independently material."""
+        """Event-type choice/value and corporate-action event ID are independently material."""
         base_hash = self._expected_hash(self.base)
         base_entry = self.base_statement.entries[0]
         base_detail = base_entry.entry_details[0]
@@ -117,7 +129,8 @@ class BankStatementDetailCorporateActionEvidenceRedTests(unittest.TestCase):
         self._assert_entry_hash_binding(base_entry, base_hash)
 
         expected_values = {
-            "event_type": self.event_type_changed,
+            "event_type_value": self.event_type_value_changed,
+            "event_type_choice": self.event_type_choice_changed,
             "event_identification": self.event_identification_changed,
         }
         for label, statement in self.variants.items():
@@ -266,7 +279,7 @@ class BankStatementDetailCorporateActionEvidenceRedTests(unittest.TestCase):
             )
 
     @staticmethod
-    def _expected_hash(value: dict[str, str]) -> str:
+    def _expected_hash(value: dict[str, object]) -> str:
         """Digest the admitted direct RltdCorpActn projection."""
         preimage = json.dumps(
             {
@@ -279,20 +292,32 @@ class BankStatementDetailCorporateActionEvidenceRedTests(unittest.TestCase):
         return f"sha256:{hashlib.sha256(preimage).hexdigest()}"
 
     @staticmethod
-    def _related_corporate_action_xml(value: dict[str, str]) -> str:
+    def _related_corporate_action_xml(value: dict[str, object]) -> str:
         """Serialize one direct TxDtls/RltdCorpActn in V14 schema order."""
+        event_type = value["event_type"]
+        if not isinstance(event_type, dict):
+            raise AssertionError("event_type must preserve the V14 choice structure")
+        choice = event_type["choice"]
+        event_type_value = event_type["value"]
+        if choice not in {"Cd", "Prtry"}:
+            raise AssertionError("event_type choice must be Cd or Prtry")
+        if not isinstance(event_type_value, str):
+            raise AssertionError("event_type value must be text")
+        event_identification = value["corporate_action_event_identification"]
+        if not isinstance(event_identification, str):
+            raise AssertionError("corporate_action_event_identification must be text")
         return (
             "            <RltdCorpActn>\n"
-            f"              <EvtTp>{value['event_type']}</EvtTp>\n"
-            "              <CorpActnEvtId>"
-            f"{value['corporate_action_event_identification']}"
-            "</CorpActnEvtId>\n"
+            "              <EvtTp>\n"
+            f"                <{choice}>{event_type_value}</{choice}>\n"
+            "              </EvtTp>\n"
+            f"              <CorpActnEvtId>{event_identification}</CorpActnEvtId>\n"
             "            </RltdCorpActn>\n"
         )
 
     @classmethod
     def _with_related_corporate_action(
-        cls, fixture: str, marker: str, value: dict[str, str]
+        cls, fixture: str, marker: str, value: dict[str, object]
     ) -> bytes:
         """Insert RltdCorpActn after RmtInf while skipping intervening optional V14 elements."""
         if fixture.count(marker) != 1:
