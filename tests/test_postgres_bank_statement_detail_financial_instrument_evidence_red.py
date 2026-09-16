@@ -241,7 +241,7 @@ class BankStatementDetailFinancialInstrumentEvidenceRedTests(unittest.TestCase):
 
     @staticmethod
     def _expected_hash(value: dict[str, str]) -> str:
-        """Digest the admitted SecurityIdentification19 ISIN projection."""
+        """Digest the admitted FinInstrmId/ISIN projection."""
         preimage = json.dumps(
             {
                 "evidence_type": _FINANCIAL_INSTRUMENT_PATH,
