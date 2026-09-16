@@ -1,4 +1,4 @@
-"""PostgreSQL REDs for camt.053 transaction-detail corporate-action evidence."""
+"""PostgreSQL REDs for camt.053 transaction-detail related-corporate-action evidence."""
 
 from __future__ import annotations
 
@@ -22,7 +22,9 @@ from accounting_information_platform import bank_statement
 from tests import test_postgres_posting as posting
 
 _HASH_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
-_CORPORATE_ACTION_PATH = "camt.053.001.14/Stmt/Ntry/NtryDtls/TxDtls/CorpActn"
+_RELATED_CORPORATE_ACTION_PATH = (
+    "camt.053.001.14/Stmt/Ntry/NtryDtls/TxDtls/RltdCorpActn"
+)
 _CORRECTION_ERROR = (
     r"^statement identity already exists with different entry evidence\. "
     r"Use an explicit correction contract, then retry ingest\.$"
@@ -30,7 +32,7 @@ _CORRECTION_ERROR = (
 
 
 class BankStatementDetailCorporateActionEvidenceRedTests(unittest.TestCase):
-    """Retain bank-reported corporate-action provenance without promoting it to accounting truth."""
+    """Retain bank-reported related-corporate-action provenance without promoting it to accounting truth."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -38,7 +40,7 @@ class BankStatementDetailCorporateActionEvidenceRedTests(unittest.TestCase):
         posting.PostgresPostingTests.setUpClass()
 
     def setUp(self) -> None:
-        """Prepare causal event-type, event-identity, and layout variants."""
+        """Prepare causal event-type, event-identifier, and layout variants."""
         self.case = posting.PostgresPostingTests("setUp")
         self.case.setUp()
         self.addCleanup(self.case.doCleanups)
@@ -54,32 +56,34 @@ class BankStatementDetailCorporateActionEvidenceRedTests(unittest.TestCase):
 
         self.base = {
             "event_type": "DIVIDEND",
-            "event_identification": "EVT-2026-001",
+            "corporate_action_event_identification": "EVT-2026-001",
         }
         self.event_type_changed = {**self.base, "event_type": "BONUS"}
         self.event_identification_changed = {
             **self.base,
-            "event_identification": "EVT-2026-002",
+            "corporate_action_event_identification": "EVT-2026-002",
         }
 
-        self.base_payload = self._with_corporate_action(fixture, marker, self.base)
+        self.base_payload = self._with_related_corporate_action(fixture, marker, self.base)
         self.base_statement = self._parse(self.base_payload)
         self.variants = {
             "event_type": self._parse(
-                self._with_corporate_action(fixture, marker, self.event_type_changed)
+                self._with_related_corporate_action(
+                    fixture, marker, self.event_type_changed
+                )
             ),
             "event_identification": self._parse(
-                self._with_corporate_action(
+                self._with_related_corporate_action(
                     fixture, marker, self.event_identification_changed
                 )
             ),
         }
 
-        corporate_action_xml = self._corporate_action_xml(self.base)
+        corporate_action_xml = self._related_corporate_action_xml(self.base)
         self.assertEqual(self.base_payload.count(corporate_action_xml.encode("utf-8")), 1)
         reformatted_xml = corporate_action_xml.replace(
-            "            <CorpActn>\n",
-            "            <CorpActn>\n              \n",
+            "            <RltdCorpActn>\n",
+            "            <RltdCorpActn>\n              \n",
             1,
         )
         self.reformatted_payload = self.base_payload.replace(
@@ -100,14 +104,15 @@ class BankStatementDetailCorporateActionEvidenceRedTests(unittest.TestCase):
         )
         self.store = MemoryArtifactStore()
 
-    def test_each_corporate_action_semantic_is_material_to_identity(self) -> None:
-        """Event type and official event identification are independently material."""
+    def test_each_related_corporate_action_semantic_is_material_to_identity(self) -> None:
+        """Event type and corporate-action event identification are independently material."""
         base_hash = self._expected_hash(self.base)
         base_entry = self.base_statement.entries[0]
         base_detail = base_entry.entry_details[0]
         self.assertRegex(base_hash, _HASH_PATTERN)
         self.assertEqual(
-            getattr(base_detail, "corporate_action_evidence_hash", None), base_hash
+            getattr(base_detail, "related_corporate_action_evidence_hash", None),
+            base_hash,
         )
         self._assert_entry_hash_binding(base_entry, base_hash)
 
@@ -123,7 +128,10 @@ class BankStatementDetailCorporateActionEvidenceRedTests(unittest.TestCase):
                 self.assertRegex(expected_hash, _HASH_PATTERN)
                 self.assertNotEqual(base_hash, expected_hash)
                 self.assertEqual(
-                    getattr(detail, "corporate_action_evidence_hash", None), expected_hash
+                    getattr(
+                        detail, "related_corporate_action_evidence_hash", None
+                    ),
+                    expected_hash,
                 )
                 self._assert_entry_hash_binding(entry, expected_hash)
                 self.assertEqual(
@@ -145,8 +153,8 @@ class BankStatementDetailCorporateActionEvidenceRedTests(unittest.TestCase):
                     statement.entries[1].source_entry_hash,
                 )
 
-    def test_xml_layout_does_not_change_corporate_action_semantics(self) -> None:
-        """Layout-only XML changes raw provenance but not corporate-action identity."""
+    def test_xml_layout_does_not_change_related_corporate_action_semantics(self) -> None:
+        """Layout-only XML changes raw provenance but not related-corporate-action identity."""
         expected_hash = self._expected_hash(self.base)
         base_entry = self.base_statement.entries[0]
         reformatted_entry = self.reformatted_statement.entries[0]
@@ -158,7 +166,9 @@ class BankStatementDetailCorporateActionEvidenceRedTests(unittest.TestCase):
             self.reformatted_statement.source_artifact_hash,
         )
         self.assertEqual(
-            getattr(reformatted_detail, "corporate_action_evidence_hash", None),
+            getattr(
+                reformatted_detail, "related_corporate_action_evidence_hash", None
+            ),
             expected_hash,
         )
         self._assert_entry_hash_binding(reformatted_entry, expected_hash)
@@ -169,8 +179,10 @@ class BankStatementDetailCorporateActionEvidenceRedTests(unittest.TestCase):
             self.reformatted_statement.normalized_payload_hash,
         )
 
-    def test_changed_corporate_action_requires_explicit_statement_correction(self) -> None:
-        """Accepted corporate-action provenance cannot be silently replaced under one statement identity."""
+    def test_changed_related_corporate_action_requires_explicit_statement_correction(
+        self,
+    ) -> None:
+        """Accepted related-corporate-action provenance cannot be silently replaced."""
         accepted = accept_bank_statement_evidence(
             self._command(self.base_payload, "base"),
             posting.DATABASE_URL,
@@ -179,7 +191,7 @@ class BankStatementDetailCorporateActionEvidenceRedTests(unittest.TestCase):
         )
         self.assertFalse(accepted["replayed"])
 
-        changed_payload = self._with_corporate_action(
+        changed_payload = self._with_related_corporate_action(
             load_canonical_statement_fixture().decode("utf-8"),
             (
                 "            <RmtInf>\n"
@@ -196,8 +208,10 @@ class BankStatementDetailCorporateActionEvidenceRedTests(unittest.TestCase):
                 artifact_store=self.store,
             )
 
-    def test_buyer_read_preserves_corporate_action_without_changing_amount_truth(self) -> None:
-        """Tenant reads expose corporate-action provenance while bank amounts remain unchanged."""
+    def test_buyer_read_preserves_related_corporate_action_without_changing_amount_truth(
+        self,
+    ) -> None:
+        """Tenant reads expose related-corporate-action provenance without changing bank amounts."""
         expected_hash = self._expected_hash(self.base)
         accepted = accept_bank_statement_evidence(
             self._command(self.base_payload, "lookup"),
@@ -213,8 +227,10 @@ class BankStatementDetailCorporateActionEvidenceRedTests(unittest.TestCase):
         entry = document["bank_statement_entries"][0]
         detail = entry["entry_details"][0]
 
-        self.assertEqual(detail.get("corporate_action_evidence_hash"), expected_hash)
-        self.assertEqual(detail.get("corporate_action"), self.base)
+        self.assertEqual(
+            detail.get("related_corporate_action_evidence_hash"), expected_hash
+        )
+        self.assertEqual(detail.get("related_corporate_action"), self.base)
         self.assertEqual(entry["entry_amount"], "25000")
         self.assertEqual(entry["entry_currency_code"], "KRW")
         self.assertEqual(detail["detail_amount"], "25000")
@@ -226,7 +242,7 @@ class BankStatementDetailCorporateActionEvidenceRedTests(unittest.TestCase):
 
     @staticmethod
     def _assert_entry_hash_binding(entry: object, expected_hash: str) -> None:
-        """Require source_entry_hash to digest the exact corporate-action-bound detail hash."""
+        """Require source_entry_hash to digest the exact related-corporate-action-bound detail hash."""
         projection = dict(bank_statement._entry_payload(entry))
         details = projection.get("details")
         if not isinstance(details, list) or not details:
@@ -234,9 +250,10 @@ class BankStatementDetailCorporateActionEvidenceRedTests(unittest.TestCase):
         first_detail = details[0]
         if not isinstance(first_detail, dict):
             raise AssertionError("canonical entry detail projection must be a mapping")
-        if first_detail.get("corporate_action_evidence_hash") != expected_hash:
+        if first_detail.get("related_corporate_action_evidence_hash") != expected_hash:
             raise AssertionError(
-                "canonical entry projection must carry the exact corporate_action_evidence_hash"
+                "canonical entry projection must carry the exact "
+                "related_corporate_action_evidence_hash"
             )
         preimage = json.dumps(
             projection, separators=(",", ":"), sort_keys=True
@@ -245,16 +262,16 @@ class BankStatementDetailCorporateActionEvidenceRedTests(unittest.TestCase):
         if getattr(entry, "source_entry_hash", None) != expected_entry_hash:
             raise AssertionError(
                 "source_entry_hash must digest the canonical entry projection containing "
-                "corporate_action_evidence_hash"
+                "related_corporate_action_evidence_hash"
             )
 
     @staticmethod
     def _expected_hash(value: dict[str, str]) -> str:
-        """Digest the admitted CorpActn projection."""
+        """Digest the admitted direct RltdCorpActn projection."""
         preimage = json.dumps(
             {
-                "evidence_type": _CORPORATE_ACTION_PATH,
-                "corporate_action": value,
+                "evidence_type": _RELATED_CORPORATE_ACTION_PATH,
+                "related_corporate_action": value,
             },
             separators=(",", ":"),
             sort_keys=True,
@@ -262,25 +279,27 @@ class BankStatementDetailCorporateActionEvidenceRedTests(unittest.TestCase):
         return f"sha256:{hashlib.sha256(preimage).hexdigest()}"
 
     @staticmethod
-    def _corporate_action_xml(value: dict[str, str]) -> str:
-        """Serialize one direct TxDtls/CorpActn in schema order."""
+    def _related_corporate_action_xml(value: dict[str, str]) -> str:
+        """Serialize one direct TxDtls/RltdCorpActn in V14 schema order."""
         return (
-            "            <CorpActn>\n"
+            "            <RltdCorpActn>\n"
             f"              <EvtTp>{value['event_type']}</EvtTp>\n"
-            f"              <EvtId>{value['event_identification']}</EvtId>\n"
-            "            </CorpActn>\n"
+            "              <CorpActnEvtId>"
+            f"{value['corporate_action_event_identification']}"
+            "</CorpActnEvtId>\n"
+            "            </RltdCorpActn>\n"
         )
 
     @classmethod
-    def _with_corporate_action(
+    def _with_related_corporate_action(
         cls, fixture: str, marker: str, value: dict[str, str]
     ) -> bytes:
-        """Insert CorpActn after RmtInf while skipping intervening optional V14 elements."""
+        """Insert RltdCorpActn after RmtInf while skipping intervening optional V14 elements."""
         if fixture.count(marker) != 1:
             raise AssertionError("canonical first-detail RmtInf marker must occur exactly once")
         return fixture.replace(
             marker,
-            marker + cls._corporate_action_xml(value),
+            marker + cls._related_corporate_action_xml(value),
             1,
         ).encode("utf-8")
 
@@ -289,7 +308,9 @@ class BankStatementDetailCorporateActionEvidenceRedTests(unittest.TestCase):
         return {
             "tenant_reference": self.case.policy.tenant_reference,
             "bank_account_reference": self.bank_account_reference,
-            "ingestion_idempotency_key": f"detail-corporate-action-{suffix}-{uuid.uuid4().hex}",
+            "ingestion_idempotency_key": (
+                f"detail-related-corporate-action-{suffix}-{uuid.uuid4().hex}"
+            ),
             "message_definition_identifier": CAMT053_MESSAGE_DEFINITION,
             "statement_payload": payload.decode("utf-8"),
         }
