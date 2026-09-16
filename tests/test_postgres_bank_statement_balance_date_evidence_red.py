@@ -85,7 +85,11 @@ class BankStatementBalanceDateEvidenceRedTests(unittest.TestCase):
         )
         self.opening_datetime_offset_payload = self._replace_balance_date_choice(
             self.opening_marker,
-            "<DtTm>2026-08-23T00:00:00+00:00</DtTm>",
+            "<DtTm>2026-08-23T09:00:00+09:00</DtTm>",
+        )
+        self.opening_local_datetime_payload = self._replace_balance_date_choice(
+            self.opening_marker,
+            "<DtTm>2026-08-23T00:00:00</DtTm>",
         )
         self.opening_date_statement = parse_bank_statement_payload(
             self.opening_date_payload,
@@ -97,6 +101,10 @@ class BankStatementBalanceDateEvidenceRedTests(unittest.TestCase):
         )
         self.opening_datetime_offset_statement = parse_bank_statement_payload(
             self.opening_datetime_offset_payload,
+            CAMT053_MESSAGE_DEFINITION,
+        )
+        self.opening_local_datetime_statement = parse_bank_statement_payload(
+            self.opening_local_datetime_payload,
             CAMT053_MESSAGE_DEFINITION,
         )
 
@@ -218,7 +226,7 @@ class BankStatementBalanceDateEvidenceRedTests(unittest.TestCase):
         )
 
     def test_equivalent_balance_datetime_offsets_have_one_semantic_identity(self) -> None:
-        """Z and +00:00 are one instant and must not fork canonical balance evidence."""
+        """UTC and a nonzero equivalent offset must not fork canonical balance evidence."""
         expected_hash = self._expected_balance_date_hash(
             "DtTm",
             "2026-08-23T00:00:00Z",
@@ -246,6 +254,42 @@ class BankStatementBalanceDateEvidenceRedTests(unittest.TestCase):
         self.assertEqual(
             self.opening_datetime_statement.normalized_payload_hash,
             self.opening_datetime_offset_statement.normalized_payload_hash,
+        )
+
+    def test_timezone_less_datetime_does_not_acquire_invented_timezone(self) -> None:
+        """A local ISODateTime remains local evidence rather than an inferred UTC instant."""
+        local_hash = self._expected_balance_date_hash(
+            "DtTm",
+            "2026-08-23T00:00:00",
+        )
+        zoned_hash = self._expected_balance_date_hash(
+            "DtTm",
+            "2026-08-23T00:00:00Z",
+        )
+        local_balance = self._opening_balance(self.opening_local_datetime_statement)
+        zoned_balance = self._opening_balance(self.opening_datetime_statement)
+
+        self.assertNotEqual(local_hash, zoned_hash)
+        self.assertEqual(
+            getattr(local_balance, "balance_date_evidence_hash", None),
+            local_hash,
+        )
+        self.assertEqual(
+            getattr(local_balance, "balance_date_choice", None),
+            "DtTm",
+        )
+        self.assertEqual(
+            getattr(local_balance, "balance_date_value", None),
+            "2026-08-23T00:00:00",
+        )
+        self._assert_balance_hash_binding(local_balance, local_hash)
+        self.assertNotEqual(
+            local_balance.source_balance_hash,
+            zoned_balance.source_balance_hash,
+        )
+        self.assertNotEqual(
+            self.opening_local_datetime_statement.normalized_payload_hash,
+            self.opening_datetime_statement.normalized_payload_hash,
         )
 
     def test_same_statement_identity_cannot_replay_changed_opening_balance_date(self) -> None:
@@ -312,6 +356,35 @@ class BankStatementBalanceDateEvidenceRedTests(unittest.TestCase):
         self.assertEqual(opening.get("balance_date_evidence_hash"), expected_hash)
         self.assertEqual(opening.get("balance_date_choice"), "DtTm")
         self.assertEqual(opening.get("balance_date_value"), "2026-08-23T00:00:00Z")
+
+    def test_buyer_read_preserves_local_datetime_without_invented_timezone(self) -> None:
+        """Readback preserves an admitted timezone-less DtTm without silently adding UTC."""
+        expected_hash = self._expected_balance_date_hash(
+            "DtTm",
+            "2026-08-23T00:00:00",
+        )
+        accepted = accept_bank_statement_evidence(
+            self._command(self.opening_local_datetime_payload, "lookup-local"),
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            artifact_store=self.store,
+        )
+        document = lookup_bank_statement(
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            str(accepted["bank_statement_record_id"]),
+        )
+        balances = document.get("balances")
+        self.assertIsInstance(balances, list)
+        opening = next(
+            balance
+            for balance in balances
+            if balance.get("balance_type_code") == "OPBD"
+            and balance.get("balance_type_source_code") == "cd"
+        )
+        self.assertEqual(opening.get("balance_date_evidence_hash"), expected_hash)
+        self.assertEqual(opening.get("balance_date_choice"), "DtTm")
+        self.assertEqual(opening.get("balance_date_value"), "2026-08-23T00:00:00")
 
     def test_invalid_balance_date_is_rejected_before_evidence_admission(self) -> None:
         """An invalid Bal/Dt lexical value cannot become retained balance evidence."""
