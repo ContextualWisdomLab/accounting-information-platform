@@ -64,6 +64,11 @@ class BankStatementDetailRelatedPriceEvidenceRedTests(unittest.TestCase):
         self.changed_rate_semantics["deal_price"]["value"]["value"] = "100.5"
         self.changed_type_semantics = copy.deepcopy(self.base_semantics)
         self.changed_type_semantics["deal_price"]["type"]["value"] = "PREM"
+        self.yielded_type_semantics = copy.deepcopy(self.base_semantics)
+        self.yielded_type_semantics["deal_price"]["type"] = {
+            "choice": "Yldd",
+            "value": True,
+        }
         self.amount_choice_semantics = copy.deepcopy(self.base_semantics)
         self.amount_choice_semantics["deal_price"]["value"] = {
             "choice": "Amt",
@@ -89,6 +94,9 @@ class BankStatementDetailRelatedPriceEvidenceRedTests(unittest.TestCase):
         self.changed_type_payload = self._with_related_price(
             fixture, self.changed_type_semantics
         )
+        self.yielded_type_payload = self._with_related_price(
+            fixture, self.yielded_type_semantics
+        )
         self.amount_choice_payload = self._with_related_price(
             fixture, self.amount_choice_semantics
         )
@@ -108,6 +116,7 @@ class BankStatementDetailRelatedPriceEvidenceRedTests(unittest.TestCase):
         self.base_statement = self._parse(self.base_payload)
         self.changed_rate_statement = self._parse(self.changed_rate_payload)
         self.changed_type_statement = self._parse(self.changed_type_payload)
+        self.yielded_type_statement = self._parse(self.yielded_type_payload)
         self.amount_choice_statement = self._parse(self.amount_choice_payload)
         self.layout_statement = self._parse(self.layout_payload)
         self.proprietary_statement = self._parse(self.proprietary_payload)
@@ -131,11 +140,12 @@ class BankStatementDetailRelatedPriceEvidenceRedTests(unittest.TestCase):
         )
         self.store = MemoryArtifactStore()
 
-    def test_deal_price_fields_and_value_choice_are_material_to_hash_chain(self) -> None:
-        """Price type, value, and Rate-versus-Amt branch are independently retained."""
+    def test_deal_price_fields_and_choice_branches_are_material_to_hash_chain(self) -> None:
+        """Price type/value changes and both nested choices remain material evidence."""
         cases = (
             (self.changed_rate_statement, self.changed_rate_semantics),
             (self.changed_type_statement, self.changed_type_semantics),
+            (self.yielded_type_statement, self.yielded_type_semantics),
             (self.amount_choice_statement, self.amount_choice_semantics),
         )
         base_hash = self._expected_hash(self.base_semantics)
@@ -364,8 +374,12 @@ class BankStatementDetailRelatedPriceEvidenceRedTests(unittest.TestCase):
             deal = semantics["deal_price"]
             price_type = deal["type"]
             price_value = deal["value"]
+            if price_type["choice"] == "Yldd":
+                type_value = str(price_type["value"]).lower()
+            else:
+                type_value = str(price_type["value"])
             type_xml = (
-                f"<{price_type['choice']}>{price_type['value']}</{price_type['choice']}>"
+                f"<{price_type['choice']}>{type_value}</{price_type['choice']}>"
             )
             if price_value["choice"] == "Rate":
                 value_xml = f"<Rate>{price_value['value']}</Rate>"
@@ -401,7 +415,11 @@ class BankStatementDetailRelatedPriceEvidenceRedTests(unittest.TestCase):
                     f"{price['value']}</Pric>\n"
                     "              </Prtry>"
                 )
-            return "            <RltdPric>\n" + "\n".join(rendered) + "\n            </RltdPric>"
+            return (
+                "            <RltdPric>\n"
+                + "\n".join(rendered)
+                + "\n            </RltdPric>"
+            )
         raise AssertionError("unsupported focused TransactionPrice4Choice")
 
     def _command(self, payload: bytes, suffix: str) -> dict[str, object]:
