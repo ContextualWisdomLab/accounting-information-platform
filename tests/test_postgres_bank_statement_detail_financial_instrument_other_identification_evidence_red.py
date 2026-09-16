@@ -279,6 +279,10 @@ class BankStatementDetailFinancialInstrumentOtherIdentificationEvidenceRedTests(
         }
         variants["type-discriminator"] = type_discriminator
 
+        proprietary_type_value = copy.deepcopy(base)
+        proprietary_type_value["other_identifications"][1]["type"]["value"] = "CUSIP"
+        variants["proprietary-type-value"] = proprietary_type_value
+
         repeated_order = copy.deepcopy(base)
         repeated_order["other_identifications"] = list(
             reversed(repeated_order["other_identifications"])
