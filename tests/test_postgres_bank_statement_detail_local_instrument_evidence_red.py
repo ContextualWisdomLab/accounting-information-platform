@@ -52,7 +52,7 @@ class BankStatementDetailLocalInstrumentEvidenceRedTests(unittest.TestCase):
         self.base_value = "CORE"
         self.changed_value = "B2B"
         self.proprietary_choice = "proprietary"
-        self.proprietary_value = "BANK-LOCAL-CORE"
+        self.proprietary_value = self.base_value
 
         self.base_payload = self._with_local_instrument(
             fixture, marker, self.base_choice, self.base_value
