@@ -39,7 +39,7 @@ class BankStatementDetailRelatedQuantitiesEvidenceRedTests(unittest.TestCase):
         posting.PostgresPostingTests.setUpClass()
 
     def setUp(self) -> None:
-        """Build schema-valid quantity variants that isolate source-material changes."""
+        """Build schema-valid V14 quantity variants with one material change each."""
         self.case = posting.PostgresPostingTests("setUp")
         self.case.setUp()
         self.addCleanup(self.case.doCleanups)
@@ -67,70 +67,53 @@ class BankStatementDetailRelatedQuantitiesEvidenceRedTests(unittest.TestCase):
                 "proprietary": {"type": "BANK_LOT", "quantity": "42"},
             },
         ]
-        self.changed_unit_semantics = copy.deepcopy(self.base_semantics)
-        self.changed_unit_semantics[0]["quantity"]["value"] = "101"
-        self.changed_quantity_choice_semantics = copy.deepcopy(self.base_semantics)
-        self.changed_quantity_choice_semantics[0]["quantity"] = {
+        variants = {
+            "unit_value": copy.deepcopy(self.base_semantics),
+            "qty_face_amount_choice": copy.deepcopy(self.base_semantics),
+            "qty_amortised_value_choice": copy.deepcopy(self.base_semantics),
+            "qty_digital_token_choice": copy.deepcopy(self.base_semantics),
+            "original_face_amount": copy.deepcopy(self.base_semantics),
+            "original_amortised_value": copy.deepcopy(self.base_semantics),
+            "proprietary_type": copy.deepcopy(self.base_semantics),
+            "proprietary_quantity": copy.deepcopy(self.base_semantics),
+            "order": copy.deepcopy(self.base_semantics),
+        }
+        variants["unit_value"][0]["quantity"]["value"] = "101"
+        variants["qty_face_amount_choice"][0]["quantity"] = {
             "choice": "FaceAmt",
             "value": "100",
         }
-        self.changed_face_amount_semantics = copy.deepcopy(self.base_semantics)
-        self.changed_face_amount_semantics[1]["original_and_current_face_amount"][
+        variants["qty_amortised_value_choice"][0]["quantity"] = {
+            "choice": "AmtsdVal",
+            "value": "100",
+        }
+        variants["qty_digital_token_choice"][0]["quantity"] = {
+            "choice": "DgtlTknUnit",
+            "value": "100",
+        }
+        variants["original_face_amount"][1]["original_and_current_face_amount"][
             "face_amount"
         ] = "1001"
-        self.changed_amortised_value_semantics = copy.deepcopy(self.base_semantics)
-        self.changed_amortised_value_semantics[1]["original_and_current_face_amount"][
+        variants["original_amortised_value"][1]["original_and_current_face_amount"][
             "amortised_value"
         ] = "901"
-        self.changed_proprietary_type_semantics = copy.deepcopy(self.base_semantics)
-        self.changed_proprietary_type_semantics[2]["proprietary"]["type"] = "BANK_POSITION"
-        self.changed_proprietary_quantity_semantics = copy.deepcopy(self.base_semantics)
-        self.changed_proprietary_quantity_semantics[2]["proprietary"]["quantity"] = "43"
-        self.reordered_semantics = copy.deepcopy(self.base_semantics)
-        self.reordered_semantics.reverse()
+        variants["proprietary_type"][2]["proprietary"]["type"] = "BANK_POSITION"
+        variants["proprietary_quantity"][2]["proprietary"]["quantity"] = "43"
+        variants["order"].reverse()
+        self.variants = variants
 
         self.base_payload = self._with_related_quantities(fixture, self.base_semantics)
-        self.changed_unit_payload = self._with_related_quantities(
-            fixture, self.changed_unit_semantics
-        )
-        self.changed_quantity_choice_payload = self._with_related_quantities(
-            fixture, self.changed_quantity_choice_semantics
-        )
-        self.changed_face_amount_payload = self._with_related_quantities(
-            fixture, self.changed_face_amount_semantics
-        )
-        self.changed_amortised_value_payload = self._with_related_quantities(
-            fixture, self.changed_amortised_value_semantics
-        )
-        self.changed_proprietary_type_payload = self._with_related_quantities(
-            fixture, self.changed_proprietary_type_semantics
-        )
-        self.changed_proprietary_quantity_payload = self._with_related_quantities(
-            fixture, self.changed_proprietary_quantity_semantics
-        )
-        self.reordered_payload = self._with_related_quantities(
-            fixture, self.reordered_semantics
-        )
+        self.base_statement = self._parse(self.base_payload)
+        self.variant_payloads = {
+            name: self._with_related_quantities(fixture, semantics)
+            for name, semantics in self.variants.items()
+        }
+        self.variant_statements = {
+            name: self._parse(payload) for name, payload in self.variant_payloads.items()
+        }
         self.layout_payload = self._with_related_quantities(
             fixture, self.base_semantics, compact=True
         )
-
-        self.base_statement = self._parse(self.base_payload)
-        self.changed_unit_statement = self._parse(self.changed_unit_payload)
-        self.changed_quantity_choice_statement = self._parse(
-            self.changed_quantity_choice_payload
-        )
-        self.changed_face_amount_statement = self._parse(self.changed_face_amount_payload)
-        self.changed_amortised_value_statement = self._parse(
-            self.changed_amortised_value_payload
-        )
-        self.changed_proprietary_type_statement = self._parse(
-            self.changed_proprietary_type_payload
-        )
-        self.changed_proprietary_quantity_statement = self._parse(
-            self.changed_proprietary_quantity_payload
-        )
-        self.reordered_statement = self._parse(self.reordered_payload)
         self.layout_statement = self._parse(self.layout_payload)
 
         self.bank_account_reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
@@ -146,28 +129,8 @@ class BankStatementDetailRelatedQuantitiesEvidenceRedTests(unittest.TestCase):
         )
         self.store = MemoryArtifactStore()
 
-    def test_quantity_fields_and_nested_choice_are_material_to_hash_chain(self) -> None:
-        """Unit/face/amortised/proprietary fields remain independently material."""
-        cases = (
-            (self.changed_unit_statement, self.changed_unit_semantics),
-            (
-                self.changed_quantity_choice_statement,
-                self.changed_quantity_choice_semantics,
-            ),
-            (self.changed_face_amount_statement, self.changed_face_amount_semantics),
-            (
-                self.changed_amortised_value_statement,
-                self.changed_amortised_value_semantics,
-            ),
-            (
-                self.changed_proprietary_type_statement,
-                self.changed_proprietary_type_semantics,
-            ),
-            (
-                self.changed_proprietary_quantity_statement,
-                self.changed_proprietary_quantity_semantics,
-            ),
-        )
+    def test_all_v14_quantity_branches_and_fields_are_material_to_hash_chain(self) -> None:
+        """Every admitted V14 quantity branch and scalar remains material evidence."""
         base_hash = self._expected_hash(self.base_semantics)
         base_entry = self.base_statement.entries[0]
         base_detail = base_entry.entry_details[0]
@@ -181,8 +144,9 @@ class BankStatementDetailRelatedQuantitiesEvidenceRedTests(unittest.TestCase):
         )
         self._assert_entry_hash_binding(base_entry, base_hash)
 
-        for statement, semantics in cases:
-            with self.subTest(semantics=semantics):
+        for name, statement in self.variant_statements.items():
+            semantics = self.variants[name]
+            with self.subTest(name=name):
                 changed_hash = self._expected_hash(semantics)
                 changed_entry = statement.entries[0]
                 changed_detail = changed_entry.entry_details[0]
@@ -213,36 +177,6 @@ class BankStatementDetailRelatedQuantitiesEvidenceRedTests(unittest.TestCase):
                     self.base_statement.entries[1].source_entry_hash,
                     statement.entries[1].source_entry_hash,
                 )
-
-    def test_repeated_related_quantity_source_order_is_material(self) -> None:
-        """Repeated RltdQties retain source order rather than being sorted as a set."""
-        base_hash = self._expected_hash(self.base_semantics)
-        reordered_hash = self._expected_hash(self.reordered_semantics)
-        base_entry = self.base_statement.entries[0]
-        reordered_entry = self.reordered_statement.entries[0]
-        base_detail = base_entry.entry_details[0]
-        reordered_detail = reordered_entry.entry_details[0]
-
-        self.assertNotEqual(base_hash, reordered_hash)
-        self.assertEqual(
-            getattr(reordered_detail, "related_quantities", None), self.reordered_semantics
-        )
-        self.assertEqual(
-            getattr(reordered_detail, "related_quantities_evidence_hash", None),
-            reordered_hash,
-        )
-        self._assert_entry_hash_binding(reordered_entry, reordered_hash)
-        self._assert_accounting_amount_unchanged(
-            self.base_statement, self.reordered_statement
-        )
-        self.assertNotEqual(
-            base_detail.source_detail_hash, reordered_detail.source_detail_hash
-        )
-        self.assertNotEqual(base_entry.source_entry_hash, reordered_entry.source_entry_hash)
-        self.assertNotEqual(
-            self.base_statement.normalized_payload_hash,
-            self.reordered_statement.normalized_payload_hash,
-        )
 
     def test_xml_layout_is_not_related_quantity_semantics(self) -> None:
         """Whitespace-only XML layout changes raw provenance, not quantity semantics."""
@@ -283,7 +217,7 @@ class BankStatementDetailRelatedQuantitiesEvidenceRedTests(unittest.TestCase):
 
         with self.assertRaisesRegex(AccountingValidationError, _CORRECTION_ERROR):
             accept_bank_statement_evidence(
-                self._command(self.changed_unit_payload, "changed-unit"),
+                self._command(self.variant_payloads["unit_value"], "changed-unit"),
                 posting.DATABASE_URL,
                 self.case.policy.tenant_reference,
                 artifact_store=self.store,
@@ -379,7 +313,7 @@ class BankStatementDetailRelatedQuantitiesEvidenceRedTests(unittest.TestCase):
         *,
         compact: bool = False,
     ) -> bytes:
-        """Insert schema-positioned repeated RelatedQuantities after omitted price/date."""
+        """Insert repeated V14 RltdQties after omitted RltdDts/RltdPric siblings."""
         xml = self._related_quantities_xml(semantics, compact=compact)
         replacement = f"{self.marker}\n{xml}"
         self.assertEqual(fixture.count(self.marker), 1)
@@ -389,7 +323,7 @@ class BankStatementDetailRelatedQuantitiesEvidenceRedTests(unittest.TestCase):
     def _related_quantities_xml(
         semantics: list[dict[str, object]], *, compact: bool
     ) -> str:
-        """Render the three V14 TransactionQuantities3Choice branches used by this RED."""
+        """Render V14 TransactionQuantities4Choice and nested quantity choices."""
         rendered: list[str] = []
         for item in semantics:
             choice = item["choice"]
@@ -416,7 +350,7 @@ class BankStatementDetailRelatedQuantitiesEvidenceRedTests(unittest.TestCase):
                     "</Prtry>"
                 )
             else:
-                raise AssertionError("unsupported focused TransactionQuantities3Choice")
+                raise AssertionError("unsupported focused TransactionQuantities4Choice")
             if compact:
                 rendered.append(f"            <RltdQties>{body}</RltdQties>")
             else:
