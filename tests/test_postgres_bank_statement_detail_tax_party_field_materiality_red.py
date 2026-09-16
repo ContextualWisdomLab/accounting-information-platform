@@ -10,6 +10,7 @@ from accounting_information_platform import (
     accept_bank_statement_evidence,
     parse_bank_statement_payload,
 )
+from tests import test_postgres_posting as posting
 from tests.test_postgres_bank_statement_detail_tax_party_evidence_red import (
     BankStatementDetailTaxPartyEvidenceRedTests as TaxPartyRed,
     _CORRECTION_ERROR,
@@ -81,17 +82,12 @@ class BankStatementDetailTaxPartyFieldMaterialityRedTests(unittest.TestCase):
         """Each omitted-field candidate must reach the existing correction boundary."""
         accepted = accept_bank_statement_evidence(
             self.fixture._command(self.fixture.base_payload, "all-party-fields-base"),
-            self.fixture.case.DATABASE_URL
-            if hasattr(self.fixture.case, "DATABASE_URL")
-            else __import__("tests.test_postgres_posting", fromlist=["DATABASE_URL"]).DATABASE_URL,
+            posting.DATABASE_URL,
             self.fixture.case.policy.tenant_reference,
             artifact_store=self.fixture.store,
         )
         self.assertFalse(accepted["replayed"])
 
-        database_url = __import__(
-            "tests.test_postgres_posting", fromlist=["DATABASE_URL"]
-        ).DATABASE_URL
         for label, _parties, payload in self._variants():
             with self.subTest(field=label):
                 with self.assertRaisesRegex(
@@ -99,7 +95,7 @@ class BankStatementDetailTaxPartyFieldMaterialityRedTests(unittest.TestCase):
                 ):
                     accept_bank_statement_evidence(
                         self.fixture._command(payload, f"party-{label}"),
-                        database_url,
+                        posting.DATABASE_URL,
                         self.fixture.case.policy.tenant_reference,
                         artifact_store=self.fixture.store,
                     )
@@ -107,15 +103,51 @@ class BankStatementDetailTaxPartyFieldMaterialityRedTests(unittest.TestCase):
     def _variants(self) -> tuple[tuple[str, dict[str, object], bytes], ...]:
         """Vary only fields not independently exercised by the predecessor RED."""
         cases = (
-            ("creditor-registration-id", "creditor", "registration_id", "KR-REG-CRED-002", False),
+            (
+                "creditor-registration-id",
+                "creditor",
+                "registration_id",
+                "KR-REG-CRED-002",
+                False,
+            ),
             ("creditor-tax-type", "creditor", "tax_type", "GST", False),
             ("debtor-tax-id", "debtor", "tax_id", "KR-TAX-DEBT-002", False),
-            ("debtor-registration-id", "debtor", "registration_id", "KR-REG-DEBT-002", False),
+            (
+                "debtor-registration-id",
+                "debtor",
+                "registration_id",
+                "KR-REG-DEBT-002",
+                False,
+            ),
             ("debtor-tax-type", "debtor", "tax_type", "GST", False),
-            ("ultimate-debtor-tax-id", "ultimate_debtor", "tax_id", "KR-TAX-ULT-002", False),
-            ("ultimate-debtor-tax-type", "ultimate_debtor", "tax_type", "GST", False),
-            ("ultimate-debtor-authorisation-title", "ultimate_debtor", "title", "Senior ultimate tax agent", True),
-            ("ultimate-debtor-authorisation-name", "ultimate_debtor", "name", "Ultimate Tax Representative Revised", True),
+            (
+                "ultimate-debtor-tax-id",
+                "ultimate_debtor",
+                "tax_id",
+                "KR-TAX-ULT-002",
+                False,
+            ),
+            (
+                "ultimate-debtor-tax-type",
+                "ultimate_debtor",
+                "tax_type",
+                "GST",
+                False,
+            ),
+            (
+                "ultimate-debtor-authorisation-title",
+                "ultimate_debtor",
+                "title",
+                "Senior ultimate tax agent",
+                True,
+            ),
+            (
+                "ultimate-debtor-authorisation-name",
+                "ultimate_debtor",
+                "name",
+                "Ultimate Tax Representative Revised",
+                True,
+            ),
         )
         variants: list[tuple[str, dict[str, object], bytes]] = []
         for label, party_name, field_name, value, authorisation in cases:
