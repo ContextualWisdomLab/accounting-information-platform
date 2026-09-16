@@ -62,9 +62,15 @@ class BankStatementDetailCorporateActionEvidenceRedTests(unittest.TestCase):
             **self.base,
             "event_type": {"choice": "Cd", "value": "BONU"},
         }
-        self.event_type_choice_changed = {
+        self.event_type_branch_changed = {
             **self.base,
-            "event_type": {"choice": "Prtry", "value": "DVCA"},
+            "event_type": {
+                "choice": "Prtry",
+                "value": {
+                    "id": "DVCA",
+                    "issuer": "BANK-CORPORATE-ACTION",
+                },
+            },
         }
         self.event_identification_changed = {
             **self.base,
@@ -79,9 +85,9 @@ class BankStatementDetailCorporateActionEvidenceRedTests(unittest.TestCase):
                     fixture, marker, self.event_type_value_changed
                 )
             ),
-            "event_type_choice": self._parse(
+            "event_type_branch": self._parse(
                 self._with_related_corporate_action(
-                    fixture, marker, self.event_type_choice_changed
+                    fixture, marker, self.event_type_branch_changed
                 )
             ),
             "event_identification": self._parse(
@@ -117,7 +123,7 @@ class BankStatementDetailCorporateActionEvidenceRedTests(unittest.TestCase):
         self.store = MemoryArtifactStore()
 
     def test_each_related_corporate_action_semantic_is_material_to_identity(self) -> None:
-        """Event-type choice/value and corporate-action event ID are independently material."""
+        """Code value, choice-branch structure, and corporate-action event ID are material."""
         base_hash = self._expected_hash(self.base)
         base_entry = self.base_statement.entries[0]
         base_detail = base_entry.entry_details[0]
@@ -130,7 +136,7 @@ class BankStatementDetailCorporateActionEvidenceRedTests(unittest.TestCase):
 
         expected_values = {
             "event_type_value": self.event_type_value_changed,
-            "event_type_choice": self.event_type_choice_changed,
+            "event_type_branch": self.event_type_branch_changed,
             "event_identification": self.event_identification_changed,
         }
         for label, statement in self.variants.items():
@@ -299,17 +305,34 @@ class BankStatementDetailCorporateActionEvidenceRedTests(unittest.TestCase):
             raise AssertionError("event_type must preserve the V14 choice structure")
         choice = event_type["choice"]
         event_type_value = event_type["value"]
-        if choice not in {"Cd", "Prtry"}:
+        if choice == "Cd":
+            if not isinstance(event_type_value, str):
+                raise AssertionError("Cd event_type value must be text")
+            event_type_xml = f"                <Cd>{event_type_value}</Cd>\n"
+        elif choice == "Prtry":
+            if not isinstance(event_type_value, dict):
+                raise AssertionError("Prtry event_type value must preserve GenericIdentification30")
+            proprietary_id = event_type_value.get("id")
+            proprietary_issuer = event_type_value.get("issuer")
+            if not isinstance(proprietary_id, str) or not isinstance(
+                proprietary_issuer, str
+            ):
+                raise AssertionError("Prtry event_type requires string id and issuer")
+            event_type_xml = (
+                "                <Prtry>\n"
+                f"                  <Id>{proprietary_id}</Id>\n"
+                f"                  <Issr>{proprietary_issuer}</Issr>\n"
+                "                </Prtry>\n"
+            )
+        else:
             raise AssertionError("event_type choice must be Cd or Prtry")
-        if not isinstance(event_type_value, str):
-            raise AssertionError("event_type value must be text")
         event_identification = value["corporate_action_event_identification"]
         if not isinstance(event_identification, str):
             raise AssertionError("corporate_action_event_identification must be text")
         return (
             "            <RltdCorpActn>\n"
             "              <EvtTp>\n"
-            f"                <{choice}>{event_type_value}</{choice}>\n"
+            f"{event_type_xml}"
             "              </EvtTp>\n"
             f"              <CorpActnEvtId>{event_identification}</CorpActnEvtId>\n"
             "            </RltdCorpActn>\n"
