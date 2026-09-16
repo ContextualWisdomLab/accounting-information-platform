@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -52,67 +53,54 @@ class BankStatementDetailCardTransactionEvidenceRedTests(unittest.TestCase):
         )
         self.assertEqual(fixture.count(self.marker), 1)
 
-        self.base_semantics = {
+        self.base_semantics: dict[str, object] = {
             "transaction": {
                 "choice": "Indv",
                 "payment_context": {
                     "card_data_entry_mode": "CICC",
                     "fallback_indicator": False,
                 },
-                "transaction_identifier": "CARD-TX-001",
-            }
-        }
-        self.entry_mode_semantics = {
-            "transaction": {
-                "choice": "Indv",
-                "payment_context": {
-                    "card_data_entry_mode": "CTLS",
-                    "fallback_indicator": False,
+                "transaction_identifier": {
+                    "transaction_datetime": "2026-08-23T10:00:00+00:00",
+                    "transaction_reference": "CARD-TX-001",
                 },
-                "transaction_identifier": "CARD-TX-001",
             }
         }
-        self.fallback_semantics = {
-            "transaction": {
-                "choice": "Indv",
-                "payment_context": {
-                    "card_data_entry_mode": "CICC",
-                    "fallback_indicator": True,
-                },
-                "transaction_identifier": "CARD-TX-001",
-            }
+        variants = {
+            "entry_mode": copy.deepcopy(self.base_semantics),
+            "fallback": copy.deepcopy(self.base_semantics),
+            "transaction_datetime": copy.deepcopy(self.base_semantics),
+            "transaction_reference": copy.deepcopy(self.base_semantics),
         }
-        self.identifier_semantics = {
-            "transaction": {
-                "choice": "Indv",
-                "payment_context": {
-                    "card_data_entry_mode": "CICC",
-                    "fallback_indicator": False,
-                },
-                "transaction_identifier": "CARD-TX-002",
-            }
-        }
+        variants["entry_mode"]["transaction"]["payment_context"][
+            "card_data_entry_mode"
+        ] = "CTLS"
+        variants["fallback"]["transaction"]["payment_context"][
+            "fallback_indicator"
+        ] = True
+        variants["transaction_datetime"]["transaction"]["transaction_identifier"][
+            "transaction_datetime"
+        ] = "2026-08-23T10:05:00+00:00"
+        variants["transaction_reference"]["transaction"]["transaction_identifier"][
+            "transaction_reference"
+        ] = "CARD-TX-002"
+        self.variants = variants
 
         self.base_payload = self._with_detail_card_transaction(
             fixture, self.base_semantics
         )
-        self.entry_mode_payload = self._with_detail_card_transaction(
-            fixture, self.entry_mode_semantics
-        )
-        self.fallback_payload = self._with_detail_card_transaction(
-            fixture, self.fallback_semantics
-        )
-        self.identifier_payload = self._with_detail_card_transaction(
-            fixture, self.identifier_semantics
-        )
+        self.variant_payloads = {
+            name: self._with_detail_card_transaction(fixture, semantics)
+            for name, semantics in self.variants.items()
+        }
         self.layout_payload = self._with_detail_card_transaction(
             fixture, self.base_semantics, compact=True
         )
 
         self.base_statement = self._parse(self.base_payload)
-        self.entry_mode_statement = self._parse(self.entry_mode_payload)
-        self.fallback_statement = self._parse(self.fallback_payload)
-        self.identifier_statement = self._parse(self.identifier_payload)
+        self.variant_statements = {
+            name: self._parse(payload) for name, payload in self.variant_payloads.items()
+        }
         self.layout_statement = self._parse(self.layout_payload)
 
         self.bank_account_reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
@@ -129,7 +117,7 @@ class BankStatementDetailCardTransactionEvidenceRedTests(unittest.TestCase):
         self.store = MemoryArtifactStore()
 
     def test_detail_card_transaction_fields_are_material_to_hash_chain(self) -> None:
-        """Entry mode, fallback flag, and card transaction ID stay material evidence."""
+        """Entry mode, fallback, Tx datetime, and Tx reference stay material evidence."""
         base_hash = self._expected_hash(self.base_semantics)
         base_entry = self.base_statement.entries[0]
         base_detail = base_entry.entry_details[0]
@@ -143,11 +131,8 @@ class BankStatementDetailCardTransactionEvidenceRedTests(unittest.TestCase):
         )
         self._assert_entry_hash_binding(base_entry, base_hash)
 
-        for name, statement, semantics in (
-            ("entry-mode", self.entry_mode_statement, self.entry_mode_semantics),
-            ("fallback", self.fallback_statement, self.fallback_semantics),
-            ("transaction-id", self.identifier_statement, self.identifier_semantics),
-        ):
+        for name, statement in self.variant_statements.items():
+            semantics = self.variants[name]
             with self.subTest(name=name):
                 changed_hash = self._expected_hash(semantics)
                 changed_entry = statement.entries[0]
@@ -216,7 +201,7 @@ class BankStatementDetailCardTransactionEvidenceRedTests(unittest.TestCase):
 
         with self.assertRaisesRegex(AccountingValidationError, _CORRECTION_ERROR):
             accept_bank_statement_evidence(
-                self._command(self.entry_mode_payload, "changed-entry-mode"),
+                self._command(self.variant_payloads["entry_mode"], "changed-entry-mode"),
                 posting.DATABASE_URL,
                 self.case.policy.tenant_reference,
                 artifact_store=self.store,
@@ -326,19 +311,22 @@ class BankStatementDetailCardTransactionEvidenceRedTests(unittest.TestCase):
         if not isinstance(transaction, dict) or transaction.get("choice") != "Indv":
             raise AssertionError("focused RED supports the individual CardTx branch only")
         context = transaction["payment_context"]
-        if not isinstance(context, dict):
-            raise AssertionError("payment_context must be a mapping")
+        identifier = transaction["transaction_identifier"]
+        if not isinstance(context, dict) or not isinstance(identifier, dict):
+            raise AssertionError("CardTx payment context and transaction ID must be mappings")
         entry_mode = context["card_data_entry_mode"]
         fallback = "true" if context["fallback_indicator"] else "false"
-        transaction_identifier = transaction["transaction_identifier"]
+        transaction_datetime = identifier["transaction_datetime"]
+        transaction_reference = identifier["transaction_reference"]
         if compact:
             return (
                 "            <CardTx><Tx><Indv><PmtCntxt>"
                 f"<CardDataNtryMd>{entry_mode}</CardDataNtryMd>"
                 f"<FllbckInd>{fallback}</FllbckInd>"
-                "</PmtCntxt>"
-                f"<TxId>{transaction_identifier}</TxId>"
-                "</Indv></Tx></CardTx>"
+                "</PmtCntxt><TxId>"
+                f"<TxDtTm>{transaction_datetime}</TxDtTm>"
+                f"<TxRef>{transaction_reference}</TxRef>"
+                "</TxId></Indv></Tx></CardTx>"
             )
         return (
             "            <CardTx>\n"
@@ -348,7 +336,10 @@ class BankStatementDetailCardTransactionEvidenceRedTests(unittest.TestCase):
             f"                    <CardDataNtryMd>{entry_mode}</CardDataNtryMd>\n"
             f"                    <FllbckInd>{fallback}</FllbckInd>\n"
             "                  </PmtCntxt>\n"
-            f"                  <TxId>{transaction_identifier}</TxId>\n"
+            "                  <TxId>\n"
+            f"                    <TxDtTm>{transaction_datetime}</TxDtTm>\n"
+            f"                    <TxRef>{transaction_reference}</TxRef>\n"
+            "                  </TxId>\n"
             "                </Indv>\n"
             "              </Tx>\n"
             "            </CardTx>"
