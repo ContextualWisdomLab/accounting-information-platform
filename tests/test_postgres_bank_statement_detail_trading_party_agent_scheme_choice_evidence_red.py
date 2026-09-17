@@ -93,6 +93,25 @@ class BankStatementDetailTradingPartyAgentSchemeChoiceEvidenceRedTests(
             "scheme"
         )
 
+        self.discriminator_controls = {
+            "clearing-system-coded": copy.deepcopy(self.base),
+            "clearing-system-proprietary": copy.deepcopy(self.base),
+            "other-scheme-coded": copy.deepcopy(self.base),
+            "other-scheme-proprietary": copy.deepcopy(self.base),
+        }
+        self.discriminator_controls["clearing-system-coded"]["financial_institution"][
+            "clearing_system_member"
+        ]["clearing_system"] = {"code": "DEBLZ"}
+        self.discriminator_controls["clearing-system-proprietary"][
+            "financial_institution"
+        ]["clearing_system_member"]["clearing_system"] = {"proprietary": "DEBLZ"}
+        self.discriminator_controls["other-scheme-coded"]["financial_institution"][
+            "other"
+        ]["scheme"] = {"code": "BANK"}
+        self.discriminator_controls["other-scheme-proprietary"][
+            "financial_institution"
+        ]["other"]["scheme"] = {"proprietary": "BANK"}
+
         self.base_payload = self._with_trading_party(fixture, marker, self.base)
         self.base_statement = parse_bank_statement_payload(
             self.base_payload, CAMT053_MESSAGE_DEFINITION
@@ -104,6 +123,14 @@ class BankStatementDetailTradingPartyAgentSchemeChoiceEvidenceRedTests(
         self.variant_statements = {
             name: parse_bank_statement_payload(payload, CAMT053_MESSAGE_DEFINITION)
             for name, payload in self.variant_payloads.items()
+        }
+        self.discriminator_payloads = {
+            name: self._with_trading_party(fixture, marker, value)
+            for name, value in self.discriminator_controls.items()
+        }
+        self.discriminator_statements = {
+            name: parse_bank_statement_payload(payload, CAMT053_MESSAGE_DEFINITION)
+            for name, payload in self.discriminator_payloads.items()
         }
 
         trading_party_xml = self._trading_party_xml(self.base)
@@ -135,7 +162,7 @@ class BankStatementDetailTradingPartyAgentSchemeChoiceEvidenceRedTests(
         self.store = MemoryArtifactStore()
 
     def test_scheme_choice_and_optionality_are_material(self) -> None:
-        """Cd|Prtry discriminators and optional scheme presence stay material."""
+        """Cd|Prtry branches and optional scheme presence stay material."""
         base_hash = self._expected_hash(self.base)
         base_entry = self.base_statement.entries[0]
         base_detail = base_entry.entry_details[0]
@@ -175,6 +202,57 @@ class BankStatementDetailTradingPartyAgentSchemeChoiceEvidenceRedTests(
                 self.assertEqual(
                     self.base_statement.entries[1].source_entry_hash,
                     statement.entries[1].source_entry_hash,
+                )
+
+    def test_same_scalar_value_keeps_cd_prtry_discriminators_material(self) -> None:
+        """The choice branch itself stays material when the scalar text is identical."""
+        pairs = (
+            ("clearing-system", "clearing-system-coded", "clearing-system-proprietary"),
+            ("other-scheme", "other-scheme-coded", "other-scheme-proprietary"),
+        )
+        for label, coded_name, proprietary_name in pairs:
+            with self.subTest(label=label):
+                coded_value = self.discriminator_controls[coded_name]
+                proprietary_value = self.discriminator_controls[proprietary_name]
+                coded_hash = self._expected_hash(coded_value)
+                proprietary_hash = self._expected_hash(proprietary_value)
+                self.assertNotEqual(coded_hash, proprietary_hash)
+
+                coded_statement = self.discriminator_statements[coded_name]
+                proprietary_statement = self.discriminator_statements[proprietary_name]
+                coded_entry = coded_statement.entries[0]
+                proprietary_entry = proprietary_statement.entries[0]
+                coded_detail = coded_entry.entry_details[0]
+                proprietary_detail = proprietary_entry.entry_details[0]
+
+                self.assertEqual(
+                    getattr(coded_detail, "trading_party_evidence_hash", None), coded_hash
+                )
+                self.assertEqual(
+                    getattr(proprietary_detail, "trading_party_evidence_hash", None),
+                    proprietary_hash,
+                )
+                self._assert_entry_hash_binding(coded_entry, coded_hash)
+                self._assert_entry_hash_binding(proprietary_entry, proprietary_hash)
+                self._assert_exact_accounting_amount(coded_entry, coded_detail)
+                self._assert_exact_accounting_amount(proprietary_entry, proprietary_detail)
+                self.assertEqual(
+                    coded_statement.account_identifier_hash,
+                    proprietary_statement.account_identifier_hash,
+                )
+                self.assertNotEqual(
+                    coded_detail.source_detail_hash, proprietary_detail.source_detail_hash
+                )
+                self.assertNotEqual(
+                    coded_entry.source_entry_hash, proprietary_entry.source_entry_hash
+                )
+                self.assertNotEqual(
+                    coded_statement.normalized_payload_hash,
+                    proprietary_statement.normalized_payload_hash,
+                )
+                self.assertEqual(
+                    coded_statement.entries[1].source_entry_hash,
+                    proprietary_statement.entries[1].source_entry_hash,
                 )
 
     def test_xml_layout_does_not_change_scheme_choice_identity(self) -> None:
@@ -220,6 +298,32 @@ class BankStatementDetailTradingPartyAgentSchemeChoiceEvidenceRedTests(
                 with self.assertRaisesRegex(AccountingValidationError, _CORRECTION_ERROR):
                     accept_bank_statement_evidence(
                         self._command(payload, name),
+                        posting.DATABASE_URL,
+                        self.case.policy.tenant_reference,
+                        artifact_store=self.store,
+                    )
+
+    def test_same_scalar_choice_discriminator_requires_explicit_correction(self) -> None:
+        """A Cd|Prtry swap cannot silently replace accepted equal-text evidence."""
+        pairs = (
+            ("clearing-system", "clearing-system-coded", "clearing-system-proprietary"),
+            ("other-scheme", "other-scheme-coded", "other-scheme-proprietary"),
+        )
+        for label, coded_name, proprietary_name in pairs:
+            with self.subTest(label=label):
+                accepted = accept_bank_statement_evidence(
+                    self._command(self.discriminator_payloads[coded_name], f"{label}-coded"),
+                    posting.DATABASE_URL,
+                    self.case.policy.tenant_reference,
+                    artifact_store=self.store,
+                )
+                self.assertFalse(accepted["replayed"])
+                with self.assertRaisesRegex(AccountingValidationError, _CORRECTION_ERROR):
+                    accept_bank_statement_evidence(
+                        self._command(
+                            self.discriminator_payloads[proprietary_name],
+                            f"{label}-proprietary",
+                        ),
                         posting.DATABASE_URL,
                         self.case.policy.tenant_reference,
                         artifact_store=self.store,
