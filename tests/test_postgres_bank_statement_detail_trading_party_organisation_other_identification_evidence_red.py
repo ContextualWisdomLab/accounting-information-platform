@@ -51,7 +51,6 @@ class BankStatementDetailTradingPartyOrganisationOtherIdentificationEvidenceRedT
         fixture = load_canonical_statement_fixture().decode("utf-8")
         marker = "              </Dbtr>\n            </RltdPties>"
         self.assertEqual(fixture.count(marker), 1)
-
         self.base = {
             "choice": "party",
             "name": "Trading Party Alpha",
@@ -86,8 +85,8 @@ class BankStatementDetailTradingPartyOrganisationOtherIdentificationEvidenceRedT
         trading_party_xml = self._trading_party_xml(self.base)
         self.assertEqual(self.base_payload.count(trading_party_xml.encode("utf-8")), 1)
         reformatted_xml = trading_party_xml.replace(
-            "                      <SchmeNm>\n",
-            "                      <SchmeNm>\n                        \n",
+            "                        <SchmeNm>\n",
+            "                        <SchmeNm>\n                          \n",
             1,
         )
         self.assertNotEqual(reformatted_xml, trading_party_xml)
@@ -129,7 +128,6 @@ class BankStatementDetailTradingPartyOrganisationOtherIdentificationEvidenceRedT
         }
         self.assertEqual(len(set(variant_hashes.values())), len(variant_hashes))
         self.assertNotIn(base_hash, set(variant_hashes.values()))
-
         for name, statement in self.variant_statements.items():
             with self.subTest(name=name):
                 expected_hash = variant_hashes[name]
@@ -162,7 +160,6 @@ class BankStatementDetailTradingPartyOrganisationOtherIdentificationEvidenceRedT
         reformatted_entry = self.reformatted_statement.entries[0]
         base_detail = base_entry.entry_details[0]
         reformatted_detail = reformatted_entry.entry_details[0]
-
         self.assertNotEqual(
             self.base_statement.source_artifact_hash,
             self.reformatted_statement.source_artifact_hash,
@@ -192,7 +189,6 @@ class BankStatementDetailTradingPartyOrganisationOtherIdentificationEvidenceRedT
             artifact_store=self.store,
         )
         self.assertFalse(accepted["replayed"])
-
         for name, payload in self.variant_payloads.items():
             with self.subTest(name=name):
                 with self.assertRaisesRegex(AccountingValidationError, _CORRECTION_ERROR):
@@ -219,7 +215,6 @@ class BankStatementDetailTradingPartyOrganisationOtherIdentificationEvidenceRedT
         )
         entry = document["bank_statement_entries"][0]
         detail = entry["entry_details"][0]
-
         self.assertEqual(detail.get("trading_party_evidence_hash"), expected_hash)
         self.assertEqual(detail.get("trading_party"), self.base)
         self.assertEqual(entry["entry_amount"], "25000")
@@ -231,7 +226,6 @@ class BankStatementDetailTradingPartyOrganisationOtherIdentificationEvidenceRedT
     def _variants(cls, base: dict[str, object]) -> dict[str, dict[str, object]]:
         """Return independent first/repeated Othr scheme, issuer, and presence variants."""
         variants: dict[str, dict[str, object]] = {}
-
         first_scheme_value = copy.deepcopy(base)
         cls._identification(first_scheme_value)["scheme"] = {"code": "DUNS"}
         variants["first-scheme-code-value"] = first_scheme_value
@@ -265,9 +259,8 @@ class BankStatementDetailTradingPartyOrganisationOtherIdentificationEvidenceRedT
         variants["additional-issuer-value"] = additional_issuer
 
         additional_removed = copy.deepcopy(base)
-        cls._identification(additional_removed)["additional_identifiers"] = []
+        cls._identification(additional_removed).pop("additional_identifiers")
         variants["additional-identifier-removed"] = additional_removed
-
         return variants
 
     @staticmethod
@@ -341,7 +334,6 @@ class BankStatementDetailTradingPartyOrganisationOtherIdentificationEvidenceRedT
         identification = cls._identification(value)
         if identification.get("choice") != "organisation":
             raise AssertionError("organisation-Othr RED requires OrganisationIdentification39")
-
         first = {
             "id": str(identification["identifier"]),
             "scheme": identification.get("scheme"),
@@ -355,7 +347,6 @@ class BankStatementDetailTradingPartyOrganisationOtherIdentificationEvidenceRedT
             if not isinstance(item, dict):
                 raise AssertionError("additional organisation identifier must be a mapping")
             items.append(item)
-
         other_xml = "".join(cls._other_xml(item) for item in items)
         return (
             "              <TradgPty>\n"
@@ -377,7 +368,7 @@ class BankStatementDetailTradingPartyOrganisationOtherIdentificationEvidenceRedT
         scheme = value.get("scheme")
         scheme_xml = "" if scheme is None else cls._scheme_xml(scheme)
         issuer = value.get("issuer")
-        issuer_xml = "" if issuer is None else f"                      <Issr>{issuer}</Issr>\n"
+        issuer_xml = "" if issuer is None else f"                        <Issr>{issuer}</Issr>\n"
         return (
             "                      <Othr>\n"
             f"                        <Id>{identifier}</Id>\n"
