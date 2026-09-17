@@ -135,12 +135,12 @@ class BankStatementDetailTradingPartyPrivateIdentificationEvidenceRedTests(
         self.assertEqual(len(set(variant_hashes.values())), len(variant_hashes))
         self.assertNotIn(base_hash, set(variant_hashes.values()))
         self.assertNotEqual(
-            variant_hashes["first-scheme-code-ccpt"],
-            variant_hashes["first-scheme-proprietary-ccpt"],
+            variant_hashes["first-scheme-code-nidn"],
+            variant_hashes["first-scheme-proprietary-nidn"],
         )
         self.assertNotEqual(
-            variant_hashes["additional-scheme-code-nidn"],
-            variant_hashes["additional-scheme-proprietary-nidn"],
+            variant_hashes["additional-scheme-code-ccpt"],
+            variant_hashes["additional-scheme-proprietary-ccpt"],
         )
 
         for name, statement in self.variant_statements.items():
@@ -271,14 +271,14 @@ class BankStatementDetailTradingPartyPrivateIdentificationEvidenceRedTests(
         variants["first-id-value"] = first_id
 
         first_scheme_code = copy.deepcopy(base)
-        cls._identification(first_scheme_code)["scheme"] = {"code": "CCPT"}
-        variants["first-scheme-code-ccpt"] = first_scheme_code
+        cls._identification(first_scheme_code)["scheme"] = {"code": "NIDN"}
+        variants["first-scheme-code-nidn"] = first_scheme_code
 
         first_scheme_proprietary = copy.deepcopy(base)
         cls._identification(first_scheme_proprietary)["scheme"] = {
-            "proprietary": "CCPT"
+            "proprietary": "NIDN"
         }
-        variants["first-scheme-proprietary-ccpt"] = first_scheme_proprietary
+        variants["first-scheme-proprietary-nidn"] = first_scheme_proprietary
 
         first_scheme_absent = copy.deepcopy(base)
         cls._identification(first_scheme_absent).pop("scheme")
@@ -297,14 +297,14 @@ class BankStatementDetailTradingPartyPrivateIdentificationEvidenceRedTests(
         variants["additional-id-value"] = additional_id
 
         additional_scheme_code = copy.deepcopy(base)
-        cls._additional(additional_scheme_code)["scheme"] = {"code": "NIDN"}
-        variants["additional-scheme-code-nidn"] = additional_scheme_code
+        cls._additional(additional_scheme_code)["scheme"] = {"code": "CCPT"}
+        variants["additional-scheme-code-ccpt"] = additional_scheme_code
 
         additional_scheme_proprietary = copy.deepcopy(base)
         cls._additional(additional_scheme_proprietary)["scheme"] = {
-            "proprietary": "NIDN"
+            "proprietary": "CCPT"
         }
-        variants["additional-scheme-proprietary-nidn"] = additional_scheme_proprietary
+        variants["additional-scheme-proprietary-ccpt"] = additional_scheme_proprietary
 
         additional_scheme_absent = copy.deepcopy(base)
         cls._additional(additional_scheme_absent).pop("scheme")
