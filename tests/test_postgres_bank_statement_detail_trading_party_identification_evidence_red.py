@@ -7,6 +7,7 @@ import json
 import re
 import unittest
 import uuid
+from decimal import Decimal
 
 from accounting_information_platform import (
     AccountingValidationError,
@@ -125,6 +126,10 @@ class BankStatementDetailTradingPartyIdentificationEvidenceRedTests(unittest.Tes
             base_hash,
         )
         self._assert_entry_hash_binding(base_entry, base_hash)
+        self.assertEqual(base_entry.entry_amount, Decimal("25000.00"))
+        self.assertEqual(base_entry.entry_currency_code, "KRW")
+        self.assertEqual(base_detail.detail_amount, Decimal("25000.00"))
+        self.assertEqual(base_detail.detail_currency_code, "KRW")
 
         variant_hashes = {
             name: self._expected_hash(value) for name, value in self.variants.items()
