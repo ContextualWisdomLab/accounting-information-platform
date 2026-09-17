@@ -182,45 +182,65 @@ class BankStatementDetailPaymentAgentPostalAddressEvidenceRedTests(unittest.Test
                     )
 
     def test_buyer_read_stays_digest_only_while_postal_identity_is_material(self) -> None:
-        """Tenant read keeps the existing digest-only privacy surface."""
-        base_detail = self._ingest_and_read(self.base_payload, "lookup-base")
-        self.assertIsInstance(base_detail.get("instructing_agent_evidence_hash"), str)
-        self.assertRegex(
-            str(base_detail["instructing_agent_evidence_hash"]),
-            r"\Asha256:[0-9a-f]{64}\Z",
-        )
-        self.assertNotIn("instructing_agent", base_detail)
+        """Tenant read exposes no postal delta beyond purpose digest and source identity."""
+        postal_detail = self._ingest_and_read(self.base_payload, "lookup-postal")
 
-        variant_name = "institution-town-name"
-        variant_statement = self.variant_statements[variant_name]
-        variant_reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
+        no_postal = copy.deepcopy(self.base)
+        no_postal.pop("postal_address", None)
+        branch = no_postal.get("branch")
+        if not isinstance(branch, dict):
+            raise AssertionError("digest-only baseline requires branch identity")
+        branch.pop("postal_address", None)
+        no_postal_payload = self._with_instructing_agent(no_postal)
+        self.assertNotEqual(no_postal_payload, self.base_payload)
+        no_postal_statement = parse_bank_statement_payload(
+            no_postal_payload, CAMT053_MESSAGE_DEFINITION
+        )
+        no_postal_reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
         accept_bank_account_record(
             {
                 "tenant_reference": self.case.policy.tenant_reference,
-                "bank_account_reference": variant_reference,
-                "account_currency_code": variant_statement.account_currency_code,
-                "account_identifier_hash": variant_statement.account_identifier_hash,
+                "bank_account_reference": no_postal_reference,
+                "account_currency_code": no_postal_statement.account_currency_code,
+                "account_identifier_hash": no_postal_statement.account_identifier_hash,
             },
             posting.DATABASE_URL,
             self.case.policy.tenant_reference,
         )
-        variant_detail = self._ingest_and_read(
-            self.variant_payloads[variant_name],
-            "lookup-variant",
-            bank_account_reference=variant_reference,
+        no_postal_detail = self._ingest_and_read(
+            no_postal_payload,
+            "lookup-no-postal",
+            bank_account_reference=no_postal_reference,
         )
+
+        for projection in (postal_detail, no_postal_detail):
+            self.assertIsInstance(projection.get("instructing_agent_evidence_hash"), str)
+            self.assertRegex(
+                str(projection["instructing_agent_evidence_hash"]),
+                r"\Asha256:[0-9a-f]{64}\Z",
+            )
+            self.assertRegex(
+                str(projection["source_detail_hash"]),
+                r"\Asha256:[0-9a-f]{64}\Z",
+            )
+            self.assertEqual(projection["detail_amount"], "6000")
+            self.assertEqual(projection["detail_currency_code"], "KRW")
+
         self.assertEqual(
-            base_detail["instructing_agent_evidence_hash"],
-            variant_detail["instructing_agent_evidence_hash"],
+            postal_detail["instructing_agent_evidence_hash"],
+            no_postal_detail["instructing_agent_evidence_hash"],
         )
         self.assertNotEqual(
-            base_detail["source_detail_hash"],
-            variant_detail["source_detail_hash"],
+            postal_detail["source_detail_hash"],
+            no_postal_detail["source_detail_hash"],
         )
-        self.assertEqual(base_detail["detail_amount"], "6000")
-        self.assertEqual(base_detail["detail_currency_code"], "KRW")
-        self.assertEqual(variant_detail["detail_amount"], "6000")
-        self.assertEqual(variant_detail["detail_currency_code"], "KRW")
+
+        postal_projection = dict(postal_detail)
+        no_postal_projection = dict(no_postal_detail)
+        for projection in (postal_projection, no_postal_projection):
+            projection.pop("instructing_agent_evidence_hash")
+            projection.pop("source_detail_hash")
+        self.assertEqual(postal_projection, no_postal_projection)
 
     @staticmethod
     def _institution_address() -> dict[str, object]:
