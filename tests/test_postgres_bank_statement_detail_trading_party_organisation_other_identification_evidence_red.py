@@ -128,6 +128,10 @@ class BankStatementDetailTradingPartyOrganisationOtherIdentificationEvidenceRedT
         }
         self.assertEqual(len(set(variant_hashes.values())), len(variant_hashes))
         self.assertNotIn(base_hash, set(variant_hashes.values()))
+        self.assertNotEqual(
+            variant_hashes["additional-scheme-code-bank"],
+            variant_hashes["additional-scheme-proprietary-bank"],
+        )
         for name, statement in self.variant_statements.items():
             with self.subTest(name=name):
                 expected_hash = variant_hashes[name]
@@ -250,13 +254,31 @@ class BankStatementDetailTradingPartyOrganisationOtherIdentificationEvidenceRedT
         cls._additional(additional_id)["id"] = "TRADING-TAX-002"
         variants["additional-id-value"] = additional_id
 
-        additional_scheme = copy.deepcopy(base)
-        cls._additional(additional_scheme)["scheme"] = {"proprietary": "NATIONAL_TAX_ID"}
-        variants["additional-scheme-value"] = additional_scheme
+        additional_scheme_value = copy.deepcopy(base)
+        cls._additional(additional_scheme_value)["scheme"] = {
+            "proprietary": "NATIONAL_TAX_ID"
+        }
+        variants["additional-scheme-value"] = additional_scheme_value
 
-        additional_issuer = copy.deepcopy(base)
-        cls._additional(additional_issuer)["issuer"] = "Alternate Tax Registry"
-        variants["additional-issuer-value"] = additional_issuer
+        additional_scheme_code = copy.deepcopy(base)
+        cls._additional(additional_scheme_code)["scheme"] = {"code": "BANK"}
+        variants["additional-scheme-code-bank"] = additional_scheme_code
+
+        additional_scheme_proprietary = copy.deepcopy(base)
+        cls._additional(additional_scheme_proprietary)["scheme"] = {"proprietary": "BANK"}
+        variants["additional-scheme-proprietary-bank"] = additional_scheme_proprietary
+
+        additional_scheme_absent = copy.deepcopy(base)
+        cls._additional(additional_scheme_absent).pop("scheme")
+        variants["additional-scheme-absent"] = additional_scheme_absent
+
+        additional_issuer_value = copy.deepcopy(base)
+        cls._additional(additional_issuer_value)["issuer"] = "Alternate Tax Registry"
+        variants["additional-issuer-value"] = additional_issuer_value
+
+        additional_issuer_absent = copy.deepcopy(base)
+        cls._additional(additional_issuer_absent).pop("issuer")
+        variants["additional-issuer-absent"] = additional_issuer_absent
 
         additional_removed = copy.deepcopy(base)
         cls._identification(additional_removed).pop("additional_identifiers")
