@@ -181,20 +181,20 @@ class BankStatementDetailPaymentAgentPostalAddressEvidenceRedTests(unittest.Test
                         artifact_store=self.store,
                     )
 
-    def test_buyer_read_remains_digest_only_across_postal_evidence(self) -> None:
-        """Postal materiality stays internal without adding reversible buyer fields."""
+    def test_buyer_read_stays_digest_only_while_postal_identity_is_material(self) -> None:
+        """Tenant read exposes no postal delta beyond purpose digest and source identity."""
         postal_detail = self._ingest_and_read(self.base_payload, "lookup-postal")
+
         no_postal = copy.deepcopy(self.base)
         no_postal.pop("postal_address", None)
         branch = no_postal.get("branch")
         if not isinstance(branch, dict):
-            raise AssertionError("branch must be a mapping")
+            raise AssertionError("digest-only baseline requires branch identity")
         branch.pop("postal_address", None)
         no_postal_payload = self._with_instructing_agent(no_postal)
         self.assertNotEqual(no_postal_payload, self.base_payload)
         no_postal_statement = parse_bank_statement_payload(
-            no_postal_payload,
-            CAMT053_MESSAGE_DEFINITION,
+            no_postal_payload, CAMT053_MESSAGE_DEFINITION
         )
         no_postal_reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
         accept_bank_account_record(
@@ -243,206 +243,137 @@ class BankStatementDetailPaymentAgentPostalAddressEvidenceRedTests(unittest.Test
         self.assertEqual(postal_projection, no_postal_projection)
 
     @staticmethod
-    def _variants(base: dict[str, object]) -> dict[str, dict[str, object]]:
-        """Change every direct PostalAddress27 field and ordered AdrLine evidence."""
-        variants: dict[str, dict[str, object]] = {}
-        scalar_changes = {
-            "address_type": "ADDR",
-            "care_of": "Alt Treasury Desk",
-            "department": "Alternate Payments",
-            "sub_department": "Alternate Clearing",
-            "street_name": "Goethestrasse",
-            "building_number": "99",
-            "building_name": "Alternate Haus",
-            "floor": "9",
-            "unit_number": "9A",
-            "post_box": "999",
-            "room": "909",
-            "post_code": "60311",
-            "town_name": "Berlin",
-            "town_location_name": "Mitte",
-            "district_name": "Central",
-            "country_subdivision": "BE",
-            "country": "FR",
-        }
-        for owner in ("institution", "branch"):
-            for field, replacement in scalar_changes.items():
-                variant = copy.deepcopy(base)
-                address = self_address = variant.get("postal_address")
-                if owner == "branch":
-                    branch_value = variant.get("branch")
-                    if not isinstance(branch_value, dict):
-                        raise AssertionError("branch must be a mapping")
-                    address = branch_value.get("postal_address")
-                if not isinstance(address, dict):
-                    raise AssertionError("postal address must be a mapping")
-                address[field] = replacement
-                variants[f"{owner}-{field}-value"] = variant
-                if owner == "institution" and self_address is not address:
-                    raise AssertionError("institution address identity drifted")
-
-            address_line = copy.deepcopy(base)
-            address = address_line.get("postal_address")
-            if owner == "branch":
-                branch_value = address_line.get("branch")
-                if not isinstance(branch_value, dict):
-                    raise AssertionError("branch must be a mapping")
-                address = branch_value.get("postal_address")
-            if not isinstance(address, dict):
-                raise AssertionError("postal address must be a mapping")
-            address["address_lines"][0] = "Alternate line 1"
-            variants[f"{owner}-address-line-value"] = address_line
-
-            address_order = copy.deepcopy(base)
-            address = address_order.get("postal_address")
-            if owner == "branch":
-                branch_value = address_order.get("branch")
-                if not isinstance(branch_value, dict):
-                    raise AssertionError("branch must be a mapping")
-                address = branch_value.get("postal_address")
-            if not isinstance(address, dict):
-                raise AssertionError("postal address must be a mapping")
-            lines = address.get("address_lines")
-            if not isinstance(lines, list) or len(lines) != 2:
-                raise AssertionError("focused address must have two ordered AdrLine values")
-            lines.reverse()
-            variants[f"{owner}-address-line-order"] = address_order
-
-            absent = copy.deepcopy(base)
-            if owner == "institution":
-                absent.pop("postal_address", None)
-            else:
-                branch_value = absent.get("branch")
-                if not isinstance(branch_value, dict):
-                    raise AssertionError("branch must be a mapping")
-                branch_value.pop("postal_address", None)
-            variants[f"{owner}-postal-address-absent"] = absent
-        return variants
-
-    @staticmethod
     def _institution_address() -> dict[str, object]:
-        """Return one fully populated institution PostalAddress27 fixture."""
         return {
-            "address_type": "BIZZ",
-            "care_of": "Treasury Desk",
-            "department": "Payments",
-            "sub_department": "Clearing",
+            "address_type": {"code": "BIZZ"},
+            "care_of": "Treasury Operations",
+            "department": "Corporate Banking",
+            "sub_department": "Payments",
             "street_name": "Taunusanlage",
             "building_number": "12",
-            "building_name": "Main Tower",
-            "floor": "4",
-            "unit_number": "4B",
-            "post_box": "100",
-            "room": "401",
+            "building_name": "Tower A",
+            "floor": "7",
+            "unit_number": "701",
+            "post_box": "1001",
+            "room": "Ops",
             "post_code": "60325",
-            "town_name": "Frankfurt",
+            "town_name": "Frankfurt am Main",
             "town_location_name": "Westend",
             "district_name": "Innenstadt",
             "country_subdivision": "HE",
             "country": "DE",
-            "address_lines": ["Institution line 1", "Institution line 2"],
+            "address_lines": ["Taunusanlage 12", "60325 Frankfurt am Main"],
         }
 
     @staticmethod
     def _branch_address() -> dict[str, object]:
-        """Return one fully populated branch PostalAddress27 fixture."""
         return {
-            "address_type": "BIZZ",
-            "care_of": "Branch Operations",
-            "department": "Payment Operations",
-            "sub_department": "Investigation",
-            "street_name": "Gallusanlage",
-            "building_number": "8",
-            "building_name": "Branch Tower",
-            "floor": "6",
-            "unit_number": "6C",
-            "post_box": "200",
-            "room": "602",
+            "address_type": {"code": "BIZZ"},
+            "care_of": "Payments Desk",
+            "department": "Transaction Banking",
+            "sub_department": "Instruction Services",
+            "street_name": "Mainzer Landstrasse",
+            "building_number": "46",
+            "building_name": "Payments House",
+            "floor": "3",
+            "unit_number": "302",
+            "post_box": "2002",
+            "room": "Settlement",
             "post_code": "60329",
-            "town_name": "Frankfurt",
+            "town_name": "Frankfurt am Main",
             "town_location_name": "Bahnhofsviertel",
-            "district_name": "Gallus",
+            "district_name": "Innenstadt I",
             "country_subdivision": "HE",
             "country": "DE",
-            "address_lines": ["Branch line 1", "Branch line 2"],
+            "address_lines": ["Mainzer Landstrasse 46", "60329 Frankfurt am Main"],
         }
 
     @classmethod
-    def _agent_xml(cls, value: dict[str, object]) -> str:
-        """Serialize one V14 InstgAgt with institution and optional branch address."""
-        bicfi = value.get("bicfi")
-        name = value.get("name")
-        postal_address = value.get("postal_address")
-        branch = value.get("branch")
-        if not isinstance(bicfi, str) or not bicfi:
-            raise AssertionError("focused instructing agent requires BICFI")
-        if not isinstance(name, str) or not name:
-            raise AssertionError("focused instructing agent requires name")
+    def _variants(cls, base: dict[str, object]) -> dict[str, dict[str, object]]:
+        """Change every admitted postal field independently at institution and branch level."""
+        variants: dict[str, dict[str, object]] = {}
+        scalar_changes: dict[str, object] = {
+            "address_type": {"code": "ADDR"},
+            "care_of": "Alternate Care Of",
+            "department": "Alternate Department",
+            "sub_department": "Alternate SubDepartment",
+            "street_name": "Alternate Street",
+            "building_number": "99",
+            "building_name": "Alternate Building",
+            "floor": "9",
+            "unit_number": "909",
+            "post_box": "9090",
+            "room": "Alternate Room",
+            "post_code": "10115",
+            "town_name": "Berlin",
+            "town_location_name": "Mitte",
+            "district_name": "Berlin-Mitte",
+            "country_subdivision": "BE",
+            "country": "NL",
+        }
+        for owner_key, label in (("postal_address", "institution"),):
+            for field, replacement in scalar_changes.items():
+                variant = copy.deepcopy(base)
+                address = variant.get(owner_key)
+                if not isinstance(address, dict):
+                    raise AssertionError("institution postal address must be a mapping")
+                address[field] = copy.deepcopy(replacement)
+                variants[f"{label}-{field.replace('_', '-')}"] = variant
+            first_line = copy.deepcopy(base)
+            address = first_line.get(owner_key)
+            if not isinstance(address, dict) or not isinstance(address.get("address_lines"), list):
+                raise AssertionError("institution address lines must be source ordered")
+            address["address_lines"][0] = "Alternate address line"
+            variants[f"{label}-address-line-value"] = first_line
+            reordered = copy.deepcopy(base)
+            address = reordered.get(owner_key)
+            if not isinstance(address, dict) or not isinstance(address.get("address_lines"), list):
+                raise AssertionError("institution address lines must be source ordered")
+            address["address_lines"].reverse()
+            variants[f"{label}-address-line-order"] = reordered
+
+        for field, replacement in scalar_changes.items():
+            variant = copy.deepcopy(base)
+            branch = variant.get("branch")
+            if not isinstance(branch, dict):
+                raise AssertionError("branch must be a mapping")
+            address = branch.get("postal_address")
+            if not isinstance(address, dict):
+                raise AssertionError("branch postal address must be a mapping")
+            address[field] = copy.deepcopy(replacement)
+            variants[f"branch-{field.replace('_', '-')}"] = variant
+        first_line = copy.deepcopy(base)
+        branch = first_line.get("branch")
         if not isinstance(branch, dict):
-            raise AssertionError("focused instructing agent requires branch")
+            raise AssertionError("branch must be a mapping")
+        address = branch.get("postal_address")
+        if not isinstance(address, dict) or not isinstance(address.get("address_lines"), list):
+            raise AssertionError("branch address lines must be source ordered")
+        address["address_lines"][0] = "Alternate branch address line"
+        variants["branch-address-line-value"] = first_line
+        reordered = copy.deepcopy(base)
+        branch = reordered.get("branch")
+        if not isinstance(branch, dict):
+            raise AssertionError("branch must be a mapping")
+        address = branch.get("postal_address")
+        if not isinstance(address, dict) or not isinstance(address.get("address_lines"), list):
+            raise AssertionError("branch address lines must be source ordered")
+        address["address_lines"].reverse()
+        variants["branch-address-line-order"] = reordered
 
-        institution_postal = (
-            cls._postal_xml(postal_address, "                  ")
-            if isinstance(postal_address, dict)
-            else ""
-        )
-        branch_address = branch.get("postal_address")
-        branch_postal = (
-            cls._postal_xml(branch_address, "                  ")
-            if isinstance(branch_address, dict)
-            else ""
-        )
-        return (
-            "              <InstgAgt>\n"
-            "                <FinInstnId>\n"
-            f"                  <BICFI>{bicfi}</BICFI>\n"
-            f"                  <Nm>{name}</Nm>\n"
-            + institution_postal
-            + "                </FinInstnId>\n"
-            "                <BrnchId>\n"
-            f"                  <Id>{branch['id']}</Id>\n"
-            f"                  <Nm>{branch['name']}</Nm>\n"
-            + branch_postal
-            + "                </BrnchId>\n"
-            "              </InstgAgt>\n"
-        )
-
-    @staticmethod
-    def _postal_xml(address: dict[str, object], indent: str) -> str:
-        """Serialize PostalAddress27 in V14 field order."""
-        fields = (
-            ("address_type", "AdrTp"),
-            ("care_of", "CareOf"),
-            ("department", "Dept"),
-            ("sub_department", "SubDept"),
-            ("street_name", "StrtNm"),
-            ("building_number", "BldgNb"),
-            ("building_name", "BldgNm"),
-            ("floor", "Flr"),
-            ("unit_number", "UnitNb"),
-            ("post_box", "PstBx"),
-            ("room", "Room"),
-            ("post_code", "PstCd"),
-            ("town_name", "TwnNm"),
-            ("town_location_name", "TwnLctnNm"),
-            ("district_name", "DstrctNm"),
-            ("country_subdivision", "CtrySubDvsn"),
-            ("country", "Ctry"),
-        )
-        content = ""
-        for key, tag in fields:
-            value = address.get(key)
-            if value is not None:
-                content += f"{indent}  <{tag}>{value}</{tag}>\n"
-        lines = address.get("address_lines", [])
-        if not isinstance(lines, list):
-            raise AssertionError("address_lines must be a list")
-        for value in lines:
-            content += f"{indent}  <AdrLine>{value}</AdrLine>\n"
-        return f"{indent}<PstlAdr>\n{content}{indent}</PstlAdr>\n"
+        institution_absent = copy.deepcopy(base)
+        institution_absent.pop("postal_address", None)
+        variants["institution-address-absent"] = institution_absent
+        branch_absent = copy.deepcopy(base)
+        branch = branch_absent.get("branch")
+        if not isinstance(branch, dict):
+            raise AssertionError("branch must be a mapping")
+        branch.pop("postal_address", None)
+        variants["branch-address-absent"] = branch_absent
+        return variants
 
     def _with_instructing_agent(self, value: dict[str, object]) -> bytes:
-        """Insert one postal-rich InstgAgt into the outgoing-payment detail."""
+        """Insert one PostalAddress27-rich InstgAgt into the outgoing payment detail."""
         replacement = (
             "            <AmtDtls>\n"
             "              <TxAmt>\n"
@@ -456,17 +387,95 @@ class BankStatementDetailPaymentAgentPostalAddressEvidenceRedTests(unittest.Test
         )
         return self.fixture.replace(self.marker, replacement, 1).encode("utf-8")
 
+    @classmethod
+    def _agent_xml(cls, value: dict[str, object]) -> str:
+        """Serialize InstgAgt with institution and branch PostalAddress27 in XSD order."""
+        bicfi = value.get("bicfi")
+        if not isinstance(bicfi, str) or not bicfi:
+            raise AssertionError("postal RED requires BICFI")
+        parts = [
+            "              <InstgAgt>\n",
+            "                <FinInstnId>\n",
+            f"                  <BICFI>{bicfi}</BICFI>\n",
+        ]
+        if isinstance(value.get("name"), str):
+            parts.append(f"                  <Nm>{value['name']}</Nm>\n")
+        institution_address = value.get("postal_address")
+        if institution_address is not None:
+            if not isinstance(institution_address, dict):
+                raise AssertionError("institution postal_address must be a mapping")
+            parts.append(cls._postal_xml(institution_address, "                  "))
+        parts.append("                </FinInstnId>\n")
+
+        branch = value.get("branch")
+        if branch is not None:
+            if not isinstance(branch, dict):
+                raise AssertionError("branch must be a mapping")
+            parts.append("                <BrnchId>\n")
+            if isinstance(branch.get("id"), str):
+                parts.append(f"                  <Id>{branch['id']}</Id>\n")
+            if isinstance(branch.get("name"), str):
+                parts.append(f"                  <Nm>{branch['name']}</Nm>\n")
+            branch_address = branch.get("postal_address")
+            if branch_address is not None:
+                if not isinstance(branch_address, dict):
+                    raise AssertionError("branch postal_address must be a mapping")
+                parts.append(cls._postal_xml(branch_address, "                  "))
+            parts.append("                </BrnchId>\n")
+        parts.append("              </InstgAgt>\n")
+        return "".join(parts)
+
+    @staticmethod
+    def _postal_xml(address: dict[str, object], indent: str) -> str:
+        """Serialize PostalAddress27 in schema sequence order."""
+        address_type = address.get("address_type")
+        if not isinstance(address_type, dict) or set(address_type) != {"code"}:
+            raise AssertionError("postal RED requires coded AddressType3Choice")
+        lines = address.get("address_lines")
+        if not isinstance(lines, list) or len(lines) < 2:
+            raise AssertionError("postal RED requires source-ordered address lines")
+        tags = (
+            ("CareOf", "care_of"),
+            ("Dept", "department"),
+            ("SubDept", "sub_department"),
+            ("StrtNm", "street_name"),
+            ("BldgNb", "building_number"),
+            ("BldgNm", "building_name"),
+            ("Flr", "floor"),
+            ("UnitNb", "unit_number"),
+            ("PstBx", "post_box"),
+            ("Room", "room"),
+            ("PstCd", "post_code"),
+            ("TwnNm", "town_name"),
+            ("TwnLctnNm", "town_location_name"),
+            ("DstrctNm", "district_name"),
+            ("CtrySubDvsn", "country_subdivision"),
+            ("Ctry", "country"),
+        )
+        parts = [
+            f"{indent}<PstlAdr>\n",
+            f"{indent}  <AdrTp>\n",
+            f"{indent}    <Cd>{address_type['code']}</Cd>\n",
+            f"{indent}  </AdrTp>\n",
+        ]
+        parts.extend(
+            f"{indent}  <{tag}>{address[key]}</{tag}>\n" for tag, key in tags
+        )
+        parts.extend(f"{indent}  <AdrLine>{line}</AdrLine>\n" for line in lines)
+        parts.append(f"{indent}</PstlAdr>\n")
+        return "".join(parts)
+
     @staticmethod
     def _assert_exact_accounting_amount(entry: object, detail: object) -> None:
-        """Pin accounting truth independently from bank-reported postal provenance."""
+        """Keep accounting amounts independent from payment-agent postal provenance."""
         if getattr(entry, "entry_amount", None) != Decimal("6000.00"):
-            raise AssertionError("postal evidence must retain exact 6000.00 entry amount")
+            raise AssertionError("payment-agent postal evidence must retain 6000.00")
         if getattr(entry, "entry_currency_code", None) != "KRW":
-            raise AssertionError("postal evidence must retain KRW entry currency")
+            raise AssertionError("payment-agent postal evidence must retain KRW")
         if getattr(detail, "detail_amount", None) != Decimal("6000.00"):
-            raise AssertionError("postal evidence must retain exact 6000.00 detail amount")
+            raise AssertionError("payment-agent postal detail must retain 6000.00")
         if getattr(detail, "detail_currency_code", None) != "KRW":
-            raise AssertionError("postal evidence must retain KRW detail currency")
+            raise AssertionError("payment-agent postal detail must retain KRW")
 
     def _ingest_and_read(
         self,
@@ -501,9 +510,7 @@ class BankStatementDetailPaymentAgentPostalAddressEvidenceRedTests(unittest.Test
         return {
             "tenant_reference": self.case.policy.tenant_reference,
             "bank_account_reference": bank_account_reference or self.bank_account_reference,
-            "ingestion_idempotency_key": (
-                f"payment-agent-postal-{suffix}-{uuid.uuid4().hex}"
-            ),
+            "ingestion_idempotency_key": f"payment-agent-postal-{suffix}-{uuid.uuid4().hex}",
             "message_definition_identifier": CAMT053_MESSAGE_DEFINITION,
             "statement_payload": payload.decode("utf-8"),
         }
