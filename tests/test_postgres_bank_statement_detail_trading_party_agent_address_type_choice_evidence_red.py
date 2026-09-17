@@ -100,10 +100,11 @@ class BankStatementDetailTradingPartyAgentAddressTypeChoiceEvidenceRedTests(
         trading_party_xml = self._trading_party_xml(self.base)
         self.assertEqual(self.base_payload.count(trading_party_xml.encode("utf-8")), 1)
         reformatted_xml = trading_party_xml.replace(
-            "                      <Prtry>\n",
-            "                      <Prtry>\n                        \n",
+            "                        <Prtry>\n",
+            "                        <Prtry>\n                          \n",
             1,
         )
+        self.assertNotEqual(reformatted_xml, trading_party_xml)
         self.reformatted_payload = self.base_payload.replace(
             trading_party_xml.encode("utf-8"), reformatted_xml.encode("utf-8"), 1
         )
