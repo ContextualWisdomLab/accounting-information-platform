@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from decimal import Decimal
 import hashlib
 import json
 import unittest
+from decimal import Decimal
 
 from accounting_information_platform import (
     CAMT053_MESSAGE_DEFINITION,
