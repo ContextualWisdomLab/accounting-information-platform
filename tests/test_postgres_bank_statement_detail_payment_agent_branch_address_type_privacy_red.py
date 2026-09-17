@@ -29,8 +29,8 @@ class BankStatementDetailPaymentAgentBranchAddressTypePrivacyRedTests(unittest.T
         self.choice = choice_case(
             "test_buyer_read_remains_digest_only_across_address_type_choice"
         )
-        self.choice.setUp()
         self.addCleanup(self.choice.doCleanups)
+        self.choice.setUp()
 
     def test_branch_address_type_choice_does_not_expand_buyer_projection(self) -> None:
         """Branch AdrTp materiality changes canonical evidence without reversible buyer disclosure."""
