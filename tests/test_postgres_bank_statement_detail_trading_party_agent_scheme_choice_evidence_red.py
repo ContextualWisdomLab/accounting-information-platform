@@ -303,31 +303,21 @@ class BankStatementDetailTradingPartyAgentSchemeChoiceEvidenceRedTests(
                         artifact_store=self.store,
                     )
 
-    def test_same_scalar_choice_discriminator_requires_explicit_correction(self) -> None:
-        """A Cd|Prtry swap cannot silently replace accepted equal-text evidence."""
-        pairs = (
-            ("clearing-system", "clearing-system-coded", "clearing-system-proprietary"),
-            ("other-scheme", "other-scheme-coded", "other-scheme-proprietary"),
+    def test_same_scalar_clearing_discriminator_requires_explicit_correction(self) -> None:
+        """A same-text clearing-system Cd|Prtry swap requires correction."""
+        self._assert_same_scalar_discriminator_requires_correction(
+            "clearing-system",
+            "clearing-system-coded",
+            "clearing-system-proprietary",
         )
-        for label, coded_name, proprietary_name in pairs:
-            with self.subTest(label=label):
-                accepted = accept_bank_statement_evidence(
-                    self._command(self.discriminator_payloads[coded_name], f"{label}-coded"),
-                    posting.DATABASE_URL,
-                    self.case.policy.tenant_reference,
-                    artifact_store=self.store,
-                )
-                self.assertFalse(accepted["replayed"])
-                with self.assertRaisesRegex(AccountingValidationError, _CORRECTION_ERROR):
-                    accept_bank_statement_evidence(
-                        self._command(
-                            self.discriminator_payloads[proprietary_name],
-                            f"{label}-proprietary",
-                        ),
-                        posting.DATABASE_URL,
-                        self.case.policy.tenant_reference,
-                        artifact_store=self.store,
-                    )
+
+    def test_same_scalar_other_scheme_discriminator_requires_explicit_correction(self) -> None:
+        """A same-text financial-ID scheme Cd|Prtry swap requires correction."""
+        self._assert_same_scalar_discriminator_requires_correction(
+            "other-scheme",
+            "other-scheme-coded",
+            "other-scheme-proprietary",
+        )
 
     def test_buyer_read_preserves_scheme_choice_without_changing_amount(self) -> None:
         """Tenant reads expose choices while exact 25000 KRW remains fixed."""
@@ -352,6 +342,28 @@ class BankStatementDetailTradingPartyAgentSchemeChoiceEvidenceRedTests(
         self.assertEqual(entry["entry_currency_code"], "KRW")
         self.assertEqual(detail["detail_amount"], "25000")
         self.assertEqual(detail["detail_currency_code"], "KRW")
+
+    def _assert_same_scalar_discriminator_requires_correction(
+        self, label: str, coded_name: str, proprietary_name: str
+    ) -> None:
+        """Exercise one discriminator-only replay in an isolated unittest fixture."""
+        accepted = accept_bank_statement_evidence(
+            self._command(self.discriminator_payloads[coded_name], f"{label}-coded"),
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            artifact_store=self.store,
+        )
+        self.assertFalse(accepted["replayed"])
+        with self.assertRaisesRegex(AccountingValidationError, _CORRECTION_ERROR):
+            accept_bank_statement_evidence(
+                self._command(
+                    self.discriminator_payloads[proprietary_name],
+                    f"{label}-proprietary",
+                ),
+                posting.DATABASE_URL,
+                self.case.policy.tenant_reference,
+                artifact_store=self.store,
+            )
 
     @staticmethod
     def _assert_exact_accounting_amount(entry: object, detail: object) -> None:
