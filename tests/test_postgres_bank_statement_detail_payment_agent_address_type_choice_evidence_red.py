@@ -36,8 +36,8 @@ class BankStatementDetailPaymentAgentAddressTypeChoiceEvidenceRedTests(unittest.
     def setUp(self) -> None:
         """Prepare proprietary and coded address-type variants for one InstgAgt."""
         self.case = posting.PostgresPostingTests("setUp")
-        self.case.setUp()
         self.addCleanup(self.case.doCleanups)
+        self.case.setUp()
         self.addCleanup(self.case.tearDown)
 
         fixture = load_canonical_statement_fixture().decode("utf-8")
