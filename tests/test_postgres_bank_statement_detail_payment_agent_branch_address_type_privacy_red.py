@@ -7,8 +7,9 @@ import uuid
 
 from accounting_information_platform import accept_bank_account_record
 from tests import test_postgres_posting as posting
-from tests.test_postgres_bank_statement_detail_payment_agent_address_type_choice_evidence_red import (
-    BankStatementDetailPaymentAgentAddressTypeChoiceEvidenceRedTests as AddressTypeChoiceCase,
+from tests import (
+    test_postgres_bank_statement_detail_payment_agent_address_type_choice_evidence_red
+    as address_type_choice,
 )
 
 
@@ -22,7 +23,10 @@ class BankStatementDetailPaymentAgentBranchAddressTypePrivacyRedTests(unittest.T
 
     def setUp(self) -> None:
         """Prepare the existing standard-agent choice fixture without duplicating its serializer."""
-        self.choice = AddressTypeChoiceCase(
+        choice_case = (
+            address_type_choice.BankStatementDetailPaymentAgentAddressTypeChoiceEvidenceRedTests
+        )
+        self.choice = choice_case(
             "test_buyer_read_remains_digest_only_across_address_type_choice"
         )
         self.choice.setUp()
