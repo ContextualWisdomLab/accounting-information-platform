@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 import hashlib
 import json
 import unittest
@@ -87,6 +88,10 @@ class BankStatementDetailRelatedDatesSecondProprietaryDateMaterialityRedTests(
         self._assert_entry_hash_binding(base_entry, base_hash)
         self._assert_entry_hash_binding(changed_entry, changed_hash)
 
+        self.assertEqual(base_entry.entry_amount, Decimal("25000.00"))
+        self.assertEqual(base_entry.entry_currency_code, "KRW")
+        self.assertEqual(base_detail.detail_amount, Decimal("25000.00"))
+        self.assertEqual(base_detail.detail_currency_code, "KRW")
         self.assertEqual(base_entry.entry_amount, changed_entry.entry_amount)
         self.assertEqual(base_entry.entry_currency_code, changed_entry.entry_currency_code)
         self.assertEqual(base_detail.detail_amount, changed_detail.detail_amount)
