@@ -137,40 +137,50 @@ class BankStatementIntermediaryAgentDeepIdentityEvidenceRedTests(unittest.TestCa
                 self._assert_exact_amount(changed_entry, changed_detail)
 
     def test_buyer_projection_remains_digest_only_for_deep_identity(self) -> None:
-        """Deep intermediary identity stays purpose-digested and does not become reversible buyer data."""
+        """Any deep intermediary identity stays purpose-digested instead of reversible buyer data."""
         for slot in (1, 2, 3):
             with self.subTest(slot=slot):
-                base_payload = self._with_chain(slot, self.AGENTS[slot])
-                changed_identity = self._variants(self.AGENTS[slot])["institution-name"]
-                changed_payload = self._with_chain(slot, changed_identity)
-                base_statement = self._statement(base_payload)
-                changed_statement = self._statement(changed_payload)
-                base_reference = self._register_account(base_statement, f"base-{slot}")
-                changed_reference = self._register_account(changed_statement, f"changed-{slot}")
-                base_detail = self._ingest_and_read(base_payload, base_reference, f"base-{slot}")
-                changed_detail = self._ingest_and_read(
-                    changed_payload,
-                    changed_reference,
-                    f"changed-{slot}",
+                deep_payload = self._with_chain(slot, self.AGENTS[slot])
+                bicfi_only_payload = self._with_chain(
+                    slot,
+                    self.AGENTS[slot],
+                    target_deep=False,
+                )
+                deep_statement = self._statement(deep_payload)
+                bicfi_only_statement = self._statement(bicfi_only_payload)
+                deep_reference = self._register_account(deep_statement, f"deep-{slot}")
+                bicfi_only_reference = self._register_account(
+                    bicfi_only_statement,
+                    f"bicfi-only-{slot}",
+                )
+                deep_detail = self._ingest_and_read(
+                    deep_payload,
+                    deep_reference,
+                    f"deep-{slot}",
+                )
+                bicfi_only_detail = self._ingest_and_read(
+                    bicfi_only_payload,
+                    bicfi_only_reference,
+                    f"bicfi-only-{slot}",
                 )
                 digest_key = f"intermediary_agent_{slot}_evidence_hash"
-                self._assert_digest(base_detail.get(digest_key))
-                self._assert_digest(changed_detail.get(digest_key))
-                self.assertNotEqual(base_detail[digest_key], changed_detail[digest_key])
+                self._assert_digest(deep_detail.get(digest_key))
+                self._assert_digest(bicfi_only_detail.get(digest_key))
+                self.assertNotEqual(deep_detail[digest_key], bicfi_only_detail[digest_key])
                 self.assertNotEqual(
-                    base_detail["source_detail_hash"],
-                    changed_detail["source_detail_hash"],
+                    deep_detail["source_detail_hash"],
+                    bicfi_only_detail["source_detail_hash"],
                 )
-                base_projection = dict(base_detail)
-                changed_projection = dict(changed_detail)
-                for projection in (base_projection, changed_projection):
+                deep_projection = dict(deep_detail)
+                bicfi_only_projection = dict(bicfi_only_detail)
+                for projection in (deep_projection, bicfi_only_projection):
                     projection.pop(digest_key)
                     projection.pop("source_detail_hash")
-                self.assertEqual(base_projection, changed_projection)
-                self.assertEqual(base_detail["detail_amount"], "6000")
-                self.assertEqual(changed_detail["detail_amount"], "6000")
-                self.assertEqual(base_detail["detail_currency_code"], "KRW")
-                self.assertEqual(changed_detail["detail_currency_code"], "KRW")
+                self.assertEqual(deep_projection, bicfi_only_projection)
+                self.assertEqual(deep_detail["detail_amount"], "6000")
+                self.assertEqual(bicfi_only_detail["detail_amount"], "6000")
+                self.assertEqual(deep_detail["detail_currency_code"], "KRW")
+                self.assertEqual(bicfi_only_detail["detail_currency_code"], "KRW")
 
     def test_material_deep_identity_change_requires_explicit_correction(self) -> None:
         """Accepted intermediary deep identity cannot be silently replaced on replay."""
@@ -201,26 +211,44 @@ class BankStatementIntermediaryAgentDeepIdentityEvidenceRedTests(unittest.TestCa
     @staticmethod
     def _variants(identity: dict[str, str]) -> dict[str, dict[str, str]]:
         """Change one institution or branch identity fact while retaining BICFI."""
+        institution_lei = copy.deepcopy(identity)
+        institution_lei["lei"] = "213800D1EI4B9WTWWD28"
         institution_name = copy.deepcopy(identity)
         institution_name["name"] = identity["name"] + " Updated"
         branch_id = copy.deepcopy(identity)
         branch_id["branch_id"] = identity["branch_id"] + "-ALT"
+        branch_lei = copy.deepcopy(identity)
+        branch_lei["branch_lei"] = "213800D1EI4B9WTWWD28"
         branch_name = copy.deepcopy(identity)
         branch_name["branch_name"] = identity["branch_name"] + " Updated"
         return {
+            "institution-lei": institution_lei,
             "institution-name": institution_name,
             "branch-id": branch_id,
+            "branch-lei": branch_lei,
             "branch-name": branch_name,
         }
 
-    def _with_chain(self, target_slot: int, target_identity: dict[str, str]) -> bytes:
-        """Insert an ordered intermediary chain whose target position carries deep identity."""
+    def _with_chain(
+        self,
+        target_slot: int,
+        target_identity: dict[str, str],
+        *,
+        target_deep: bool = True,
+    ) -> bytes:
+        """Insert an ordered intermediary chain, optionally omitting target deep identity."""
         if target_slot not in self.AGENTS:
             raise AssertionError(f"unsupported intermediary slot: {target_slot}")
         lines = ["            <RltdAgts>"]
         for slot in range(1, target_slot + 1):
             identity = target_identity if slot == target_slot else self.AGENTS[slot]
-            lines.extend(self._agent_lines(slot, identity, deep=slot == target_slot))
+            lines.extend(
+                self._agent_lines(
+                    slot,
+                    identity,
+                    deep=target_deep and slot == target_slot,
+                )
+            )
         lines.append("            </RltdAgts>")
         replacement = (
             "            <AmtDtls>\n"
