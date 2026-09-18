@@ -44,8 +44,8 @@ class BankStatementDetailProprietaryAgentIdentityEvidenceRedTests(unittest.TestC
     def setUp(self) -> None:
         """Prepare deep-identity materiality and representation controls."""
         self.case = posting.PostgresPostingTests("setUp")
-        self.case.setUp()
         self.addCleanup(self.case.doCleanups)
+        self.case.setUp()
         self.addCleanup(self.case.tearDown)
 
         fixture = load_canonical_statement_fixture().decode("utf-8")
