@@ -119,9 +119,9 @@ class BankStatementDetailPaymentAgentClearingSystemChoiceEvidenceRedTests(
                         self.case._assert_exact_accounting_amount(entry, detail)
 
     def test_clearing_system_layout_is_representation_only_for_every_role(self) -> None:
-        """Whitespace inside ClrSysId changes source bytes, not admitted semantics."""
-        needle = b"                    <Prtry>USABA</Prtry>\n"
-        replacement = b"                    <Prtry>  USABA  </Prtry>\n"
+        """Whitespace between ClrSysId children changes source bytes, not semantics."""
+        needle = b"                    <ClrSysId>\n"
+        whitespace = b"                      \n"
 
         for element_name, (digest_key, bicfi) in self.case.ROLES.items():
             with self.subTest(element_name=element_name):
@@ -133,7 +133,7 @@ class BankStatementDetailPaymentAgentClearingSystemChoiceEvidenceRedTests(
                     member_id=f"{element_name}-MEMBER-001",
                 )
                 self.assertEqual(payload.count(needle), 1)
-                reformatted = payload.replace(needle, replacement, 1)
+                reformatted = payload.replace(needle, needle + whitespace, 1)
                 self.assertNotEqual(payload, reformatted)
 
                 base = self.case._statement(payload)
