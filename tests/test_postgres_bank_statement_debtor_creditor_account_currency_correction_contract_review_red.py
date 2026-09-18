@@ -19,6 +19,7 @@ from tests.test_postgres_bank_statement_debtor_creditor_account_currency_evidenc
 class BankStatementDebtorCreditorAccountCurrencyCorrectionContractReviewRedTests(unittest.TestCase):
     """Reject related-account currency replay through the complete correction contract."""
 
+    _iban_identification = staticmethod(AccountCurrencyHelpers._iban_identification)
     _with_role_account = AccountCurrencyHelpers._with_role_account
     _register_statement_account = AccountCurrencyHelpers._register_statement_account
     _command = AccountCurrencyHelpers._command
