@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import unittest
+from decimal import Decimal
 
 from tests import test_postgres_bank_statement_debtor_creditor_party_private_identification_evidence_red as private_red
 from tests import test_postgres_posting as posting
@@ -25,8 +26,8 @@ class BankStatementDebtorCreditorPrivateCountryPrivacyReviewRedTests(unittest.Te
                 "runTest"
             )
         )
-        self.helper.setUp()
         self.addCleanup(self.helper.doCleanups)
+        self.helper.setUp()
 
     def test_country_of_birth_is_material_but_not_reversible_in_buyer_projection(self) -> None:
         """Changing only CtryOfBirth must alter internal evidence and leave buyer data unchanged."""
@@ -47,19 +48,27 @@ class BankStatementDebtorCreditorPrivateCountryPrivacyReviewRedTests(unittest.Te
                     f"{role}-private-country-de",
                 )
 
+                expected_entry_amount = (
+                    Decimal("25000.00") if role == "debtor" else Decimal("10000.00")
+                )
+                expected_detail_amount = (
+                    Decimal("25000.00") if role == "debtor" else Decimal("6000.00")
+                )
                 for projection in (baseline, changed):
                     self.helper._assert_sha256(projection["counterparty_evidence_hash"])
                     self.helper._assert_sha256(projection["source_entry_hash"])
                     first_detail = projection["entry_details"][0]
                     self.helper._assert_sha256(first_detail["source_detail_hash"])
                     self.assertEqual(
-                        str(projection["entry_currency_code"]),
-                        "KRW",
+                        Decimal(str(projection["entry_amount"])),
+                        expected_entry_amount,
                     )
+                    self.assertEqual(str(projection["entry_currency_code"]), "KRW")
                     self.assertEqual(
-                        str(first_detail["detail_currency_code"]),
-                        "KRW",
+                        Decimal(str(first_detail["detail_amount"])),
+                        expected_detail_amount,
                     )
+                    self.assertEqual(str(first_detail["detail_currency_code"]), "KRW")
 
                 self.assertNotEqual(
                     baseline["counterparty_evidence_hash"],
