@@ -89,6 +89,7 @@ class BankStatementIntermediaryAgentDeepIdentityEvidenceRedTests(unittest.TestCa
             digest_key = f"intermediary_agent_{slot}_evidence_hash"
             base_digest = getattr(base_detail, digest_key, None)
             self._assert_digest(base_digest)
+            self._assert_digest(base_detail.source_detail_hash)
             self._assert_exact_amount(base_entry, base_detail)
 
             for variant_name, identity in variants.items():
@@ -98,6 +99,7 @@ class BankStatementIntermediaryAgentDeepIdentityEvidenceRedTests(unittest.TestCa
                     changed_detail = changed_entry.entry_details[0]
                     changed_digest = getattr(changed_detail, digest_key, None)
                     self._assert_digest(changed_digest)
+                    self._assert_digest(changed_detail.source_detail_hash)
                     self.assertNotEqual(base_digest, changed_digest)
                     self.assertEqual(base.account_identifier_hash, changed.account_identifier_hash)
                     self.assertNotEqual(base_detail.source_detail_hash, changed_detail.source_detail_hash)
@@ -129,6 +131,8 @@ class BankStatementIntermediaryAgentDeepIdentityEvidenceRedTests(unittest.TestCa
                 changed_digest = getattr(changed_detail, digest_key, None)
                 self._assert_digest(base_digest)
                 self._assert_digest(changed_digest)
+                self._assert_digest(base_detail.source_detail_hash)
+                self._assert_digest(changed_detail.source_detail_hash)
                 self.assertNotEqual(base.source_artifact_hash, changed.source_artifact_hash)
                 self.assertEqual(base_digest, changed_digest)
                 self.assertEqual(base_detail.source_detail_hash, changed_detail.source_detail_hash)
@@ -166,6 +170,8 @@ class BankStatementIntermediaryAgentDeepIdentityEvidenceRedTests(unittest.TestCa
                 digest_key = f"intermediary_agent_{slot}_evidence_hash"
                 self._assert_digest(deep_detail.get(digest_key))
                 self._assert_digest(bicfi_only_detail.get(digest_key))
+                self._assert_digest(deep_detail.get("source_detail_hash"))
+                self._assert_digest(bicfi_only_detail.get("source_detail_hash"))
                 self.assertNotEqual(deep_detail[digest_key], bicfi_only_detail[digest_key])
                 self.assertNotEqual(
                     deep_detail["source_detail_hash"],
