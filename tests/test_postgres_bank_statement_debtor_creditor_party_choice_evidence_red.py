@@ -39,8 +39,8 @@ class BankStatementDebtorCreditorPartyChoiceEvidenceRedTests(unittest.TestCase):
     def setUp(self) -> None:
         """Prepare one PostgreSQL fixture and one schema-shaped party choice per role."""
         self.case = posting.PostgresPostingTests("setUp")
-        self.case.setUp()
         self.addCleanup(self.case.doCleanups)
+        self.case.setUp()
         self.addCleanup(self.case.tearDown)
         self.fixture = load_canonical_statement_fixture().decode("utf-8")
         self.same_scalar_name = "Direct Party Same Scalar"
@@ -88,6 +88,8 @@ class BankStatementDebtorCreditorPartyChoiceEvidenceRedTests(unittest.TestCase):
                     self.assertEqual(right_detail.detail_currency_code, "KRW")
                     self._assert_sha256(left_entry.counterparty_evidence_hash)
                     self._assert_sha256(right_entry.counterparty_evidence_hash)
+                    self._assert_sha256(left_detail.source_detail_hash)
+                    self._assert_sha256(right_detail.source_detail_hash)
                     self._assert_sha256(left_entry.source_entry_hash)
                     self._assert_sha256(right_entry.source_entry_hash)
                     self._assert_sha256(left.normalized_payload_hash)
@@ -96,6 +98,7 @@ class BankStatementDebtorCreditorPartyChoiceEvidenceRedTests(unittest.TestCase):
                         left_entry.counterparty_evidence_hash,
                         right_entry.counterparty_evidence_hash,
                     )
+                    self.assertNotEqual(left_detail.source_detail_hash, right_detail.source_detail_hash)
                     self.assertNotEqual(left_entry.source_entry_hash, right_entry.source_entry_hash)
                     self.assertNotEqual(left.normalized_payload_hash, right.normalized_payload_hash)
                     self.assertEqual(left.account_identifier_hash, right.account_identifier_hash)
@@ -129,15 +132,20 @@ class BankStatementDebtorCreditorPartyChoiceEvidenceRedTests(unittest.TestCase):
         right = parse_bank_statement_payload(formatted, CAMT053_MESSAGE_DEFINITION)
         left_entry = left.entries[0]
         right_entry = right.entries[0]
+        left_detail = left_entry.entry_details[0]
+        right_detail = right_entry.entry_details[0]
 
         self._assert_sha256(left_entry.counterparty_evidence_hash)
         self._assert_sha256(right_entry.counterparty_evidence_hash)
+        self._assert_sha256(left_detail.source_detail_hash)
+        self._assert_sha256(right_detail.source_detail_hash)
         self._assert_sha256(left_entry.source_entry_hash)
         self._assert_sha256(right_entry.source_entry_hash)
         self._assert_sha256(left.normalized_payload_hash)
         self._assert_sha256(right.normalized_payload_hash)
         self.assertNotEqual(left.source_artifact_hash, right.source_artifact_hash)
         self.assertEqual(left_entry.counterparty_evidence_hash, right_entry.counterparty_evidence_hash)
+        self.assertEqual(left_detail.source_detail_hash, right_detail.source_detail_hash)
         self.assertEqual(left_entry.source_entry_hash, right_entry.source_entry_hash)
         self.assertEqual(left.normalized_payload_hash, right.normalized_payload_hash)
 
@@ -164,7 +172,7 @@ class BankStatementDebtorCreditorPartyChoiceEvidenceRedTests(unittest.TestCase):
                     )
 
     def test_buyer_entry_projection_keeps_party_choice_non_reversible(self) -> None:
-        """Choice semantics affect the digest without exposing party/agent source text."""
+        """Choice semantics affect internal evidence without exposing source party text."""
         for role in ("debtor", "creditor"):
             with self.subTest(role=role):
                 party_entry = self._ingest_and_read_target_entry(
@@ -186,6 +194,7 @@ class BankStatementDebtorCreditorPartyChoiceEvidenceRedTests(unittest.TestCase):
                     )
                     self.assertEqual(projection["entry_currency_code"], "KRW")
                     first_detail = projection["entry_details"][0]
+                    self._assert_sha256(first_detail["source_detail_hash"])
                     self.assertEqual(
                         Decimal(str(first_detail["detail_amount"])),
                         self._expected_detail_amount(role),
@@ -195,6 +204,11 @@ class BankStatementDebtorCreditorPartyChoiceEvidenceRedTests(unittest.TestCase):
                     party_entry["counterparty_evidence_hash"],
                     agent_entry["counterparty_evidence_hash"],
                 )
+                self.assertNotEqual(
+                    party_entry["entry_details"][0]["source_detail_hash"],
+                    agent_entry["entry_details"][0]["source_detail_hash"],
+                )
+                self.assertNotEqual(party_entry["source_entry_hash"], agent_entry["source_entry_hash"])
 
                 party_public = dict(party_entry)
                 agent_public = dict(agent_entry)
@@ -202,6 +216,14 @@ class BankStatementDebtorCreditorPartyChoiceEvidenceRedTests(unittest.TestCase):
                     projection.pop("bank_statement_entry_id")
                     projection.pop("counterparty_evidence_hash")
                     projection.pop("source_entry_hash")
+                    projection["entry_details"] = [
+                        {
+                            key: value
+                            for key, value in dict(detail).items()
+                            if key != "source_detail_hash"
+                        }
+                        for detail in projection["entry_details"]
+                    ]
                 self.assertEqual(party_public, agent_public)
 
                 serialized = json.dumps(
