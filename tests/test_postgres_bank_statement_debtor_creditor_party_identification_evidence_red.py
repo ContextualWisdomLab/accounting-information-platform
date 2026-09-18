@@ -204,12 +204,23 @@ class BankStatementDebtorCreditorPartyIdentificationEvidenceRedTests(unittest.Te
                     ),
                     f"{role}-party-identification-organisation",
                 )
+                changed_identifier_entry = self._ingest_and_read_target_entry(
+                    role,
+                    self._with_role_identity(
+                        role, "organisation", self.changed_identifier
+                    ),
+                    f"{role}-party-identification-changed-identifier",
+                )
                 person_entry = self._ingest_and_read_target_entry(
                     role,
                     self._with_role_identity(role, "person", self.base_identifier),
                     f"{role}-party-identification-person",
                 )
-                for projection in (organisation_entry, person_entry):
+                for projection in (
+                    organisation_entry,
+                    changed_identifier_entry,
+                    person_entry,
+                ):
                     self._assert_sha256(projection["counterparty_evidence_hash"])
                     self._assert_sha256(projection["source_entry_hash"])
                     self.assertEqual(
@@ -225,26 +236,32 @@ class BankStatementDebtorCreditorPartyIdentificationEvidenceRedTests(unittest.Te
                     )
                     self.assertEqual(first_detail["detail_currency_code"], "KRW")
 
-                self.assertNotEqual(
-                    organisation_entry["counterparty_evidence_hash"],
-                    person_entry["counterparty_evidence_hash"],
-                )
-                self.assertNotEqual(
-                    organisation_entry["entry_details"][0]["source_detail_hash"],
-                    person_entry["entry_details"][0]["source_detail_hash"],
-                )
-                self.assertNotEqual(
-                    organisation_entry["source_entry_hash"],
-                    person_entry["source_entry_hash"],
-                )
+                for variant in (changed_identifier_entry, person_entry):
+                    self.assertNotEqual(
+                        organisation_entry["counterparty_evidence_hash"],
+                        variant["counterparty_evidence_hash"],
+                    )
+                    self.assertNotEqual(
+                        organisation_entry["entry_details"][0]["source_detail_hash"],
+                        variant["entry_details"][0]["source_detail_hash"],
+                    )
+                    self.assertNotEqual(
+                        organisation_entry["source_entry_hash"],
+                        variant["source_entry_hash"],
+                    )
 
                 organisation_public = self._public_projection(organisation_entry)
+                changed_identifier_public = self._public_projection(
+                    changed_identifier_entry
+                )
                 person_public = self._public_projection(person_entry)
+                self.assertEqual(organisation_public, changed_identifier_public)
                 self.assertEqual(organisation_public, person_public)
 
                 serialized = json.dumps(
                     {
                         "organisation": organisation_entry,
+                        "changed_identifier": changed_identifier_entry,
                         "person": person_entry,
                     },
                     sort_keys=True,
