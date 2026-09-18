@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import unittest
 import uuid
 
@@ -14,7 +15,7 @@ _CORRECTION_ERROR = (
     r"^statement identity already exists with different entry evidence\. "
     r"Use an explicit correction contract, then retry ingest\.$"
 )
-_DIGEST_RE = r"\Asha256:[0-9a-f]{64}\Z"
+_DIGEST_RE = r"sha256:[0-9a-f]{64}"
 
 
 class BankStatementDetailPaymentAgentOtherRoleAddressTypeChoiceEvidenceRedTests(
@@ -257,10 +258,8 @@ class BankStatementDetailPaymentAgentOtherRoleAddressTypeChoiceEvidenceRedTests(
     @staticmethod
     def _assert_digest(value: object) -> None:
         """Require a present canonical digest instead of allowing None-equality false positives."""
-        if not isinstance(value, str):
-            raise AssertionError("canonical role/evidence digest must be present")
-        if unittest.TestCase().assertRegex(value, _DIGEST_RE) is not None:
-            raise AssertionError("canonical digest shape assertion failed")
+        if not isinstance(value, str) or re.fullmatch(_DIGEST_RE, value) is None:
+            raise AssertionError("canonical digest must match sha256:<64 lowercase hex>")
 
     @classmethod
     def _with_choice(cls, payload: bytes, owner: str, choice: bytes) -> bytes:
