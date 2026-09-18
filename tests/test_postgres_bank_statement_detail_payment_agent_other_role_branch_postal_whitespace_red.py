@@ -63,15 +63,17 @@ class BankStatementDetailPaymentAgentOtherRoleBranchPostalWhitespaceRedTests(
                 changed_entry = changed.entries[1]
                 base_detail = base_entry.entry_details[0]
                 changed_detail = changed_entry.entry_details[0]
+                base_digest = getattr(base_detail, digest_key, None)
+                changed_digest = getattr(changed_detail, digest_key, None)
 
                 self.assertNotEqual(
                     base.source_artifact_hash,
                     changed.source_artifact_hash,
                 )
-                self.assertEqual(
-                    getattr(base_detail, digest_key, None),
-                    getattr(changed_detail, digest_key, None),
-                )
+                for digest in (base_digest, changed_digest):
+                    self.assertIsInstance(digest, str)
+                    self.assertRegex(str(digest), r"\Asha256:[0-9a-f]{64}\Z")
+                self.assertEqual(base_digest, changed_digest)
                 self.assertEqual(
                     base_detail.source_detail_hash,
                     changed_detail.source_detail_hash,
