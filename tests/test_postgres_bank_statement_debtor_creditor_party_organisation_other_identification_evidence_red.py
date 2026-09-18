@@ -203,6 +203,8 @@ class BankStatementDebtorCreditorPartyOrganisationOtherIdentificationEvidenceRed
         ):
             self._assert_sha256(value)
 
+        self._assert_sha256(left.source_artifact_hash)
+        self._assert_sha256(right.source_artifact_hash)
         self.assertNotEqual(left.source_artifact_hash, right.source_artifact_hash)
         self.assertEqual(
             left_entry.counterparty_evidence_hash,
