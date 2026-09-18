@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import unittest
 from decimal import Decimal
 
 from accounting_information_platform import (
@@ -10,15 +11,40 @@ from accounting_information_platform import (
     CAMT053_MESSAGE_DEFINITION,
     MemoryArtifactStore,
     accept_bank_statement_evidence,
+    load_canonical_statement_fixture,
     parse_bank_statement_payload,
 )
+from tests import test_postgres_posting as posting
 from tests.test_postgres_bank_statement_debtor_creditor_account_identification_choice_evidence_red import (
-    BankStatementDebtorCreditorAccountIdentificationChoiceEvidenceRedTests as RelatedAccountEvidenceBase,
+    BankStatementDebtorCreditorAccountIdentificationChoiceEvidenceRedTests as RelatedAccountEvidenceHelpers,
 )
 
 
-class BankStatementDebtorCreditorAccountTypeChoiceEvidenceRedTests(RelatedAccountEvidenceBase):
+class BankStatementDebtorCreditorAccountTypeChoiceEvidenceRedTests(unittest.TestCase):
     """Preserve related-account type choice semantics without reversible buyer disclosure."""
+
+    _iban_identification = staticmethod(RelatedAccountEvidenceHelpers._iban_identification)
+    _with_role_account = RelatedAccountEvidenceHelpers._with_role_account
+    _register_statement_account = RelatedAccountEvidenceHelpers._register_statement_account
+    _ingest_and_read_target_detail = RelatedAccountEvidenceHelpers._ingest_and_read_target_detail
+    _command = RelatedAccountEvidenceHelpers._command
+    _target_entry_index = staticmethod(RelatedAccountEvidenceHelpers._target_entry_index)
+    _expected_detail_amount = staticmethod(RelatedAccountEvidenceHelpers._expected_detail_amount)
+    _assert_sha256 = RelatedAccountEvidenceHelpers._assert_sha256
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        """Reuse the canonical PostgreSQL integration fixture."""
+        posting.PostgresPostingTests.setUpClass()
+
+    def setUp(self) -> None:
+        """Prepare one nested PostgreSQL fixture and the pinned CAMT.053 statement."""
+        self.case = posting.PostgresPostingTests("setUp")
+        self.addCleanup(self.case.doCleanups)
+        self.case.setUp()
+        self.addCleanup(self.case.tearDown)
+        self.fixture = load_canonical_statement_fixture().decode("utf-8")
+        self.same_scalar_identifier = "DE89370400440532013000"
 
     def test_account_type_choice_value_and_absence_change_admitted_identity(self) -> None:
         """CashAccountType2Choice value, discriminator, and presence are material evidence."""
@@ -47,12 +73,10 @@ class BankStatementDebtorCreditorAccountTypeChoiceEvidenceRedTests(RelatedAccoun
             for semantic, left_account, right_account in pairs:
                 with self.subTest(role=role, semantic=semantic):
                     left = parse_bank_statement_payload(
-                        self._with_role_account(role, left_account),
-                        CAMT053_MESSAGE_DEFINITION,
+                        self._with_role_account(role, left_account), CAMT053_MESSAGE_DEFINITION
                     )
                     right = parse_bank_statement_payload(
-                        self._with_role_account(role, right_account),
-                        CAMT053_MESSAGE_DEFINITION,
+                        self._with_role_account(role, right_account), CAMT053_MESSAGE_DEFINITION
                     )
                     left_detail = left.entries[target_index].entry_details[0]
                     right_detail = right.entries[target_index].entry_details[0]
@@ -82,8 +106,7 @@ class BankStatementDebtorCreditorAccountTypeChoiceEvidenceRedTests(RelatedAccoun
         """Whitespace around a proprietary account type changes raw bytes, not admitted semantics."""
         baseline = self._typed_account("Prtry", "OPERATING-A")
         spaced = baseline.replace(
-            "<Prtry>OPERATING-A</Prtry>",
-            "<Prtry>  OPERATING-A  </Prtry>",
+            "<Prtry>OPERATING-A</Prtry>", "<Prtry>  OPERATING-A  </Prtry>"
         )
         for role in ("debtor", "creditor"):
             with self.subTest(role=role):
@@ -113,46 +136,56 @@ class BankStatementDebtorCreditorAccountTypeChoiceEvidenceRedTests(RelatedAccoun
 
     def test_material_account_type_change_reaches_explicit_correction_boundary(self) -> None:
         """Accepted evidence cannot silently replay a different related-account type."""
-        baseline = self._with_role_account("debtor", self._typed_account("Prtry", "OPERATING-A"))
-        changed = self._with_role_account("debtor", self._typed_account("Prtry", "OPERATING-B"))
-        reference = self._register_statement_account(baseline)
-        store = MemoryArtifactStore()
-        accept_bank_statement_evidence(
-            self._command(baseline, reference, "account-type-baseline"),
-            self.case.DATABASE_URL if hasattr(self.case, "DATABASE_URL") else __import__("tests.test_postgres_posting", fromlist=["DATABASE_URL"]).DATABASE_URL,
-            self.case.policy.tenant_reference,
-            artifact_store=store,
-        )
-        database_url = __import__("tests.test_postgres_posting", fromlist=["DATABASE_URL"]).DATABASE_URL
-        with self.assertRaisesRegex(
-            AccountingValidationError,
-            r"statement identity already exists with different entry evidence",
-        ):
-            accept_bank_statement_evidence(
-                self._command(changed, reference, "account-type-changed"),
-                database_url,
-                self.case.policy.tenant_reference,
-                artifact_store=store,
-            )
+        for role in ("debtor", "creditor"):
+            with self.subTest(role=role):
+                baseline = self._with_role_account(
+                    role, self._typed_account("Prtry", "OPERATING-A")
+                )
+                changed = self._with_role_account(
+                    role, self._typed_account("Prtry", "OPERATING-B")
+                )
+                reference = self._register_statement_account(baseline)
+                store = MemoryArtifactStore()
+                accept_bank_statement_evidence(
+                    self._command(baseline, reference, f"{role}-account-type-baseline"),
+                    posting.DATABASE_URL,
+                    self.case.policy.tenant_reference,
+                    artifact_store=store,
+                )
+                with self.assertRaisesRegex(
+                    AccountingValidationError,
+                    r"statement identity already exists with different entry evidence",
+                ):
+                    accept_bank_statement_evidence(
+                        self._command(changed, reference, f"{role}-account-type-changed"),
+                        posting.DATABASE_URL,
+                        self.case.policy.tenant_reference,
+                        artifact_store=store,
+                    )
 
     def test_buyer_projection_does_not_make_account_type_reversible(self) -> None:
         """CashAccountType2Choice remains purpose-bound evidence, not a reversible buyer field."""
+        same_scalar = "SVGS"
         for role in ("debtor", "creditor"):
             with self.subTest(role=role):
                 coded = self._ingest_and_read_target_detail(
                     role,
-                    self._with_role_account(role, self._typed_account("Cd", "CACC")),
+                    self._with_role_account(role, self._typed_account("Cd", same_scalar)),
                     "account-type-coded",
                 )
                 proprietary = self._ingest_and_read_target_detail(
                     role,
-                    self._with_role_account(role, self._typed_account("Prtry", "CACC")),
+                    self._with_role_account(role, self._typed_account("Prtry", same_scalar)),
                     "account-type-proprietary",
                 )
                 digest_key = f"{role}_account_evidence_hash"
                 for projection in (coded, proprietary):
                     self._assert_sha256(projection[digest_key])
                     self._assert_sha256(projection["source_detail_hash"])
+                    self.assertEqual(
+                        Decimal(str(projection["detail_amount"])), self._expected_detail_amount(role)
+                    )
+                    self.assertEqual(projection["detail_currency_code"], "KRW")
                 self.assertNotEqual(coded[digest_key], proprietary[digest_key])
                 self.assertNotEqual(coded["source_detail_hash"], proprietary["source_detail_hash"])
 
@@ -168,24 +201,24 @@ class BankStatementDebtorCreditorAccountTypeChoiceEvidenceRedTests(RelatedAccoun
                     sort_keys=True,
                     default=str,
                 )
-                self.assertNotIn("OPERATING-A", serialized)
-                self.assertEqual(
-                    Decimal(str(coded["detail_amount"])), self._expected_detail_amount(role)
-                )
-                self.assertEqual(coded["detail_currency_code"], "KRW")
+                self.assertNotIn(same_scalar, serialized)
 
     def _typed_account(self, kind: str, value: str) -> str:
         """Return Id followed by one CashAccountType2Choice fragment in schema sequence."""
         if kind not in {"Cd", "Prtry"}:
             raise AssertionError("account type kind must be Cd or Prtry")
         identification = self._iban_identification(self.same_scalar_identifier)
-        account_type = (
-            "\n                <Tp>\n"
-            f"                  <{kind}>{value}</{kind}>\n"
-            "                </Tp>"
+        return (
+            identification
+            + "\n                <Tp>\n"
+            + f"                  <{kind}>{value}</{kind}>\n"
+            + "                </Tp>"
         )
-        return identification + account_type
 
     def _untyped_account(self) -> str:
         """Return the same account identification without an optional account type."""
         return self._iban_identification(self.same_scalar_identifier)
+
+
+if __name__ == "__main__":
+    unittest.main()
