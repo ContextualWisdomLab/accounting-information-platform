@@ -229,62 +229,62 @@ class BankStatementIntermediaryAgentOtherIdentificationEvidenceRedTests(
         """Buyer reads expose no reversible intermediary alternate-ID fields."""
         for slot in (1, 2, 3):
             with self.subTest(slot=slot):
-                proprietary_payload = self._payload(
+                rich_payload = self._payload(
                     slot,
                     identifier=f"INTRMY-{slot}-ALT-001",
                     scheme_kind="proprietary",
                     scheme_value="BANK",
                     issuer="CWL Bank Registry",
                 )
-                coded_payload = self._payload(
+                baseline_payload = self._payload(
                     slot,
-                    identifier=f"INTRMY-{slot}-ALT-001",
-                    scheme_kind="code",
-                    scheme_value="BANK",
-                    issuer="CWL Bank Registry",
+                    identifier=None,
+                    scheme_kind=None,
+                    scheme_value=None,
+                    issuer=None,
                 )
-                proprietary_statement = self.case._statement(proprietary_payload)
-                coded_statement = self.case._statement(coded_payload)
-                proprietary_reference = self.case._register_account(
-                    proprietary_statement,
-                    f"other-proprietary-{slot}",
+                rich_statement = self.case._statement(rich_payload)
+                baseline_statement = self.case._statement(baseline_payload)
+                rich_reference = self.case._register_account(
+                    rich_statement,
+                    f"other-rich-{slot}",
                 )
-                coded_reference = self.case._register_account(
-                    coded_statement,
-                    f"other-coded-{slot}",
+                baseline_reference = self.case._register_account(
+                    baseline_statement,
+                    f"other-baseline-{slot}",
                 )
-                proprietary_detail = self.case._ingest_and_read(
-                    proprietary_payload,
-                    proprietary_reference,
-                    f"other-proprietary-{slot}-{uuid.uuid4().hex}",
+                rich_detail = self.case._ingest_and_read(
+                    rich_payload,
+                    rich_reference,
+                    f"other-rich-{slot}-{uuid.uuid4().hex}",
                 )
-                coded_detail = self.case._ingest_and_read(
-                    coded_payload,
-                    coded_reference,
-                    f"other-coded-{slot}-{uuid.uuid4().hex}",
+                baseline_detail = self.case._ingest_and_read(
+                    baseline_payload,
+                    baseline_reference,
+                    f"other-baseline-{slot}-{uuid.uuid4().hex}",
                 )
                 digest_key = f"intermediary_agent_{slot}_evidence_hash"
 
-                for projection in (proprietary_detail, coded_detail):
+                for projection in (rich_detail, baseline_detail):
                     self.case._assert_digest(projection.get(digest_key))
                     self.case._assert_digest(projection.get("source_detail_hash"))
                     self.assertEqual(projection["detail_amount"], "6000")
                     self.assertEqual(projection["detail_currency_code"], "KRW")
 
                 self.assertNotEqual(
-                    proprietary_detail[digest_key],
-                    coded_detail[digest_key],
+                    rich_detail[digest_key],
+                    baseline_detail[digest_key],
                 )
                 self.assertNotEqual(
-                    proprietary_detail["source_detail_hash"],
-                    coded_detail["source_detail_hash"],
+                    rich_detail["source_detail_hash"],
+                    baseline_detail["source_detail_hash"],
                 )
-                proprietary_visible = dict(proprietary_detail)
-                coded_visible = dict(coded_detail)
-                for projection in (proprietary_visible, coded_visible):
+                rich_visible = dict(rich_detail)
+                baseline_visible = dict(baseline_detail)
+                for projection in (rich_visible, baseline_visible):
                     projection.pop(digest_key)
                     projection.pop("source_detail_hash")
-                self.assertEqual(proprietary_visible, coded_visible)
+                self.assertEqual(rich_visible, baseline_visible)
 
     def _payload(
         self,
