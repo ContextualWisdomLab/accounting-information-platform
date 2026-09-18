@@ -88,6 +88,10 @@ class BankStatementDebtorCreditorPartyOrganisationIdentifiersEvidenceRedTests(
                         right_entry.source_entry_hash,
                         left.normalized_payload_hash,
                         right.normalized_payload_hash,
+                        left.account_identifier_hash,
+                        right.account_identifier_hash,
+                        left.entries[untouched_index].source_entry_hash,
+                        right.entries[untouched_index].source_entry_hash,
                     ):
                         self._assert_sha256(value)
 
@@ -161,39 +165,46 @@ class BankStatementDebtorCreditorPartyOrganisationIdentifiersEvidenceRedTests(
 
     def test_organisation_identifier_change_reaches_complete_correction_boundary(self) -> None:
         """Accepted AnyBIC/LEI evidence cannot be silently replaced by replay."""
+        variants = (
+            ("any-bic-value", self.changed_bic, self.base_lei),
+            ("any-bic-absent", None, self.base_lei),
+            ("lei-value", self.base_bic, self.changed_lei),
+            ("lei-absent", self.base_bic, None),
+        )
         for role in ("debtor", "creditor"):
-            with self.subTest(role=role):
-                baseline = self._with_role_organisation(
-                    role, self.base_bic, self.base_lei
-                )
-                changed = self._with_role_organisation(
-                    role, self.changed_bic, self.base_lei
-                )
-                reference = self._register_statement_account(baseline)
-                store = MemoryArtifactStore()
-                accept_bank_statement_evidence(
-                    self._command(
-                        baseline,
-                        reference,
-                        f"{role}-party-organisation-identifiers-baseline",
-                    ),
-                    posting.DATABASE_URL,
-                    self.case.policy.tenant_reference,
-                    artifact_store=store,
-                )
-                with self.assertRaisesRegex(
-                    AccountingValidationError, _CORRECTION_ERROR
-                ):
-                    accept_bank_statement_evidence(
-                        self._command(
-                            changed,
-                            reference,
-                            f"{role}-party-organisation-identifiers-changed",
-                        ),
-                        posting.DATABASE_URL,
-                        self.case.policy.tenant_reference,
-                        artifact_store=store,
+            baseline = self._with_role_organisation(
+                role, self.base_bic, self.base_lei
+            )
+            reference = self._register_statement_account(baseline)
+            store = MemoryArtifactStore()
+            accept_bank_statement_evidence(
+                self._command(
+                    baseline,
+                    reference,
+                    f"{role}-party-organisation-identifiers-baseline",
+                ),
+                posting.DATABASE_URL,
+                self.case.policy.tenant_reference,
+                artifact_store=store,
+            )
+            for semantic, changed_bic, changed_lei in variants:
+                with self.subTest(role=role, semantic=semantic):
+                    changed = self._with_role_organisation(
+                        role, changed_bic, changed_lei
                     )
+                    with self.assertRaisesRegex(
+                        AccountingValidationError, _CORRECTION_ERROR
+                    ):
+                        accept_bank_statement_evidence(
+                            self._command(
+                                changed,
+                                reference,
+                                f"{role}-party-organisation-identifiers-{semantic}",
+                            ),
+                            posting.DATABASE_URL,
+                            self.case.policy.tenant_reference,
+                            artifact_store=store,
+                        )
 
     def test_buyer_projection_keeps_organisation_identifiers_non_reversible(self) -> None:
         """Organisation identifiers affect internal evidence without leaking source IDs."""
