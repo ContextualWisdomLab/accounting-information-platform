@@ -35,7 +35,7 @@ class BankStatementStructuredRemittanceEvidenceRedTests(unittest.TestCase):
         posting.PostgresPostingTests.setUpClass()
 
     def setUp(self) -> None:
-        """Prepare structured references and repeated referred-document evidence."""
+        """Prepare structured references and repeated remittance evidence."""
         self.case = posting.PostgresPostingTests("setUp")
         self.addCleanup(self.case.doCleanups)
         self.case.setUp()
@@ -114,6 +114,38 @@ class BankStatementStructuredRemittanceEvidenceRedTests(unittest.TestCase):
         )
         self.changed_structured_population_statement = parse_bank_statement_payload(
             self.changed_structured_population_payload,
+            CAMT053_MESSAGE_DEFINITION,
+        )
+
+        self.first_additional_remittance = "Shipment 2026-09-01"
+        self.base_second_additional_remittance = "Customer deduction ref A-1002"
+        self.changed_second_additional_remittance = "Customer deduction ref A-1003"
+        for value in (
+            self.first_additional_remittance,
+            self.base_second_additional_remittance,
+            self.changed_second_additional_remittance,
+        ):
+            if not 1 <= len(value) <= 140:
+                raise AssertionError("additional remittance must satisfy Max140Text")
+
+        self.base_additional_remittance_payload = self._with_additional_remittance_lines(
+            fixture,
+            self.marker,
+            self.first_additional_remittance,
+            self.base_second_additional_remittance,
+        )
+        self.changed_additional_remittance_payload = self._with_additional_remittance_lines(
+            fixture,
+            self.marker,
+            self.first_additional_remittance,
+            self.changed_second_additional_remittance,
+        )
+        self.base_additional_remittance_statement = parse_bank_statement_payload(
+            self.base_additional_remittance_payload,
+            CAMT053_MESSAGE_DEFINITION,
+        )
+        self.changed_additional_remittance_statement = parse_bank_statement_payload(
+            self.changed_additional_remittance_payload,
             CAMT053_MESSAGE_DEFINITION,
         )
 
@@ -342,6 +374,96 @@ class BankStatementStructuredRemittanceEvidenceRedTests(unittest.TestCase):
         self.assertEqual(Decimal(str(detail["detail_amount"])), Decimal("25000.00"))
         self.assertEqual(detail["detail_currency_code"], "KRW")
 
+    def test_later_additional_remittance_is_material_to_evidence_identity(self) -> None:
+        """A later AddtlRmtInf value cannot alias when the first value and accounting facts match."""
+        base_entry = self.base_additional_remittance_statement.entries[0]
+        changed_entry = self.changed_additional_remittance_statement.entries[0]
+        base_detail = base_entry.entry_details[0]
+        changed_detail = changed_entry.entry_details[0]
+
+        for value in (
+            base_detail.source_detail_hash,
+            changed_detail.source_detail_hash,
+            base_entry.source_entry_hash,
+            changed_entry.source_entry_hash,
+            self.base_additional_remittance_statement.normalized_payload_hash,
+            self.changed_additional_remittance_statement.normalized_payload_hash,
+            self.base_additional_remittance_statement.account_identifier_hash,
+            self.changed_additional_remittance_statement.account_identifier_hash,
+            self.base_additional_remittance_statement.entries[1].source_entry_hash,
+            self.changed_additional_remittance_statement.entries[1].source_entry_hash,
+        ):
+            self._assert_sha256(value)
+
+        self.assertNotEqual(base_detail.source_detail_hash, changed_detail.source_detail_hash)
+        self.assertNotEqual(base_entry.source_entry_hash, changed_entry.source_entry_hash)
+        self.assertNotEqual(
+            self.base_additional_remittance_statement.normalized_payload_hash,
+            self.changed_additional_remittance_statement.normalized_payload_hash,
+        )
+        self.assertEqual(
+            self.base_additional_remittance_statement.account_identifier_hash,
+            self.changed_additional_remittance_statement.account_identifier_hash,
+        )
+        self.assertEqual(
+            self.base_additional_remittance_statement.entries[1].source_entry_hash,
+            self.changed_additional_remittance_statement.entries[1].source_entry_hash,
+        )
+        self._assert_exact_amount(base_entry, base_detail)
+        self._assert_exact_amount(changed_entry, changed_detail)
+
+    def test_changed_later_additional_remittance_requires_explicit_statement_correction(
+        self,
+    ) -> None:
+        """Changing later AddtlRmtInf evidence cannot silently replay one statement identity."""
+        accepted = accept_bank_statement_evidence(
+            self._command(self.base_additional_remittance_payload, "additional-remittance-base"),
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            artifact_store=self.store,
+        )
+        self.assertFalse(accepted["replayed"])
+
+        with self.assertRaisesRegex(AccountingValidationError, _CORRECTION_ERROR):
+            accept_bank_statement_evidence(
+                self._command(
+                    self.changed_additional_remittance_payload,
+                    "additional-remittance-changed",
+                ),
+                posting.DATABASE_URL,
+                self.case.policy.tenant_reference,
+                artifact_store=self.store,
+            )
+
+    def test_buyer_read_keeps_additional_remittance_in_source_order(self) -> None:
+        """Reconciliation reads retain every AddtlRmtInf value in source order."""
+        accepted = accept_bank_statement_evidence(
+            self._command(self.base_additional_remittance_payload, "additional-remittance-lookup"),
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            artifact_store=self.store,
+        )
+        document = lookup_bank_statement_entries(
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            str(accepted["bank_statement_record_id"]),
+        )
+        entry = document["bank_statement_entries"][0]
+        detail = entry["entry_details"][0]
+        text = detail.get("remittance_evidence_text")
+        if not isinstance(text, str):
+            raise AssertionError("buyer read must retain additional remittance evidence")
+        self.assertIn(self.first_additional_remittance, text)
+        self.assertIn(self.base_second_additional_remittance, text)
+        self.assertLess(
+            text.index(self.first_additional_remittance),
+            text.index(self.base_second_additional_remittance),
+        )
+        self.assertEqual(Decimal(str(entry["entry_amount"])), Decimal("25000.00"))
+        self.assertEqual(entry["entry_currency_code"], "KRW")
+        self.assertEqual(Decimal(str(detail["detail_amount"])), Decimal("25000.00"))
+        self.assertEqual(detail["detail_currency_code"], "KRW")
+
     @staticmethod
     def _with_structured_reference(fixture: str, marker: str, reference: str) -> bytes:
         """Insert one standards-shaped SCOR creditor reference beside existing Ustrd evidence."""
@@ -421,6 +543,23 @@ class BankStatementStructuredRemittanceEvidenceRedTests(unittest.TestCase):
             "                  </Tp>\n"
             f"                  <Nb>{second_document_number}</Nb>\n"
             "                </RfrdDocInf>\n"
+            "              </Strd>"
+        )
+        return fixture.replace(marker, structured, 1).encode("utf-8")
+
+    @staticmethod
+    def _with_additional_remittance_lines(
+        fixture: str,
+        marker: str,
+        first_value: str,
+        second_value: str,
+    ) -> bytes:
+        """Insert two source-ordered AddtlRmtInf values into one Strd block."""
+        structured = (
+            f"{marker}\n"
+            "              <Strd>\n"
+            f"                <AddtlRmtInf>{first_value}</AddtlRmtInf>\n"
+            f"                <AddtlRmtInf>{second_value}</AddtlRmtInf>\n"
             "              </Strd>"
         )
         return fixture.replace(marker, structured, 1).encode("utf-8")
