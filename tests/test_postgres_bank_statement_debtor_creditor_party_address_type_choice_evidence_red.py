@@ -131,6 +131,7 @@ class BankStatementDebtorCreditorPartyAddressTypeChoiceEvidenceRedTests(
                     f"{role}-address-type-coded-{uuid.uuid4().hex}",
                 )
                 for projection in (rich, coded_entry):
+                    self._assert_uuid(projection["bank_statement_entry_id"])
                     self.case._assert_sha256(
                         projection["counterparty_evidence_hash"]
                     )
@@ -150,10 +151,13 @@ class BankStatementDebtorCreditorPartyAddressTypeChoiceEvidenceRedTests(
                     rich["source_entry_hash"],
                     coded_entry["source_entry_hash"],
                 )
-                self.assertEqual(
-                    self._public_projection(rich),
-                    self._public_projection(coded_entry),
-                )
+                rich_public = self._public_projection(rich)
+                coded_public = self._public_projection(coded_entry)
+                self.assertEqual(rich_public, coded_public)
+
+                buyer_values = set(self._scalar_leaves(rich_public))
+                source_values = set(self._scalar_leaves(_BASE_PROPRIETARY))
+                self.assertTrue(source_values.isdisjoint(buyer_values))
 
                 serialized = json.dumps(rich, sort_keys=True, default=str)
                 self.assertNotIn(_BASE_PROPRIETARY["issuer"], serialized)
@@ -254,6 +258,32 @@ class BankStatementDebtorCreditorPartyAddressTypeChoiceEvidenceRedTests(
         coded["address_type"] = {"code": "BIZZ"}
         variants["same-id-choice-discriminator"] = coded
         return variants
+
+    @staticmethod
+    def _assert_uuid(value: object) -> None:
+        """Require canonical lowercase hyphenated UUID text before hiding server identity."""
+        if not isinstance(value, str):
+            raise AssertionError(f"expected UUID text, got {value!r}")
+        try:
+            parsed = uuid.UUID(value)
+        except (ValueError, AttributeError) as exc:
+            raise AssertionError(f"expected canonical UUID text, got {value!r}") from exc
+        if str(parsed) != value:
+            raise AssertionError(f"expected canonical UUID text, got {value!r}")
+
+    @classmethod
+    def _scalar_leaves(cls, value: object) -> list[str]:
+        """Collect exact scalar buyer leaves recursively without substring heuristics."""
+        leaves: list[str] = []
+        if isinstance(value, dict):
+            for child in value.values():
+                leaves.extend(cls._scalar_leaves(child))
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                leaves.extend(cls._scalar_leaves(child))
+        elif value is not None:
+            leaves.append(str(value))
+        return leaves
 
 
 if __name__ == "__main__":
