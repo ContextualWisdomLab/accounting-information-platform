@@ -158,6 +158,10 @@ class BankStatementDetailInitiatingPartyOrganisationIdentifiersEvidenceRedTests(
             formatted_entry.source_entry_hash,
             baseline.normalized_payload_hash,
             formatted.normalized_payload_hash,
+            baseline.account_identifier_hash,
+            formatted.account_identifier_hash,
+            baseline.entries[1].source_entry_hash,
+            formatted.entries[1].source_entry_hash,
         ):
             self.helper._assert_sha256(value)
         self.assertNotEqual(baseline.source_artifact_hash, formatted.source_artifact_hash)
@@ -173,6 +177,11 @@ class BankStatementDetailInitiatingPartyOrganisationIdentifiersEvidenceRedTests(
         self.assertEqual(
             baseline.normalized_payload_hash,
             formatted.normalized_payload_hash,
+        )
+        self.assertEqual(baseline.account_identifier_hash, formatted.account_identifier_hash)
+        self.assertEqual(
+            baseline.entries[1].source_entry_hash,
+            formatted.entries[1].source_entry_hash,
         )
         self.helper._assert_financial_truth(baseline_entry, baseline_detail)
         self.helper._assert_financial_truth(formatted_entry, formatted_detail)
@@ -221,7 +230,9 @@ class BankStatementDetailInitiatingPartyOrganisationIdentifiersEvidenceRedTests(
         payloads = {
             "baseline": self._payload(self.base_bic, self.base_lei),
             "changed_bic": self._payload(self.changed_bic, self.base_lei),
+            "absent_bic": self._payload(None, self.base_lei),
             "changed_lei": self._payload(self.base_bic, self.changed_lei),
+            "absent_lei": self._payload(self.base_bic, None),
         }
         entries = {
             label: self.helper._ingest_and_read_first_entry(payload, label)
@@ -249,7 +260,7 @@ class BankStatementDetailInitiatingPartyOrganisationIdentifiersEvidenceRedTests(
         baseline = entries["baseline"]
         baseline_detail = baseline["entry_details"][0]
         baseline_public = self.helper._public_entry_projection(baseline, evidence_key)
-        for label in ("changed_bic", "changed_lei"):
+        for label in ("changed_bic", "absent_bic", "changed_lei", "absent_lei"):
             variant = entries[label]
             variant_detail = variant["entry_details"][0]
             self.assertNotEqual(
