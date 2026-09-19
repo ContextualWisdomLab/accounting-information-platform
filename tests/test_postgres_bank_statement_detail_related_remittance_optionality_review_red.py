@@ -234,14 +234,11 @@ class BankStatementDetailRelatedRemittanceOptionalityReviewRedTests(unittest.Tes
                         self._expected_hash(expected_records),
                     )
                     if label == "remittance-identification-absent":
-                        self.assertIsNone(actual[0].get("remittance_identifier"))
+                        self.assertNotIn("remittance_identifier", actual[0])
                     elif label == "location-details-absent":
-                        self.assertEqual(actual[0].get("remittance_location_details"), [])
+                        self.assertNotIn("remittance_location_details", actual[0])
                     elif label == "later-location-absent":
-                        self.assertEqual(
-                            len(actual[0].get("remittance_location_details", [])),
-                            1,
-                        )
+                        self.assertEqual(len(actual[0]["remittance_location_details"]), 1)
                     elif label == "later-related-remittance-absent":
                         self.assertEqual(len(actual), 1)
 
@@ -294,21 +291,23 @@ class BankStatementDetailRelatedRemittanceOptionalityReviewRedTests(unittest.Tes
 
     @staticmethod
     def _expected_records(records: RelatedRemittances) -> list[dict[str, object]]:
-        """Return buyer-visible semantics while preserving absent RmtId and empty populations."""
-        return [
-            {
-                "remittance_identifier": remittance_identifier,
-                "remittance_location_details": [
+        """Return source-faithful semantics without manufacturing absent optional keys."""
+        projected: list[dict[str, object]] = []
+        for remittance_identifier, locations in records:
+            record: dict[str, object] = {}
+            if remittance_identifier is not None:
+                record["remittance_identifier"] = remittance_identifier
+            if locations:
+                record["remittance_location_details"] = [
                     {
                         "method": method,
                         "electronic_address": electronic_address,
                         "postal_address": None,
                     }
                     for method, electronic_address in locations
-                ],
-            }
-            for remittance_identifier, locations in records
-        ]
+                ]
+            projected.append(record)
+        return projected
 
     @staticmethod
     def _parse(payload: bytes) -> object:
