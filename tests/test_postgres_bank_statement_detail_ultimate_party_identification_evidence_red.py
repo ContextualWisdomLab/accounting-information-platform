@@ -120,9 +120,14 @@ class BankStatementDetailUltimatePartyIdentificationEvidenceRedTests(unittest.Te
                 baseline = self._with_ultimate_party(
                     role, "organisation", self.base_identifier
                 )
+                needle = (
+                    f"                  <Nm>{self.party_name}</Nm>\n"
+                    "                  <Id>\n"
+                ).encode("utf-8")
+                self.assertEqual(baseline.count(needle), 1)
                 formatted = baseline.replace(
-                    b"                  <Id>\n",
-                    b"                  <Id>\n                    \n",
+                    needle,
+                    needle + b"                    \n",
                     1,
                 )
                 self.assertNotEqual(baseline, formatted)
@@ -389,13 +394,12 @@ class BankStatementDetailUltimatePartyIdentificationEvidenceRedTests(unittest.Te
             return "UltmtCdtr"
         raise AssertionError(f"unsupported ultimate role: {role}")
 
-    @staticmethod
-    def _assert_financial_truth(entry: object, detail: object) -> None:
+    def _assert_financial_truth(self, entry: object, detail: object) -> None:
         """Keep the evidence mutation independent from exact accounting values."""
-        assert getattr(entry, "entry_amount") == Decimal("25000.00")
-        assert getattr(entry, "entry_currency_code") == "KRW"
-        assert getattr(detail, "detail_amount") == Decimal("25000.00")
-        assert getattr(detail, "detail_currency_code") == "KRW"
+        self.assertEqual(getattr(entry, "entry_amount"), Decimal("25000.00"))
+        self.assertEqual(getattr(entry, "entry_currency_code"), "KRW")
+        self.assertEqual(getattr(detail, "detail_amount"), Decimal("25000.00"))
+        self.assertEqual(getattr(detail, "detail_currency_code"), "KRW")
 
     def _assert_sha256(self, value: object) -> None:
         """Require one canonical SHA-256 identity before equality comparisons."""
