@@ -42,7 +42,7 @@ class BankStatementIntermediaryAgentClearingSystemChoiceEvidenceRedTests(
                 base_payload = self._payload(
                     slot,
                     choice_kind="proprietary",
-                    choice_value="USABA",
+                    choice_value="USFW",
                     member_id=f"INTRMY-{slot}-MEMBER-001",
                 )
                 base = self.case._statement(base_payload)
@@ -58,7 +58,7 @@ class BankStatementIntermediaryAgentClearingSystemChoiceEvidenceRedTests(
                     "member-id": self._payload(
                         slot,
                         choice_kind="proprietary",
-                        choice_value="USABA",
+                        choice_value="USFW",
                         member_id=f"INTRMY-{slot}-MEMBER-002",
                     ),
                     "choice-value": self._payload(
@@ -70,7 +70,7 @@ class BankStatementIntermediaryAgentClearingSystemChoiceEvidenceRedTests(
                     "same-scalar-choice-discriminator": self._payload(
                         slot,
                         choice_kind="code",
-                        choice_value="USABA",
+                        choice_value="USFW",
                         member_id=f"INTRMY-{slot}-MEMBER-001",
                     ),
                     "choice-absent": self._payload(
@@ -122,7 +122,7 @@ class BankStatementIntermediaryAgentClearingSystemChoiceEvidenceRedTests(
                 payload = self._payload(
                     slot,
                     choice_kind="proprietary",
-                    choice_value="USABA",
+                    choice_value="USFW",
                     member_id=f"INTRMY-{slot}-MEMBER-001",
                 )
                 self.assertEqual(payload.count(needle), 1)
@@ -165,13 +165,13 @@ class BankStatementIntermediaryAgentClearingSystemChoiceEvidenceRedTests(
         base_payload = self._payload(
             slot,
             choice_kind="proprietary",
-            choice_value="USABA",
+            choice_value="USFW",
             member_id="INTRMY-3-MEMBER-001",
         )
         changed_payload = self._payload(
             slot,
             choice_kind="code",
-            choice_value="USABA",
+            choice_value="USFW",
             member_id="INTRMY-3-MEMBER-001",
         )
         statement = self.case._statement(base_payload)
@@ -203,7 +203,7 @@ class BankStatementIntermediaryAgentClearingSystemChoiceEvidenceRedTests(
                 rich_payload = self._payload(
                     slot,
                     choice_kind="proprietary",
-                    choice_value="USABA",
+                    choice_value="USFW",
                     member_id=f"INTRMY-{slot}-MEMBER-001",
                 )
                 baseline_payload = self.case._with_chain(
