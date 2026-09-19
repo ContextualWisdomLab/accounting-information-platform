@@ -42,7 +42,7 @@ class BankStatementDebtorCreditorAgentClearingSystemChoiceEvidenceRedTests(
                 base_payload = self._payload(
                     role,
                     choice_kind="proprietary",
-                    choice_value="USABA",
+                    choice_value="USFW",
                     member_id=f"{role.upper()}-MEMBER-001",
                 )
                 base = self.case._statement(base_payload)
@@ -58,7 +58,7 @@ class BankStatementDebtorCreditorAgentClearingSystemChoiceEvidenceRedTests(
                     "member-id": self._payload(
                         role,
                         choice_kind="proprietary",
-                        choice_value="USABA",
+                        choice_value="USFW",
                         member_id=f"{role.upper()}-MEMBER-002",
                     ),
                     "choice-value": self._payload(
@@ -70,7 +70,7 @@ class BankStatementDebtorCreditorAgentClearingSystemChoiceEvidenceRedTests(
                     "same-scalar-choice-discriminator": self._payload(
                         role,
                         choice_kind="code",
-                        choice_value="USABA",
+                        choice_value="USFW",
                         member_id=f"{role.upper()}-MEMBER-001",
                     ),
                     "choice-absent": self._payload(
@@ -122,7 +122,7 @@ class BankStatementDebtorCreditorAgentClearingSystemChoiceEvidenceRedTests(
                 payload = self._payload(
                     role,
                     choice_kind="proprietary",
-                    choice_value="USABA",
+                    choice_value="USFW",
                     member_id=f"{role.upper()}-MEMBER-001",
                 )
                 self.assertEqual(payload.count(needle), 1)
@@ -165,13 +165,13 @@ class BankStatementDebtorCreditorAgentClearingSystemChoiceEvidenceRedTests(
         base_payload = self._payload(
             role,
             choice_kind="proprietary",
-            choice_value="USABA",
+            choice_value="USFW",
             member_id="CDTRAGT-MEMBER-001",
         )
         changed_payload = self._payload(
             role,
             choice_kind="code",
-            choice_value="USABA",
+            choice_value="USFW",
             member_id="CDTRAGT-MEMBER-001",
         )
         statement = self.case._statement(base_payload)
@@ -203,7 +203,7 @@ class BankStatementDebtorCreditorAgentClearingSystemChoiceEvidenceRedTests(
                 rich_payload = self._payload(
                     role,
                     choice_kind="proprietary",
-                    choice_value="USABA",
+                    choice_value="USFW",
                     member_id=f"{role.upper()}-MEMBER-001",
                 )
                 baseline_payload = self.case._with_agent(role, identity, deep=False)
