@@ -30,8 +30,8 @@ class BankStatementDetailInitiatingPartyEvidenceRedTests(unittest.TestCase):
     def setUp(self) -> None:
         """Create statements differing only in one initiating-party name."""
         self.case = posting.PostgresPostingTests("setUp")
-        self.case.setUp()
         self.addCleanup(self.case.doCleanups)
+        self.case.setUp()
         self.addCleanup(self.case.tearDown)
 
         fixture = load_canonical_statement_fixture().decode("utf-8")
