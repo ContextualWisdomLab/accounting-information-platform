@@ -140,6 +140,10 @@ class BankStatementDetailInitiatingPartyPostalAddressEvidenceRedTests(unittest.T
             formatted_entry.source_entry_hash,
             baseline.normalized_payload_hash,
             formatted.normalized_payload_hash,
+            baseline.account_identifier_hash,
+            formatted.account_identifier_hash,
+            baseline.entries[1].source_entry_hash,
+            formatted.entries[1].source_entry_hash,
         ):
             self.case._assert_sha256(value)
 
