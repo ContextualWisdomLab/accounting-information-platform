@@ -40,7 +40,7 @@ class BankStatementDetailInitiatingPartyAgentClearingSystemChoiceEvidenceRedTest
         baseline = deep.parse_bank_statement_payload(
             self._payload(
                 choice_kind="proprietary",
-                choice_value="USABA",
+                choice_value="USFW",
                 member_id="INITIATING-MEMBER-001",
             ),
             deep.CAMT053_MESSAGE_DEFINITION,
@@ -96,7 +96,7 @@ class BankStatementDetailInitiatingPartyAgentClearingSystemChoiceEvidenceRedTest
         """Whitespace inside ClrSysId changes artifact bytes without semantic drift."""
         baseline_payload = self._payload(
             choice_kind="proprietary",
-            choice_value="USABA",
+            choice_value="USFW",
             member_id="INITIATING-MEMBER-001",
         )
         needle = b"                      <ClrSysId>\n"
@@ -166,7 +166,7 @@ class BankStatementDetailInitiatingPartyAgentClearingSystemChoiceEvidenceRedTest
         """Accepted initiating-agent clearing evidence cannot be silently replaced."""
         baseline_payload = self._payload(
             choice_kind="proprietary",
-            choice_value="USABA",
+            choice_value="USFW",
             member_id="INITIATING-MEMBER-001",
         )
         for semantic, payload in self._variants().items():
@@ -256,7 +256,7 @@ class BankStatementDetailInitiatingPartyAgentClearingSystemChoiceEvidenceRedTest
         return {
             "member-id": self._payload(
                 choice_kind="proprietary",
-                choice_value="USABA",
+                choice_value="USFW",
                 member_id="INITIATING-MEMBER-002",
             ),
             "choice-value": self._payload(
@@ -266,7 +266,7 @@ class BankStatementDetailInitiatingPartyAgentClearingSystemChoiceEvidenceRedTest
             ),
             "same-scalar-choice-discriminator": self._payload(
                 choice_kind="code",
-                choice_value="USABA",
+                choice_value="USFW",
                 member_id="INITIATING-MEMBER-001",
             ),
             "choice-absent": self._payload(
