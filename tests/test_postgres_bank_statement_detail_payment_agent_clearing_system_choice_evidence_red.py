@@ -47,7 +47,7 @@ class BankStatementDetailPaymentAgentClearingSystemChoiceEvidenceRedTests(
                     element_name,
                     bicfi,
                     choice_kind="proprietary",
-                    choice_value="USABA",
+                    choice_value="USFW",
                     member_id=f"{element_name}-MEMBER-001",
                 )
                 base = self.case._statement(base_payload)
@@ -62,7 +62,7 @@ class BankStatementDetailPaymentAgentClearingSystemChoiceEvidenceRedTests(
                         element_name,
                         bicfi,
                         choice_kind="proprietary",
-                        choice_value="USABA",
+                        choice_value="USFW",
                         member_id=f"{element_name}-MEMBER-002",
                     ),
                     "choice-value": self._payload(
@@ -76,7 +76,7 @@ class BankStatementDetailPaymentAgentClearingSystemChoiceEvidenceRedTests(
                         element_name,
                         bicfi,
                         choice_kind="code",
-                        choice_value="USABA",
+                        choice_value="USFW",
                         member_id=f"{element_name}-MEMBER-001",
                     ),
                     "choice-absent": self._payload(
@@ -129,7 +129,7 @@ class BankStatementDetailPaymentAgentClearingSystemChoiceEvidenceRedTests(
                     element_name,
                     bicfi,
                     choice_kind="proprietary",
-                    choice_value="USABA",
+                    choice_value="USFW",
                     member_id=f"{element_name}-MEMBER-001",
                 )
                 self.assertEqual(payload.count(needle), 1)
@@ -168,14 +168,14 @@ class BankStatementDetailPaymentAgentClearingSystemChoiceEvidenceRedTests(
                     element_name,
                     bicfi,
                     choice_kind="proprietary",
-                    choice_value="USABA",
+                    choice_value="USFW",
                     member_id=f"{element_name}-MEMBER-001",
                 )
                 changed_payload = self._payload(
                     element_name,
                     bicfi,
                     choice_kind="code",
-                    choice_value="USABA",
+                    choice_value="USFW",
                     member_id=f"{element_name}-MEMBER-001",
                 )
                 statement = self.case._statement(base_payload)
@@ -212,14 +212,14 @@ class BankStatementDetailPaymentAgentClearingSystemChoiceEvidenceRedTests(
                     element_name,
                     bicfi,
                     choice_kind="proprietary",
-                    choice_value="USABA",
+                    choice_value="USFW",
                     member_id=f"{element_name}-MEMBER-001",
                 )
                 coded_payload = self._payload(
                     element_name,
                     bicfi,
                     choice_kind="code",
-                    choice_value="USABA",
+                    choice_value="USFW",
                     member_id=f"{element_name}-MEMBER-001",
                 )
                 proprietary_statement = self.case._statement(proprietary_payload)
