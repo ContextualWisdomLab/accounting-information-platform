@@ -90,9 +90,23 @@ class BankStatementDetailSafekeepingAccountOptionalityReviewRedTests(unittest.Te
         """SfkpgAcct, Tp, Tp/SchmeNm and Nm presence are material source facts."""
         base_entry = self.base_statement.entries[0]
         base_detail = base_entry.entry_details[0]
+        base_sibling_entry = self.base_statement.entries[1]
         base_digest = getattr(base_detail, "safekeeping_account_evidence_hash", None)
         self._assert_sha256(base_digest)
-        self.assertEqual(base_digest, safekeeping.BankStatementDetailSafekeepingAccountEvidenceRedTests._expected_hash(self.base))
+        self.assertEqual(
+            base_digest,
+            safekeeping.BankStatementDetailSafekeepingAccountEvidenceRedTests._expected_hash(
+                self.base
+            ),
+        )
+        for value in (
+            base_detail.source_detail_hash,
+            base_entry.source_entry_hash,
+            self.base_statement.normalized_payload_hash,
+            self.base_statement.account_identifier_hash,
+            base_sibling_entry.source_entry_hash,
+        ):
+            self._assert_sha256(value)
         self._assert_exact_amount(base_entry, base_detail)
 
         for label, expected in self.variants.items():
@@ -100,6 +114,7 @@ class BankStatementDetailSafekeepingAccountOptionalityReviewRedTests(unittest.Te
                 changed = self._parse(self.variant_payloads[label])
                 changed_entry = changed.entries[0]
                 changed_detail = changed_entry.entry_details[0]
+                changed_sibling_entry = changed.entries[1]
                 changed_digest = getattr(
                     changed_detail,
                     "safekeeping_account_evidence_hash",
@@ -112,8 +127,18 @@ class BankStatementDetailSafekeepingAccountOptionalityReviewRedTests(unittest.Te
                     self._assert_sha256(changed_digest)
                     self.assertEqual(
                         changed_digest,
-                        safekeeping.BankStatementDetailSafekeepingAccountEvidenceRedTests._expected_hash(expected),
+                        safekeeping.BankStatementDetailSafekeepingAccountEvidenceRedTests._expected_hash(
+                            expected
+                        ),
                     )
+                for value in (
+                    changed_detail.source_detail_hash,
+                    changed_entry.source_entry_hash,
+                    changed.normalized_payload_hash,
+                    changed.account_identifier_hash,
+                    changed_sibling_entry.source_entry_hash,
+                ):
+                    self._assert_sha256(value)
                 self.assertNotEqual(base_digest, changed_digest)
                 self.assertNotEqual(
                     base_detail.source_detail_hash,
@@ -132,8 +157,8 @@ class BankStatementDetailSafekeepingAccountOptionalityReviewRedTests(unittest.Te
                     changed.account_identifier_hash,
                 )
                 self.assertEqual(
-                    self.base_statement.entries[1].source_entry_hash,
-                    changed.entries[1].source_entry_hash,
+                    base_sibling_entry.source_entry_hash,
+                    changed_sibling_entry.source_entry_hash,
                 )
                 self._assert_exact_amount(changed_entry, changed_detail)
 
@@ -192,7 +217,9 @@ class BankStatementDetailSafekeepingAccountOptionalityReviewRedTests(unittest.Te
                     self.assertEqual(actual, expected)
                     self.assertEqual(
                         detail.get("safekeeping_account_evidence_hash"),
-                        safekeeping.BankStatementDetailSafekeepingAccountEvidenceRedTests._expected_hash(expected),
+                        safekeeping.BankStatementDetailSafekeepingAccountEvidenceRedTests._expected_hash(
+                            expected
+                        ),
                     )
                     if label == "type-absent":
                         self.assertNotIn("type", actual)
@@ -204,9 +231,13 @@ class BankStatementDetailSafekeepingAccountOptionalityReviewRedTests(unittest.Te
                     elif label == "name-absent":
                         self.assertNotIn("name", actual)
 
-                self.assertEqual(Decimal(str(entry["entry_amount"])), Decimal("25000.00"))
+                self.assertEqual(
+                    Decimal(str(entry["entry_amount"])), Decimal("25000.00")
+                )
                 self.assertEqual(entry["entry_currency_code"], "KRW")
-                self.assertEqual(Decimal(str(detail["detail_amount"])), Decimal("25000.00"))
+                self.assertEqual(
+                    Decimal(str(detail["detail_amount"])), Decimal("25000.00")
+                )
                 self.assertEqual(detail["detail_currency_code"], "KRW")
 
     def _payload(self, value: dict[str, object] | None) -> bytes:
@@ -298,7 +329,9 @@ class BankStatementDetailSafekeepingAccountOptionalityReviewRedTests(unittest.Te
     def _with_unique_statement_id(self, payload: bytes, suffix: str) -> bytes:
         """Give lookup variants independent statement identity without changing owner truth."""
         old = b"<Id>STMT-2026-08-24-001</Id>"
-        new = f"<Id>STMT-SAFEKEEP-{suffix}-{uuid.uuid4().hex[:12]}</Id>".encode("utf-8")
+        new = f"<Id>STMT-SAFEKEEP-{suffix}-{uuid.uuid4().hex[:12]}</Id>".encode(
+            "utf-8"
+        )
         if payload.count(old) != 1:
             raise AssertionError("canonical statement Id marker must occur exactly once")
         return payload.replace(old, new, 1)
@@ -307,7 +340,7 @@ class BankStatementDetailSafekeepingAccountOptionalityReviewRedTests(unittest.Te
     def _assert_sha256(value: object) -> None:
         """Require canonical purpose-bound SHA-256 evidence."""
         if not isinstance(value, str) or _HASH_RE.fullmatch(value) is None:
-            raise AssertionError("safekeeping evidence hash must be canonical SHA-256")
+            raise AssertionError("evidence hash must be canonical SHA-256")
 
     @staticmethod
     def _assert_exact_amount(entry: object, detail: object) -> None:
