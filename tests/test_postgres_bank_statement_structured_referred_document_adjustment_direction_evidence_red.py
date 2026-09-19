@@ -171,14 +171,14 @@ class BankStatementStructuredAdjustmentDirectionEvidenceRedTests(unittest.TestCa
             self.base_second_direction,
         ):
             self.assertIn(value, text)
-        self.assertLess(
-            text.index(self.first_adjustment_amount),
-            text.index(self.second_adjustment_amount),
+        paired_order = re.compile(
+            rf"{re.escape(self.first_adjustment_amount)}.*?"
+            rf"{re.escape(self.first_direction)}.*?"
+            rf"{re.escape(self.second_adjustment_amount)}.*?"
+            rf"{re.escape(self.base_second_direction)}",
+            re.DOTALL,
         )
-        self.assertLess(
-            text.index(self.first_direction),
-            text.index(self.base_second_direction),
-        )
+        self.assertRegex(text, paired_order)
         self.assertEqual(Decimal(str(entry["entry_amount"])), Decimal("25000.00"))
         self.assertEqual(entry["entry_currency_code"], "KRW")
         self.assertEqual(Decimal(str(detail["detail_amount"])), Decimal("25000.00"))
