@@ -47,8 +47,8 @@ class BankStatementDetailRelatedRemittanceElectronicAddressOptionalityReviewRedT
     def setUp(self) -> None:
         """Remove only ElctrncAdr from one otherwise unchanged location detail."""
         self.case = posting.PostgresPostingTests("setUp")
-        self.case.setUp()
         self.addCleanup(self.case.doCleanups)
+        self.case.setUp()
         self.addCleanup(self.case.tearDown)
 
         fixture = load_canonical_statement_fixture().decode("utf-8")
@@ -164,7 +164,7 @@ class BankStatementDetailRelatedRemittanceElectronicAddressOptionalityReviewRedT
     def test_buyer_read_retains_method_only_location_without_fabricating_address_value(
         self,
     ) -> None:
-        """Tenant readback retains the method-only location and no fabricated address value."""
+        """Tenant readback retains the method-only location without an address key."""
         accepted = accept_bank_statement_evidence(
             self._command(self.method_only_payload, "electronic-address-lookup"),
             posting.DATABASE_URL,
@@ -195,7 +195,7 @@ class BankStatementDetailRelatedRemittanceElectronicAddressOptionalityReviewRedT
         if not isinstance(first_location, dict):
             raise AssertionError("method-only location detail must be a mapping")
         self.assertEqual(first_location.get("method"), "EMAL")
-        self.assertIsNone(first_location.get("electronic_address"))
+        self.assertNotIn("electronic_address", first_location)
         self.assertIsNone(first_location.get("postal_address"))
         self._assert_readback_amount(entry, detail)
 
@@ -246,21 +246,25 @@ class BankStatementDetailRelatedRemittanceElectronicAddressOptionalityReviewRedT
 
     @staticmethod
     def _expected_records(records: RelatedRemittances) -> list[dict[str, object]]:
-        """Return current buyer/canonical location shape with nullable optional addresses."""
-        return [
-            {
-                "remittance_identifier": remittance_identifier,
-                "remittance_location_details": [
-                    {
-                        "method": method,
-                        "electronic_address": electronic_address,
-                        "postal_address": None,
-                    }
-                    for method, electronic_address in locations
-                ],
-            }
-            for remittance_identifier, locations in records
-        ]
+        """Return source-faithful location shape without synthesizing absent ElctrncAdr."""
+        projected: list[dict[str, object]] = []
+        for remittance_identifier, locations in records:
+            location_details: list[dict[str, object]] = []
+            for method, electronic_address in locations:
+                location: dict[str, object] = {
+                    "method": method,
+                    "postal_address": None,
+                }
+                if electronic_address is not None:
+                    location["electronic_address"] = electronic_address
+                location_details.append(location)
+            projected.append(
+                {
+                    "remittance_identifier": remittance_identifier,
+                    "remittance_location_details": location_details,
+                }
+            )
+        return projected
 
     @staticmethod
     def _parse(payload: bytes) -> object:
