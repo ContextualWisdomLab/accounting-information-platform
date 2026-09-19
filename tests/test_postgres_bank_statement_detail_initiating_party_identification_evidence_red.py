@@ -273,6 +273,7 @@ class BankStatementDetailInitiatingPartyIdentificationEvidenceRedTests(unittest.
         evidence_key = "initiating_party_evidence_hash"
 
         for entry in entries.values():
+            self._assert_uuid(entry["bank_statement_entry_id"])
             self._assert_sha256(entry["source_entry_hash"])
             self.assertEqual(
                 Decimal(str(entry["entry_amount"])),
@@ -407,8 +408,9 @@ class BankStatementDetailInitiatingPartyIdentificationEvidenceRedTests(unittest.
         entry: dict[str, object],
         evidence_key: str,
     ) -> dict[str, object]:
-        """Remove only internal entry/detail evidence hashes before public comparison."""
+        """Remove server identity and internal evidence hashes before public comparison."""
         projection = dict(entry)
+        projection.pop("bank_statement_entry_id")
         projection.pop("source_entry_hash")
         details = projection.get("entry_details")
         if not isinstance(details, list):
@@ -456,6 +458,15 @@ class BankStatementDetailInitiatingPartyIdentificationEvidenceRedTests(unittest.
             value,
         ) is None:
             raise AssertionError(f"expected canonical sha256 digest, got {value!r}")
+
+    def _assert_uuid(self, value: object) -> None:
+        """Require a server-owned buyer entry identity before omitting it from diffing."""
+        self.assertIsInstance(value, str)
+        try:
+            parsed = uuid.UUID(str(value))
+        except (ValueError, AttributeError, TypeError) as error:
+            raise AssertionError(f"expected UUID bank-statement entry identity, got {value!r}") from error
+        self.assertEqual(str(parsed), value)
 
 
 if __name__ == "__main__":
