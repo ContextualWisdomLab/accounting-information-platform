@@ -1,0 +1,411 @@
+"""PostgreSQL REDs for ultimate-party identification evidence in camt.053 details."""
+
+from __future__ import annotations
+
+import json
+import re
+import unittest
+import uuid
+from decimal import Decimal
+
+from accounting_information_platform import (
+    AccountingValidationError,
+    CAMT053_MESSAGE_DEFINITION,
+    MemoryArtifactStore,
+    accept_bank_account_record,
+    accept_bank_statement_evidence,
+    load_canonical_statement_fixture,
+    lookup_bank_statement_entries,
+    parse_bank_statement_payload,
+)
+from tests import test_postgres_posting as posting
+
+_HASH_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+_CORRECTION_ERROR = (
+    r"^statement identity already exists with different entry evidence\. "
+    r"Use an explicit correction contract, then retry ingest\.$"
+)
+
+
+class BankStatementDetailUltimatePartyIdentificationEvidenceRedTests(unittest.TestCase):
+    """Retain ultimate-party identity as evidence without creating identity-master truth."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        """Reuse the canonical real-PostgreSQL integration fixture."""
+        posting.PostgresPostingTests.setUpClass()
+
+    def setUp(self) -> None:
+        """Prepare one isolated fixture and role-specific ultimate-party variants."""
+        self.case = posting.PostgresPostingTests("setUp")
+        self.addCleanup(self.case.doCleanups)
+        self.case.setUp()
+        self.addCleanup(self.case.tearDown)
+        self.fixture = load_canonical_statement_fixture().decode("utf-8")
+        self.party_name = "Ultimate Identified Party"
+        self.base_identifier = "ULTIMATE-PARTY-ID-001"
+        self.changed_identifier = "ULTIMATE-PARTY-ID-002"
+
+    def test_identifier_value_and_party52_choice_are_material_for_each_ultimate_role(self) -> None:
+        """Ultimate-party identifier value and OrgId/PrvtId discriminator change evidence."""
+        variants = (
+            (
+                "identifier-value",
+                ("organisation", self.base_identifier),
+                ("organisation", self.changed_identifier),
+            ),
+            (
+                "identity-choice",
+                ("organisation", self.base_identifier),
+                ("person", self.base_identifier),
+            ),
+        )
+        for role in ("ultimate_debtor", "ultimate_creditor"):
+            for semantic, left_identity, right_identity in variants:
+                with self.subTest(role=role, semantic=semantic):
+                    left = parse_bank_statement_payload(
+                        self._with_ultimate_party(role, *left_identity),
+                        CAMT053_MESSAGE_DEFINITION,
+                    )
+                    right = parse_bank_statement_payload(
+                        self._with_ultimate_party(role, *right_identity),
+                        CAMT053_MESSAGE_DEFINITION,
+                    )
+                    left_entry = left.entries[0]
+                    right_entry = right.entries[0]
+                    left_detail = left_entry.entry_details[0]
+                    right_detail = right_entry.entry_details[0]
+
+                    self._assert_financial_truth(left_entry, left_detail)
+                    self._assert_financial_truth(right_entry, right_detail)
+                    for value in (
+                        left_detail.source_detail_hash,
+                        right_detail.source_detail_hash,
+                        left_entry.source_entry_hash,
+                        right_entry.source_entry_hash,
+                        left.normalized_payload_hash,
+                        right.normalized_payload_hash,
+                        left.account_identifier_hash,
+                        right.account_identifier_hash,
+                        left.entries[1].source_entry_hash,
+                        right.entries[1].source_entry_hash,
+                    ):
+                        self._assert_sha256(value)
+
+                    self.assertNotEqual(
+                        left_detail.source_detail_hash,
+                        right_detail.source_detail_hash,
+                    )
+                    self.assertNotEqual(
+                        left_entry.source_entry_hash,
+                        right_entry.source_entry_hash,
+                    )
+                    self.assertNotEqual(
+                        left.normalized_payload_hash,
+                        right.normalized_payload_hash,
+                    )
+                    self.assertEqual(
+                        left.account_identifier_hash,
+                        right.account_identifier_hash,
+                    )
+                    self.assertEqual(
+                        left.entries[1].source_entry_hash,
+                        right.entries[1].source_entry_hash,
+                    )
+
+    def test_identifier_whitespace_is_representation_only_for_each_ultimate_role(self) -> None:
+        """Whitespace inside ultimate Pty/Id changes raw bytes but not semantic identity."""
+        for role in ("ultimate_debtor", "ultimate_creditor"):
+            with self.subTest(role=role):
+                baseline = self._with_ultimate_party(
+                    role, "organisation", self.base_identifier
+                )
+                needle = (
+                    f"                  <Nm>{self.party_name}</Nm>\n"
+                    "                  <Id>\n"
+                ).encode("utf-8")
+                self.assertEqual(baseline.count(needle), 1)
+                formatted = baseline.replace(
+                    needle,
+                    needle + b"                    \n",
+                    1,
+                )
+                self.assertNotEqual(baseline, formatted)
+                left = parse_bank_statement_payload(
+                    baseline, CAMT053_MESSAGE_DEFINITION
+                )
+                right = parse_bank_statement_payload(
+                    formatted, CAMT053_MESSAGE_DEFINITION
+                )
+                left_entry = left.entries[0]
+                right_entry = right.entries[0]
+                left_detail = left_entry.entry_details[0]
+                right_detail = right_entry.entry_details[0]
+
+                for value in (
+                    left.source_artifact_hash,
+                    right.source_artifact_hash,
+                    left_detail.source_detail_hash,
+                    right_detail.source_detail_hash,
+                    left_entry.source_entry_hash,
+                    right_entry.source_entry_hash,
+                    left.normalized_payload_hash,
+                    right.normalized_payload_hash,
+                ):
+                    self._assert_sha256(value)
+                self.assertNotEqual(
+                    left.source_artifact_hash,
+                    right.source_artifact_hash,
+                )
+                self.assertEqual(
+                    left_detail.source_detail_hash,
+                    right_detail.source_detail_hash,
+                )
+                self.assertEqual(
+                    left_entry.source_entry_hash,
+                    right_entry.source_entry_hash,
+                )
+                self.assertEqual(
+                    left.normalized_payload_hash,
+                    right.normalized_payload_hash,
+                )
+
+    def test_identifier_change_reaches_complete_correction_boundary_for_each_role(self) -> None:
+        """Accepted ultimate-party identity cannot be replaced by silent replay."""
+        for role in ("ultimate_debtor", "ultimate_creditor"):
+            with self.subTest(role=role):
+                baseline = self._with_ultimate_party(
+                    role, "organisation", self.base_identifier
+                )
+                changed = self._with_ultimate_party(
+                    role, "person", self.base_identifier
+                )
+                reference = self._register_statement_account(baseline)
+                store = MemoryArtifactStore()
+                accept_bank_statement_evidence(
+                    self._command(baseline, reference, f"{role}-identity-baseline"),
+                    posting.DATABASE_URL,
+                    self.case.policy.tenant_reference,
+                    artifact_store=store,
+                )
+                with self.assertRaisesRegex(
+                    AccountingValidationError, _CORRECTION_ERROR
+                ):
+                    accept_bank_statement_evidence(
+                        self._command(
+                            changed,
+                            reference,
+                            f"{role}-identity-changed",
+                        ),
+                        posting.DATABASE_URL,
+                        self.case.policy.tenant_reference,
+                        artifact_store=store,
+                    )
+
+    def test_buyer_projection_keeps_ultimate_party_identity_non_reversible(self) -> None:
+        """Ultimate-party source IDs affect digests without becoming buyer identity fields."""
+        for role in ("ultimate_debtor", "ultimate_creditor"):
+            with self.subTest(role=role):
+                organisation = self._ingest_and_read_first_detail(
+                    self._with_ultimate_party(
+                        role, "organisation", self.base_identifier
+                    ),
+                    f"{role}-organisation",
+                )
+                changed_identifier = self._ingest_and_read_first_detail(
+                    self._with_ultimate_party(
+                        role, "organisation", self.changed_identifier
+                    ),
+                    f"{role}-changed-identifier",
+                )
+                person = self._ingest_and_read_first_detail(
+                    self._with_ultimate_party(role, "person", self.base_identifier),
+                    f"{role}-person",
+                )
+                evidence_key = self._evidence_key(role)
+                for projection in (organisation, changed_identifier, person):
+                    self._assert_sha256(projection[evidence_key])
+                    self._assert_sha256(projection["source_detail_hash"])
+                    self.assertEqual(
+                        Decimal(str(projection["detail_amount"])),
+                        Decimal("25000.00"),
+                    )
+                    self.assertEqual(projection["detail_currency_code"], "KRW")
+
+                for variant in (changed_identifier, person):
+                    self.assertNotEqual(
+                        organisation[evidence_key],
+                        variant[evidence_key],
+                    )
+                    self.assertNotEqual(
+                        organisation["source_detail_hash"],
+                        variant["source_detail_hash"],
+                    )
+
+                organisation_public = self._public_projection(
+                    organisation, evidence_key
+                )
+                changed_public = self._public_projection(
+                    changed_identifier, evidence_key
+                )
+                person_public = self._public_projection(person, evidence_key)
+                self.assertEqual(organisation_public, changed_public)
+                self.assertEqual(organisation_public, person_public)
+
+                serialized = json.dumps(
+                    {
+                        "organisation": organisation,
+                        "changed_identifier": changed_identifier,
+                        "person": person,
+                    },
+                    sort_keys=True,
+                    default=str,
+                )
+                self.assertNotIn(self.base_identifier, serialized)
+                self.assertNotIn(self.changed_identifier, serialized)
+
+    def _with_ultimate_party(
+        self,
+        role: str,
+        identity_choice: str,
+        identifier: str,
+    ) -> bytes:
+        """Insert one schema-shaped ultimate party with PartyIdentification272/Id."""
+        marker = "              </Dbtr>\n            </RltdPties>"
+        self.assertEqual(self.fixture.count(marker), 1)
+        tag = self._xml_tag(role)
+        party = self._party_xml(identity_choice, identifier)
+        replacement = (
+            "              </Dbtr>\n"
+            f"              <{tag}>\n"
+            f"{party}\n"
+            f"              </{tag}>\n"
+            "            </RltdPties>"
+        )
+        return self.fixture.replace(marker, replacement, 1).encode("utf-8")
+
+    def _party_xml(self, identity_choice: str, identifier: str) -> str:
+        """Serialize one ultimate Pty with an organisation-or-person Party52Choice."""
+        if identity_choice == "organisation":
+            identity_xml = (
+                "                    <OrgId>\n"
+                "                      <Othr>\n"
+                f"                        <Id>{identifier}</Id>\n"
+                "                      </Othr>\n"
+                "                    </OrgId>\n"
+            )
+        elif identity_choice == "person":
+            identity_xml = (
+                "                    <PrvtId>\n"
+                "                      <Othr>\n"
+                f"                        <Id>{identifier}</Id>\n"
+                "                      </Othr>\n"
+                "                    </PrvtId>\n"
+            )
+        else:
+            raise AssertionError(f"unsupported Party52Choice: {identity_choice}")
+        return (
+            "                <Pty>\n"
+            f"                  <Nm>{self.party_name}</Nm>\n"
+            "                  <Id>\n"
+            + identity_xml
+            + "                  </Id>\n"
+            "                </Pty>"
+        )
+
+    def _register_statement_account(self, payload: bytes) -> str:
+        """Register only the statement-owner account needed by supported ingest."""
+        parsed = parse_bank_statement_payload(payload, CAMT053_MESSAGE_DEFINITION)
+        reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
+        accept_bank_account_record(
+            {
+                "tenant_reference": self.case.policy.tenant_reference,
+                "bank_account_reference": reference,
+                "account_currency_code": parsed.account_currency_code,
+                "account_identifier_hash": parsed.account_identifier_hash,
+            },
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+        )
+        return reference
+
+    def _ingest_and_read_first_detail(
+        self,
+        payload: bytes,
+        suffix: str,
+    ) -> dict[str, object]:
+        """Ingest on an isolated statement-owner account and return its first detail."""
+        reference = self._register_statement_account(payload)
+        accepted = accept_bank_statement_evidence(
+            self._command(payload, reference, suffix),
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            artifact_store=MemoryArtifactStore(),
+        )
+        document = lookup_bank_statement_entries(
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            str(accepted["bank_statement_record_id"]),
+        )
+        return document["bank_statement_entries"][0]["entry_details"][0]
+
+    @staticmethod
+    def _public_projection(
+        detail: dict[str, object], evidence_key: str
+    ) -> dict[str, object]:
+        """Remove only internal evidence identities before buyer-visible comparison."""
+        projection = dict(detail)
+        projection.pop(evidence_key)
+        projection.pop("source_detail_hash")
+        return projection
+
+    def _command(
+        self,
+        payload: bytes,
+        bank_account_reference: str,
+        suffix: str,
+    ) -> dict[str, object]:
+        """Return one supported ingest command with a unique tenant replay key."""
+        return {
+            "tenant_reference": self.case.policy.tenant_reference,
+            "bank_account_reference": bank_account_reference,
+            "ingestion_idempotency_key": (
+                f"ultimate-party-identification-{suffix}-{uuid.uuid4().hex}"
+            ),
+            "message_definition_identifier": CAMT053_MESSAGE_DEFINITION,
+            "statement_payload": payload.decode("utf-8"),
+        }
+
+    @staticmethod
+    def _evidence_key(role: str) -> str:
+        """Return the existing role-specific ultimate-party digest field."""
+        if role == "ultimate_debtor":
+            return "ultimate_debtor_evidence_hash"
+        if role == "ultimate_creditor":
+            return "ultimate_creditor_evidence_hash"
+        raise AssertionError(f"unsupported ultimate role: {role}")
+
+    @staticmethod
+    def _xml_tag(role: str) -> str:
+        """Map the test role to the registered camt.053 ultimate-party element."""
+        if role == "ultimate_debtor":
+            return "UltmtDbtr"
+        if role == "ultimate_creditor":
+            return "UltmtCdtr"
+        raise AssertionError(f"unsupported ultimate role: {role}")
+
+    def _assert_financial_truth(self, entry: object, detail: object) -> None:
+        """Keep the evidence mutation independent from exact accounting values."""
+        self.assertEqual(getattr(entry, "entry_amount"), Decimal("25000.00"))
+        self.assertEqual(getattr(entry, "entry_currency_code"), "KRW")
+        self.assertEqual(getattr(detail, "detail_amount"), Decimal("25000.00"))
+        self.assertEqual(getattr(detail, "detail_currency_code"), "KRW")
+
+    def _assert_sha256(self, value: object) -> None:
+        """Require one canonical SHA-256 identity before equality comparisons."""
+        self.assertIsInstance(value, str)
+        self.assertRegex(value, _HASH_PATTERN)
+
+
+if __name__ == "__main__":
+    unittest.main()
