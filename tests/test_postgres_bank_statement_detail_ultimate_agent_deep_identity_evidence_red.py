@@ -247,11 +247,7 @@ class BankStatementDetailUltimateAgentDeepIdentityEvidenceRedTests(unittest.Test
                 bic_public = self._public_projection(bic_only, evidence_key)
                 self.assertEqual(deep_public, bic_public)
                 buyer_values = set(self._scalar_leaves(deep_public))
-                source_values = {
-                    str(value)
-                    for key, value in identity.items()
-                    if key != "bicfi"
-                }
+                source_values = {str(value) for value in identity.values()}
                 self.assertTrue(source_values.isdisjoint(buyer_values))
 
     @staticmethod
