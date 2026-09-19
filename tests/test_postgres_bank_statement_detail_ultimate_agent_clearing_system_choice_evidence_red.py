@@ -41,7 +41,7 @@ class BankStatementDetailUltimateAgentClearingSystemChoiceEvidenceRedTests(
             baseline_payload = self._payload(
                 role,
                 choice_kind="proprietary",
-                choice_value="USABA",
+                choice_value="USFW",
                 member_id=f"{role.upper()}-MEMBER-001",
             )
             baseline = deep.parse_bank_statement_payload(
@@ -113,7 +113,7 @@ class BankStatementDetailUltimateAgentClearingSystemChoiceEvidenceRedTests(
                 baseline = self._payload(
                     role,
                     choice_kind="proprietary",
-                    choice_value="USABA",
+                    choice_value="USFW",
                     member_id=f"{role.upper()}-MEMBER-001",
                 )
                 self.assertEqual(baseline.count(needle), 1)
@@ -178,7 +178,7 @@ class BankStatementDetailUltimateAgentClearingSystemChoiceEvidenceRedTests(
             baseline = self._payload(
                 role,
                 choice_kind="proprietary",
-                choice_value="USABA",
+                choice_value="USFW",
                 member_id=f"{role.upper()}-MEMBER-001",
             )
             reference = self.case._register_statement_account(baseline)
@@ -259,7 +259,7 @@ class BankStatementDetailUltimateAgentClearingSystemChoiceEvidenceRedTests(
             "member-id": self._payload(
                 role,
                 choice_kind="proprietary",
-                choice_value="USABA",
+                choice_value="USFW",
                 member_id=f"{role.upper()}-MEMBER-002",
             ),
             "choice-value": self._payload(
@@ -271,7 +271,7 @@ class BankStatementDetailUltimateAgentClearingSystemChoiceEvidenceRedTests(
             "same-scalar-choice-discriminator": self._payload(
                 role,
                 choice_kind="code",
-                choice_value="USABA",
+                choice_value="USFW",
                 member_id=member,
             ),
             "choice-absent": self._payload(
