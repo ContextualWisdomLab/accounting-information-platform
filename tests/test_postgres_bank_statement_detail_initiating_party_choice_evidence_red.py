@@ -64,6 +64,7 @@ class BankStatementDetailInitiatingPartyChoiceEvidenceRedTests(unittest.TestCase
             self._assert_sha256(getattr(detail, "initiating_party_evidence_hash"))
             self._assert_sha256(detail.source_detail_hash)
             self._assert_sha256(statement.entries[0].source_entry_hash)
+            self._assert_sha256(statement.entries[1].source_entry_hash)
             self._assert_sha256(statement.normalized_payload_hash)
             self._assert_sha256(statement.account_identifier_hash)
             self.assertEqual(detail.detail_amount, Decimal("25000.00"))
@@ -166,6 +167,8 @@ class BankStatementDetailInitiatingPartyChoiceEvidenceRedTests(unittest.TestCase
         for detail in (party_detail, agent_detail):
             self._assert_sha256(detail[evidence_key])
             self._assert_sha256(detail["source_detail_hash"])
+            self.assertEqual(Decimal(str(detail["detail_amount"])), Decimal("25000.00"))
+            self.assertEqual(detail["detail_currency_code"], "KRW")
         self.assertNotEqual(party_detail[evidence_key], agent_detail[evidence_key])
         self.assertNotEqual(
             party_detail["source_detail_hash"],
@@ -218,8 +221,12 @@ class BankStatementDetailInitiatingPartyChoiceEvidenceRedTests(unittest.TestCase
             formatted_detail.source_detail_hash,
             baseline.entries[0].source_entry_hash,
             formatted.entries[0].source_entry_hash,
+            baseline.entries[1].source_entry_hash,
+            formatted.entries[1].source_entry_hash,
             baseline.normalized_payload_hash,
             formatted.normalized_payload_hash,
+            baseline.account_identifier_hash,
+            formatted.account_identifier_hash,
         ):
             self._assert_sha256(value)
 
