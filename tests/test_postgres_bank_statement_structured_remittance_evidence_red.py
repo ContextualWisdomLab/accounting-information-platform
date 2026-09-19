@@ -96,6 +96,27 @@ class BankStatementStructuredRemittanceEvidenceRedTests(unittest.TestCase):
             CAMT053_MESSAGE_DEFINITION,
         )
 
+        self.base_structured_population_payload = self._with_repeated_structured_blocks(
+            fixture,
+            self.marker,
+            self.first_document_number,
+            self.base_second_document_number,
+        )
+        self.changed_structured_population_payload = self._with_repeated_structured_blocks(
+            fixture,
+            self.marker,
+            self.first_document_number,
+            self.changed_second_document_number,
+        )
+        self.base_structured_population_statement = parse_bank_statement_payload(
+            self.base_structured_population_payload,
+            CAMT053_MESSAGE_DEFINITION,
+        )
+        self.changed_structured_population_statement = parse_bank_statement_payload(
+            self.changed_structured_population_payload,
+            CAMT053_MESSAGE_DEFINITION,
+        )
+
         self.bank_account_reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
         accept_bank_account_record(
             {
@@ -233,6 +254,94 @@ class BankStatementStructuredRemittanceEvidenceRedTests(unittest.TestCase):
         self.assertEqual(Decimal(str(detail["detail_amount"])), Decimal("25000.00"))
         self.assertEqual(detail["detail_currency_code"], "KRW")
 
+    def test_later_structured_block_is_material_to_evidence_identity(self) -> None:
+        """A later Strd block cannot alias when the earlier structured remittance is unchanged."""
+        base_entry = self.base_structured_population_statement.entries[0]
+        changed_entry = self.changed_structured_population_statement.entries[0]
+        base_detail = base_entry.entry_details[0]
+        changed_detail = changed_entry.entry_details[0]
+
+        for value in (
+            base_detail.source_detail_hash,
+            changed_detail.source_detail_hash,
+            base_entry.source_entry_hash,
+            changed_entry.source_entry_hash,
+            self.base_structured_population_statement.normalized_payload_hash,
+            self.changed_structured_population_statement.normalized_payload_hash,
+            self.base_structured_population_statement.account_identifier_hash,
+            self.changed_structured_population_statement.account_identifier_hash,
+            self.base_structured_population_statement.entries[1].source_entry_hash,
+            self.changed_structured_population_statement.entries[1].source_entry_hash,
+        ):
+            self._assert_sha256(value)
+
+        self.assertNotEqual(base_detail.source_detail_hash, changed_detail.source_detail_hash)
+        self.assertNotEqual(base_entry.source_entry_hash, changed_entry.source_entry_hash)
+        self.assertNotEqual(
+            self.base_structured_population_statement.normalized_payload_hash,
+            self.changed_structured_population_statement.normalized_payload_hash,
+        )
+        self.assertEqual(
+            self.base_structured_population_statement.account_identifier_hash,
+            self.changed_structured_population_statement.account_identifier_hash,
+        )
+        self.assertEqual(
+            self.base_structured_population_statement.entries[1].source_entry_hash,
+            self.changed_structured_population_statement.entries[1].source_entry_hash,
+        )
+        self._assert_exact_amount(base_entry, base_detail)
+        self._assert_exact_amount(changed_entry, changed_detail)
+
+    def test_changed_later_structured_block_requires_explicit_statement_correction(self) -> None:
+        """Changing a later Strd block cannot silently replay one statement identity."""
+        accepted = accept_bank_statement_evidence(
+            self._command(self.base_structured_population_payload, "strd-population-base"),
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            artifact_store=self.store,
+        )
+        self.assertFalse(accepted["replayed"])
+
+        with self.assertRaisesRegex(AccountingValidationError, _CORRECTION_ERROR):
+            accept_bank_statement_evidence(
+                self._command(
+                    self.changed_structured_population_payload,
+                    "strd-population-changed",
+                ),
+                posting.DATABASE_URL,
+                self.case.policy.tenant_reference,
+                artifact_store=self.store,
+            )
+
+    def test_buyer_read_keeps_repeated_structured_blocks_in_source_order(self) -> None:
+        """Reconciliation reads keep repeated Strd blocks in source order."""
+        accepted = accept_bank_statement_evidence(
+            self._command(self.base_structured_population_payload, "strd-population-lookup"),
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            artifact_store=self.store,
+        )
+        document = lookup_bank_statement_entries(
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            str(accepted["bank_statement_record_id"]),
+        )
+        entry = document["bank_statement_entries"][0]
+        detail = entry["entry_details"][0]
+        text = detail.get("remittance_evidence_text")
+        if not isinstance(text, str):
+            raise AssertionError("buyer read must retain repeated structured remittance evidence")
+        self.assertIn(self.first_document_number, text)
+        self.assertIn(self.base_second_document_number, text)
+        self.assertLess(
+            text.index(self.first_document_number),
+            text.index(self.base_second_document_number),
+        )
+        self.assertEqual(Decimal(str(entry["entry_amount"])), Decimal("25000.00"))
+        self.assertEqual(entry["entry_currency_code"], "KRW")
+        self.assertEqual(Decimal(str(detail["detail_amount"])), Decimal("25000.00"))
+        self.assertEqual(detail["detail_currency_code"], "KRW")
+
     @staticmethod
     def _with_structured_reference(fixture: str, marker: str, reference: str) -> bytes:
         """Insert one standards-shaped SCOR creditor reference beside existing Ustrd evidence."""
@@ -271,6 +380,39 @@ class BankStatementStructuredRemittanceEvidenceRedTests(unittest.TestCase):
             "                  </Tp>\n"
             f"                  <Nb>{first_document_number}</Nb>\n"
             "                </RfrdDocInf>\n"
+            "                <RfrdDocInf>\n"
+            "                  <Tp>\n"
+            "                    <CdOrPrtry>\n"
+            "                      <Cd>CINV</Cd>\n"
+            "                    </CdOrPrtry>\n"
+            "                  </Tp>\n"
+            f"                  <Nb>{second_document_number}</Nb>\n"
+            "                </RfrdDocInf>\n"
+            "              </Strd>"
+        )
+        return fixture.replace(marker, structured, 1).encode("utf-8")
+
+    @staticmethod
+    def _with_repeated_structured_blocks(
+        fixture: str,
+        marker: str,
+        first_document_number: str,
+        second_document_number: str,
+    ) -> bytes:
+        """Insert two source-ordered Strd blocks with one invoice reference in each."""
+        structured = (
+            f"{marker}\n"
+            "              <Strd>\n"
+            "                <RfrdDocInf>\n"
+            "                  <Tp>\n"
+            "                    <CdOrPrtry>\n"
+            "                      <Cd>CINV</Cd>\n"
+            "                    </CdOrPrtry>\n"
+            "                  </Tp>\n"
+            f"                  <Nb>{first_document_number}</Nb>\n"
+            "                </RfrdDocInf>\n"
+            "              </Strd>\n"
+            "              <Strd>\n"
             "                <RfrdDocInf>\n"
             "                  <Tp>\n"
             "                    <CdOrPrtry>\n"
