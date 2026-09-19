@@ -224,8 +224,9 @@ class BankStatementDetailRelatedRemittanceOptionalityReviewRedTests(unittest.Tes
                 actual = detail.get("related_remittance_information")
 
                 if expected_records is None:
+                    self.assertNotIn("related_remittance_information", detail)
+                    self.assertNotIn("related_remittance_evidence_hash", detail)
                     self.assertIsNone(actual)
-                    self.assertIsNone(detail.get("related_remittance_evidence_hash"))
                 else:
                     expected_projection = self._expected_records(expected_records)
                     self.assertEqual(actual, expected_projection)
