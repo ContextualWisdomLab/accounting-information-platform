@@ -35,7 +35,7 @@ class BankStatementStructuredAdjustmentEvidenceRedTests(unittest.TestCase):
         posting.PostgresPostingTests.setUpClass()
 
     def setUp(self) -> None:
-        """Prepare source-identical statements that differ only in a later adjustment amount."""
+        """Prepare source-identical statements with one isolated adjustment change."""
         self.case = posting.PostgresPostingTests("setUp")
         self.addCleanup(self.case.doCleanups)
         self.case.setUp()
@@ -67,6 +67,47 @@ class BankStatementStructuredAdjustmentEvidenceRedTests(unittest.TestCase):
         )
         self.changed_statement = parse_bank_statement_payload(
             self.changed_payload,
+            CAMT053_MESSAGE_DEFINITION,
+        )
+
+        self.first_direction = "DBIT"
+        self.second_direction = "CRDT"
+        self.first_reason = "DISC"
+        self.base_second_reason = "ADJT"
+        self.changed_second_reason = "FEES"
+        self.first_additional_information = "Early payment discount"
+        self.base_second_additional_information = "Invoice correction adjustment"
+        self.changed_second_additional_information = "Bank fee correction adjustment"
+        self.reason_base_payload = self._with_referred_document_adjustment_reason_metadata(
+            fixture,
+            marker,
+            self.base_second_reason,
+            self.base_second_additional_information,
+        )
+        self.reason_changed_payload = self._with_referred_document_adjustment_reason_metadata(
+            fixture,
+            marker,
+            self.changed_second_reason,
+            self.base_second_additional_information,
+        )
+        self.additional_information_changed_payload = (
+            self._with_referred_document_adjustment_reason_metadata(
+                fixture,
+                marker,
+                self.base_second_reason,
+                self.changed_second_additional_information,
+            )
+        )
+        self.reason_base_statement = parse_bank_statement_payload(
+            self.reason_base_payload,
+            CAMT053_MESSAGE_DEFINITION,
+        )
+        self.reason_changed_statement = parse_bank_statement_payload(
+            self.reason_changed_payload,
+            CAMT053_MESSAGE_DEFINITION,
+        )
+        self.additional_information_changed_statement = parse_bank_statement_payload(
+            self.additional_information_changed_payload,
             CAMT053_MESSAGE_DEFINITION,
         )
 
@@ -170,6 +211,117 @@ class BankStatementStructuredAdjustmentEvidenceRedTests(unittest.TestCase):
         self.assertEqual(Decimal(str(detail["detail_amount"])), Decimal("25000.00"))
         self.assertEqual(detail["detail_currency_code"], "KRW")
 
+    def test_later_adjustment_reason_fields_are_material_to_evidence_identity(self) -> None:
+        """Changing Rsn or AddtlInf must change only the owning evidence chain."""
+        for changed in (
+            self.reason_changed_statement,
+            self.additional_information_changed_statement,
+        ):
+            with self.subTest(changed_hash=changed.normalized_payload_hash):
+                base_entry = self.reason_base_statement.entries[0]
+                changed_entry = changed.entries[0]
+                base_detail = base_entry.entry_details[0]
+                changed_detail = changed_entry.entry_details[0]
+
+                for value in (
+                    base_detail.source_detail_hash,
+                    changed_detail.source_detail_hash,
+                    base_entry.source_entry_hash,
+                    changed_entry.source_entry_hash,
+                    self.reason_base_statement.normalized_payload_hash,
+                    changed.normalized_payload_hash,
+                    self.reason_base_statement.account_identifier_hash,
+                    changed.account_identifier_hash,
+                    self.reason_base_statement.entries[1].source_entry_hash,
+                    changed.entries[1].source_entry_hash,
+                ):
+                    self._assert_sha256(value)
+
+                self.assertNotEqual(
+                    base_detail.source_detail_hash,
+                    changed_detail.source_detail_hash,
+                )
+                self.assertNotEqual(
+                    base_entry.source_entry_hash,
+                    changed_entry.source_entry_hash,
+                )
+                self.assertNotEqual(
+                    self.reason_base_statement.normalized_payload_hash,
+                    changed.normalized_payload_hash,
+                )
+                self.assertEqual(
+                    self.reason_base_statement.account_identifier_hash,
+                    changed.account_identifier_hash,
+                )
+                self.assertEqual(
+                    self.reason_base_statement.entries[1].source_entry_hash,
+                    changed.entries[1].source_entry_hash,
+                )
+                self._assert_exact_transaction_amount(base_entry, base_detail)
+                self._assert_exact_transaction_amount(changed_entry, changed_detail)
+
+    def test_changed_adjustment_reason_fields_require_explicit_statement_correction(self) -> None:
+        """A changed reason or explanation cannot silently replay one statement."""
+        accepted = accept_bank_statement_evidence(
+            self._command(self.reason_base_payload, "reason-base"),
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            artifact_store=self.store,
+        )
+        self.assertFalse(accepted["replayed"])
+
+        for suffix, payload in (
+            ("reason-changed", self.reason_changed_payload),
+            (
+                "additional-information-changed",
+                self.additional_information_changed_payload,
+            ),
+        ):
+            with self.subTest(suffix=suffix):
+                with self.assertRaisesRegex(AccountingValidationError, _CORRECTION_ERROR):
+                    accept_bank_statement_evidence(
+                        self._command(payload, suffix),
+                        posting.DATABASE_URL,
+                        self.case.policy.tenant_reference,
+                        artifact_store=self.store,
+                    )
+
+    def test_buyer_read_keeps_adjustment_reason_associations_in_source_order(self) -> None:
+        """Buyer reads retain amount, direction, reason, and explanation associations."""
+        accepted = accept_bank_statement_evidence(
+            self._command(self.reason_base_payload, "reason-lookup"),
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            artifact_store=self.store,
+        )
+        document = lookup_bank_statement_entries(
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            str(accepted["bank_statement_record_id"]),
+        )
+        entry = document["bank_statement_entries"][0]
+        detail = entry["entry_details"][0]
+        text = detail.get("remittance_evidence_text")
+        if not isinstance(text, str):
+            raise AssertionError("buyer read must retain adjustment reason evidence")
+
+        paired_order = re.compile(
+            rf"{re.escape(self.first_adjustment_amount)}.*?"
+            rf"{re.escape(self.first_direction)}.*?"
+            rf"{re.escape(self.first_reason)}.*?"
+            rf"{re.escape(self.first_additional_information)}.*?"
+            rf"{re.escape(self.base_second_adjustment_amount)}.*?"
+            rf"{re.escape(self.second_direction)}.*?"
+            rf"{re.escape(self.base_second_reason)}.*?"
+            rf"{re.escape(self.base_second_additional_information)}",
+            re.DOTALL,
+        )
+        self.assertRegex(text, paired_order)
+        self.assertEqual(Decimal(str(entry["entry_amount"])), Decimal("25000.00"))
+        self.assertEqual(entry["entry_currency_code"], "KRW")
+        self.assertEqual(Decimal(str(detail["detail_amount"])), Decimal("25000.00"))
+        self.assertEqual(detail["detail_currency_code"], "KRW")
+
     @staticmethod
     def _with_referred_document_adjustments(
         fixture: str,
@@ -195,6 +347,43 @@ class BankStatementStructuredAdjustmentEvidenceRedTests(unittest.TestCase):
             "                  </AdjstmntAmtAndRsn>\n"
             "                  <AdjstmntAmtAndRsn>\n"
             f'                    <Amt Ccy="KRW">{second_adjustment_amount}</Amt>\n'
+            "                  </AdjstmntAmtAndRsn>\n"
+            "                </RfrdDocAmt>\n"
+            "              </Strd>"
+        )
+        return fixture.replace(marker, structured, 1).encode("utf-8")
+
+    def _with_referred_document_adjustment_reason_metadata(
+        self,
+        fixture: str,
+        marker: str,
+        second_reason: str,
+        second_additional_information: str,
+    ) -> bytes:
+        """Insert two source-ordered adjustments whose later reason fields can vary."""
+        structured = (
+            f"{marker}\n"
+            "              <Strd>\n"
+            "                <RfrdDocInf>\n"
+            "                  <Tp>\n"
+            "                    <CdOrPrtry>\n"
+            "                      <Cd>CINV</Cd>\n"
+            "                    </CdOrPrtry>\n"
+            "                  </Tp>\n"
+            "                  <Nb>INV-2026-1001</Nb>\n"
+            "                </RfrdDocInf>\n"
+            "                <RfrdDocAmt>\n"
+            "                  <AdjstmntAmtAndRsn>\n"
+            f'                    <Amt Ccy="KRW">{self.first_adjustment_amount}</Amt>\n'
+            f"                    <CdtDbtInd>{self.first_direction}</CdtDbtInd>\n"
+            f"                    <Rsn>{self.first_reason}</Rsn>\n"
+            f"                    <AddtlInf>{self.first_additional_information}</AddtlInf>\n"
+            "                  </AdjstmntAmtAndRsn>\n"
+            "                  <AdjstmntAmtAndRsn>\n"
+            f'                    <Amt Ccy="KRW">{self.base_second_adjustment_amount}</Amt>\n'
+            f"                    <CdtDbtInd>{self.second_direction}</CdtDbtInd>\n"
+            f"                    <Rsn>{second_reason}</Rsn>\n"
+            f"                    <AddtlInf>{second_additional_information}</AddtlInf>\n"
             "                  </AdjstmntAmtAndRsn>\n"
             "                </RfrdDocAmt>\n"
             "              </Strd>"
