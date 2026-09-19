@@ -93,12 +93,7 @@ class BankStatementDetailSafekeepingAccountOptionalityReviewRedTests(unittest.Te
         base_sibling_entry = self.base_statement.entries[1]
         base_digest = getattr(base_detail, "safekeeping_account_evidence_hash", None)
         self._assert_sha256(base_digest)
-        self.assertEqual(
-            base_digest,
-            safekeeping.BankStatementDetailSafekeepingAccountEvidenceRedTests._expected_hash(
-                self.base
-            ),
-        )
+        self.assertEqual(base_digest, safekeeping.BankStatementDetailSafekeepingAccountEvidenceRedTests._expected_hash(self.base))
         for value in (
             base_detail.source_detail_hash,
             base_entry.source_entry_hash,
@@ -127,9 +122,7 @@ class BankStatementDetailSafekeepingAccountOptionalityReviewRedTests(unittest.Te
                     self._assert_sha256(changed_digest)
                     self.assertEqual(
                         changed_digest,
-                        safekeeping.BankStatementDetailSafekeepingAccountEvidenceRedTests._expected_hash(
-                            expected
-                        ),
+                        safekeeping.BankStatementDetailSafekeepingAccountEvidenceRedTests._expected_hash(expected),
                     )
                 for value in (
                     changed_detail.source_detail_hash,
@@ -217,9 +210,7 @@ class BankStatementDetailSafekeepingAccountOptionalityReviewRedTests(unittest.Te
                     self.assertEqual(actual, expected)
                     self.assertEqual(
                         detail.get("safekeeping_account_evidence_hash"),
-                        safekeeping.BankStatementDetailSafekeepingAccountEvidenceRedTests._expected_hash(
-                            expected
-                        ),
+                        safekeeping.BankStatementDetailSafekeepingAccountEvidenceRedTests._expected_hash(expected),
                     )
                     if label == "type-absent":
                         self.assertNotIn("type", actual)
@@ -231,13 +222,9 @@ class BankStatementDetailSafekeepingAccountOptionalityReviewRedTests(unittest.Te
                     elif label == "name-absent":
                         self.assertNotIn("name", actual)
 
-                self.assertEqual(
-                    Decimal(str(entry["entry_amount"])), Decimal("25000.00")
-                )
+                self.assertEqual(Decimal(str(entry["entry_amount"])), Decimal("25000.00"))
                 self.assertEqual(entry["entry_currency_code"], "KRW")
-                self.assertEqual(
-                    Decimal(str(detail["detail_amount"])), Decimal("25000.00")
-                )
+                self.assertEqual(Decimal(str(detail["detail_amount"])), Decimal("25000.00"))
                 self.assertEqual(detail["detail_currency_code"], "KRW")
 
     def _payload(self, value: dict[str, object] | None) -> bytes:
@@ -329,9 +316,7 @@ class BankStatementDetailSafekeepingAccountOptionalityReviewRedTests(unittest.Te
     def _with_unique_statement_id(self, payload: bytes, suffix: str) -> bytes:
         """Give lookup variants independent statement identity without changing owner truth."""
         old = b"<Id>STMT-2026-08-24-001</Id>"
-        new = f"<Id>STMT-SAFEKEEP-{suffix}-{uuid.uuid4().hex[:12]}</Id>".encode(
-            "utf-8"
-        )
+        new = f"<Id>STMT-SAFEKEEP-{suffix}-{uuid.uuid4().hex[:12]}</Id>".encode("utf-8")
         if payload.count(old) != 1:
             raise AssertionError("canonical statement Id marker must occur exactly once")
         return payload.replace(old, new, 1)
