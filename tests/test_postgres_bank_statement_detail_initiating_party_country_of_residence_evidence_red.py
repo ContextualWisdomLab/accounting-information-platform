@@ -233,10 +233,12 @@ class BankStatementDetailInitiatingPartyCountryOfResidenceEvidenceRedTests(
             rich_detail["source_detail_hash"],
         )
         self.assertNotEqual(absent["source_entry_hash"], rich["source_entry_hash"])
-        self.assertEqual(
-            self.case._public_entry_projection(absent, evidence_key),
-            self.case._public_entry_projection(rich, evidence_key),
-        )
+        absent_public = self.case._public_entry_projection(absent, evidence_key)
+        rich_public = self.case._public_entry_projection(rich, evidence_key)
+        self.assertEqual(absent_public, rich_public)
+        for projection in (absent_public, rich_public):
+            buyer_values = set(self.case._scalar_leaves(projection))
+            self.assertNotIn("DE", buyer_values)
 
     def _with_country(self, country: str | None) -> bytes:
         """Return one InitgPty/Pty branch with optional CtryOfRes after Id."""
