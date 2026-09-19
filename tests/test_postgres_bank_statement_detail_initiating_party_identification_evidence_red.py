@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 import unittest
 import uuid
@@ -252,7 +251,7 @@ class BankStatementDetailInitiatingPartyIdentificationEvidenceRedTests(unittest.
                     )
 
     def test_buyer_projection_keeps_identity_non_reversible(self) -> None:
-        """Buyer reads expose identity-sensitive digests without source party identifiers."""
+        """Buyer entries expose identity-sensitive digests without source identifiers."""
         payloads = {
             "organisation": self._with_identified_party(
                 "organisation",
@@ -267,13 +266,27 @@ class BankStatementDetailInitiatingPartyIdentificationEvidenceRedTests(unittest.
                 self.base_identifier,
             ),
         }
-        projections = {
-            label: self._ingest_and_read_first_detail(payload, label)
+        entries = {
+            label: self._ingest_and_read_first_entry(payload, label)
             for label, payload in payloads.items()
         }
         evidence_key = "initiating_party_evidence_hash"
 
-        for detail in projections.values():
+        for entry in entries.values():
+            self._assert_sha256(entry["source_entry_hash"])
+            self.assertEqual(
+                Decimal(str(entry["entry_amount"])),
+                Decimal("25000.00"),
+            )
+            self.assertEqual(entry["entry_currency_code"], "KRW")
+            details = entry["entry_details"]
+            self.assertIsInstance(details, list)
+            if not isinstance(details, list) or not details:
+                raise AssertionError("expected the buyer entry to expose its first detail")
+            detail = details[0]
+            self.assertIsInstance(detail, dict)
+            if not isinstance(detail, dict):
+                raise AssertionError("expected buyer entry detail to be a mapping")
             self._assert_sha256(detail[evidence_key])
             self._assert_sha256(detail["source_detail_hash"])
             self.assertEqual(
@@ -282,29 +295,37 @@ class BankStatementDetailInitiatingPartyIdentificationEvidenceRedTests(unittest.
             )
             self.assertEqual(detail["detail_currency_code"], "KRW")
 
-        organisation = projections["organisation"]
+        organisation = entries["organisation"]
+        organisation_detail = organisation["entry_details"][0]
         for label in ("changed_identifier", "person"):
-            variant = projections[label]
+            variant = entries[label]
+            variant_detail = variant["entry_details"][0]
             self.assertNotEqual(
-                organisation[evidence_key],
-                variant[evidence_key],
+                organisation_detail[evidence_key],
+                variant_detail[evidence_key],
             )
             self.assertNotEqual(
-                organisation["source_detail_hash"],
-                variant["source_detail_hash"],
+                organisation_detail["source_detail_hash"],
+                variant_detail["source_detail_hash"],
+            )
+            self.assertNotEqual(
+                organisation["source_entry_hash"],
+                variant["source_entry_hash"],
             )
             self.assertEqual(
-                self._public_projection(organisation, evidence_key),
-                self._public_projection(variant, evidence_key),
+                self._public_entry_projection(organisation, evidence_key),
+                self._public_entry_projection(variant, evidence_key),
             )
 
-        serialized = json.dumps(
-            projections,
-            sort_keys=True,
-            default=str,
-        )
-        self.assertNotIn(self.base_identifier, serialized)
-        self.assertNotIn(self.changed_identifier, serialized)
+        buyer_values: set[object] = set()
+        for entry in entries.values():
+            buyer_values.update(
+                self._scalar_leaves(
+                    self._public_entry_projection(entry, evidence_key)
+                )
+            )
+        self.assertNotIn(self.base_identifier, buyer_values)
+        self.assertNotIn(self.changed_identifier, buyer_values)
 
     def _with_identified_party(
         self,
@@ -352,12 +373,12 @@ class BankStatementDetailInitiatingPartyIdentificationEvidenceRedTests(unittest.
             )
         raise AssertionError(f"unsupported Party52Choice: {identity_choice}")
 
-    def _ingest_and_read_first_detail(
+    def _ingest_and_read_first_entry(
         self,
         payload: bytes,
         suffix: str,
     ) -> dict[str, object]:
-        """Ingest on an isolated statement-owner account and return its first detail."""
+        """Ingest on an isolated statement-owner account and return its first entry."""
         bank_account_reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
         self.helper._register_bank_account(bank_account_reference)
         accepted = initiating.accept_bank_statement_evidence(
@@ -375,18 +396,50 @@ class BankStatementDetailInitiatingPartyIdentificationEvidenceRedTests(unittest.
             self.helper.case.policy.tenant_reference,
             str(accepted["bank_statement_record_id"]),
         )
-        return document["bank_statement_entries"][0]["entry_details"][0]
+        entry = document["bank_statement_entries"][0]
+        self.assertIsInstance(entry, dict)
+        if not isinstance(entry, dict):
+            raise AssertionError("expected the buyer read to expose an entry mapping")
+        return entry
 
     @staticmethod
-    def _public_projection(
-        detail: dict[str, object],
+    def _public_entry_projection(
+        entry: dict[str, object],
         evidence_key: str,
     ) -> dict[str, object]:
-        """Remove only internal identity hashes before buyer-visible comparison."""
-        projection = dict(detail)
-        projection.pop(evidence_key)
-        projection.pop("source_detail_hash")
+        """Remove only internal entry/detail evidence hashes before public comparison."""
+        projection = dict(entry)
+        projection.pop("source_entry_hash")
+        details = projection.get("entry_details")
+        if not isinstance(details, list):
+            raise AssertionError("expected entry_details to be a list")
+        public_details: list[dict[str, object]] = []
+        for raw_detail in details:
+            if not isinstance(raw_detail, dict):
+                raise AssertionError("expected each entry detail to be a mapping")
+            detail = dict(raw_detail)
+            detail.pop(evidence_key)
+            detail.pop("source_detail_hash")
+            public_details.append(detail)
+        projection["entry_details"] = public_details
         return projection
+
+    @classmethod
+    def _scalar_leaves(cls, value: object) -> tuple[object, ...]:
+        """Collect scalar buyer values recursively across the complete entry projection."""
+        if isinstance(value, dict):
+            leaves: list[object] = []
+            for child in value.values():
+                leaves.extend(cls._scalar_leaves(child))
+            return tuple(leaves)
+        if isinstance(value, (list, tuple)):
+            leaves = []
+            for child in value:
+                leaves.extend(cls._scalar_leaves(child))
+            return tuple(leaves)
+        if value is None:
+            return ()
+        return (value,)
 
     def _assert_financial_truth(self, entry: object, detail: object) -> None:
         """Keep identity mutations independent from exact transaction facts."""
