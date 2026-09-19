@@ -45,7 +45,7 @@ class BankStatementDetailProprietaryAgentClearingSystemChoiceEvidenceRedTests(
                 "agent": {
                     "bicfi": "DEUTDEFF",
                     "clearing_system_member": {
-                        "system": {"proprietary": "USABA"},
+                        "system": {"proprietary": "USFW"},
                         "member_id": "DE-CLEAR-001",
                     },
                     "name": "Execution Broker Frankfurt",
@@ -224,7 +224,7 @@ class BankStatementDetailProprietaryAgentClearingSystemChoiceEvidenceRedTests(
         variants["choice-value"] = changed_value
 
         changed_kind = copy.deepcopy(base)
-        clearing(changed_kind)["system"] = {"code": "USABA"}
+        clearing(changed_kind)["system"] = {"code": "USFW"}
         variants["same-scalar-choice-discriminator"] = changed_kind
 
         absent = copy.deepcopy(base)
