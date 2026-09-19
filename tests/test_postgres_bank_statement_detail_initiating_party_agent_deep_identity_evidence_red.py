@@ -203,6 +203,7 @@ class BankStatementDetailInitiatingPartyAgentDeepIdentityEvidenceRedTests(
         evidence_key = "initiating_party_evidence_hash"
 
         for entry, detail in ((deep_entry, deep_detail), (bic_entry, bic_detail)):
+            self._assert_uuid(entry["bank_statement_entry_id"])
             self.case._assert_sha256(entry["source_entry_hash"])
             self.case._assert_sha256(detail[evidence_key])
             self.case._assert_sha256(detail["source_detail_hash"])
@@ -289,6 +290,18 @@ class BankStatementDetailInitiatingPartyAgentDeepIdentityEvidenceRedTests(
         self.assertEqual(getattr(entry, "entry_currency_code"), "KRW")
         self.assertEqual(getattr(detail, "detail_amount"), Decimal("25000.00"))
         self.assertEqual(getattr(detail, "detail_currency_code"), "KRW")
+
+    @staticmethod
+    def _assert_uuid(value: object) -> None:
+        """Require canonical lowercase hyphenated UUID text before hiding server identity."""
+        if not isinstance(value, str):
+            raise AssertionError(f"expected UUID text, got {value!r}")
+        try:
+            parsed = uuid.UUID(value)
+        except (ValueError, AttributeError) as exc:
+            raise AssertionError(f"expected canonical UUID text, got {value!r}") from exc
+        if str(parsed) != value:
+            raise AssertionError(f"expected canonical UUID text, got {value!r}")
 
     @staticmethod
     def _public_entry_projection(
