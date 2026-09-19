@@ -61,12 +61,15 @@ class BankStatementDetailInitiatingPartyChoiceEvidenceRedTests(unittest.TestCase
             (agent, agent_detail),
             (changed_agent, changed_agent_detail),
         ):
+            entry = statement.entries[0]
             self._assert_sha256(getattr(detail, "initiating_party_evidence_hash"))
             self._assert_sha256(detail.source_detail_hash)
-            self._assert_sha256(statement.entries[0].source_entry_hash)
+            self._assert_sha256(entry.source_entry_hash)
             self._assert_sha256(statement.entries[1].source_entry_hash)
             self._assert_sha256(statement.normalized_payload_hash)
             self._assert_sha256(statement.account_identifier_hash)
+            self.assertEqual(entry.entry_amount, Decimal("25000.00"))
+            self.assertEqual(entry.entry_currency_code, "KRW")
             self.assertEqual(detail.detail_amount, Decimal("25000.00"))
             self.assertEqual(detail.detail_currency_code, "KRW")
 
@@ -152,21 +155,27 @@ class BankStatementDetailInitiatingPartyChoiceEvidenceRedTests(unittest.TestCase
         agent_reference = f"urn:cwl:bank_account:{uuid.uuid4().hex}"
         self.helper._register_bank_account(party_reference)
         self.helper._register_bank_account(agent_reference)
-        party_detail = self.helper._ingest_and_read_first_detail(
+        party_entry, party_detail = self._ingest_and_read_first_entry_and_detail(
             party_payload,
             party_reference,
             "initiating-choice-party-read",
         )
-        agent_detail = self.helper._ingest_and_read_first_detail(
+        agent_entry, agent_detail = self._ingest_and_read_first_entry_and_detail(
             agent_payload,
             agent_reference,
             "initiating-choice-agent-read",
         )
 
         evidence_key = "initiating_party_evidence_hash"
-        for detail in (party_detail, agent_detail):
+        for entry, detail in (
+            (party_entry, party_detail),
+            (agent_entry, agent_detail),
+        ):
             self._assert_sha256(detail[evidence_key])
             self._assert_sha256(detail["source_detail_hash"])
+            self._assert_sha256(entry["source_entry_hash"])
+            self.assertEqual(Decimal(str(entry["entry_amount"])), Decimal("25000.00"))
+            self.assertEqual(entry["entry_currency_code"], "KRW")
             self.assertEqual(Decimal(str(detail["detail_amount"])), Decimal("25000.00"))
             self.assertEqual(detail["detail_currency_code"], "KRW")
         self.assertNotEqual(party_detail[evidence_key], agent_detail[evidence_key])
@@ -174,6 +183,7 @@ class BankStatementDetailInitiatingPartyChoiceEvidenceRedTests(unittest.TestCase
             party_detail["source_detail_hash"],
             agent_detail["source_detail_hash"],
         )
+        self.assertNotEqual(party_entry["source_entry_hash"], agent_entry["source_entry_hash"])
 
         party_public = dict(party_detail)
         agent_public = dict(agent_detail)
@@ -246,6 +256,35 @@ class BankStatementDetailInitiatingPartyChoiceEvidenceRedTests(unittest.TestCase
             baseline.entries[1].source_entry_hash,
             formatted.entries[1].source_entry_hash,
         )
+        for statement, detail in (
+            (baseline, baseline_detail),
+            (formatted, formatted_detail),
+        ):
+            self.assertEqual(statement.entries[0].entry_amount, Decimal("25000.00"))
+            self.assertEqual(statement.entries[0].entry_currency_code, "KRW")
+            self.assertEqual(detail.detail_amount, Decimal("25000.00"))
+            self.assertEqual(detail.detail_currency_code, "KRW")
+
+    def _ingest_and_read_first_entry_and_detail(
+        self,
+        payload: bytes,
+        bank_account_reference: str,
+        suffix: str,
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        """Ingest one fixture and return its first buyer entry plus first detail."""
+        accepted = initiating.accept_bank_statement_evidence(
+            self.helper._command(payload, suffix, bank_account_reference),
+            posting.DATABASE_URL,
+            self.helper.case.policy.tenant_reference,
+            artifact_store=MemoryArtifactStore(),
+        )
+        document = initiating.lookup_bank_statement_entries(
+            posting.DATABASE_URL,
+            self.helper.case.policy.tenant_reference,
+            str(accepted["bank_statement_record_id"]),
+        )
+        entry = document["bank_statement_entries"][0]
+        return entry, entry["entry_details"][0]
 
     def _with_choice(self, choice_xml: str) -> bytes:
         """Insert one schema-shaped TransactionParties12/InitgPty choice."""
