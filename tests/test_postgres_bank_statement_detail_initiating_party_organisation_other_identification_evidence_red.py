@@ -214,6 +214,8 @@ class BankStatementDetailInitiatingPartyOrganisationOtherIdentificationEvidenceR
             baseline.entries[1].source_entry_hash,
             formatted.entries[1].source_entry_hash,
         )
+        self.helper._assert_financial_truth(baseline_entry, baseline_detail)
+        self.helper._assert_financial_truth(formatted_entry, formatted_detail)
 
     def test_all_other_identification_variants_reach_correction_boundary(self) -> None:
         """Accepted repeated Othr evidence cannot be silently replaced by replay."""
@@ -261,11 +263,18 @@ class BankStatementDetailInitiatingPartyOrganisationOtherIdentificationEvidenceR
             "scheme": {"proprietary": "INITIATING_PRIVATE_SCHEME_BETA"},
             "issuer": "Initiating Private Registry Beta",
         }
-        one_identifier = copy.deepcopy(self.base_identifiers[:1])
         payloads = {
             "baseline": self._payload(self.base_identifiers),
             "private": self._payload(private_identifiers),
-            "single": self._payload(one_identifier),
+            "single": self._payload(copy.deepcopy(self.base_identifiers[:1])),
+            "first_scheme_absent": self._payload(self.variants["first-scheme-absent"]),
+            "additional_scheme_absent": self._payload(
+                self.variants["additional-scheme-absent"]
+            ),
+            "first_issuer_absent": self._payload(self.variants["first-issuer-absent"]),
+            "additional_issuer_absent": self._payload(
+                self.variants["additional-issuer-absent"]
+            ),
         }
         entries = {
             label: self.helper._ingest_and_read_first_entry(payload, label)
@@ -291,8 +300,9 @@ class BankStatementDetailInitiatingPartyOrganisationOtherIdentificationEvidenceR
         baseline = entries["baseline"]
         baseline_detail = baseline["entry_details"][0]
         baseline_public = self.helper._public_entry_projection(baseline, evidence_key)
-        for label in ("private", "single"):
-            variant = entries[label]
+        for label, variant in entries.items():
+            if label == "baseline":
+                continue
             variant_detail = variant["entry_details"][0]
             self.assertNotEqual(
                 baseline_detail[evidence_key],
