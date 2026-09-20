@@ -35,7 +35,7 @@ class BankStatementStructuredRelatedDateEvidenceRedTests(unittest.TestCase):
         posting.PostgresPostingTests.setUpClass()
 
     def setUp(self) -> None:
-        """Prepare statements that differ only in one referred-document date."""
+        """Prepare statements that differ only in the later referred-document date."""
         self.case = posting.PostgresPostingTests("setUp")
         self.addCleanup(self.case.doCleanups)
         self.case.setUp()
@@ -46,18 +46,20 @@ class BankStatementStructuredRelatedDateEvidenceRedTests(unittest.TestCase):
         if fixture.count(marker) != 1:
             raise AssertionError("canonical Ustrd marker must occur exactly once")
 
-        self.document_number = "INV-2026-1001"
-        self.base_related_date = "2026-09-01"
-        self.changed_related_date = "2026-09-02"
-        self.base_payload = self._with_referred_document_date(
+        self.first_document_number = "INV-2026-1001"
+        self.first_related_date = "2026-09-01"
+        self.second_document_number = "INV-2026-1002"
+        self.base_second_related_date = "2026-09-05"
+        self.changed_second_related_date = "2026-09-06"
+        self.base_payload = self._with_referred_document_dates(
             fixture,
             marker,
-            self.base_related_date,
+            self.base_second_related_date,
         )
-        self.changed_payload = self._with_referred_document_date(
+        self.changed_payload = self._with_referred_document_dates(
             fixture,
             marker,
-            self.changed_related_date,
+            self.changed_second_related_date,
         )
         self.base_statement = parse_bank_statement_payload(
             self.base_payload,
@@ -84,7 +86,7 @@ class BankStatementStructuredRelatedDateEvidenceRedTests(unittest.TestCase):
         self.store = MemoryArtifactStore()
 
     def test_related_date_is_material_to_evidence_identity(self) -> None:
-        """A changed document date changes evidence without changing accounting time."""
+        """A later document-date change changes evidence without changing accounting time."""
         base_entry = self.base_statement.entries[0]
         changed_entry = self.changed_statement.entries[0]
         base_detail = base_entry.entry_details[0]
@@ -147,8 +149,8 @@ class BankStatementStructuredRelatedDateEvidenceRedTests(unittest.TestCase):
                 artifact_store=self.store,
             )
 
-    def test_buyer_read_keeps_referred_document_number_and_date(self) -> None:
-        """Buyer reads retain the invoice number and its related date in source order."""
+    def test_buyer_read_keeps_each_referred_document_bound_to_its_date(self) -> None:
+        """Buyer reads retain both document/date pairs and their source ordering."""
         accepted = accept_bank_statement_evidence(
             self._command(self.base_payload, "related-date-lookup"),
             posting.DATABASE_URL,
@@ -166,24 +168,26 @@ class BankStatementStructuredRelatedDateEvidenceRedTests(unittest.TestCase):
         if not isinstance(text, str):
             raise AssertionError("buyer read must retain referred-document date evidence")
 
-        source_order = re.compile(
-            rf"{re.escape(self.document_number)}.*?"
-            rf"{re.escape(self.base_related_date)}",
+        paired_source_order = re.compile(
+            rf"{re.escape(self.first_document_number)}.*?"
+            rf"{re.escape(self.first_related_date)}.*?"
+            rf"{re.escape(self.second_document_number)}.*?"
+            rf"{re.escape(self.base_second_related_date)}",
             re.DOTALL,
         )
-        self.assertRegex(text, source_order)
+        self.assertRegex(text, paired_source_order)
         self.assertEqual(Decimal(str(entry["entry_amount"])), Decimal("25000.00"))
         self.assertEqual(entry["entry_currency_code"], "KRW")
         self.assertEqual(Decimal(str(detail["detail_amount"])), Decimal("25000.00"))
         self.assertEqual(detail["detail_currency_code"], "KRW")
 
-    def _with_referred_document_date(
+    def _with_referred_document_dates(
         self,
         fixture: str,
         marker: str,
-        related_date: str,
+        second_related_date: str,
     ) -> bytes:
-        """Insert one commercial-invoice number and source document date."""
+        """Insert two source-ordered commercial-invoice number/date pairs."""
         structured = (
             f"{marker}\n"
             "              <Strd>\n"
@@ -193,8 +197,17 @@ class BankStatementStructuredRelatedDateEvidenceRedTests(unittest.TestCase):
             "                      <Cd>CINV</Cd>\n"
             "                    </CdOrPrtry>\n"
             "                  </Tp>\n"
-            f"                  <Nb>{self.document_number}</Nb>\n"
-            f"                  <RltdDt>{related_date}</RltdDt>\n"
+            f"                  <Nb>{self.first_document_number}</Nb>\n"
+            f"                  <RltdDt>{self.first_related_date}</RltdDt>\n"
+            "                </RfrdDocInf>\n"
+            "                <RfrdDocInf>\n"
+            "                  <Tp>\n"
+            "                    <CdOrPrtry>\n"
+            "                      <Cd>CINV</Cd>\n"
+            "                    </CdOrPrtry>\n"
+            "                  </Tp>\n"
+            f"                  <Nb>{self.second_document_number}</Nb>\n"
+            f"                  <RltdDt>{second_related_date}</RltdDt>\n"
             "                </RfrdDocInf>\n"
             "              </Strd>"
         )
@@ -220,7 +233,7 @@ class BankStatementStructuredRelatedDateEvidenceRedTests(unittest.TestCase):
 
     @staticmethod
     def _assert_exact_transaction_amount(entry: object, detail: object) -> None:
-        """Keep source document date separate from transaction amount truth."""
+        """Keep source document dates separate from transaction amount truth."""
         if getattr(entry, "entry_amount", None) != Decimal("25000.00"):
             raise AssertionError("entry amount must remain exactly 25000.00")
         if getattr(entry, "entry_currency_code", None) != "KRW":
