@@ -39,7 +39,7 @@ class BankStatementStructuredLineDetailsEvidenceRedTests(unittest.TestCase):
         posting.PostgresPostingTests.setUpClass()
 
     def setUp(self) -> None:
-        """Prepare statements that differ only in the second line-item number."""
+        """Prepare line-detail statements with isolated identifier and description changes."""
         self.case = posting.PostgresPostingTests("setUp")
         self.addCleanup(self.case.doCleanups)
         self.case.setUp()
@@ -54,16 +54,27 @@ class BankStatementStructuredLineDetailsEvidenceRedTests(unittest.TestCase):
         self.first_line_number = "Stockitem1"
         self.second_line_number = "Stockitem2"
         self.changed_second_line_number = "Stockitem2-R"
+        self.first_line_description = "Annual support service"
+        self.second_line_description = "Quarterly data service"
+        self.changed_second_line_description = "Quarterly data service corrected"
         self.line_related_date = "2026-09-01"
         self.base_payload = self._with_line_details(
             fixture,
             marker,
             self.second_line_number,
+            self.second_line_description,
         )
         self.changed_payload = self._with_line_details(
             fixture,
             marker,
             self.changed_second_line_number,
+            self.second_line_description,
+        )
+        self.description_changed_payload = self._with_line_details(
+            fixture,
+            marker,
+            self.second_line_number,
+            self.changed_second_line_description,
         )
         self.base_statement = parse_bank_statement_payload(
             self.base_payload,
@@ -71,6 +82,10 @@ class BankStatementStructuredLineDetailsEvidenceRedTests(unittest.TestCase):
         )
         self.changed_statement = parse_bank_statement_payload(
             self.changed_payload,
+            CAMT053_MESSAGE_DEFINITION,
+        )
+        self.description_changed_statement = parse_bank_statement_payload(
+            self.description_changed_payload,
             CAMT053_MESSAGE_DEFINITION,
         )
 
@@ -95,8 +110,14 @@ class BankStatementStructuredLineDetailsEvidenceRedTests(unittest.TestCase):
         changed_entry = self.changed_statement.entries[0]
         base_detail = base_entry.entry_details[0]
         changed_detail = changed_entry.entry_details[0]
-        base_projection = self._structured_projection(self.second_line_number)
-        changed_projection = self._structured_projection(self.changed_second_line_number)
+        base_projection = self._structured_projection(
+            self.second_line_number,
+            self.second_line_description,
+        )
+        changed_projection = self._structured_projection(
+            self.changed_second_line_number,
+            self.second_line_description,
+        )
 
         self.assertNotEqual(base_projection, changed_projection)
         for value in (
@@ -165,6 +186,88 @@ class BankStatementStructuredLineDetailsEvidenceRedTests(unittest.TestCase):
         self._assert_exact_transaction_amount(base_entry, base_detail)
         self._assert_exact_transaction_amount(changed_entry, changed_detail)
 
+    def test_line_description_is_material_to_each_canonical_evidence_hash(self) -> None:
+        """Bind bank-reported line descriptions to the same ordered evidence projection."""
+        base_entry = self.base_statement.entries[0]
+        changed_entry = self.description_changed_statement.entries[0]
+        base_detail = base_entry.entry_details[0]
+        changed_detail = changed_entry.entry_details[0]
+        base_projection = self._structured_projection(
+            self.second_line_number,
+            self.second_line_description,
+        )
+        changed_projection = self._structured_projection(
+            self.second_line_number,
+            self.changed_second_line_description,
+        )
+
+        self.assertNotEqual(base_projection, changed_projection)
+        for value in (
+            base_detail.source_detail_hash,
+            changed_detail.source_detail_hash,
+            base_entry.source_entry_hash,
+            changed_entry.source_entry_hash,
+            self.base_statement.normalized_payload_hash,
+            self.description_changed_statement.normalized_payload_hash,
+            self.base_statement.account_identifier_hash,
+            self.description_changed_statement.account_identifier_hash,
+            self.base_statement.entries[1].source_entry_hash,
+            self.description_changed_statement.entries[1].source_entry_hash,
+        ):
+            self._assert_sha256(value)
+
+        self.assertEqual(
+            base_detail.source_detail_hash,
+            self._expected_detail_hash(base_detail, base_projection),
+        )
+        self.assertEqual(
+            changed_detail.source_detail_hash,
+            self._expected_detail_hash(changed_detail, changed_projection),
+        )
+        self.assertEqual(
+            base_entry.source_entry_hash,
+            self._expected_entry_hash(base_entry, {1: base_projection}),
+        )
+        self.assertEqual(
+            changed_entry.source_entry_hash,
+            self._expected_entry_hash(changed_entry, {1: changed_projection}),
+        )
+        self.assertEqual(
+            self.base_statement.normalized_payload_hash,
+            self._expected_statement_hash(
+                self.base_statement,
+                {(1, 1): base_projection},
+            ),
+        )
+        self.assertEqual(
+            self.description_changed_statement.normalized_payload_hash,
+            self._expected_statement_hash(
+                self.description_changed_statement,
+                {(1, 1): changed_projection},
+            ),
+        )
+
+        self.assertNotEqual(base_detail.source_detail_hash, changed_detail.source_detail_hash)
+        self.assertNotEqual(base_entry.source_entry_hash, changed_entry.source_entry_hash)
+        self.assertNotEqual(
+            self.base_statement.normalized_payload_hash,
+            self.description_changed_statement.normalized_payload_hash,
+        )
+        self.assertEqual(
+            self.base_statement.account_identifier_hash,
+            self.description_changed_statement.account_identifier_hash,
+        )
+        self.assertEqual(
+            self.base_statement.entries[1].source_entry_hash,
+            self.description_changed_statement.entries[1].source_entry_hash,
+        )
+        self.assertEqual(
+            self.base_statement.entries[1].source_entry_hash,
+            self._expected_entry_hash(self.base_statement.entries[1], {}),
+        )
+        self._assert_exact_transaction_amount(base_entry, base_detail)
+        self._assert_exact_transaction_amount(changed_entry, changed_detail)
+
     def test_changed_line_identifier_requires_explicit_statement_correction(self) -> None:
         """Changed line-detail evidence cannot silently replay a statement identity."""
         accepted = accept_bank_statement_evidence(
@@ -178,6 +281,27 @@ class BankStatementStructuredLineDetailsEvidenceRedTests(unittest.TestCase):
         with self.assertRaisesRegex(AccountingValidationError, _CORRECTION_ERROR):
             accept_bank_statement_evidence(
                 self._command(self.changed_payload, "line-detail-changed"),
+                posting.DATABASE_URL,
+                self.case.policy.tenant_reference,
+                artifact_store=self.store,
+            )
+
+    def test_changed_line_description_requires_explicit_statement_correction(self) -> None:
+        """Changed description evidence cannot silently replay a statement identity."""
+        accepted = accept_bank_statement_evidence(
+            self._command(self.base_payload, "line-description-base"),
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            artifact_store=self.store,
+        )
+        self.assertFalse(accepted["replayed"])
+
+        with self.assertRaisesRegex(AccountingValidationError, _CORRECTION_ERROR):
+            accept_bank_statement_evidence(
+                self._command(
+                    self.description_changed_payload,
+                    "line-description-changed",
+                ),
                 posting.DATABASE_URL,
                 self.case.policy.tenant_reference,
                 artifact_store=self.store,
@@ -199,14 +323,24 @@ class BankStatementStructuredLineDetailsEvidenceRedTests(unittest.TestCase):
         entry = document["bank_statement_entries"][0]
         detail = entry["entry_details"][0]
         projection = detail.get(_STRUCTURED_EVIDENCE_KEY)
-        self.assertEqual(projection, self._structured_projection(self.second_line_number))
+        self.assertEqual(
+            projection,
+            self._structured_projection(
+                self.second_line_number,
+                self.second_line_description,
+            ),
+        )
 
         self.assertEqual(Decimal(str(entry["entry_amount"])), Decimal("25000.00"))
         self.assertEqual(entry["entry_currency_code"], "KRW")
         self.assertEqual(Decimal(str(detail["detail_amount"])), Decimal("25000.00"))
         self.assertEqual(detail["detail_currency_code"], "KRW")
 
-    def _structured_projection(self, second_line_number: str) -> list[dict[str, object]]:
+    def _structured_projection(
+        self,
+        second_line_number: str,
+        second_line_description: str,
+    ) -> list[dict[str, object]]:
         """Return the exact ordered buyer/hash projection required for this source."""
         return [
             {
@@ -218,6 +352,7 @@ class BankStatementStructuredLineDetailsEvidenceRedTests(unittest.TestCase):
                         "line_type_code": "SKNB",
                         "line_number": self.first_line_number,
                         "related_date": self.line_related_date,
+                        "description": self.first_line_description,
                         "due_payable_amount": {
                             "amount": "10000.05",
                             "currency_code": "KRW",
@@ -238,6 +373,7 @@ class BankStatementStructuredLineDetailsEvidenceRedTests(unittest.TestCase):
                         "line_type_code": "SKNB",
                         "line_number": second_line_number,
                         "related_date": self.line_related_date,
+                        "description": second_line_description,
                         "due_payable_amount": {
                             "amount": "5100.1",
                             "currency_code": "KRW",
@@ -369,6 +505,7 @@ class BankStatementStructuredLineDetailsEvidenceRedTests(unittest.TestCase):
         fixture: str,
         marker: str,
         second_line_number: str,
+        second_line_description: str,
     ) -> bytes:
         """Insert two source-ordered line-detail identities with distinct amounts."""
         structured = (
@@ -392,6 +529,7 @@ class BankStatementStructuredLineDetailsEvidenceRedTests(unittest.TestCase):
             f"                      <Nb>{self.first_line_number}</Nb>\n"
             f"                      <RltdDt>{self.line_related_date}</RltdDt>\n"
             "                    </Id>\n"
+            f"                    <Desc>{self.first_line_description}</Desc>\n"
             "                    <Amt>\n"
             "                      <DuePyblAmt Ccy=\"KRW\">10000.05</DuePyblAmt>\n"
             "                      <DscntApldAmt>\n"
@@ -411,6 +549,7 @@ class BankStatementStructuredLineDetailsEvidenceRedTests(unittest.TestCase):
             f"                      <Nb>{second_line_number}</Nb>\n"
             f"                      <RltdDt>{self.line_related_date}</RltdDt>\n"
             "                    </Id>\n"
+            f"                    <Desc>{second_line_description}</Desc>\n"
             "                    <Amt>\n"
             "                      <DuePyblAmt Ccy=\"KRW\">5100.10</DuePyblAmt>\n"
             "                      <DscntApldAmt>\n"
