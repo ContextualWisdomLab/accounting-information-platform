@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 from copy import deepcopy
+from decimal import Decimal
 
 from accounting_information_platform import (
     AccountingValidationError,
@@ -196,9 +197,9 @@ class BankStatementStructuredLineAdjustmentReasonEvidenceRedTests(unittest.TestC
             detail.get(_STRUCTURED_EVIDENCE_KEY),
             self._structured_projection(self.changed_reason_code),
         )
-        self.assertEqual(str(entry["entry_amount"]), "25000.000000")
+        self.assertEqual(Decimal(str(entry["entry_amount"])), Decimal("25000.00"))
         self.assertEqual(entry["entry_currency_code"], "KRW")
-        self.assertEqual(str(detail["detail_amount"]), "25000.000000")
+        self.assertEqual(Decimal(str(detail["detail_amount"])), Decimal("25000.00"))
         self.assertEqual(detail["detail_currency_code"], "KRW")
 
     def _structured_projection(self, second_line_later_reason_code: str) -> list[dict[str, object]]:
@@ -209,7 +210,10 @@ class BankStatementStructuredLineAdjustmentReasonEvidenceRedTests(unittest.TestC
         line_details = projection[0]["line_details"]
         if not isinstance(line_details, list) or len(line_details) != 2:
             raise AssertionError("canonical line projection must contain exactly two lines")
-        adjustments = line_details[1].get("adjustments")
+        second_line = line_details[1]
+        if not isinstance(second_line, dict):
+            raise AssertionError("second line projection must be one mapping")
+        adjustments = second_line.get("adjustments")
         if not isinstance(adjustments, list) or len(adjustments) != 2:
             raise AssertionError("second line projection must contain exactly two adjustments")
         later_adjustment = adjustments[1]
