@@ -346,8 +346,14 @@ class BankStatementStructuredLineAdjustmentCreditDebitEvidenceRedTests(unittest.
             raise AssertionError("second line boundaries must be present")
         line_end = line_end_start + len("</LineDtls>")
         line_segment = text[line_start:line_end]
-        if line_segment.count("<AdjstmntAmtAndRsn>") != 2:
+        adjustment_marker = "<AdjstmntAmtAndRsn>"
+        if line_segment.count(adjustment_marker) != 2:
             raise AssertionError("second line must contain exactly two adjustments")
+        first_adjustment_index = line_segment.index(adjustment_marker)
+        second_adjustment_index = line_segment.index(
+            adjustment_marker,
+            first_adjustment_index + len(adjustment_marker),
+        )
 
         amount_text = format(self.second_line_later_adjustment_amount, "f")
         old_block = (
@@ -368,6 +374,8 @@ class BankStatementStructuredLineAdjustmentCreditDebitEvidenceRedTests(unittest.
         )
         if line_segment.count(old_block) != 1:
             raise AssertionError("target second-line later adjustment must occur exactly once")
+        if line_segment.index(old_block) != second_adjustment_index:
+            raise AssertionError("target adjustment must be the second source adjustment")
         if old_block != new_block and line_segment.count(new_block) != 0:
             raise AssertionError("replacement adjustment indicator must not pre-exist")
 
