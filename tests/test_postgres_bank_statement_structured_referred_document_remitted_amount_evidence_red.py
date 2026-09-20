@@ -47,9 +47,9 @@ class BankStatementStructuredRemittedAmountEvidenceRedTests(unittest.TestCase):
             raise AssertionError("canonical Ustrd marker must occur exactly once")
 
         self.invoice_number = "INV-2026-1001"
-        self.due_payable_amount = "26000.00"
-        self.base_remitted_amount = "22922.51"
-        self.changed_remitted_amount = "22923.51"
+        self.due_payable_amount = "26000"
+        self.base_remitted_amount = "22922"
+        self.changed_remitted_amount = "22923"
         self.base_payload = self._with_referred_document_amounts(
             fixture,
             marker,
