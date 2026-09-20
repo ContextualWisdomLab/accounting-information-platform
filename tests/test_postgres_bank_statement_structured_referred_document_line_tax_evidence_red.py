@@ -264,7 +264,9 @@ class BankStatementStructuredLineTaxEvidenceRedTests(unittest.TestCase):
             },
             {
                 "type_code": "LOCL",
-                "amount": str(Decimal(second_local_tax_amount).normalize()),
+                "amount": self.line_contract._decimal_text(
+                    Decimal(second_local_tax_amount)
+                ),
                 "currency_code": "KRW",
             },
         ]
