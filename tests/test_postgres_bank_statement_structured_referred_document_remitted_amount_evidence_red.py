@@ -1,4 +1,4 @@
-"""REDs for structured referred-document remitted-amount evidence preservation."""
+"""REDs for structured referred-document amount evidence preservation."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ _CORRECTION_ERROR = (
 
 
 class BankStatementStructuredRemittedAmountEvidenceRedTests(unittest.TestCase):
-    """Retain RfrdDocAmt remitted amount as Bank Reconciliation evidence."""
+    """Retain RfrdDocAmt due/remitted amounts as Bank Reconciliation evidence."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -35,7 +35,7 @@ class BankStatementStructuredRemittedAmountEvidenceRedTests(unittest.TestCase):
         posting.PostgresPostingTests.setUpClass()
 
     def setUp(self) -> None:
-        """Prepare statements that differ only in the remitted amount."""
+        """Prepare statements that independently vary due or remitted amount."""
         self.case = posting.PostgresPostingTests("setUp")
         self.addCleanup(self.case.doCleanups)
         self.case.setUp()
@@ -48,6 +48,7 @@ class BankStatementStructuredRemittedAmountEvidenceRedTests(unittest.TestCase):
 
         self.invoice_number = "INV-2026-1001"
         self.due_payable_amount = "26000"
+        self.changed_due_payable_amount = "26001"
         self.base_remitted_amount = "22922"
         self.changed_remitted_amount = "22923"
         self.base_payload = self._with_referred_document_amounts(
@@ -60,12 +61,22 @@ class BankStatementStructuredRemittedAmountEvidenceRedTests(unittest.TestCase):
             marker,
             self.changed_remitted_amount,
         )
+        self.changed_due_payload = self._with_referred_document_amounts(
+            fixture,
+            marker,
+            self.base_remitted_amount,
+            due_payable_amount=self.changed_due_payable_amount,
+        )
         self.base_statement = parse_bank_statement_payload(
             self.base_payload,
             CAMT053_MESSAGE_DEFINITION,
         )
         self.changed_statement = parse_bank_statement_payload(
             self.changed_payload,
+            CAMT053_MESSAGE_DEFINITION,
+        )
+        self.changed_due_statement = parse_bank_statement_payload(
+            self.changed_due_payload,
             CAMT053_MESSAGE_DEFINITION,
         )
 
@@ -128,6 +139,50 @@ class BankStatementStructuredRemittedAmountEvidenceRedTests(unittest.TestCase):
         self._assert_exact_transaction_amount(base_entry, base_detail)
         self._assert_exact_transaction_amount(changed_entry, changed_detail)
 
+    def test_due_payable_amount_is_material_to_evidence_identity(self) -> None:
+        """A changed due-payable amount must change only its owning evidence chain."""
+        base_entry = self.base_statement.entries[0]
+        changed_entry = self.changed_due_statement.entries[0]
+        base_detail = base_entry.entry_details[0]
+        changed_detail = changed_entry.entry_details[0]
+
+        for value in (
+            base_detail.source_detail_hash,
+            changed_detail.source_detail_hash,
+            base_entry.source_entry_hash,
+            changed_entry.source_entry_hash,
+            self.base_statement.normalized_payload_hash,
+            self.changed_due_statement.normalized_payload_hash,
+            self.base_statement.account_identifier_hash,
+            self.changed_due_statement.account_identifier_hash,
+            self.base_statement.entries[1].source_entry_hash,
+            self.changed_due_statement.entries[1].source_entry_hash,
+        ):
+            self._assert_sha256(value)
+
+        self.assertNotEqual(
+            base_detail.source_detail_hash,
+            changed_detail.source_detail_hash,
+        )
+        self.assertNotEqual(
+            base_entry.source_entry_hash,
+            changed_entry.source_entry_hash,
+        )
+        self.assertNotEqual(
+            self.base_statement.normalized_payload_hash,
+            self.changed_due_statement.normalized_payload_hash,
+        )
+        self.assertEqual(
+            self.base_statement.account_identifier_hash,
+            self.changed_due_statement.account_identifier_hash,
+        )
+        self.assertEqual(
+            self.base_statement.entries[1].source_entry_hash,
+            self.changed_due_statement.entries[1].source_entry_hash,
+        )
+        self._assert_exact_transaction_amount(base_entry, base_detail)
+        self._assert_exact_transaction_amount(changed_entry, changed_detail)
+
     def test_changed_remitted_amount_requires_explicit_statement_correction(self) -> None:
         """Changing bank-reported remitted evidence cannot silently replay a statement."""
         accepted = accept_bank_statement_evidence(
@@ -141,6 +196,24 @@ class BankStatementStructuredRemittedAmountEvidenceRedTests(unittest.TestCase):
         with self.assertRaisesRegex(AccountingValidationError, _CORRECTION_ERROR):
             accept_bank_statement_evidence(
                 self._command(self.changed_payload, "remitted-changed"),
+                posting.DATABASE_URL,
+                self.case.policy.tenant_reference,
+                artifact_store=self.store,
+            )
+
+    def test_changed_due_payable_amount_requires_explicit_statement_correction(self) -> None:
+        """Changing bank-reported due evidence cannot silently replay a statement."""
+        accepted = accept_bank_statement_evidence(
+            self._command(self.base_payload, "due-base"),
+            posting.DATABASE_URL,
+            self.case.policy.tenant_reference,
+            artifact_store=self.store,
+        )
+        self.assertFalse(accepted["replayed"])
+
+        with self.assertRaisesRegex(AccountingValidationError, _CORRECTION_ERROR):
+            accept_bank_statement_evidence(
+                self._command(self.changed_due_payload, "due-changed"),
                 posting.DATABASE_URL,
                 self.case.policy.tenant_reference,
                 artifact_store=self.store,
@@ -184,8 +257,15 @@ class BankStatementStructuredRemittedAmountEvidenceRedTests(unittest.TestCase):
         fixture: str,
         marker: str,
         remitted_amount: str,
+        *,
+        due_payable_amount: str | None = None,
     ) -> bytes:
         """Insert one source-ordered due/remitted amount pair into RfrdDocAmt."""
+        due_payable_amount = (
+            self.due_payable_amount
+            if due_payable_amount is None
+            else due_payable_amount
+        )
         structured = (
             f"{marker}\n"
             "              <Strd>\n"
@@ -198,7 +278,7 @@ class BankStatementStructuredRemittedAmountEvidenceRedTests(unittest.TestCase):
             f"                  <Nb>{self.invoice_number}</Nb>\n"
             "                </RfrdDocInf>\n"
             "                <RfrdDocAmt>\n"
-            f'                  <DuePyblAmt Ccy="KRW">{self.due_payable_amount}</DuePyblAmt>\n'
+            f'                  <DuePyblAmt Ccy="KRW">{due_payable_amount}</DuePyblAmt>\n'
             f'                  <RmtdAmt Ccy="KRW">{remitted_amount}</RmtdAmt>\n'
             "                </RfrdDocAmt>\n"
             "              </Strd>"
@@ -225,7 +305,7 @@ class BankStatementStructuredRemittedAmountEvidenceRedTests(unittest.TestCase):
 
     @staticmethod
     def _assert_exact_transaction_amount(entry: object, detail: object) -> None:
-        """Keep bank-reported remitted amount separate from transaction amount truth."""
+        """Keep referred-document amounts separate from transaction amount truth."""
         if getattr(entry, "entry_amount", None) != Decimal("25000.00"):
             raise AssertionError("entry amount must remain exactly 25000.00")
         if getattr(entry, "entry_currency_code", None) != "KRW":
