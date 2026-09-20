@@ -256,6 +256,7 @@ class BankStatementStructuredLineAdjustmentAdditionalInformationEvidenceRedTests
             "detail_currency_code",
             "credit_debit_code",
             "end_to_end_reference",
+            "account_servicer_reference",
             "remittance_evidence_text",
         )
         for base_entry, changed_entry in zip(
