@@ -210,7 +210,7 @@ class BankStatementStructuredLineIssuerEvidenceRedTests(unittest.TestCase):
     def test_buyer_read_keeps_line_issuer_bound_to_each_line_identity(self) -> None:
         """Buyer reads retain issuer with the line type and number it qualifies."""
         accepted = accept_bank_statement_evidence(
-            self._command(self.base_payload, "line-issuer-lookup"),
+            self._command(self.changed_payload, "line-issuer-lookup"),
             posting.DATABASE_URL,
             self.case.policy.tenant_reference,
             artifact_store=self.store,
@@ -225,7 +225,7 @@ class BankStatementStructuredLineIssuerEvidenceRedTests(unittest.TestCase):
 
         self.assertEqual(
             detail.get(_STRUCTURED_EVIDENCE_KEY),
-            self._structured_projection(self.line_type_issuer),
+            self._structured_projection(self.changed_line_type_issuer),
         )
         self.assertEqual(Decimal(str(entry["entry_amount"])), Decimal("25000.00"))
         self.assertEqual(entry["entry_currency_code"], "KRW")
