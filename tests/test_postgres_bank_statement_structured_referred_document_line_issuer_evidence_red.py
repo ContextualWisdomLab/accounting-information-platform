@@ -17,8 +17,9 @@ from accounting_information_platform import (
     parse_bank_statement_payload,
 )
 from tests import test_postgres_posting as posting
-from tests.test_postgres_bank_statement_structured_referred_document_line_details_evidence_red import (
-    BankStatementStructuredLineDetailsEvidenceRedTests as LineDetailsEvidenceContract,
+from tests import (
+    test_postgres_bank_statement_structured_referred_document_line_details_evidence_red
+    as line_details_contract,
 )
 
 _CORRECTION_ERROR = (
@@ -57,8 +58,10 @@ class BankStatementStructuredLineIssuerEvidenceRedTests(unittest.TestCase):
         self.line_type_issuer = "ISO"
         self.changed_line_type_issuer = "ISO-LOCAL"
 
-        self.line_contract = LineDetailsEvidenceContract(
-            "test_line_projection_is_material_to_each_canonical_evidence_hash"
+        self.line_contract = (
+            line_details_contract.BankStatementStructuredLineDetailsEvidenceRedTests(
+                "test_line_projection_is_material_to_each_canonical_evidence_hash"
+            )
         )
         self.line_contract.document_number = self.document_number
         self.line_contract.first_line_number = self.first_line_number
