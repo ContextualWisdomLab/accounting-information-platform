@@ -86,6 +86,7 @@ class BankStatementStructuredLineAdjustmentAdditionalInformationEvidenceRedTests
         line_contract = self.credit_debit_contract.line_contract
 
         self.assertNotEqual(base_projection, changed_projection)
+        self._assert_non_structured_normalization_unchanged()
         for value in (
             base_detail.source_detail_hash,
             changed_detail.source_detail_hash,
@@ -207,6 +208,75 @@ class BankStatementStructuredLineAdjustmentAdditionalInformationEvidenceRedTests
         self.assertEqual(entry["entry_currency_code"], "KRW")
         self.assertEqual(Decimal(str(detail["detail_amount"])), Decimal("25000.00"))
         self.assertEqual(detail["detail_currency_code"], "KRW")
+
+    def _assert_non_structured_normalization_unchanged(self) -> None:
+        """Prove the source delta cannot hide collateral normalized-field changes."""
+        statement_fields = (
+            "message_definition_identifier",
+            "statement_identity_reference",
+            "electronic_sequence_number",
+            "legal_sequence_number",
+            "period_start_at",
+            "period_end_at",
+            "opening_balance_hash",
+            "closing_balance_hash",
+            "account_currency_code",
+            "account_identifier_hash",
+        )
+        self.assertEqual(
+            tuple(getattr(self.base_statement, field) for field in statement_fields),
+            tuple(getattr(self.changed_statement, field) for field in statement_fields),
+        )
+        self.assertEqual(len(self.base_statement.entries), len(self.changed_statement.entries))
+
+        entry_fields = (
+            "source_entry_identity",
+            "entry_sequence_number",
+            "source_locator_path",
+            "booking_occurred_at",
+            "value_occurred_at",
+            "entry_amount",
+            "entry_currency_code",
+            "credit_debit_code",
+            "reversal_indicator",
+            "bank_transaction_domain_code",
+            "bank_transaction_family_code",
+            "bank_transaction_subfamily_code",
+            "end_to_end_reference",
+            "account_servicer_reference",
+            "mandate_reference",
+            "cheque_reference",
+            "remittance_evidence_text",
+            "counterparty_evidence_hash",
+        )
+        detail_fields = (
+            "detail_sequence_number",
+            "source_locator_path",
+            "detail_amount",
+            "detail_currency_code",
+            "credit_debit_code",
+            "end_to_end_reference",
+            "remittance_evidence_text",
+        )
+        for base_entry, changed_entry in zip(
+            self.base_statement.entries,
+            self.changed_statement.entries,
+            strict=True,
+        ):
+            self.assertEqual(
+                tuple(getattr(base_entry, field) for field in entry_fields),
+                tuple(getattr(changed_entry, field) for field in entry_fields),
+            )
+            self.assertEqual(len(base_entry.entry_details), len(changed_entry.entry_details))
+            for base_detail, changed_detail in zip(
+                base_entry.entry_details,
+                changed_entry.entry_details,
+                strict=True,
+            ):
+                self.assertEqual(
+                    tuple(getattr(base_detail, field) for field in detail_fields),
+                    tuple(getattr(changed_detail, field) for field in detail_fields),
+                )
 
     def _structured_projection(
         self,
