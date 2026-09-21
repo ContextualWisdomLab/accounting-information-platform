@@ -209,6 +209,7 @@ class BankStatementStructuredReferredDocumentLineOrderEvidenceRedTests(unittest.
             self.line_contract.case.policy.tenant_reference,
             record_id,
         )
+        before_artifacts = dict(self.line_contract.store._artifacts)
 
         with self.assertRaisesRegex(AccountingValidationError, _CORRECTION_ERROR):
             accept_bank_statement_evidence(
@@ -231,6 +232,7 @@ class BankStatementStructuredReferredDocumentLineOrderEvidenceRedTests(unittest.
             self.line_contract.case.policy.tenant_reference,
             record_id,
         )
+        self.assertEqual(self.line_contract.store._artifacts, before_artifacts)
         self.assertEqual(after_statement, before_statement)
         self.assertEqual(after_entries, before_entries)
         self.assertEqual(
