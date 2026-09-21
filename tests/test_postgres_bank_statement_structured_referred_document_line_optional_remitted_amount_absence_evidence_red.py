@@ -383,18 +383,7 @@ class BankStatementStructuredLineOptionalRemittedAmountAbsenceEvidenceRedTests(
         text = payload.decode("utf-8")
         segment, _, _ = self.parent.parent._second_line_segment(text)
         lines = segment.splitlines(keepends=True)
-        amount_open = [
-            index for index, line in enumerate(lines) if line.strip() == "<Amt>"
-        ]
-        amount_close = [
-            index for index, line in enumerate(lines) if line.strip() == "</Amt>"
-        ]
-        if len(amount_open) != 1 or len(amount_close) != 1:
-            raise AssertionError("second source line requires one direct Amount group")
-        start = amount_open[0]
-        end = amount_close[0]
-        if not start < end:
-            raise AssertionError("direct Amount group boundaries are invalid")
+        start, end = self.parent._direct_amount_bounds(lines)
 
         candidates = [
             (index, line)
@@ -421,10 +410,7 @@ class BankStatementStructuredLineOptionalRemittedAmountAbsenceEvidenceRedTests(
         changed_lines = changed_segment.splitlines(keepends=True)
         if any("RmtdAmt" in line for line in changed_lines):
             raise AssertionError("changed line-two Amount must omit RmtdAmt")
-        if sum(line.strip() == "<Amt>" for line in changed_lines) != 1:
-            raise AssertionError("direct Amount group must remain after RmtdAmt omission")
-        if sum(line.strip() == "</Amt>" for line in changed_lines) != 1:
-            raise AssertionError("direct Amount group must remain closed")
+        self.parent._direct_amount_bounds(changed_lines)
         if not any("<DscntApldAmt>" in line for line in changed_lines):
             raise AssertionError("discount evidence must keep the Amount group populated")
         return (text[:segment_start] + changed_segment + text[segment_end:]).encode(
@@ -438,12 +424,8 @@ class BankStatementStructuredLineOptionalRemittedAmountAbsenceEvidenceRedTests(
         lines = segment.splitlines(keepends=True)
         if any("RmtdAmt" in line for line in lines):
             raise AssertionError("RmtdAmt-absence fixture must not already contain it")
-        close_indexes = [
-            index for index, line in enumerate(lines) if line.strip() == "</Amt>"
-        ]
-        if len(close_indexes) != 1:
-            raise AssertionError("second source line requires one direct Amount closer")
-        insert_at = close_indexes[0]
+        _, end = self.parent._direct_amount_bounds(lines)
+        insert_at = end
         restored_segment = "".join(
             lines[:insert_at] + [self.remitted_line] + lines[insert_at:]
         )
