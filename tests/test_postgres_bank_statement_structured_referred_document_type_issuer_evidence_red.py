@@ -61,18 +61,22 @@ class BankStatementStructuredReferredDocumentTypeIssuerEvidenceRedTests(
         self.changed_document_type_issuer = "LOCAL-SCHEME"
         self.line_type_issuer_decoy = "LINE-SCHEME"
 
-        coded_with_line_decoy = self._with_second_document_line_issuer(
+        self.decoy_only_payload = self._with_second_document_line_issuer(
             self.proprietary_contract.coded_payload,
             self.line_type_issuer_decoy,
         )
         self.base_payload = self._with_document_type_issuer(
-            coded_with_line_decoy,
+            self.decoy_only_payload,
             self.base_document_type_issuer,
         )
         self.changed_payload = self._replace_document_type_issuer(
             self.base_payload,
             self.base_document_type_issuer,
             self.changed_document_type_issuer,
+        )
+        self.decoy_only_statement = parse_bank_statement_payload(
+            self.decoy_only_payload,
+            CAMT053_MESSAGE_DEFINITION,
         )
         self.base_statement = parse_bank_statement_payload(
             self.base_payload,
@@ -195,6 +199,60 @@ class BankStatementStructuredReferredDocumentTypeIssuerEvidenceRedTests(
             changed_entry,
             changed_detail,
         )
+
+    def test_line_issuer_decoy_does_not_populate_document_type_issuer(self) -> None:
+        """A line Id/Issr remains line evidence when outer Tp/Issr is absent."""
+        entry = self.decoy_only_statement.entries[0]
+        detail = entry.entry_details[0]
+        projection = self._structured_projection(None)
+
+        self.assertEqual(
+            detail.source_detail_hash,
+            self.line_contract._expected_detail_hash(detail, projection),
+        )
+        self.assertEqual(
+            entry.source_entry_hash,
+            self.line_contract._expected_entry_hash(entry, {1: projection}),
+        )
+        self.assertEqual(
+            self.decoy_only_statement.normalized_payload_hash,
+            self.line_contract._expected_statement_hash(
+                self.decoy_only_statement,
+                {(1, 1): projection},
+            ),
+        )
+        self.line_contract._assert_exact_transaction_amount(entry, detail)
+
+        accepted = accept_bank_statement_evidence(
+            self.line_contract._command(
+                self.decoy_only_payload,
+                "document-type-issuer-decoy-only",
+            ),
+            posting.DATABASE_URL,
+            self.line_contract.case.policy.tenant_reference,
+            artifact_store=self.line_contract.store,
+        )
+        document = lookup_bank_statement_entries(
+            posting.DATABASE_URL,
+            self.line_contract.case.policy.tenant_reference,
+            str(accepted["bank_statement_record_id"]),
+        )
+        buyer_entry = document["bank_statement_entries"][0]
+        buyer_detail = buyer_entry["entry_details"][0]
+        self.assertEqual(
+            buyer_detail.get(_STRUCTURED_EVIDENCE_KEY),
+            projection,
+        )
+        self.assertEqual(
+            Decimal(str(buyer_entry["entry_amount"])),
+            Decimal("25000.00"),
+        )
+        self.assertEqual(buyer_entry["entry_currency_code"], "KRW")
+        self.assertEqual(
+            Decimal(str(buyer_detail["detail_amount"])),
+            Decimal("25000.00"),
+        )
+        self.assertEqual(buyer_detail["detail_currency_code"], "KRW")
 
     def test_changed_document_type_issuer_fails_closed_for_same_statement_identity(
         self,
@@ -354,7 +412,7 @@ class BankStatementStructuredReferredDocumentTypeIssuerEvidenceRedTests(
 
     def _structured_projection(
         self,
-        document_type_issuer: str,
+        document_type_issuer: str | None,
     ) -> list[dict[str, object]]:
         """Return two documents with competing issuer scopes on the second."""
         parent_projection = deepcopy(
@@ -390,7 +448,8 @@ class BankStatementStructuredReferredDocumentTypeIssuerEvidenceRedTests(
         if not isinstance(first_line, dict):
             raise AssertionError("first second-document line must be a mapping")
         first_line["line_type_issuer"] = self.line_type_issuer_decoy
-        second_document["document_type_issuer"] = document_type_issuer
+        if document_type_issuer is not None:
+            second_document["document_type_issuer"] = document_type_issuer
         return [first_document, second_document]
 
     def _with_second_document_line_issuer(
