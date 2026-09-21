@@ -30,10 +30,14 @@ _NORMALIZATION_PARENT_TEST = optional_remitted_contract._NORMALIZATION_PARENT_TE
 _CORRECTION_ERROR = optional_remitted_contract._CORRECTION_ERROR
 _STRUCTURED_EVIDENCE_KEY = "structured_referred_document_evidence"
 _DISCOUNT_KEY = "discount_applied_amounts"
-_EXPECTED_DISCOUNTS = [
-    {"type_code": "APDS", "amount": "100", "currency_code": "KRW"},
-    {"type_code": "STDS", "amount": "50", "currency_code": "KRW"},
-]
+_APDS = {"type_code": "APDS", "amount": "100", "currency_code": "KRW"}
+_STDS = {"type_code": "STDS", "amount": "50", "currency_code": "KRW"}
+_LATER_DISCOUNT_SOURCE = (
+    "                      <DscntApldAmt>\n"
+    "                        <Tp><Cd>STDS</Cd></Tp>\n"
+    "                        <Amt Ccy=\"KRW\">50.00</Amt>\n"
+    "                      </DscntApldAmt>\n"
+)
 
 
 class BankStatementStructuredLineRepeatedDiscountContractionEvidenceRedTests(
@@ -47,7 +51,7 @@ class BankStatementStructuredLineRepeatedDiscountContractionEvidenceRedTests(
         _PARENT_TEST.setUpClass()
 
     def setUp(self) -> None:
-        """Remove only the later second-line discount from #118's changed source."""
+        """Seed two line-two discounts, then remove only the later STDS member."""
         self.parent = _PARENT_TEST(
             "test_optional_remitted_amount_absence_is_material_to_each_evidence_hash"
         )
@@ -55,45 +59,49 @@ class BankStatementStructuredLineRepeatedDiscountContractionEvidenceRedTests(
         self.addCleanup(self.parent.doCleanups)
         self.line_contract = self.parent.line_contract
 
-        # Compose on #118's changed source: DuePyblAmt and RmtdAmt are already
-        # absent, while two repeated discounts keep the direct Amount group live.
-        self.base_payload = self.parent.changed_payload
+        # #118 intentionally owns a one-discount APDS source after DuePyblAmt and
+        # RmtdAmt disappear. Seed the second STDS member here so this RED proves a
+        # real 2 -> 1 repeated-member contraction instead of assuming ancestry.
+        self.base_payload = self._seed_later_second_line_discount(
+            self.parent.changed_payload
+        )
         self.base_statement = parse_bank_statement_payload(
             self.base_payload,
             CAMT053_MESSAGE_DEFINITION,
         )
-        self.base_projection = deepcopy(self.parent.changed_projection)
+        self.base_projection = self._projection_with_later_discount(
+            self.parent.changed_projection
+        )
         first_line, second_line = self.parent.parent.parent._line_details(
             self.base_projection
         )
         discounts = second_line.get(_DISCOUNT_KEY)
-        if discounts != _EXPECTED_DISCOUNTS:
+        if discounts != [_APDS, _STDS]:
             raise AssertionError(
-                "second source line must begin with APDS / 100 KRW then STDS / 50 KRW"
+                "seeded second source line must contain APDS / 100 then STDS / 50 KRW"
             )
-        self.retained_discount = deepcopy(discounts[0])
-        self.removed_discount = deepcopy(discounts[1])
-        self.first_line_projection = deepcopy(first_line)
-        self.second_line_non_discount_projection = deepcopy(second_line)
-        self.second_line_non_discount_projection.pop(_DISCOUNT_KEY)
         if "due_payable_amount" in second_line or "remitted_amount" in second_line:
             raise AssertionError(
                 "parent omission contracts must remove DuePyblAmt and RmtdAmt first"
             )
+        self.first_line_projection = deepcopy(first_line)
+        self.second_line_non_discount_projection = deepcopy(second_line)
+        self.second_line_non_discount_projection.pop(_DISCOUNT_KEY)
 
-        base_blocks = self._second_line_discount_blocks(self.base_payload)
-        if len(base_blocks) != 2:
-            raise AssertionError("second source line must contain exactly two discounts")
-        self.discount_gap = base_blocks[1][1]
-        self.removed_discount_block = base_blocks[1][0]
-        self.changed_payload = self._remove_later_second_line_discount(
-            self.base_payload
-        )
+        self.changed_payload = self._remove_later_second_line_discount(self.base_payload)
+        if self.changed_payload != self.parent.changed_payload:
+            raise AssertionError(
+                "discount contraction must recover #118 exact changed-source bytes"
+            )
         self.changed_statement = parse_bank_statement_payload(
             self.changed_payload,
             CAMT053_MESSAGE_DEFINITION,
         )
         self.changed_projection = self._projection_without_later_discount()
+        if self.changed_projection != self.parent.changed_projection:
+            raise AssertionError(
+                "discount contraction must recover #118 exact changed projection"
+            )
 
     def test_later_discount_removal_is_material_to_each_evidence_hash(self) -> None:
         """Bind repeated-member contraction through raw and canonical evidence identity."""
@@ -139,10 +147,7 @@ class BankStatementStructuredLineRepeatedDiscountContractionEvidenceRedTests(
 
         self.assertEqual(
             base_detail.source_detail_hash,
-            self.line_contract._expected_detail_hash(
-                base_detail,
-                self.base_projection,
-            ),
+            self.line_contract._expected_detail_hash(base_detail, self.base_projection),
         )
         self.assertEqual(
             changed_detail.source_detail_hash,
@@ -179,7 +184,6 @@ class BankStatementStructuredLineRepeatedDiscountContractionEvidenceRedTests(
                 {(1, 1): self.changed_projection},
             ),
         )
-
         self.assertNotEqual(base_detail.source_detail_hash, changed_detail.source_detail_hash)
         self.assertNotEqual(base_entry.source_entry_hash, changed_entry.source_entry_hash)
         self.assertNotEqual(
@@ -246,7 +250,7 @@ class BankStatementStructuredLineRepeatedDiscountContractionEvidenceRedTests(
         )
 
     def test_buyer_read_keeps_only_the_source_retained_discount(self) -> None:
-        """Expose APDS only after the later STDS member disappears from source."""
+        """Expose APDS only after the seeded later STDS member disappears from source."""
         accepted = accept_bank_statement_evidence(
             self.line_contract._command(
                 self.changed_payload,
@@ -331,7 +335,7 @@ class BankStatementStructuredLineRepeatedDiscountContractionEvidenceRedTests(
         self.assertEqual(first_line, self.first_line_projection)
         second_line_without_discounts = deepcopy(second_line)
         discounts = second_line_without_discounts.pop(_DISCOUNT_KEY, None)
-        self.assertEqual(discounts, [self.retained_discount])
+        self.assertEqual(discounts, [_APDS])
         self.assertEqual(
             second_line_without_discounts,
             self.second_line_non_discount_projection,
@@ -339,20 +343,32 @@ class BankStatementStructuredLineRepeatedDiscountContractionEvidenceRedTests(
         self.assertNotIn("due_payable_amount", second_line)
         self.assertNotIn("remitted_amount", second_line)
         self.assertNotIn("description", second_line)
-
         self.assertEqual(Decimal(str(entry["entry_amount"])), Decimal("25000.00"))
         self.assertEqual(entry["entry_currency_code"], "KRW")
         self.assertEqual(Decimal(str(detail["detail_amount"])), Decimal("25000.00"))
         self.assertEqual(detail["detail_currency_code"], "KRW")
 
+    def _projection_with_later_discount(
+        self,
+        projection: list[dict[str, object]],
+    ) -> list[dict[str, object]]:
+        """Seed one later STDS member after the exact inherited APDS discount."""
+        changed = deepcopy(projection)
+        _, second_line = self.parent.parent.parent._line_details(changed)
+        discounts = second_line.get(_DISCOUNT_KEY)
+        if discounts != [_APDS]:
+            raise AssertionError("#118 source must begin with exactly APDS / 100 KRW")
+        discounts.append(deepcopy(_STDS))
+        return changed
+
     def _projection_without_later_discount(self) -> list[dict[str, object]]:
-        """Remove only the later STDS member from line two's discount population."""
+        """Contract the seeded APDS/STDS population back to inherited APDS only."""
         projection = deepcopy(self.base_projection)
         first_line, second_line = self.parent.parent.parent._line_details(projection)
         discounts = second_line.get(_DISCOUNT_KEY)
-        if discounts != [self.retained_discount, self.removed_discount]:
-            raise AssertionError("projection discount population drifted before contraction")
-        second_line[_DISCOUNT_KEY] = [deepcopy(discounts[0])]
+        if discounts != [_APDS, _STDS]:
+            raise AssertionError("projection must begin with seeded APDS then STDS")
+        second_line[_DISCOUNT_KEY] = [deepcopy(_APDS)]
         if first_line != self.first_line_projection:
             raise AssertionError("first source line must remain unchanged")
         stable_second_line = deepcopy(second_line)
@@ -361,8 +377,8 @@ class BankStatementStructuredLineRepeatedDiscountContractionEvidenceRedTests(
             raise AssertionError("non-discount line-two evidence must remain unchanged")
         return projection
 
-    def _second_line_discount_blocks(self, payload: bytes) -> list[tuple[str, str]]:
-        """Return direct discount blocks with exact inter-member source gaps."""
+    def _second_line_discount_blocks(self, payload: bytes) -> list[str]:
+        """Return complete direct discount blocks from the line-two Amount group."""
         text = payload.decode("utf-8")
         segment, _, _ = self.parent.parent.parent._second_line_segment(text)
         lines = segment.splitlines(keepends=True)
@@ -381,63 +397,65 @@ class BankStatementStructuredLineRepeatedDiscountContractionEvidenceRedTests(
             for match in matches
         ):
             raise AssertionError("discount blocks must remain inside the direct Amount group")
-        blocks: list[tuple[str, str]] = []
-        for index, match in enumerate(matches):
-            gap = "" if index == 0 else segment[matches[index - 1].end() : match.start()]
-            blocks.append((match.group(0), gap))
-        return blocks
+        return [match.group(0) for match in matches]
+
+    def _seed_later_second_line_discount(self, payload: bytes) -> bytes:
+        """Append the exact STDS fixture block after the inherited APDS member."""
+        text = payload.decode("utf-8")
+        segment, segment_start, segment_end = (
+            self.parent.parent.parent._second_line_segment(text)
+        )
+        blocks = self._second_line_discount_blocks(payload)
+        if len(blocks) != 1 or "<Cd>APDS</Cd>" not in blocks[0]:
+            raise AssertionError("#118 source must contain exactly one APDS discount")
+        if "<Amt Ccy=\"KRW\">100.00</Amt>" not in blocks[0]:
+            raise AssertionError("inherited APDS amount must remain 100.00 KRW")
+        if _LATER_DISCOUNT_SOURCE in segment or "<Cd>STDS</Cd>" in segment:
+            raise AssertionError("#118 source must not already contain STDS")
+        first_end = segment.index(blocks[0]) + len(blocks[0])
+        if segment[first_end : first_end + 1] != "\n":
+            raise AssertionError("inherited APDS block must retain its source newline")
+        insert_at = first_end + 1
+        seeded_segment = (
+            segment[:insert_at]
+            + _LATER_DISCOUNT_SOURCE
+            + segment[insert_at:]
+        )
+        seeded = (text[:segment_start] + seeded_segment + text[segment_end:]).encode(
+            "utf-8"
+        )
+        blocks = self._second_line_discount_blocks(seeded)
+        if len(blocks) != 2 or "<Cd>STDS</Cd>" not in blocks[1]:
+            raise AssertionError("seeded source must contain APDS then STDS")
+        return seeded
 
     def _remove_later_second_line_discount(self, payload: bytes) -> bytes:
-        """Remove only the complete later STDS discount source block."""
+        """Remove only the exact seeded STDS block, including its source newline."""
         text = payload.decode("utf-8")
         segment, segment_start, segment_end = (
             self.parent.parent.parent._second_line_segment(text)
         )
         blocks = self._second_line_discount_blocks(payload)
         if len(blocks) != 2:
-            raise AssertionError("second source line must contain exactly two discounts")
-        first_block, second_block = blocks[0][0], blocks[1][0]
-        if "<Cd>APDS</Cd>" not in first_block or "<Cd>STDS</Cd>" not in second_block:
+            raise AssertionError("seeded line must contain exactly two discounts")
+        if "<Cd>APDS</Cd>" not in blocks[0] or "<Cd>STDS</Cd>" not in blocks[1]:
             raise AssertionError("source discount order must remain APDS then STDS")
-        if "<Amt Ccy=\"KRW\">100.00</Amt>" not in first_block:
-            raise AssertionError("first discount source amount must remain 100.00 KRW")
-        if "<Amt Ccy=\"KRW\">50.00</Amt>" not in second_block:
-            raise AssertionError("later discount source amount must remain 50.00 KRW")
-        if segment.count(second_block) != 1:
-            raise AssertionError("later discount block must occur exactly once")
-        changed_segment = segment.replace(second_block, "", 1)
-        changed_payload = (
-            text[:segment_start] + changed_segment + text[segment_end:]
-        ).encode("utf-8")
-        remaining = self._second_line_discount_blocks(changed_payload)
-        if len(remaining) != 1 or "<Cd>APDS</Cd>" not in remaining[0][0]:
-            raise AssertionError("contraction must retain exactly the first APDS discount")
-        return changed_payload
-
-    def _restore_later_second_line_discount(self, payload: bytes) -> bytes:
-        """Restore the exact removed STDS block at its original member boundary."""
-        text = payload.decode("utf-8")
-        segment, segment_start, segment_end = (
-            self.parent.parent.parent._second_line_segment(text)
-        )
-        remaining = self._second_line_discount_blocks(payload)
-        if len(remaining) != 1 or "<Cd>APDS</Cd>" not in remaining[0][0]:
-            raise AssertionError("contraction fixture must retain exactly one APDS discount")
-        if "<Cd>STDS</Cd>" in segment:
-            raise AssertionError("contraction fixture must not already contain STDS")
-        first_block = remaining[0][0]
-        first_end = segment.index(first_block) + len(first_block)
-        if segment[first_end : first_end + len(self.discount_gap)] != self.discount_gap:
-            raise AssertionError("inter-discount source gap must remain byte-exact")
-        insert_at = first_end + len(self.discount_gap)
-        restored_segment = (
-            segment[:insert_at]
-            + self.removed_discount_block
-            + segment[insert_at:]
-        )
-        return (text[:segment_start] + restored_segment + text[segment_end:]).encode(
+        if segment.count(_LATER_DISCOUNT_SOURCE) != 1:
+            raise AssertionError("exact seeded STDS source block must occur once")
+        changed_segment = segment.replace(_LATER_DISCOUNT_SOURCE, "", 1)
+        changed = (text[:segment_start] + changed_segment + text[segment_end:]).encode(
             "utf-8"
         )
+        remaining = self._second_line_discount_blocks(changed)
+        if len(remaining) != 1 or "<Cd>APDS</Cd>" not in remaining[0]:
+            raise AssertionError("contraction must retain exactly the inherited APDS member")
+        return changed
+
+    def _restore_later_second_line_discount(self, payload: bytes) -> bytes:
+        """Restore the exact seeded STDS member at its original source boundary."""
+        if "<Cd>STDS</Cd>" in payload.decode("utf-8"):
+            raise AssertionError("contracted source must not already contain STDS")
+        return self._seed_later_second_line_discount(payload)
 
 
 if __name__ == "__main__":
