@@ -353,7 +353,17 @@ class BankStatementStructuredRepeatedLineIdentificationOptionalRelatedDateAbsenc
         closing_indent = block[closing_line_start:closing_pos]
         if not closing_indent:
             raise AssertionError("target Id indentation must be recoverable")
-        child_indent = closing_indent + "    "
+
+        first_child_start = block.find("\n") + 1
+        first_child_end = block.find("\n", first_child_start)
+        if first_child_start <= 0 or first_child_end < 0:
+            raise AssertionError("target Id requires a surviving direct child line")
+        first_child_line = block[first_child_start:first_child_end]
+        if first_child_line.strip() != "<Tp>":
+            raise AssertionError("first repeated Id direct child must remain Type")
+        child_indent = first_child_line[: len(first_child_line) - len(first_child_line.lstrip())]
+        if not child_indent.startswith(closing_indent) or len(child_indent) <= len(closing_indent):
+            raise AssertionError("target Id child indentation must extend closing indentation")
 
         restored_block = (
             block[:closing_line_start]
