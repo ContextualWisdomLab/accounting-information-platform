@@ -207,7 +207,7 @@ class ReconciliationDecision:
                     "match decision must reference at least one journal. Rebuild the deterministic proposal from source evidence."
                 )
             if any(
-                not isinstance(reference, str) or not reference.strip()
+                type(reference) is not str or not reference.strip()
                 for reference in self.matched_journal_references
             ):
                 raise ValueError(
