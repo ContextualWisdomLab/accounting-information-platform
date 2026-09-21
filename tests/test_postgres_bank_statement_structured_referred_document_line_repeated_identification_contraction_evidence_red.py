@@ -249,6 +249,9 @@ class BankStatementStructuredLineRepeatedIdentificationContractionEvidenceRedTes
             self.base_statement.source_artifact_hash: self.base_payload,
         }
         self.assertEqual(self.line_contract.store._artifacts, expected_artifacts)
+        self.assertTrue(before_rows["bank_statement_artifact"])
+        self.assertTrue(before_rows["bank_statement_entry"])
+        self.assertTrue(before_rows["bank_statement_entry_detail"])
         self.assertTrue(
             any(
                 str(row[0]) == record_id
