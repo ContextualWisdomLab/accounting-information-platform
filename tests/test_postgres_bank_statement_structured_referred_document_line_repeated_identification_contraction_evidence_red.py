@@ -420,7 +420,12 @@ class BankStatementStructuredLineRepeatedIdentificationContractionEvidenceRedTes
         expect_repeated: bool,
     ) -> None:
         """Assert exact persisted identity, Id cardinality, and transaction truth."""
-        persisted_detail = persisted_entry["entry_details"][0]
+        persisted_details = persisted_entry["entry_details"]
+        self.assertEqual(
+            len(persisted_details),
+            len(expected_entry.entry_details),
+        )
+        persisted_detail = persisted_details[0]
         expected_detail = expected_entry.entry_details[0]
         self.assertEqual(
             persisted_entry["source_entry_hash"],
