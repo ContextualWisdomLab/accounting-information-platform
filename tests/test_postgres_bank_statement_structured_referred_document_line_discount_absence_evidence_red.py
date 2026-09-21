@@ -68,9 +68,13 @@ class BankStatementStructuredLineDiscountAbsenceEvidenceRedTests(unittest.TestCa
             raise AssertionError("Stockitem1 must retain APDS / 300 KRW")
         if base_lines[1].get(_DISCOUNT_KEY) != [_LINE2_APDS]:
             raise AssertionError("Stockitem2 must begin with exactly APDS / 100 KRW")
-        if "due_payable_amount" not in base_lines[1] or "remitted_amount" not in base_lines[1]:
+        if (
+            "due_payable_amount" not in base_lines[1]
+            or "remitted_amount" not in base_lines[1]
+        ):
             raise AssertionError(
-                "Stockitem2 Amount must remain populated outside Discount Applied Amount"
+                "Stockitem2 Amount must remain populated outside "
+                "Discount Applied Amount"
             )
 
         self.first_line_projection = deepcopy(base_lines[0])
@@ -209,7 +213,7 @@ class BankStatementStructuredLineDiscountAbsenceEvidenceRedTests(unittest.TestCa
         )
 
     def test_discount_present_baseline_reads_back_before_absence(self) -> None:
-        """Persist APDS before contraction so unconditional discount loss cannot pass."""
+        """Persist APDS before contraction so unconditional loss cannot pass."""
         accepted = accept_bank_statement_evidence(
             self.line_contract._command(
                 self.base_payload,
@@ -326,7 +330,9 @@ class BankStatementStructuredLineDiscountAbsenceEvidenceRedTests(unittest.TestCa
         if discounts != [_LINE2_APDS]:
             raise AssertionError("projection must remove exact Stockitem2 APDS / 100")
         if lines[1] != self.second_line_without_discount:
-            raise AssertionError("non-discount Stockitem2 evidence must remain unchanged")
+            raise AssertionError(
+                "non-discount Stockitem2 evidence must remain unchanged"
+            )
         return projection
 
     def _remove_second_line_discount(
@@ -353,9 +359,13 @@ class BankStatementStructuredLineDiscountAbsenceEvidenceRedTests(unittest.TestCa
 
         changed_segment, _, _ = self._second_line_segment(changed.decode("utf-8"))
         if "<DscntApldAmt>" in changed_segment:
-            raise AssertionError("Stockitem2 must contain zero discounts after contraction")
+            raise AssertionError(
+                "Stockitem2 must contain zero discounts after contraction"
+            )
         if "<Amt>" not in changed_segment or "</Amt>" not in changed_segment:
-            raise AssertionError("Stockitem2 direct Amount group must survive discount removal")
+            raise AssertionError(
+                "Stockitem2 direct Amount group must survive discount removal"
+            )
         if "<DuePyblAmt" not in changed_segment or "<RmtdAmt" not in changed_segment:
             raise AssertionError(
                 "Due Payable and Remitted Amount must keep direct Amount populated"
@@ -373,7 +383,9 @@ class BankStatementStructuredLineDiscountAbsenceEvidenceRedTests(unittest.TestCa
         if "<Cd>APDS</Cd>" in self._second_line_segment(text)[0]:
             raise AssertionError("contracted Stockitem2 must not already contain APDS")
         if not 0 <= offset <= len(text):
-            raise AssertionError("removed discount offset must remain within source bounds")
+            raise AssertionError(
+                "removed discount offset must remain within source bounds"
+            )
         restored = (text[:offset] + removed + text[offset:]).encode("utf-8")
         segment, _, _ = self._second_line_segment(restored.decode("utf-8"))
         block_start, block_end = self._discount_block_bounds(segment)
@@ -404,7 +416,9 @@ class BankStatementStructuredLineDiscountAbsenceEvidenceRedTests(unittest.TestCa
         """Pair the direct line Amount opener with its same-indent closer."""
         starts = [index for index, line in enumerate(lines) if line.strip() == "<Amt>"]
         if len(starts) != 1:
-            raise AssertionError("Stockitem2 must contain exactly one direct Amount group")
+            raise AssertionError(
+                "Stockitem2 must contain exactly one direct Amount group"
+            )
         start = starts[0]
         indent = lines[start][: len(lines[start]) - len(lines[start].lstrip())]
         ends = [
@@ -454,7 +468,9 @@ class BankStatementStructuredLineDiscountAbsenceEvidenceRedTests(unittest.TestCa
             raise AssertionError("discount absence RED requires one referred document")
         lines = projection[0].get("line_details")
         if not isinstance(lines, list) or len(lines) != 2:
-            raise AssertionError("retained document must expose exactly two line details")
+            raise AssertionError(
+                "retained document must expose exactly two line details"
+            )
         if not all(isinstance(line, dict) for line in lines):
             raise AssertionError("every line detail projection must be a mapping")
         return lines
@@ -467,7 +483,7 @@ class BankStatementStructuredLineDiscountAbsenceEvidenceRedTests(unittest.TestCa
         *,
         expect_second_discount: bool,
     ) -> None:
-        """Assert exact structured projection, hashes, and 25000-KRW transaction truth."""
+        """Assert exact projection, hashes, and 25000-KRW transaction truth."""
         persisted_details = persisted_entry["entry_details"]
         self.assertEqual(len(persisted_details), len(expected_entry.entry_details))
         persisted_detail = persisted_details[0]
