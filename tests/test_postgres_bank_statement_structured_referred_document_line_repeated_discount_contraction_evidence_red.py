@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import unittest
 from copy import deepcopy
 from decimal import Decimal
@@ -29,6 +30,10 @@ _NORMALIZATION_PARENT_TEST = optional_remitted_contract._NORMALIZATION_PARENT_TE
 _CORRECTION_ERROR = optional_remitted_contract._CORRECTION_ERROR
 _STRUCTURED_EVIDENCE_KEY = "structured_referred_document_evidence"
 _DISCOUNT_KEY = "discount_applied_amounts"
+_EXPECTED_DISCOUNTS = [
+    {"type_code": "APDS", "amount": "100", "currency_code": "KRW"},
+    {"type_code": "STDS", "amount": "50", "currency_code": "KRW"},
+]
 
 
 class BankStatementStructuredLineRepeatedDiscountContractionEvidenceRedTests(
@@ -62,12 +67,10 @@ class BankStatementStructuredLineRepeatedDiscountContractionEvidenceRedTests(
             self.base_projection
         )
         discounts = second_line.get(_DISCOUNT_KEY)
-        if not isinstance(discounts, list) or len(discounts) != 2:
+        if discounts != _EXPECTED_DISCOUNTS:
             raise AssertionError(
-                "second source line must begin with exactly two repeated discounts"
+                "second source line must begin with APDS / 100 KRW then STDS / 50 KRW"
             )
-        if [str(item.get("type_code")) for item in discounts] != ["APDS", "STDS"]:
-            raise AssertionError("discount contraction requires APDS then STDS")
         self.retained_discount = deepcopy(discounts[0])
         self.removed_discount = deepcopy(discounts[1])
         self.first_line_projection = deepcopy(first_line)
@@ -78,9 +81,11 @@ class BankStatementStructuredLineRepeatedDiscountContractionEvidenceRedTests(
                 "parent omission contracts must remove DuePyblAmt and RmtdAmt first"
             )
 
-        self.removed_discount_block = self._second_line_discount_blocks(
-            self.base_payload
-        )[1][0]
+        base_blocks = self._second_line_discount_blocks(self.base_payload)
+        if len(base_blocks) != 2:
+            raise AssertionError("second source line must contain exactly two discounts")
+        self.discount_gap = base_blocks[1][1]
+        self.removed_discount_block = base_blocks[1][0]
         self.changed_payload = self._remove_later_second_line_discount(
             self.base_payload
         )
@@ -345,8 +350,6 @@ class BankStatementStructuredLineRepeatedDiscountContractionEvidenceRedTests(
         projection = deepcopy(self.base_projection)
         first_line, second_line = self.parent.parent.parent._line_details(projection)
         discounts = second_line.get(_DISCOUNT_KEY)
-        if not isinstance(discounts, list) or len(discounts) != 2:
-            raise AssertionError("projection must begin with exactly two discounts")
         if discounts != [self.retained_discount, self.removed_discount]:
             raise AssertionError("projection discount population drifted before contraction")
         second_line[_DISCOUNT_KEY] = [deepcopy(discounts[0])]
@@ -358,37 +361,30 @@ class BankStatementStructuredLineRepeatedDiscountContractionEvidenceRedTests(
             raise AssertionError("non-discount line-two evidence must remain unchanged")
         return projection
 
-    def _second_line_discount_blocks(
-        self,
-        payload: bytes,
-    ) -> list[tuple[str, int, int]]:
-        """Return direct repeated-discount blocks and their line bounds in source order."""
+    def _second_line_discount_blocks(self, payload: bytes) -> list[tuple[str, str]]:
+        """Return direct discount blocks with exact inter-member source gaps."""
         text = payload.decode("utf-8")
         segment, _, _ = self.parent.parent.parent._second_line_segment(text)
         lines = segment.splitlines(keepends=True)
         amount_start, amount_end = self.parent.parent._direct_amount_bounds(lines)
-        blocks: list[tuple[str, int, int]] = []
-        index = amount_start + 1
-        while index < amount_end:
-            if lines[index].strip() != "<DscntApldAmt>":
-                index += 1
-                continue
-            indent = lines[index][: len(lines[index]) - len(lines[index].lstrip())]
-            close_index = None
-            for candidate in range(index + 1, amount_end):
-                line = lines[candidate]
-                candidate_indent = line[: len(line) - len(line.lstrip())]
-                if (
-                    line.strip() == "</DscntApldAmt>"
-                    and candidate_indent == indent
-                ):
-                    close_index = candidate
-                    break
-            if close_index is None:
-                raise AssertionError("discount block must have a matching direct close")
-            block = "".join(lines[index : close_index + 1])
-            blocks.append((block, index, close_index))
-            index = close_index + 1
+        amount_content_start = sum(len(line) for line in lines[: amount_start + 1])
+        amount_content_end = sum(len(line) for line in lines[:amount_end])
+        matches = list(
+            re.finditer(
+                r"<DscntApldAmt>.*?</DscntApldAmt>",
+                segment,
+                re.DOTALL,
+            )
+        )
+        if any(
+            match.start() < amount_content_start or match.end() > amount_content_end
+            for match in matches
+        ):
+            raise AssertionError("discount blocks must remain inside the direct Amount group")
+        blocks: list[tuple[str, str]] = []
+        for index, match in enumerate(matches):
+            gap = "" if index == 0 else segment[matches[index - 1].end() : match.start()]
+            blocks.append((match.group(0), gap))
         return blocks
 
     def _remove_later_second_line_discount(self, payload: bytes) -> bytes:
@@ -403,6 +399,10 @@ class BankStatementStructuredLineRepeatedDiscountContractionEvidenceRedTests(
         first_block, second_block = blocks[0][0], blocks[1][0]
         if "<Cd>APDS</Cd>" not in first_block or "<Cd>STDS</Cd>" not in second_block:
             raise AssertionError("source discount order must remain APDS then STDS")
+        if "<Amt Ccy=\"KRW\">100.00</Amt>" not in first_block:
+            raise AssertionError("first discount source amount must remain 100.00 KRW")
+        if "<Amt Ccy=\"KRW\">50.00</Amt>" not in second_block:
+            raise AssertionError("later discount source amount must remain 50.00 KRW")
         if segment.count(second_block) != 1:
             raise AssertionError("later discount block must occur exactly once")
         changed_segment = segment.replace(second_block, "", 1)
@@ -415,22 +415,25 @@ class BankStatementStructuredLineRepeatedDiscountContractionEvidenceRedTests(
         return changed_payload
 
     def _restore_later_second_line_discount(self, payload: bytes) -> bytes:
-        """Restore the exact removed STDS block immediately before direct Amount close."""
+        """Restore the exact removed STDS block at its original member boundary."""
         text = payload.decode("utf-8")
         segment, segment_start, segment_end = (
             self.parent.parent.parent._second_line_segment(text)
         )
-        lines = segment.splitlines(keepends=True)
         remaining = self._second_line_discount_blocks(payload)
         if len(remaining) != 1 or "<Cd>APDS</Cd>" not in remaining[0][0]:
             raise AssertionError("contraction fixture must retain exactly one APDS discount")
         if "<Cd>STDS</Cd>" in segment:
             raise AssertionError("contraction fixture must not already contain STDS")
-        _, amount_end = self.parent.parent._direct_amount_bounds(lines)
+        first_block = remaining[0][0]
+        first_end = segment.index(first_block) + len(first_block)
+        if segment[first_end : first_end + len(self.discount_gap)] != self.discount_gap:
+            raise AssertionError("inter-discount source gap must remain byte-exact")
+        insert_at = first_end + len(self.discount_gap)
         restored_segment = (
-            "".join(lines[:amount_end])
+            segment[:insert_at]
             + self.removed_discount_block
-            + "".join(lines[amount_end:])
+            + segment[insert_at:]
         )
         return (text[:segment_start] + restored_segment + text[segment_end:]).encode(
             "utf-8"
