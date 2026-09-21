@@ -34,7 +34,7 @@ _STRUCTURED_EVIDENCE_KEY = "structured_referred_document_evidence"
 class BankStatementStructuredReferredDocumentTypeIssuerEvidenceRedTests(
     unittest.TestCase
 ):
-    """Retain RfrdDocInf/Tp/Issr as reconciliation source evidence."""
+    """Retain a non-first RfrdDocInf/Tp/Issr beside competing issuer scopes."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -42,7 +42,7 @@ class BankStatementStructuredReferredDocumentTypeIssuerEvidenceRedTests(
         _PARENT_TEST.setUpClass()
 
     def setUp(self) -> None:
-        """Prepare statements differing only in the referred-document type issuer."""
+        """Prepare two-document statements differing only in the second type issuer."""
         self.proprietary_contract = (
             _PARENT_TEST(
                 "test_document_type_proprietary_is_material_to_each_canonical_evidence_hash"
@@ -52,15 +52,21 @@ class BankStatementStructuredReferredDocumentTypeIssuerEvidenceRedTests(
         self.addCleanup(self.proprietary_contract.doCleanups)
         self.line_contract = self.proprietary_contract.line_contract
 
-        self.document_number = self.proprietary_contract.document_number
+        self.first_document_number = self.proprietary_contract.first_document_number
+        self.second_document_number = self.proprietary_contract.second_document_number
         self.document_type_code = (
             self.proprietary_contract.type_code_contract.base_document_type_code
         )
         self.base_document_type_issuer = "ISO"
         self.changed_document_type_issuer = "LOCAL-SCHEME"
+        self.line_type_issuer_decoy = "LINE-SCHEME"
 
-        self.base_payload = self._with_document_type_issuer(
+        coded_with_line_decoy = self._with_second_document_line_issuer(
             self.proprietary_contract.coded_payload,
+            self.line_type_issuer_decoy,
+        )
+        self.base_payload = self._with_document_type_issuer(
+            coded_with_line_decoy,
             self.base_document_type_issuer,
         )
         self.changed_payload = self._replace_document_type_issuer(
@@ -219,7 +225,7 @@ class BankStatementStructuredReferredDocumentTypeIssuerEvidenceRedTests(
     def test_buyer_read_keeps_document_type_issuer_bound_to_exact_document(
         self,
     ) -> None:
-        """Buyer reads retain the issuer on the exact referred-document type."""
+        """Buyer reads retain each issuer at its exact source scope and document."""
         accepted = accept_bank_statement_evidence(
             self.line_contract._command(
                 self.changed_payload,
@@ -350,60 +356,121 @@ class BankStatementStructuredReferredDocumentTypeIssuerEvidenceRedTests(
         self,
         document_type_issuer: str,
     ) -> list[dict[str, object]]:
-        """Return the ordered projection with the exact document-type issuer."""
-        projection = deepcopy(
+        """Return two documents with competing issuer scopes on the second."""
+        parent_projection = deepcopy(
             self.proprietary_contract.type_code_contract._structured_projection(
                 self.document_type_code
             )
         )
-        if len(projection) != 1 or not isinstance(projection[0], dict):
+        if len(parent_projection) != 1 or not isinstance(
+            parent_projection[0],
+            dict,
+        ):
             raise AssertionError(
-                "canonical projection must contain one referred document"
+                "parent projection must contain one referred document"
             )
-        referred_document = projection[0]
-        if referred_document.get("document_type_code") != self.document_type_code:
+        first_document = parent_projection[0]
+        if first_document.get("document_type_code") != self.document_type_code:
             raise AssertionError(
-                "parent referred document must keep its coded type"
+                "first referred document must retain the coded type"
             )
-        if referred_document.get("document_number") != self.document_number:
+        if first_document.get("document_number") != self.first_document_number:
             raise AssertionError(
-                "referred-document number must remain stable"
+                "first referred-document number must remain stable"
             )
-        referred_document["document_type_issuer"] = document_type_issuer
-        return projection
+
+        second_document = deepcopy(first_document)
+        second_document["document_number"] = self.second_document_number
+        line_details = second_document.get("line_details")
+        if not isinstance(line_details, list) or len(line_details) != 2:
+            raise AssertionError(
+                "second referred document must retain exactly two source lines"
+            )
+        first_line = line_details[0]
+        if not isinstance(first_line, dict):
+            raise AssertionError("first second-document line must be a mapping")
+        first_line["line_type_issuer"] = self.line_type_issuer_decoy
+        second_document["document_type_issuer"] = document_type_issuer
+        return [first_document, second_document]
+
+    def _with_second_document_line_issuer(
+        self,
+        payload: bytes,
+        issuer: str,
+    ) -> bytes:
+        """Insert a decoy LineDtls/Id/Issr only inside the second document."""
+        text, document_start, document_end, document_segment = (
+            self._document_segment(payload)
+        )
+        line_number = self.line_contract.first_line_number
+        line_marker = f"<Nb>{line_number}</Nb>"
+        if document_segment.count(line_marker) != 1:
+            raise AssertionError(
+                "second-document first-line marker must occur exactly once"
+            )
+        marker_index = document_segment.index(line_marker)
+        line_start = document_segment.rfind("<LineDtls>", 0, marker_index)
+        line_end_start = document_segment.find("</LineDtls>", marker_index)
+        if line_start < 0 or line_end_start < 0:
+            raise AssertionError("second-document first-line boundaries must exist")
+        line_end = line_end_start + len("</LineDtls>")
+        line_segment = document_segment[line_start:line_end]
+        if "<Issr>" in line_segment:
+            raise AssertionError("line issuer decoy must not pre-exist")
+        marker = (
+            "                      </Tp>\n"
+            f"                      <Nb>{line_number}</Nb>"
+        )
+        if line_segment.count(marker) != 1:
+            raise AssertionError(
+                "line identification type/number marker must occur exactly once"
+            )
+        replacement = (
+            "                      </Tp>\n"
+            f"                      <Issr>{issuer}</Issr>\n"
+            f"                      <Nb>{line_number}</Nb>"
+        )
+        changed_line = line_segment.replace(marker, replacement, 1)
+        changed_document = (
+            document_segment[:line_start]
+            + changed_line
+            + document_segment[line_end:]
+        )
+        return (
+            text[:document_start] + changed_document + text[document_end:]
+        ).encode("utf-8")
 
     def _with_document_type_issuer(
         self,
         payload: bytes,
         issuer: str,
     ) -> bytes:
-        """Insert one Issr under the exact referred-document Tp element."""
+        """Insert one Issr under only the second document's outer Tp element."""
         text, document_start, document_end, document_segment = (
             self._document_segment(payload)
         )
-        type_markup = self.proprietary_contract._coded_type_markup(
-            self.document_type_code
+        type_start, type_end, type_segment = self._outer_type_segment(
+            document_segment
         )
-        if document_segment.count(type_markup) != 1:
+        if "<Issr>" in type_segment:
             raise AssertionError(
-                "coded document type marker must occur exactly once"
+                "outer referred-document type issuer must not pre-exist"
             )
-        if "<Issr>" in document_segment:
-            raise AssertionError(
-                "referred-document type issuer must not pre-exist"
-            )
-
-        type_end = document_segment.index(type_markup) + len(type_markup)
-        type_close = document_segment.find("</Tp>", type_end)
+        type_close = type_segment.rfind("</Tp>")
         if type_close < 0:
             raise AssertionError(
-                "referred-document type closing tag must be present"
+                "outer referred-document type closing tag must be present"
             )
         issuer_markup = f"<Issr>{issuer}</Issr>\n                    "
-        changed_document = (
-            document_segment[:type_close]
+        changed_type = (
+            type_segment[:type_close]
             + issuer_markup
-            + document_segment[type_close:]
+            + type_segment[type_close:]
+        )
+        changed_document = (
+            document_segment[:type_start]
+            + changed_type
+            + document_segment[type_end:]
         )
         return (
             text[:document_start] + changed_document + text[document_end:]
@@ -415,27 +482,28 @@ class BankStatementStructuredReferredDocumentTypeIssuerEvidenceRedTests(
         old_issuer: str,
         new_issuer: str,
     ) -> bytes:
-        """Replace only RfrdDocInf/Tp/Issr for the exact source document."""
+        """Replace only the second document's outer Tp/Issr value."""
         text, document_start, document_end, document_segment = (
             self._document_segment(payload)
         )
+        type_start, type_end, type_segment = self._outer_type_segment(
+            document_segment
+        )
         old_markup = f"<Issr>{old_issuer}</Issr>"
         new_markup = f"<Issr>{new_issuer}</Issr>"
-        if document_segment.count(old_markup) != 1:
+        if type_segment.count(old_markup) != 1:
             raise AssertionError(
-                "document type issuer marker must occur exactly once"
+                "outer document type issuer marker must occur exactly once"
             )
-        if (
-            old_markup != new_markup
-            and document_segment.count(new_markup) != 0
-        ):
+        if old_markup != new_markup and type_segment.count(new_markup) != 0:
             raise AssertionError(
-                "replacement document type issuer must not pre-exist"
+                "replacement outer document type issuer must not pre-exist"
             )
-        changed_document = document_segment.replace(
-            old_markup,
-            new_markup,
-            1,
+        changed_type = type_segment.replace(old_markup, new_markup, 1)
+        changed_document = (
+            document_segment[:type_start]
+            + changed_type
+            + document_segment[type_end:]
         )
         return (
             text[:document_start] + changed_document + text[document_end:]
@@ -445,19 +513,19 @@ class BankStatementStructuredReferredDocumentTypeIssuerEvidenceRedTests(
         self,
         payload: bytes,
     ) -> tuple[str, int, int, str]:
-        """Return the exact referred-document boundaries selected by number."""
+        """Return the non-first referred document selected by exact number."""
         text = payload.decode("utf-8")
-        document_marker = f"<Nb>{self.document_number}</Nb>"
+        document_marker = f"<Nb>{self.second_document_number}</Nb>"
         if text.count(document_marker) != 1:
             raise AssertionError(
-                "referred-document number marker must occur exactly once"
+                "second referred-document number marker must occur exactly once"
             )
         marker_index = text.index(document_marker)
         document_start = text.rfind("<RfrdDocInf>", 0, marker_index)
         document_end_start = text.find("</RfrdDocInf>", marker_index)
         if document_start < 0 or document_end_start < 0:
             raise AssertionError(
-                "referred-document boundaries must be present"
+                "second referred-document boundaries must be present"
             )
         document_end = document_end_start + len("</RfrdDocInf>")
         return (
@@ -466,6 +534,26 @@ class BankStatementStructuredReferredDocumentTypeIssuerEvidenceRedTests(
             document_end,
             text[document_start:document_end],
         )
+
+    def _outer_type_segment(
+        self,
+        document_segment: str,
+    ) -> tuple[int, int, str]:
+        """Return only the second document's outer Tp, excluding line Id/Tp nodes."""
+        type_markup = self.proprietary_contract._coded_type_markup(
+            self.document_type_code
+        )
+        if document_segment.count(type_markup) != 1:
+            raise AssertionError(
+                "outer coded document type marker must occur exactly once"
+            )
+        marker_index = document_segment.index(type_markup)
+        type_start = document_segment.rfind("<Tp>", 0, marker_index)
+        type_end_start = document_segment.find("</Tp>", marker_index)
+        if type_start < 0 or type_end_start < 0:
+            raise AssertionError("outer referred-document type boundaries must exist")
+        type_end = type_end_start + len("</Tp>")
+        return type_start, type_end, document_segment[type_start:type_end]
 
 
 if __name__ == "__main__":
