@@ -37,6 +37,12 @@ def _require_positive_exact_decimal(value: object) -> None:
         )
 
 
+def _require_identity(value: object, field_name: str) -> None:
+    """Reject reconciliation evidence that is not bound to a real source identity."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field_name} must be a non-empty identity")
+
+
 @dataclass(frozen=True, slots=True)
 class StatementEntryEvidence:
     """Immutable normalized statement evidence considered for reconciliation."""
@@ -101,7 +107,8 @@ class ReconciliationDecision:
     ``reconciliation-decision/v1`` preserves the original deterministic contract:
     every match references exactly one journal. Reviewed split evidence must opt
     into ``reconciliation-decision/v2`` explicitly before carrying more than one
-    distinct journal reference. Deterministic proposal generation remains v1.
+    distinct journal reference. Every decision remains bound to non-empty source
+    identities. Deterministic proposal generation remains v1.
     """
 
     statement_entry_reference: str
@@ -116,6 +123,7 @@ class ReconciliationDecision:
 
     def __post_init__(self) -> None:
         """Reject forged or silently incompatible reconciliation evidence."""
+        _require_identity(self.statement_entry_reference, "statement_entry_reference")
         if self.contract_version not in _RECONCILIATION_DECISION_VERSIONS:
             raise ValueError(
                 "contract_version must be reconciliation-decision/v1 or reconciliation-decision/v2. Use a supported repository-owned reconciliation decision contract."
@@ -131,6 +139,13 @@ class ReconciliationDecision:
             if not self.matched_journal_references:
                 raise ValueError(
                     "match decision must reference at least one journal. Rebuild the deterministic proposal from source evidence."
+                )
+            if any(
+                not isinstance(reference, str) or not reference.strip()
+                for reference in self.matched_journal_references
+            ):
+                raise ValueError(
+                    "matched_journal_references must contain non-empty identities. Rebuild reviewed evidence from immutable journal sources."
                 )
             if len(set(self.matched_journal_references)) != len(
                 self.matched_journal_references
