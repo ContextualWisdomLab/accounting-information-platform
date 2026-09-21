@@ -205,6 +205,51 @@ class BankStatementStructuredReferredDocumentOrderEvidenceRedTests(unittest.Test
                 artifact_store=self.line_contract.store,
             )
 
+        persisted = lookup_bank_statement_entries(
+            posting.DATABASE_URL,
+            self.line_contract.case.policy.tenant_reference,
+            str(accepted["bank_statement_record_id"]),
+        )
+        self.assertEqual(
+            persisted["source_artifact_hash"],
+            self.base_statement.source_artifact_hash,
+        )
+        self.assertEqual(
+            persisted["normalized_payload_hash"],
+            self.base_statement.normalized_payload_hash,
+        )
+        self.assertNotEqual(
+            persisted["source_artifact_hash"],
+            self.changed_statement.source_artifact_hash,
+        )
+        self.assertNotEqual(
+            persisted["normalized_payload_hash"],
+            self.changed_statement.normalized_payload_hash,
+        )
+        persisted_entry = persisted["bank_statement_entries"][0]
+        persisted_detail = persisted_entry["entry_details"][0]
+        self.assertEqual(
+            persisted_detail.get(_STRUCTURED_EVIDENCE_KEY),
+            self.base_projection,
+        )
+        self.assertEqual(
+            [
+                item["document_number"]
+                for item in persisted_detail[_STRUCTURED_EVIDENCE_KEY]
+            ],
+            [self.first_document_number, self.second_document_number],
+        )
+        self.assertEqual(
+            Decimal(str(persisted_entry["entry_amount"])),
+            Decimal("25000.00"),
+        )
+        self.assertEqual(persisted_entry["entry_currency_code"], "KRW")
+        self.assertEqual(
+            Decimal(str(persisted_detail["detail_amount"])),
+            Decimal("25000.00"),
+        )
+        self.assertEqual(persisted_detail["detail_currency_code"], "KRW")
+
     def test_buyer_read_retains_referred_document_source_order(self) -> None:
         """Buyer reads return repeated referred documents in changed source order."""
         accepted = accept_bank_statement_evidence(
