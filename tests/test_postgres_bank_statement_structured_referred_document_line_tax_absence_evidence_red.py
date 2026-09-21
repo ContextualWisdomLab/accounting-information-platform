@@ -20,11 +20,18 @@ from tests import (
     test_postgres_bank_statement_structured_referred_document_line_repeated_tax_contraction_evidence_red
     as tax_contraction_contract,
 )
+from tests import (
+    test_postgres_bank_statement_structured_referred_document_line_discount_absence_sibling_readback_red
+    as sibling_readback_contract,
+)
 
 _PARENT_TEST = (
     tax_contraction_contract.BankStatementStructuredLineRepeatedTaxContractionEvidenceRedTests
 )
 _CORRECTION_ERROR = tax_contraction_contract._CORRECTION_ERROR
+_SIBLING_READER = (
+    sibling_readback_contract.BankStatementStructuredLineDiscountAbsenceSiblingReadbackRedTests
+)
 _STRUCTURED_EVIDENCE_KEY = "structured_referred_document_evidence"
 _TAX_KEY = "tax_amounts"
 _STAT = {"type_code": "STAT", "amount": "950", "currency_code": "KRW"}
@@ -440,39 +447,11 @@ class BankStatementStructuredLineTaxAbsenceEvidenceRedTests(unittest.TestCase):
         persisted_entry: dict[str, object],
         expected_entry: object,
     ) -> None:
-        """Keep unrelated sibling evidence exact and isolated from structured data."""
-        self.assertEqual(
-            persisted_entry["source_entry_hash"],
-            expected_entry.source_entry_hash,
+        """Compare every buyer-visible field on the unrelated sibling entry."""
+        helper = _SIBLING_READER(
+            "test_discount_present_baseline_reads_complete_sibling_projection"
         )
-        self.assertEqual(
-            Decimal(str(persisted_entry["entry_amount"])),
-            expected_entry.entry_amount,
-        )
-        self.assertEqual(
-            persisted_entry["entry_currency_code"],
-            expected_entry.entry_currency_code,
-        )
-        persisted_details = persisted_entry["entry_details"]
-        self.assertEqual(len(persisted_details), len(expected_entry.entry_details))
-        for persisted_detail, expected_detail in zip(
-            persisted_details,
-            expected_entry.entry_details,
-            strict=True,
-        ):
-            self.assertEqual(
-                persisted_detail["source_detail_hash"],
-                expected_detail.source_detail_hash,
-            )
-            self.assertEqual(
-                Decimal(str(persisted_detail["detail_amount"])),
-                expected_detail.detail_amount,
-            )
-            self.assertEqual(
-                persisted_detail["detail_currency_code"],
-                expected_detail.detail_currency_code,
-            )
-            self.assertNotIn(_STRUCTURED_EVIDENCE_KEY, persisted_detail)
+        helper._assert_complete_sibling(persisted_entry, expected_entry)
 
 
 if __name__ == "__main__":
