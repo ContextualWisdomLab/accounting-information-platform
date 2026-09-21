@@ -346,19 +346,14 @@ class BankStatementStructuredRepeatedLineIdentificationOptionalRelatedDateAbsenc
         if "<Nb>" in block or "</Nb>" in block:
             raise AssertionError("target member must retain inherited Number absence")
 
-        type_pos = block.find(f"<Prtry>{self.base_type}</Prtry>")
-        if type_pos < 0:
-            raise AssertionError("target member must retain proprietary Type")
-        type_line_start = block.rfind("\n", 0, type_pos) + 1
-        child_indent = block[type_line_start:type_pos]
-
         closing_pos = block.rfind("</Id>")
         if closing_pos < 0:
             raise AssertionError("target repeated Id requires closing tag")
         closing_line_start = block.rfind("\n", 0, closing_pos) + 1
         closing_indent = block[closing_line_start:closing_pos]
-        if not child_indent or not closing_indent:
+        if not closing_indent:
             raise AssertionError("target Id indentation must be recoverable")
+        child_indent = closing_indent + "    "
 
         restored_block = (
             block[:closing_line_start]
