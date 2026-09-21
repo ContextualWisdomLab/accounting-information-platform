@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import unittest
+import uuid
 from copy import deepcopy
 from decimal import Decimal
 
 import psycopg
+from psycopg import sql
 
 from accounting_information_platform import (
     AccountingValidationError,
@@ -18,6 +20,7 @@ from accounting_information_platform import (
     parse_bank_statement_payload,
 )
 from tests import test_postgres_posting as posting
+from tests import test_postgres_runtime_rls as rls_contract
 from tests import (
     test_postgres_bank_statement_structured_referred_document_line_identification_code_evidence_red
     as code_contract,
@@ -49,6 +52,7 @@ class BankStatementStructuredLineIdentificationCardinalityEvidenceRedTests(
 
         self.second_identification_type_code = "PRNB"
         self.second_identification_number = "Part-002"
+        self.second_identification_related_date = "2026-09-02"
         self.base_payload = self.parent.base_payload
         self.changed_payload = self._insert_second_identification(self.base_payload)
         self.base_statement = self.parent.base_statement
@@ -176,20 +180,21 @@ class BankStatementStructuredLineIdentificationCardinalityEvidenceRedTests(
         )
 
     def test_rejected_extra_line_identification_preserves_all_accepted_evidence(self) -> None:
-        """Fail closed without relational or raw-artifact residue for the extra identity."""
+        """Fail closed under FORCE RLS without relational or raw-artifact residue."""
+        runtime_url = self._restricted_bank_statement_runtime_url()
         accepted = accept_bank_statement_evidence(
             self.line_contract._command(
                 self.base_payload,
                 "line-identification-cardinality-base",
             ),
-            posting.DATABASE_URL,
+            runtime_url,
             self.line_contract.case.policy.tenant_reference,
             artifact_store=self.line_contract.store,
         )
         self.assertFalse(accepted["replayed"])
         record_id = str(accepted["bank_statement_record_id"])
 
-        before_rows = self._tenant_statement_rows()
+        before_rows = self._tenant_statement_rows(runtime_url)
         expected_artifacts = {
             self.base_statement.source_artifact_hash: self.base_payload,
         }
@@ -210,12 +215,12 @@ class BankStatementStructuredLineIdentificationCardinalityEvidenceRedTests(
                     self.changed_payload,
                     "line-identification-cardinality-changed",
                 ),
-                posting.DATABASE_URL,
+                runtime_url,
                 self.line_contract.case.policy.tenant_reference,
                 artifact_store=self.line_contract.store,
             )
 
-        self.assertEqual(self._tenant_statement_rows(), before_rows)
+        self.assertEqual(self._tenant_statement_rows(runtime_url), before_rows)
         self.assertEqual(self.line_contract.store._artifacts, expected_artifacts)
         self.assertNotIn(
             self.changed_statement.source_artifact_hash,
@@ -225,7 +230,7 @@ class BankStatementStructuredLineIdentificationCardinalityEvidenceRedTests(
     def test_buyer_read_retains_every_second_line_identification_in_source_order(
         self,
     ) -> None:
-        """Expose both Id members while retaining the existing primary line fields."""
+        """Expose both Id members while retaining exact changed artifact bytes."""
         accepted = accept_bank_statement_evidence(
             self.line_contract._command(
                 self.changed_payload,
@@ -234,6 +239,10 @@ class BankStatementStructuredLineIdentificationCardinalityEvidenceRedTests(
             posting.DATABASE_URL,
             self.line_contract.case.policy.tenant_reference,
             artifact_store=self.line_contract.store,
+        )
+        self.assertEqual(
+            self.line_contract.store._artifacts,
+            {self.changed_statement.source_artifact_hash: self.changed_payload},
         )
         record_id = str(accepted["bank_statement_record_id"])
         statement = lookup_bank_statement(
@@ -288,7 +297,7 @@ class BankStatementStructuredLineIdentificationCardinalityEvidenceRedTests(
                 {
                     "type_code": self.second_identification_type_code,
                     "number": self.second_identification_number,
-                    "related_date": self.line_contract.line_related_date,
+                    "related_date": self.second_identification_related_date,
                 },
             ],
         )
@@ -328,7 +337,7 @@ class BankStatementStructuredLineIdentificationCardinalityEvidenceRedTests(
             {
                 "type_code": self.second_identification_type_code,
                 "number": self.second_identification_number,
-                "related_date": self.line_contract.line_related_date,
+                "related_date": self.second_identification_related_date,
             },
         ]
         return projection
@@ -341,6 +350,8 @@ class BankStatementStructuredLineIdentificationCardinalityEvidenceRedTests(
             raise AssertionError("base second source line must contain exactly one Id")
         if self.second_identification_number in line_segment:
             raise AssertionError("second identification must not pre-exist")
+        if self.second_identification_related_date in line_segment:
+            raise AssertionError("second identification date must not pre-exist")
         first_id_end = line_segment.index("</Id>") + len("</Id>")
         second_id = self._second_identification_markup()
         changed_line = (
@@ -386,7 +397,7 @@ class BankStatementStructuredLineIdentificationCardinalityEvidenceRedTests(
             "                        </CdOrPrtry>\n"
             "                      </Tp>\n"
             f"                      <Nb>{self.second_identification_number}</Nb>\n"
-            f"                      <RltdDt>{self.line_contract.line_related_date}</RltdDt>\n"
+            f"                      <RltdDt>{self.second_identification_related_date}</RltdDt>\n"
             "                    </Id>"
         )
 
@@ -466,10 +477,52 @@ class BankStatementStructuredLineIdentificationCardinalityEvidenceRedTests(
                     tuple(getattr(changed_detail, field) for field in detail_fields),
                 )
 
-    def _tenant_statement_rows(self) -> dict[str, tuple[tuple[object, ...], ...]]:
-        """Snapshot every evidence column after installing the tenant RLS context."""
+    def _restricted_bank_statement_runtime_url(self) -> str:
+        """Provision one tenant-bound NOBYPASSRLS login with only statement-write DML."""
+        role_name = f"accounting_statement_{uuid.uuid4().hex[:10]}"
+        password = f"AisStatement{uuid.uuid4().hex}"
+        rls_contract.PostgresRuntimeRlsTests._create_runtime_role(
+            role_name,
+            password,
+            self.line_contract.case.tenant_id,
+        )
+        self.addCleanup(
+            rls_contract.PostgresRuntimeRlsTests._drop_runtime_role,
+            role_name,
+        )
+        with psycopg.connect(posting.DATABASE_URL, autocommit=True) as admin:
+            for table_name in (
+                "bank_statement_artifact",
+                "bank_statement_record",
+                "bank_statement_entry",
+                "bank_statement_entry_detail",
+            ):
+                admin.execute(
+                    sql.SQL("GRANT INSERT ON accounting_integration.{} TO {}").format(
+                        sql.Identifier(table_name),
+                        sql.Identifier(role_name),
+                    )
+                )
+        return rls_contract.PostgresRuntimeRlsTests._runtime_database_url(
+            role_name,
+            password,
+        )
+
+    def _tenant_statement_rows(
+        self,
+        database_url: str,
+    ) -> dict[str, tuple[tuple[object, ...], ...]]:
+        """Snapshot every evidence column through the tenant-bound FORCE-RLS login."""
         tenant_reference = self.line_contract.case.policy.tenant_reference
-        with psycopg.connect(posting.DATABASE_URL) as connection:
+        with psycopg.connect(database_url) as connection:
+            role_row = connection.execute(
+                """
+                SELECT pg_roles.rolsuper, pg_roles.rolbypassrls
+                FROM pg_catalog.pg_roles
+                WHERE pg_roles.rolname = session_user
+                """
+            ).fetchone()
+            self.assertEqual(role_row, (False, False))
             tenant_row = connection.execute(
                 """
                 SELECT tenant_account_id
@@ -481,6 +534,10 @@ class BankStatementStructuredLineIdentificationCardinalityEvidenceRedTests(
             if tenant_row is None:
                 raise AssertionError("test tenant must exist before evidence snapshot")
             tenant_id = tenant_row[0]
+            bound_tenant_id = connection.execute(
+                "SELECT accounting_core.current_tenant_account_id()"
+            ).fetchone()[0]
+            self.assertEqual(bound_tenant_id, tenant_id)
             connection.execute(
                 "SELECT set_config('app.tenant_account_id', %s, false)",
                 (str(tenant_id),),
