@@ -31,6 +31,10 @@ _TARGET_KEY = "due_payable_amount"
 _OTHER_AMOUNT_KEYS = tuple(
     key for key in optional_amount_contract._AMOUNT_EVIDENCE_KEYS if key != _TARGET_KEY
 )
+_REQUIRED_RETAINED_KEYS = (
+    "discount_applied_amounts",
+    "remitted_amount",
+)
 
 
 class BankStatementStructuredLineOptionalDuePayableAmountAbsenceEvidenceRedTests(
@@ -72,10 +76,18 @@ class BankStatementStructuredLineOptionalDuePayableAmountAbsenceEvidenceRedTests
             for key in _OTHER_AMOUNT_KEYS
             if key in second_line
         }
-        if len(self.second_line_other_amount_evidence) != len(_OTHER_AMOUNT_KEYS):
+        missing_required = [
+            key for key in _REQUIRED_RETAINED_KEYS
+            if key not in self.second_line_other_amount_evidence
+        ]
+        if missing_required:
             raise AssertionError(
-                "second source line must retain every non-target Amount member"
+                "second source line must retain populated non-target Amount evidence: "
+                + ", ".join(missing_required)
             )
+        self.second_line_absent_optional_amount_keys = tuple(
+            key for key in _OTHER_AMOUNT_KEYS if key not in second_line
+        )
 
         self.due_payable_line = self._extract_second_line_due_payable_line(
             self.base_payload
@@ -291,6 +303,8 @@ class BankStatementStructuredLineOptionalDuePayableAmountAbsenceEvidenceRedTests
         self.assertNotIn(_TARGET_KEY, second_line)
         for key, expected in self.second_line_other_amount_evidence.items():
             self.assertEqual(second_line[key], expected)
+        for key in self.second_line_absent_optional_amount_keys:
+            self.assertNotIn(key, second_line)
 
         # Inherited omission contracts remain live.
         self.assertNotIn("description", second_line)
@@ -313,7 +327,12 @@ class BankStatementStructuredLineOptionalDuePayableAmountAbsenceEvidenceRedTests
         for key, expected in self.second_line_other_amount_evidence.items():
             if second_line.get(key) != expected:
                 raise AssertionError(
-                    "non-target line-two Amount evidence must remain unchanged"
+                    "populated non-target line-two Amount evidence must remain unchanged"
+                )
+        for key in self.second_line_absent_optional_amount_keys:
+            if key in second_line:
+                raise AssertionError(
+                    "Due Payable omission must not manufacture absent optional Amount evidence"
                 )
         for key, expected in self.first_line_amount_evidence.items():
             if first_line.get(key) != expected:
