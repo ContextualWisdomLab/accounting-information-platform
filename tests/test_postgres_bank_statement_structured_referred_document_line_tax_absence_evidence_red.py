@@ -29,9 +29,6 @@ _PARENT_TEST = (
     tax_contraction_contract.BankStatementStructuredLineRepeatedTaxContractionEvidenceRedTests
 )
 _CORRECTION_ERROR = tax_contraction_contract._CORRECTION_ERROR
-_SIBLING_READER = (
-    sibling_readback_contract.BankStatementStructuredLineDiscountAbsenceSiblingReadbackRedTests
-)
 _STRUCTURED_EVIDENCE_KEY = "structured_referred_document_evidence"
 _TAX_KEY = "tax_amounts"
 _STAT = {"type_code": "STAT", "amount": "950", "currency_code": "KRW"}
@@ -448,8 +445,11 @@ class BankStatementStructuredLineTaxAbsenceEvidenceRedTests(unittest.TestCase):
         expected_entry: object,
     ) -> None:
         """Compare every buyer-visible field on the unrelated sibling entry."""
-        helper = _SIBLING_READER(
-            "test_discount_present_baseline_reads_complete_sibling_projection"
+        helper = (
+            sibling_readback_contract.
+            BankStatementStructuredLineDiscountAbsenceSiblingReadbackRedTests(
+                "test_discount_present_baseline_reads_complete_sibling_projection"
+            )
         )
         helper._assert_complete_sibling(persisted_entry, expected_entry)
 
