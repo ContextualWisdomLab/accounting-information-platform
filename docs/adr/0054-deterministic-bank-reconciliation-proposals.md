@@ -55,7 +55,7 @@ JSON and CSV exports preserve monetary values as decimal strings and keep immuta
 
 ### Allocation conservation
 
-A statement entry may reconcile against several journal candidates and several statement entries may reconcile to one journal total. Allocation plans use exact `Decimal` values and must conserve exact totals on both source sides. `ReconciliationAllocation` is immutable, tenant- and run-scoped, carries statement and journal identity plus currency, and rejects non-exact or non-positive money. Allocation plans remain evidence and never post, reverse, approve, close, or adjust a journal.
+A statement entry may reconcile against several journal candidates and several statement entries may reconcile to one journal total. Allocation plans use exact `Decimal` values and must conserve exact totals on both source sides. `ReconciliationAllocation` is immutable, tenant- and run-scoped, carries statement and journal identity plus currency, and rejects non-exact or non-positive money. Within the pure proposal API, source identity is also a set invariant: one split may contain each `journal_reference` at most once, and one aggregate may contain each `statement_entry_reference` at most once. Repeating the same immutable source identity cannot manufacture additional apparent capacity even when the duplicated rows still sum exactly to the requested total. Allocation plans remain evidence and never post, reverse, approve, close, or adjust a journal.
 
 ### Allocation persistence
 
@@ -86,6 +86,8 @@ The initial deterministic-reconciliation RED contract ran on exact head `80ce0eb
 For migration 0015, exact RED head `ba3e429be18397b3309aff7d725ec0d60d25c81a` ran PostgreSQL 18.4 and 477 behavior/repository tests. Exactly the two intended approval-balance regressions failed: a match with a missing journal-allocation side and a match whose statement and journal allocation totals differed. The equal non-empty control passed. The database guard was implemented only after that observed RED boundary. Existing reconciliation fixtures were normalized to the real lifecycle `proposed → allocations → approved`, preserving cross-run conservation, concurrency serialization, supersession-based capacity release, and append-only history.
 
 Exact documentation RED head `d7e17676a76222a2e730b739275fd0afc0958700` then ran PostgreSQL 18.4 and 479 tests. Exactly two code-current documentation regressions failed: ADR 0054 still described the removed run-wide approval restriction/future multi-match persistence, and the `[Unreleased]` migration 0015 entry omitted the non-empty/equal allocation-side approval invariant. Coverage and package evidence did not become passing evidence for that RED head.
+
+The distinct-source proposal repair is test-first lineage `18577f0ae24c0f45fd50a5630eab3175f98e6afa` → `91ee12f0719bbc902130c532db8b6f3bafb61e97`: the RED keeps exact monetary totals conserved while duplicating only immutable source identity, and the production descendant adds the narrow source-identity set guard. Hosted execution evidence for that descendant remains separate and is not inferred from source inspection.
 
 Execution evidence belongs only to the exact head that produced it and is not transferred to later heads.
 
