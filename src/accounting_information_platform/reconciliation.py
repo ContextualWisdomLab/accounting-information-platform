@@ -179,7 +179,7 @@ class ReconciliationDecision:
         """Reject forged or silently incompatible reconciliation evidence."""
         _require_identity(self.statement_entry_reference, "statement_entry_reference")
         _require_review_instruction(self.next_action)
-        if not isinstance(self.matched_journal_references, tuple):
+        if type(self.matched_journal_references) is not tuple:
             raise ValueError(
                 "matched_journal_references must be an immutable tuple. Rebuild reconciliation evidence from immutable journal source identities."
             )
