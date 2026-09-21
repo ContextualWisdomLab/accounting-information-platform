@@ -28,12 +28,7 @@ _NORMALIZATION_PARENT_TEST = due_payable_contract._NORMALIZATION_PARENT_TEST
 _CORRECTION_ERROR = due_payable_contract._CORRECTION_ERROR
 _STRUCTURED_EVIDENCE_KEY = "structured_referred_document_evidence"
 _TARGET_KEY = "remitted_amount"
-_REQUIRED_RETAINED_KEYS = (
-    "discount_applied_amounts",
-    "credit_note_amount",
-    "tax_amounts",
-    "adjustments",
-)
+_REQUIRED_RETAINED_KEYS = ("discount_applied_amounts",)
 
 
 class BankStatementStructuredLineOptionalRemittedAmountAbsenceEvidenceRedTests(
@@ -85,6 +80,10 @@ class BankStatementStructuredLineOptionalRemittedAmountAbsenceEvidenceRedTests(
         if "due_payable_amount" in second_line:
             raise AssertionError(
                 "parent #117 contract must keep line-two Due Payable Amount absent"
+            )
+        if _TARGET_KEY not in second_line:
+            raise AssertionError(
+                "parent #117 source must retain populated line-two Remitted Amount"
             )
         self.second_line_absent_optional_amount_keys = tuple(
             key
