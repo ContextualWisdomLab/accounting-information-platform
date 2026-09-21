@@ -179,6 +179,10 @@ class ReconciliationDecision:
         """Reject forged or silently incompatible reconciliation evidence."""
         _require_identity(self.statement_entry_reference, "statement_entry_reference")
         _require_review_instruction(self.next_action)
+        if not isinstance(self.matched_journal_references, tuple):
+            raise ValueError(
+                "matched_journal_references must be an immutable tuple. Rebuild reconciliation evidence from immutable journal source identities."
+            )
         if self.contract_version not in _RECONCILIATION_DECISION_VERSIONS:
             raise ValueError(
                 "contract_version must be reconciliation-decision/v1 or reconciliation-decision/v2. Use a supported repository-owned reconciliation decision contract."
@@ -341,13 +345,13 @@ def propose_deterministic_match(
             return _abstain(
                 statement,
                 "currency_mismatch",
-                "Verify the statement and book currencies before recording a reconciliation decision.",
+                "Verify the statement and book currencies before recording a reconciliation decision."
             )
         if candidate.amount != statement.amount:
             return _abstain(
                 statement,
                 "amount_mismatch",
-                "Verify the exact statement and journal amounts before recording a reconciliation decision.",
+                "Verify the exact statement and journal amounts before recording a reconciliation decision."
             )
         if candidate.credit_debit_code != statement.credit_debit_code:
             return _abstain(statement, "direction_mismatch", _DIRECTION_MISMATCH_ACTION)
@@ -376,18 +380,18 @@ def propose_deterministic_match(
         return _abstain(
             statement,
             "ambiguous_reference",
-            "Review the competing book candidates and record an explicit reconciliation decision.",
+            "Review the competing book candidates and record an explicit reconciliation decision."
         )
     if same_direction_candidates:
         return _abstain(
             statement,
             "date_window_mismatch",
-            "Review the statement and journal dates or document an explicit reconciliation exception.",
+            "Review the statement and journal dates or document an explicit reconciliation exception."
         )
     if exact_money_candidates:
         return _abstain(statement, "direction_mismatch", _DIRECTION_MISMATCH_ACTION)
     return _abstain(
         statement,
         "no_candidate",
-        "Review unmatched statement evidence and create an authorized exception or adjusting-journal proposal if required.",
+        "Review unmatched statement evidence and create an authorized exception or adjusting-journal proposal if required."
     )
