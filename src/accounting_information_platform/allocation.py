@@ -62,12 +62,13 @@ def propose_split_allocations(
     reconciliation_run_reference: str,
     tenant_account_reference: str,
 ) -> tuple[ReconciliationAllocation, ...]:
-    """Propose one allocation per candidate that conserves the statement amount.
+    """Propose one allocation per distinct candidate journal with exact conservation.
 
-    Every candidate journal contributes a positive exact Decimal amount and all
-    candidates share one currency. The returned allocations sum exactly to
-    ``statement_amount``; a candidate set whose total is not exactly that amount
-    fails closed rather than returning partial conservation evidence.
+    Every candidate journal contributes a positive exact Decimal amount, every
+    journal identity appears at most once, and all candidates share one
+    currency. The returned allocations sum exactly to ``statement_amount``; a
+    duplicate source identity or candidate set whose total is not exactly that
+    amount fails closed rather than returning reviewable allocation evidence.
     """
 
     _require_identity(statement_entry_reference, "statement_entry_reference")
@@ -80,7 +81,15 @@ def propose_split_allocations(
 
     allocations: list[ReconciliationAllocation] = []
     planned_total = Decimal("0")
+    seen_journal_references: set[str] = set()
     for journal in journal_tuple:
+        _require_identity(journal.journal_reference, "journal_reference")
+        if journal.journal_reference in seen_journal_references:
+            raise ValueError(
+                "split candidates must use distinct journal identities. Remove "
+                "duplicate journal evidence before planning a split."
+            )
+        seen_journal_references.add(journal.journal_reference)
         _require_exact_positive(journal.amount, f"candidate {journal.journal_reference} amount")
         if journal.currency_code != currency_code:
             raise ValueError(
@@ -118,11 +127,12 @@ def aggregate_allocations(
     journal_reference: str = "journal-aggregate",
     currency_code: str = "KRW",
 ) -> tuple[ReconciliationAllocation, ...]:
-    """Allocate several statement entries to a journal total conserving both sides.
+    """Allocate distinct statement entries to a journal total conserving both sides.
 
-    Each statement item contributes its own allocation and the returned total
-    equals ``journal_total`` exactly. Sides that disagree fail closed instead
-    of emitting partial aggregate evidence.
+    Each statement identity appears at most once and contributes its own
+    allocation. The returned total equals ``journal_total`` exactly. Duplicate
+    source identity or disagreeing sides fail closed instead of emitting
+    reviewable aggregate evidence.
     """
 
     _require_exact_positive(journal_total, "journal_total")
@@ -133,8 +143,15 @@ def aggregate_allocations(
 
     allocations: list[ReconciliationAllocation] = []
     statement_total = Decimal("0")
+    seen_statement_references: set[str] = set()
     for statement_reference, amount in statement_items:
         _require_identity(statement_reference, "statement_entry_reference")
+        if statement_reference in seen_statement_references:
+            raise ValueError(
+                "aggregate items must use distinct statement identities. Remove "
+                "duplicate statement evidence before planning an aggregate."
+            )
+        seen_statement_references.add(statement_reference)
         _require_exact_positive(amount, f"statement {statement_reference} amount")
         statement_total += amount
         allocations.append(
