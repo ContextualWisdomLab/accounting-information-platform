@@ -81,7 +81,7 @@ class BankStatementStructuredLineDiscountOrderNonMutationRedTests(unittest.TestC
         self.assertEqual(self.parent.parent.store._artifacts, before_artifacts)
 
     def _tenant_statement_rows(self) -> dict[str, tuple[tuple[object, ...], ...]]:
-        """Snapshot all columns of the four tenant-scoped statement evidence tables."""
+        """Snapshot all columns under the tenant's forced-RLS evidence view."""
         tenant_reference = self.parent.parent.case.policy.tenant_reference
         with psycopg.connect(posting.DATABASE_URL) as connection:
             tenant_row = connection.execute(
@@ -95,6 +95,10 @@ class BankStatementStructuredLineDiscountOrderNonMutationRedTests(unittest.TestC
             if tenant_row is None:
                 raise AssertionError("test tenant must exist before evidence snapshot")
             tenant_id = tenant_row[0]
+            connection.execute(
+                "SELECT set_config('app.tenant_account_id', %s, false)",
+                (str(tenant_id),),
+            )
 
             artifact_rows = connection.execute(
                 """
