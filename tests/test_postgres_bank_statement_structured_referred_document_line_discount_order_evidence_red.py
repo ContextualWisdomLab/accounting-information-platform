@@ -81,6 +81,8 @@ class BankStatementStructuredLineDiscountOrderEvidenceRedTests(unittest.TestCase
         base_detail = base_entry.entry_details[0]
         changed_detail = changed_entry.entry_details[0]
         for value in (
+            self.base_statement.source_artifact_hash,
+            self.changed_statement.source_artifact_hash,
             base_detail.source_detail_hash,
             changed_detail.source_detail_hash,
             base_entry.source_entry_hash,
@@ -137,6 +139,10 @@ class BankStatementStructuredLineDiscountOrderEvidenceRedTests(unittest.TestCase
             ),
         )
 
+        self.assertNotEqual(
+            self.base_statement.source_artifact_hash,
+            self.changed_statement.source_artifact_hash,
+        )
         self.assertNotEqual(
             base_detail.source_detail_hash,
             changed_detail.source_detail_hash,
