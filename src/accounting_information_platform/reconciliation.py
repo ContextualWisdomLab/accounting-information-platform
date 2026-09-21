@@ -26,7 +26,7 @@ _RECONCILIATION_DECISION_VERSIONS = frozenset(
 
 def _require_credit_debit_code(value: object) -> None:
     """Require canonical source movement direction before reconciliation."""
-    if not isinstance(value, str) or value not in _CREDIT_DEBIT_CODES:
+    if type(value) is not str or value not in _CREDIT_DEBIT_CODES:
         raise ValueError(
             "credit_debit_code must be CRDT or DBIT. Normalize the source movement direction before reconciliation."
         )
