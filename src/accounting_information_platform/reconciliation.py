@@ -183,7 +183,10 @@ class ReconciliationDecision:
             raise ValueError(
                 "matched_journal_references must be an immutable tuple. Rebuild reconciliation evidence from immutable journal source identities."
             )
-        if self.contract_version not in _RECONCILIATION_DECISION_VERSIONS:
+        if (
+            type(self.contract_version) is not str
+            or self.contract_version not in _RECONCILIATION_DECISION_VERSIONS
+        ):
             raise ValueError(
                 "contract_version must be reconciliation-decision/v1 or reconciliation-decision/v2. Use a supported repository-owned reconciliation decision contract."
             )
