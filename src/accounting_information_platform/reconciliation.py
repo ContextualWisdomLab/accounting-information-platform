@@ -43,6 +43,12 @@ def _require_identity(value: object, field_name: str) -> None:
         raise ValueError(f"{field_name} must be a non-empty identity")
 
 
+def _require_optional_identity(value: object, field_name: str) -> None:
+    """Require optional source identities to be absent or non-empty strings."""
+    if value is not None and (not isinstance(value, str) or not value.strip()):
+        raise ValueError(f"{field_name} must be None or a non-empty identity")
+
+
 def _require_review_instruction(value: object) -> None:
     """Reject decision evidence that gives the reviewer no actionable next step."""
     if not isinstance(value, str) or not value.strip():
@@ -64,7 +70,13 @@ class StatementEntryEvidence:
     value_date: date
 
     def __post_init__(self) -> None:
-        """Reject non-canonical money and movement direction before matching."""
+        """Reject malformed source identity, money, and direction before matching."""
+        _require_identity(self.statement_entry_reference, "statement_entry_reference")
+        _require_optional_identity(self.provider_reference, "provider_reference")
+        _require_optional_identity(self.end_to_end_reference, "end_to_end_reference")
+        _require_optional_identity(
+            self.account_servicer_reference, "account_servicer_reference"
+        )
         _require_positive_exact_decimal(self.amount)
         _require_credit_debit_code(self.credit_debit_code)
 
@@ -83,7 +95,13 @@ class BookJournalEvidence:
     accounting_date: date
 
     def __post_init__(self) -> None:
-        """Reject non-canonical money and movement direction before matching."""
+        """Reject malformed source identity, money, and direction before matching."""
+        _require_identity(self.journal_reference, "journal_reference")
+        _require_optional_identity(self.provider_reference, "provider_reference")
+        _require_optional_identity(self.end_to_end_reference, "end_to_end_reference")
+        _require_optional_identity(
+            self.account_servicer_reference, "account_servicer_reference"
+        )
         _require_positive_exact_decimal(self.amount)
         _require_credit_debit_code(self.credit_debit_code)
 
