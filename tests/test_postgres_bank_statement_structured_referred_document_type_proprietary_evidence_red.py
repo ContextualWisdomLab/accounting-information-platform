@@ -29,7 +29,7 @@ _STRUCTURED_EVIDENCE_KEY = "structured_referred_document_evidence"
 class BankStatementStructuredReferredDocumentTypeProprietaryEvidenceRedTests(
     unittest.TestCase
 ):
-    """Retain RfrdDocInf/Tp/CdOrPrtry/Prtry as reconciliation source evidence."""
+    """Retain a non-first RfrdDocInf/Tp/CdOrPrtry/Prtry in source order."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -37,7 +37,7 @@ class BankStatementStructuredReferredDocumentTypeProprietaryEvidenceRedTests(
         type_code_contract.BankStatementStructuredReferredDocumentTypeCodeEvidenceRedTests.setUpClass()
 
     def setUp(self) -> None:
-        """Prepare statements differing only in one proprietary document type value."""
+        """Prepare two-document statements differing only in the second type value."""
         self.type_code_contract = (
             type_code_contract.BankStatementStructuredReferredDocumentTypeCodeEvidenceRedTests(
                 "test_document_type_code_is_material_to_each_canonical_evidence_hash"
@@ -47,11 +47,14 @@ class BankStatementStructuredReferredDocumentTypeProprietaryEvidenceRedTests(
         self.addCleanup(self.type_code_contract.doCleanups)
         self.line_contract = self.type_code_contract.line_contract
 
-        self.document_number = self.type_code_contract.document_number
+        self.first_document_number = self.type_code_contract.document_number
+        self.second_document_number = "INV-2026-1002"
         self.base_document_type_proprietary = "SUPPLIER_INVOICE"
         self.changed_document_type_proprietary = "SUPPLIER_CREDIT"
 
-        self.coded_payload = self.type_code_contract.base_payload
+        self.coded_payload = self._with_second_referred_document(
+            self.type_code_contract.base_payload
+        )
         self.base_payload = self._replace_document_type_choice(
             self.coded_payload,
             self._coded_type_markup(self.type_code_contract.base_document_type_code),
@@ -351,32 +354,84 @@ class BankStatementStructuredReferredDocumentTypeProprietaryEvidenceRedTests(
         self,
         document_type_proprietary: str,
     ) -> list[dict[str, object]]:
-        """Return the ordered projection with one proprietary document type."""
-        projection = deepcopy(
+        """Return two ordered documents with proprietary type on the second."""
+        parent_projection = deepcopy(
             self.type_code_contract._structured_projection(
                 self.type_code_contract.base_document_type_code
             )
         )
-        if len(projection) != 1 or not isinstance(projection[0], dict):
+        if len(parent_projection) != 1 or not isinstance(
+            parent_projection[0],
+            dict,
+        ):
             raise AssertionError(
-                "canonical projection must contain one referred document"
+                "parent projection must contain one referred document"
             )
-        referred_document = projection[0]
+        first_document = parent_projection[0]
         if (
-            referred_document.pop("document_type_code", None)
+            first_document.get("document_type_code")
             != self.type_code_contract.base_document_type_code
         ):
             raise AssertionError(
-                "parent referred document must begin with its coded type"
+                "first referred document must retain the canonical coded type"
             )
-        if referred_document.get("document_number") != self.document_number:
+        if first_document.get("document_number") != self.first_document_number:
             raise AssertionError(
-                "referred-document number must remain stable"
+                "first referred-document number must remain stable"
             )
-        referred_document["document_type_proprietary"] = (
+
+        second_document = deepcopy(first_document)
+        second_document["document_number"] = self.second_document_number
+        if (
+            second_document.pop("document_type_code", None)
+            != self.type_code_contract.base_document_type_code
+        ):
+            raise AssertionError(
+                "second referred document must begin with the canonical coded type"
+            )
+        second_document["document_type_proprietary"] = (
             document_type_proprietary
         )
-        return projection
+        return [first_document, second_document]
+
+    def _with_second_referred_document(self, payload: bytes) -> bytes:
+        """Append a distinct second RfrdDocInf after the canonical first document."""
+        text = payload.decode("utf-8")
+        first_marker = f"<Nb>{self.first_document_number}</Nb>"
+        second_marker = f"<Nb>{self.second_document_number}</Nb>"
+        if text.count(first_marker) != 1:
+            raise AssertionError(
+                "first referred-document number marker must occur exactly once"
+            )
+        if second_marker in text:
+            raise AssertionError(
+                "second referred-document number must not pre-exist"
+            )
+
+        marker_index = text.index(first_marker)
+        document_start = text.rfind("<RfrdDocInf>", 0, marker_index)
+        document_end_start = text.find("</RfrdDocInf>", marker_index)
+        if document_start < 0 or document_end_start < 0:
+            raise AssertionError(
+                "first referred-document boundaries must be present"
+            )
+        document_end = document_end_start + len("</RfrdDocInf>")
+        first_document = text[document_start:document_end]
+        if first_document.count(first_marker) != 1:
+            raise AssertionError(
+                "first document must contain its number exactly once"
+            )
+        second_document = first_document.replace(
+            first_marker,
+            second_marker,
+            1,
+        )
+        return (
+            text[:document_end]
+            + "\n                  "
+            + second_document
+            + text[document_end:]
+        ).encode("utf-8")
 
     def _replace_document_type_choice(
         self,
@@ -384,19 +439,19 @@ class BankStatementStructuredReferredDocumentTypeProprietaryEvidenceRedTests(
         current_type_markup: str,
         replacement_type_markup: str,
     ) -> bytes:
-        """Replace only the outer document type choice for the exact document."""
+        """Replace only the second document's outer type choice."""
         text = payload.decode("utf-8")
-        document_marker = f"<Nb>{self.document_number}</Nb>"
+        document_marker = f"<Nb>{self.second_document_number}</Nb>"
         if text.count(document_marker) != 1:
             raise AssertionError(
-                "referred-document number marker must occur exactly once"
+                "second referred-document number marker must occur exactly once"
             )
         marker_index = text.index(document_marker)
         document_start = text.rfind("<RfrdDocInf>", 0, marker_index)
         document_end_start = text.find("</RfrdDocInf>", marker_index)
         if document_start < 0 or document_end_start < 0:
             raise AssertionError(
-                "referred-document boundaries must be present"
+                "second referred-document boundaries must be present"
             )
         document_end = document_end_start + len("</RfrdDocInf>")
         document_segment = text[document_start:document_end]
