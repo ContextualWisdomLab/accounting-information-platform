@@ -336,17 +336,25 @@ class BankStatementStructuredLineOptionalAmountAbsenceEvidenceRedTests(
         open_indexes = [
             index for index, line in enumerate(lines) if line.strip() == "<Amt>"
         ]
-        close_indexes = [
-            index for index, line in enumerate(lines) if line.strip() == "</Amt>"
-        ]
         line_close_indexes = [
             index for index, line in enumerate(lines) if line.strip() == "</LineDtls>"
         ]
-        if len(open_indexes) != 1 or len(close_indexes) != 1:
-            raise AssertionError("second source line requires one direct Amount group")
+        if len(open_indexes) != 1:
+            raise AssertionError("second source line requires one direct Amount opener")
         if len(line_close_indexes) != 1:
             raise AssertionError("second source line requires one LineDtls closing tag")
         amount_open = open_indexes[0]
+        direct_indent = lines[amount_open][
+            : len(lines[amount_open]) - len(lines[amount_open].lstrip())
+        ]
+        close_indexes = [
+            index
+            for index, line in enumerate(lines[amount_open + 1 :], amount_open + 1)
+            if line.strip() == "</Amt>"
+            and line[: len(line) - len(line.lstrip())] == direct_indent
+        ]
+        if len(close_indexes) != 1:
+            raise AssertionError("second source line requires one direct Amount closer")
         amount_close = close_indexes[0]
         line_close = line_close_indexes[0]
         if not amount_open < amount_close < line_close:
