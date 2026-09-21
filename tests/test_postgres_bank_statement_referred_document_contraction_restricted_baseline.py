@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from decimal import Decimal
 
 from accounting_information_platform import (
     accept_bank_statement_evidence,
@@ -25,6 +26,7 @@ _RLS_OWNER = (
     rls_snapshot_contract.
     BankStatementStructuredLineIdentificationCardinalityEvidenceRedTests
 )
+_STRUCTURED_EVIDENCE_KEY = "structured_referred_document_evidence"
 
 
 class BankStatementReferredDocumentContractionRestrictedBaselineTests(
@@ -87,6 +89,7 @@ class BankStatementReferredDocumentContractionRestrictedBaselineTests(
                 self.contract.second_document_number,
             ),
         )
+        self._assert_every_primary_detail(entries[0])
         self.contract._assert_sibling(
             entries[1],
             self.contract.base_statement.entries[1],
@@ -109,6 +112,34 @@ class BankStatementReferredDocumentContractionRestrictedBaselineTests(
                 for row in before_rows["bank_statement_record"]
             )
         )
+
+    def _assert_every_primary_detail(self, persisted_entry: dict[str, object]) -> None:
+        """Require complete detail hashes/amounts while keeping structure on detail one."""
+        persisted_details = persisted_entry["entry_details"]
+        expected_details = self.contract.base_statement.entries[0].entry_details
+        self.assertEqual(len(persisted_details), len(expected_details))
+        for index, (persisted_detail, expected_detail) in enumerate(
+            zip(persisted_details, expected_details, strict=True)
+        ):
+            self.assertEqual(
+                persisted_detail["source_detail_hash"],
+                expected_detail.source_detail_hash,
+            )
+            self.assertEqual(
+                Decimal(str(persisted_detail["detail_amount"])),
+                expected_detail.detail_amount,
+            )
+            self.assertEqual(
+                persisted_detail["detail_currency_code"],
+                expected_detail.detail_currency_code,
+            )
+            if index == 0:
+                self.assertEqual(
+                    persisted_detail[_STRUCTURED_EVIDENCE_KEY],
+                    self.contract.base_projection,
+                )
+            else:
+                self.assertNotIn(_STRUCTURED_EVIDENCE_KEY, persisted_detail)
 
 
 if __name__ == "__main__":
