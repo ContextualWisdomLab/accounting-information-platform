@@ -221,10 +221,10 @@ class BankStatementStructuredLineIdentificationOrderEvidenceRedTests(unittest.Te
             self.line_contract.store._artifacts,
         )
 
-    def test_buyer_read_retains_reordered_identifications_and_first_source_scalar(
+    def test_buyer_read_retains_reordered_identifications_and_primary_scalar(
         self,
     ) -> None:
-        """Expose exact reversed Id order and keep legacy scalar fields on the first Id."""
+        """Expose exact reversed Id order without rewriting the established primary scalar."""
         accepted = accept_bank_statement_evidence(
             self.line_contract._command(
                 self.changed_payload,
@@ -270,17 +270,14 @@ class BankStatementStructuredLineIdentificationOrderEvidenceRedTests(unittest.Te
         )
 
         second_line = detail[_STRUCTURED_EVIDENCE_KEY][0]["line_details"][1]
-        self.assertEqual(
-            second_line["line_type_code"],
-            self.parent.second_identification_type_code,
-        )
+        self.assertEqual(second_line["line_type_code"], "SKNB")
         self.assertEqual(
             second_line["line_number"],
-            self.parent.second_identification_number,
+            self.line_contract.second_line_number,
         )
         self.assertEqual(
             second_line["related_date"],
-            self.parent.second_identification_related_date,
+            self.line_contract.line_related_date,
         )
         self.assertEqual(
             second_line["line_identifications"],
@@ -305,7 +302,7 @@ class BankStatementStructuredLineIdentificationOrderEvidenceRedTests(unittest.Te
     def _projection_with_reversed_identification_order(
         self,
     ) -> list[dict[str, object]]:
-        """Reverse only the complete Id population and derive legacy scalars from source-first."""
+        """Reverse only the complete Id population while retaining the canonical primary scalar."""
         projection = deepcopy(self.base_projection)
         if len(projection) != 1:
             raise AssertionError("order RED requires one referred document")
@@ -332,11 +329,16 @@ class BankStatementStructuredLineIdentificationOrderEvidenceRedTests(unittest.Te
         if identifications != [first, second]:
             raise AssertionError("parent repeated-identification order must remain canonical")
 
-        reordered = [second, first]
-        second_line["line_identifications"] = reordered
-        second_line["line_type_code"] = second["type_code"]
-        second_line["line_number"] = second["number"]
-        second_line["related_date"] = second["related_date"]
+        second_line["line_identifications"] = [second, first]
+        self.assertEqual(second_line.get("line_type_code"), "SKNB")
+        self.assertEqual(
+            second_line.get("line_number"),
+            self.line_contract.second_line_number,
+        )
+        self.assertEqual(
+            second_line.get("related_date"),
+            self.line_contract.line_related_date,
+        )
         return projection
 
     def _swap_second_line_identifications(self, payload: bytes) -> bytes:
