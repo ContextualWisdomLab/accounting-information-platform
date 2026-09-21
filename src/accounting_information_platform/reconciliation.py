@@ -101,7 +101,7 @@ class ReconciliationDecision:
     ``reconciliation-decision/v1`` preserves the original deterministic contract:
     every match references exactly one journal. Reviewed split evidence must opt
     into ``reconciliation-decision/v2`` explicitly before carrying more than one
-    journal reference. Deterministic proposal generation remains v1.
+    distinct journal reference. Deterministic proposal generation remains v1.
     """
 
     statement_entry_reference: str
@@ -131,6 +131,12 @@ class ReconciliationDecision:
             if not self.matched_journal_references:
                 raise ValueError(
                     "match decision must reference at least one journal. Rebuild the deterministic proposal from source evidence."
+                )
+            if len(set(self.matched_journal_references)) != len(
+                self.matched_journal_references
+            ):
+                raise ValueError(
+                    "match decision must reference distinct journal identities. Rebuild reviewed split evidence from distinct immutable journal sources."
                 )
             try:
                 _require_positive_exact_decimal(self.allocated_amount)
