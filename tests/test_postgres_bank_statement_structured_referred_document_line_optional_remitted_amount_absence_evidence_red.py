@@ -279,10 +279,14 @@ class BankStatementStructuredLineOptionalRemittedAmountAbsenceEvidenceRedTests(
             self.line_contract.case.policy.tenant_reference,
             record_id,
         )
-        entry = document["bank_statement_entries"][0]
+        entries = document["bank_statement_entries"]
+        self.assertEqual(len(entries), len(self.changed_statement.entries))
+        entry = entries[0]
         detail = entry["entry_details"][0]
         changed_entry = self.changed_statement.entries[0]
         changed_detail = changed_entry.entry_details[0]
+        sibling_entry = entries[1]
+        changed_sibling_entry = self.changed_statement.entries[1]
 
         self.assertEqual(
             statement["source_artifact_hash"],
@@ -295,6 +299,39 @@ class BankStatementStructuredLineOptionalRemittedAmountAbsenceEvidenceRedTests(
         self.assertEqual(entry["source_entry_hash"], changed_entry.source_entry_hash)
         self.assertEqual(detail["source_detail_hash"], changed_detail.source_detail_hash)
         self.assertEqual(detail.get(_STRUCTURED_EVIDENCE_KEY), self.changed_projection)
+        self.assertEqual(
+            sibling_entry["source_entry_hash"],
+            changed_sibling_entry.source_entry_hash,
+        )
+        self.assertEqual(
+            Decimal(str(sibling_entry["entry_amount"])),
+            changed_sibling_entry.entry_amount,
+        )
+        self.assertEqual(
+            sibling_entry["entry_currency_code"],
+            changed_sibling_entry.entry_currency_code,
+        )
+        self.assertEqual(
+            len(sibling_entry["entry_details"]),
+            len(changed_sibling_entry.entry_details),
+        )
+        for persisted_detail, expected_detail in zip(
+            sibling_entry["entry_details"],
+            changed_sibling_entry.entry_details,
+            strict=True,
+        ):
+            self.assertEqual(
+                persisted_detail["source_detail_hash"],
+                expected_detail.source_detail_hash,
+            )
+            self.assertEqual(
+                Decimal(str(persisted_detail["detail_amount"])),
+                expected_detail.detail_amount,
+            )
+            self.assertEqual(
+                persisted_detail["detail_currency_code"],
+                expected_detail.detail_currency_code,
+            )
 
         first_line, second_line = self.parent.parent._line_details(
             detail[_STRUCTURED_EVIDENCE_KEY]
