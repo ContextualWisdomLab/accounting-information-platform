@@ -36,6 +36,11 @@ _AMOUNT_EVIDENCE_KEYS = (
     "adjustments",
     "remitted_amount",
 )
+_REQUIRED_SECOND_LINE_AMOUNT_KEYS = (
+    "due_payable_amount",
+    "discount_applied_amounts",
+    "remitted_amount",
+)
 
 
 class BankStatementStructuredLineOptionalAmountAbsenceEvidenceRedTests(
@@ -72,6 +77,21 @@ class BankStatementStructuredLineOptionalAmountAbsenceEvidenceRedTests(
             for key in _AMOUNT_EVIDENCE_KEYS
             if key in first_line
         }
+        self.second_line_amount_evidence = {
+            key: deepcopy(second_line[key])
+            for key in _AMOUNT_EVIDENCE_KEYS
+            if key in second_line
+        }
+        missing_required = [
+            key
+            for key in _REQUIRED_SECOND_LINE_AMOUNT_KEYS
+            if key not in self.second_line_amount_evidence
+        ]
+        if missing_required:
+            raise AssertionError(
+                "second source line must retain the populated Amount evidence used by "
+                "this fixture: " + ", ".join(missing_required)
+            )
         self.amount_block = self._extract_second_line_amount_block(self.base_payload)
 
         self.changed_payload = self._remove_second_line_amount(self.base_payload)
@@ -289,17 +309,20 @@ class BankStatementStructuredLineOptionalAmountAbsenceEvidenceRedTests(
         self.assertEqual(detail["detail_currency_code"], "KRW")
 
     def _projection_without_second_line_amount(self) -> list[dict[str, object]]:
-        """Remove only Amount-derived keys from line two's canonical projection."""
+        """Remove the populated Amount evidence from line two's canonical projection."""
         projection = deepcopy(self.base_projection)
         first_line, second_line = self._line_details(projection)
-        missing = [key for key in _AMOUNT_EVIDENCE_KEYS if key not in second_line]
-        if missing:
-            raise AssertionError(
-                "second source line must begin with complete Amount evidence: "
-                + ", ".join(missing)
-            )
-        for key in _AMOUNT_EVIDENCE_KEYS:
+        for key, expected in self.second_line_amount_evidence.items():
+            if second_line.get(key) != expected:
+                raise AssertionError(
+                    "populated line-two Amount evidence must remain exact before omission"
+                )
             second_line.pop(key)
+        for key in _AMOUNT_EVIDENCE_KEYS:
+            if key in second_line:
+                raise AssertionError(
+                    "whole Amount omission must remove every Amount-derived projection key"
+                )
         for key, expected in self.first_line_amount_evidence.items():
             if first_line.get(key) != expected:
                 raise AssertionError("first source line Amount evidence must remain unchanged")
