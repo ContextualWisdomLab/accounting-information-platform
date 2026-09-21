@@ -1,8 +1,9 @@
 """RED contracts for immutable matched-journal populations on decisions.
 
-A frozen reconciliation decision is not immutable evidence when a caller can pass a mutable
-list into ``matched_journal_references`` and mutate that source population after construction.
-The runtime boundary therefore requires the journal population itself to be an immutable tuple.
+A frozen reconciliation decision is not immutable evidence when a caller can inject a mutable
+container or a mutable-behavior tuple subclass into ``matched_journal_references`` and change
+the source population after construction. The runtime boundary therefore requires the exact
+built-in tuple container for the journal population.
 """
 
 from __future__ import annotations
@@ -11,6 +12,27 @@ import unittest
 from decimal import Decimal
 
 from accounting_information_platform.reconciliation import ReconciliationDecision
+
+
+class _MutableTuplePopulation(tuple[str, ...]):
+    """Tuple subclass whose visible population is backed by mutable state."""
+
+    def __new__(cls, values: tuple[str, ...]) -> _MutableTuplePopulation:
+        instance = super().__new__(cls, ())
+        instance.values = list(values)
+        return instance
+
+    def __len__(self) -> int:
+        return len(self.values)
+
+    def __iter__(self):  # type: ignore[override]
+        return iter(self.values)
+
+    def __bool__(self) -> bool:
+        return bool(self.values)
+
+    def __getitem__(self, index):  # type: ignore[override]
+        return self.values[index]
 
 
 class ReconciliationDecisionJournalPopulationDomainRedTests(unittest.TestCase):
@@ -59,8 +81,25 @@ class ReconciliationDecisionJournalPopulationDomainRedTests(unittest.TestCase):
                 exception_code="no_candidate",
             )
 
+    def test_v1_match_rejects_mutable_tuple_subclass_population(self) -> None:
+        """Tuple inheritance cannot smuggle mutable backing state into a match."""
+        population = _MutableTuplePopulation(("journal-population-1",))
+        with self.assertRaisesRegex(ValueError, "matched_journal_references must be an immutable tuple"):
+            self._decision(matched_journal_references=population)
+
+    def test_abstention_rejects_mutable_empty_tuple_subclass_population(self) -> None:
+        """An empty tuple subclass cannot later attach journals to an abstention."""
+        population = _MutableTuplePopulation(())
+        with self.assertRaisesRegex(ValueError, "matched_journal_references must be an immutable tuple"):
+            self._decision(
+                decision_code="abstain",
+                matched_journal_references=population,
+                allocated_amount=Decimal("0"),
+                exception_code="no_candidate",
+            )
+
     def test_tuple_populations_preserve_v1_v2_and_abstention_contracts(self) -> None:
-        """The immutable tuple contract preserves all supported decision shapes."""
+        """The exact built-in tuple contract preserves all supported decision shapes."""
         v1 = self._decision()
         v2 = self._decision(
             matched_journal_references=("journal-population-1", "journal-population-2"),
