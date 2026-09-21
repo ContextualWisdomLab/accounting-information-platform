@@ -1,13 +1,15 @@
 """RED contract for exact split/aggregate reconciliation allocation conservation.
 
 A bank statement entry that must reconcile against several journal candidates
-(split) produces one allocation per candidate journal and the allocations must
-sum exactly to the statement amount. Several statement entries that reconcile
-to journal total (aggregate) produce one allocation per statement entry and
-the statement-side total must equal the book-side total. Every allocation is
-immutable, tenant- and run-scoped, and carries exact ``Decimal`` money. A
-proposal that would consume more than the remaining amount on either side
-fails closed instead of emitting partial evidence.
+(split) produces one allocation per distinct candidate journal and the
+allocations must sum exactly to the statement amount. Several distinct
+statement entries that reconcile to a journal total (aggregate) produce one
+allocation per statement entry and the statement-side total must equal the
+book-side total. Repeating one source identity cannot manufacture extra
+capacity merely because duplicated rows still sum to the target total. Every
+allocation is immutable, tenant- and run-scoped, and carries exact ``Decimal``
+money. A proposal that would consume more than the remaining amount on either
+side fails closed instead of emitting partial evidence.
 
 The reconciliation domain still never posts, reverses, or approves a journal;
 it returns evidence for an operator to review (ADR 0054).
@@ -91,6 +93,22 @@ class AllocationConservationContractTests(unittest.TestCase):
                 candidate_journals=(
                     self._journal(reference="journal-a", amount="450.00"),
                     self._journal(reference="journal-b", amount="600.00"),
+                ),
+                reconciliation_run_reference="run-1",
+                tenant_account_reference="tenant-a",
+            )
+
+    def test_split_rejects_duplicate_journal_identity_even_when_total_conserves(self) -> None:
+        """One journal identity cannot be counted twice to manufacture a conserved split."""
+        from accounting_information_platform.allocation import propose_split_allocations
+
+        with self.assertRaisesRegex(ValueError, "distinct journal identities"):
+            propose_split_allocations(
+                statement_entry_reference="stmt-001",
+                statement_amount=Decimal("1000.00"),
+                candidate_journals=(
+                    self._journal(reference="journal-a", amount="400.00"),
+                    self._journal(reference="journal-a", amount="600.00"),
                 ),
                 reconciliation_run_reference="run-1",
                 tenant_account_reference="tenant-a",
@@ -198,6 +216,21 @@ class AllocationConservationContractTests(unittest.TestCase):
             {x.statement_entry_reference for x in allocations},
             {"stmt-001", "stmt-002"},
         )
+
+    def test_aggregate_rejects_duplicate_statement_identity_even_when_total_conserves(self) -> None:
+        """One statement identity cannot be counted twice to manufacture a conserved aggregate."""
+        from accounting_information_platform.allocation import aggregate_allocations
+
+        with self.assertRaisesRegex(ValueError, "distinct statement identities"):
+            aggregate_allocations(
+                statement_items=(
+                    ("stmt-001", Decimal("300.00")),
+                    ("stmt-001", Decimal("700.00")),
+                ),
+                journal_total=Decimal("1000.00"),
+                reconciliation_run_reference="run-1",
+                tenant_account_reference="tenant-a",
+            )
 
     def test_aggregate_fails_closed_when_sides_disagree(self) -> None:
         """An aggregate whose book total differs from the statement sum never returns."""
