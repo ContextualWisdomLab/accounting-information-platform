@@ -13,6 +13,8 @@ from datetime import date
 from decimal import Decimal
 from typing import Iterable
 
+from .core import AccountingValidationError, _require_currency
+
 
 _CREDIT_DEBIT_CODES = frozenset({"CRDT", "DBIT"})
 _RECONCILIATION_DECISION_V1 = "reconciliation-decision/v1"
@@ -49,6 +51,20 @@ def _require_optional_identity(value: object, field_name: str) -> None:
         raise ValueError(f"{field_name} must be None or a non-empty identity")
 
 
+def _require_source_currency(value: object) -> None:
+    """Require reconciliation currency to use the accounting core's canonical syntax."""
+    if not isinstance(value, str):
+        raise ValueError(
+            "currency_code must be a three-letter uppercase currency code"
+        )
+    try:
+        _require_currency(value)
+    except AccountingValidationError as exc:
+        raise ValueError(
+            "currency_code must be a three-letter uppercase currency code"
+        ) from exc
+
+
 def _require_review_instruction(value: object) -> None:
     """Reject decision evidence that gives the reviewer no actionable next step."""
     if not isinstance(value, str) or not value.strip():
@@ -70,7 +86,7 @@ class StatementEntryEvidence:
     value_date: date
 
     def __post_init__(self) -> None:
-        """Reject malformed source identity, money, and direction before matching."""
+        """Reject malformed source identity, money, currency, and direction before matching."""
         _require_identity(self.statement_entry_reference, "statement_entry_reference")
         _require_optional_identity(self.provider_reference, "provider_reference")
         _require_optional_identity(self.end_to_end_reference, "end_to_end_reference")
@@ -78,6 +94,7 @@ class StatementEntryEvidence:
             self.account_servicer_reference, "account_servicer_reference"
         )
         _require_positive_exact_decimal(self.amount)
+        _require_source_currency(self.currency_code)
         _require_credit_debit_code(self.credit_debit_code)
 
 
@@ -95,7 +112,7 @@ class BookJournalEvidence:
     accounting_date: date
 
     def __post_init__(self) -> None:
-        """Reject malformed source identity, money, and direction before matching."""
+        """Reject malformed source identity, money, currency, and direction before matching."""
         _require_identity(self.journal_reference, "journal_reference")
         _require_optional_identity(self.provider_reference, "provider_reference")
         _require_optional_identity(self.end_to_end_reference, "end_to_end_reference")
@@ -103,6 +120,7 @@ class BookJournalEvidence:
             self.account_servicer_reference, "account_servicer_reference"
         )
         _require_positive_exact_decimal(self.amount)
+        _require_source_currency(self.currency_code)
         _require_credit_debit_code(self.credit_debit_code)
 
 
