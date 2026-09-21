@@ -25,9 +25,6 @@ from tests import (
     as sibling_readback_contract,
 )
 
-_PARENT_TEST = (
-    tax_contraction_contract.BankStatementStructuredLineRepeatedTaxContractionEvidenceRedTests
-)
 _CORRECTION_ERROR = tax_contraction_contract._CORRECTION_ERROR
 _STRUCTURED_EVIDENCE_KEY = "structured_referred_document_evidence"
 _TAX_KEY = "tax_amounts"
@@ -40,12 +37,14 @@ class BankStatementStructuredLineTaxAbsenceEvidenceRedTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         """Reuse the real-PostgreSQL repeated-tax contraction fixture."""
-        _PARENT_TEST.setUpClass()
+        tax_contraction_contract.BankStatementStructuredLineRepeatedTaxContractionEvidenceRedTests.setUpClass()
 
     def setUp(self) -> None:
         """Start from #123's one-tax source and remove only the retained STAT member."""
-        self.parent = _PARENT_TEST(
-            "test_buyer_read_keeps_only_the_source_retained_tax"
+        self.parent = (
+            tax_contraction_contract.BankStatementStructuredLineRepeatedTaxContractionEvidenceRedTests(
+                "test_buyer_read_keeps_only_the_source_retained_tax"
+            )
         )
         self.parent.setUp()
         self.addCleanup(self.parent.doCleanups)
