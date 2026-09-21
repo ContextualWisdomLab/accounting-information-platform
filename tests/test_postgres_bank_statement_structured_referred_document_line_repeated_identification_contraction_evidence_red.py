@@ -222,7 +222,7 @@ class BankStatementStructuredLineRepeatedIdentificationContractionEvidenceRedTes
             self.base_projection,
             expect_repeated=True,
         )
-        self.parent._assert_sibling(entries[1], self.base_statement.entries[1])
+        self._assert_sibling(entries[1], self.base_statement.entries[1])
 
     def test_rejected_identification_contraction_leaves_no_evidence_residue(
         self,
@@ -309,7 +309,7 @@ class BankStatementStructuredLineRepeatedIdentificationContractionEvidenceRedTes
             self.changed_projection,
             expect_repeated=False,
         )
-        self.parent._assert_sibling(entries[1], self.changed_statement.entries[1])
+        self._assert_sibling(entries[1], self.changed_statement.entries[1])
 
     def _projection_with_single_identification(self) -> list[dict[str, object]]:
         """Contract repeated Ids while retaining the established scalar SKNB view."""
@@ -469,6 +469,16 @@ class BankStatementStructuredLineRepeatedIdentificationContractionEvidenceRedTes
             Decimal("25000.00"),
         )
         self.assertEqual(persisted_detail["detail_currency_code"], "KRW")
+
+    def _assert_sibling(
+        self,
+        persisted_entry: dict[str, object],
+        expected_entry: object,
+    ) -> None:
+        """Keep structured line evidence isolated from the untouched sibling entry."""
+        self.parent._assert_sibling(persisted_entry, expected_entry)
+        for detail in persisted_entry["entry_details"]:
+            self.assertNotIn(_STRUCTURED_EVIDENCE_KEY, detail)
 
     def _assert_canonical_scalars(self, second_line: dict[str, object]) -> None:
         """Keep the established single-value compatibility view on SKNB."""
