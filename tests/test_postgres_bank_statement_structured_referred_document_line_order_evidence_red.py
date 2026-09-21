@@ -10,6 +10,7 @@ from accounting_information_platform import (
     AccountingValidationError,
     CAMT053_MESSAGE_DEFINITION,
     accept_bank_statement_evidence,
+    lookup_bank_statement,
     lookup_bank_statement_entries,
     parse_bank_statement_payload,
 )
@@ -186,7 +187,7 @@ class BankStatementStructuredReferredDocumentLineOrderEvidenceRedTests(unittest.
     def test_changed_line_order_fails_closed_without_mutating_accepted_evidence(
         self,
     ) -> None:
-        """Reject reordered lines while retaining the already accepted source evidence."""
+        """Reject reordered lines while retaining the complete accepted record."""
         accepted = accept_bank_statement_evidence(
             self.line_contract._command(
                 self.base_payload,
@@ -197,6 +198,17 @@ class BankStatementStructuredReferredDocumentLineOrderEvidenceRedTests(unittest.
             artifact_store=self.line_contract.store,
         )
         self.assertFalse(accepted["replayed"])
+        record_id = str(accepted["bank_statement_record_id"])
+        before_statement = lookup_bank_statement(
+            posting.DATABASE_URL,
+            self.line_contract.case.policy.tenant_reference,
+            record_id,
+        )
+        before_entries = lookup_bank_statement_entries(
+            posting.DATABASE_URL,
+            self.line_contract.case.policy.tenant_reference,
+            record_id,
+        )
 
         with self.assertRaisesRegex(AccountingValidationError, _CORRECTION_ERROR):
             accept_bank_statement_evidence(
@@ -209,28 +221,37 @@ class BankStatementStructuredReferredDocumentLineOrderEvidenceRedTests(unittest.
                 artifact_store=self.line_contract.store,
             )
 
-        persisted = lookup_bank_statement_entries(
+        after_statement = lookup_bank_statement(
             posting.DATABASE_URL,
             self.line_contract.case.policy.tenant_reference,
-            str(accepted["bank_statement_record_id"]),
+            record_id,
         )
+        after_entries = lookup_bank_statement_entries(
+            posting.DATABASE_URL,
+            self.line_contract.case.policy.tenant_reference,
+            record_id,
+        )
+        self.assertEqual(after_statement, before_statement)
+        self.assertEqual(after_entries, before_entries)
         self.assertEqual(
-            persisted["source_artifact_hash"],
+            after_statement["source_artifact_hash"],
             self.base_statement.source_artifact_hash,
         )
         self.assertEqual(
-            persisted["normalized_payload_hash"],
+            after_statement["normalized_payload_hash"],
             self.base_statement.normalized_payload_hash,
         )
         self.assertNotEqual(
-            persisted["source_artifact_hash"],
+            after_statement["source_artifact_hash"],
             self.changed_statement.source_artifact_hash,
         )
         self.assertNotEqual(
-            persisted["normalized_payload_hash"],
+            after_statement["normalized_payload_hash"],
             self.changed_statement.normalized_payload_hash,
         )
-        persisted_entry = persisted["bank_statement_entries"][0]
+        persisted_entries = after_entries["bank_statement_entries"]
+        self.assertEqual(len(persisted_entries), len(self.base_statement.entries))
+        persisted_entry = persisted_entries[0]
         persisted_detail = persisted_entry["entry_details"][0]
         self.assertEqual(
             persisted_detail.get(_STRUCTURED_EVIDENCE_KEY),
