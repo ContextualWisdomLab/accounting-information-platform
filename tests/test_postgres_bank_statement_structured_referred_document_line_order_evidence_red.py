@@ -49,16 +49,8 @@ class BankStatementStructuredReferredDocumentLineOrderEvidenceRedTests(unittest.
 
         self.document_number = self.parent.first_document_number
         self.base_payload = self.parent.base_payload
-        self.changed_payload = self._swap_first_document_lines(self.base_payload)
         self.base_statement = self.parent.base_statement
-        self.changed_statement = parse_bank_statement_payload(
-            self.changed_payload,
-            CAMT053_MESSAGE_DEFINITION,
-        )
         self.base_projection = deepcopy(self.parent.base_projection)
-        self.changed_projection = self._reverse_first_document_lines(
-            self.base_projection
-        )
 
         first_document = self.base_projection[0]
         lines = first_document.get("line_details")
@@ -68,6 +60,15 @@ class BankStatementStructuredReferredDocumentLineOrderEvidenceRedTests(unittest.
             )
         self.first_line_number = str(lines[0]["line_number"])
         self.second_line_number = str(lines[1]["line_number"])
+
+        self.changed_payload = self._swap_first_document_lines(self.base_payload)
+        self.changed_statement = parse_bank_statement_payload(
+            self.changed_payload,
+            CAMT053_MESSAGE_DEFINITION,
+        )
+        self.changed_projection = self._reverse_first_document_lines(
+            self.base_projection
+        )
 
     def test_referred_document_line_source_order_is_material_to_each_evidence_hash(
         self,
