@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import unittest
 
-from tests.test_postgres_bank_statement_structured_referred_document_line_optional_due_payable_absence_evidence_red import (
-    BankStatementStructuredLineOptionalDuePayableAmountAbsenceEvidenceRedTests as DuePayableContract,
+from tests import (
+    test_postgres_bank_statement_structured_referred_document_line_optional_due_payable_absence_evidence_red
+    as due_payable_contract,
+)
+
+DuePayableContract = (
+    due_payable_contract.BankStatementStructuredLineOptionalDuePayableAmountAbsenceEvidenceRedTests
 )
 
 
@@ -20,7 +25,9 @@ class _WholePayloadSegment:
 class DuePayableNestedAmountCloserRegressionTests(unittest.TestCase):
     """Keep a nested currency Amount close distinct from the direct Amount group close."""
 
-    def test_extract_remove_restore_ignore_nested_standalone_amount_closer(self) -> None:
+    def test_extract_remove_restore_ignore_nested_standalone_amount_closer(
+        self,
+    ) -> None:
         """Exercise all source-edit paths with a standalone nested ``</Amt>`` line."""
         payload = (
             "                  <LineDtls>\n"
