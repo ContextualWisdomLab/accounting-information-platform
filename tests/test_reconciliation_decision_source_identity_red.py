@@ -47,23 +47,23 @@ class ReconciliationDecisionSourceIdentityRedTests(unittest.TestCase):
             next_action="Review unmatched evidence and record an explicit exception.",
         )
 
-    def test_match_rejects_blank_statement_identity(self) -> None:
+    def test_match_rejects_blank_or_non_string_statement_identity(self) -> None:
         """A successful proposal cannot exist without immutable statement provenance."""
-        for value in ("", "   "):
+        for value in ("", "   ", None):
             with self.subTest(value=value):
                 with self.assertRaisesRegex(ValueError, "statement_entry_reference must be a non-empty identity"):
                     self._match(statement_entry_reference=value)
 
-    def test_abstention_rejects_blank_statement_identity(self) -> None:
+    def test_abstention_rejects_blank_or_non_string_statement_identity(self) -> None:
         """Fail-closed evidence must remain attributable to a real statement source."""
-        for value in ("", "\t"):
+        for value in ("", "\t", None):
             with self.subTest(value=value):
                 with self.assertRaisesRegex(ValueError, "statement_entry_reference must be a non-empty identity"):
                     self._abstain(statement_entry_reference=value)
 
-    def test_v2_rejects_blank_or_non_string_journal_identity(self) -> None:
-        """Reviewed split members must each name a real immutable journal source."""
-        for value in ("", "   ", None):
+    def test_v2_rejects_blank_non_string_or_unhashable_journal_identity(self) -> None:
+        """Reviewed split members fail domain validation before any raw set/hash error."""
+        for value in ("", "   ", None, []):
             with self.subTest(value=value):
                 with self.assertRaisesRegex(ValueError, "matched_journal_references must contain non-empty identities"):
                     self._match(
