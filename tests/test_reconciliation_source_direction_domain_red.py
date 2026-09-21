@@ -19,6 +19,12 @@ from accounting_information_platform.reconciliation import (
 )
 
 
+class _UnhashableDirection(str):
+    """Exercise runtime type admission before hashed membership."""
+
+    __hash__ = None  # type: ignore[assignment]
+
+
 class ReconciliationSourceDirectionDomainRedTests(unittest.TestCase):
     """Require canonical CRDT/DBIT direction evidence before deterministic matching."""
 
@@ -55,14 +61,14 @@ class ReconciliationSourceDirectionDomainRedTests(unittest.TestCase):
 
     def test_statement_rejects_malformed_direction_with_domain_error(self) -> None:
         """Malformed statement direction never rides through a strong reference match."""
-        for value in ("crdt", "", None, 1, [], {}):
+        for value in ("crdt", "", None, 1, [], {}, _UnhashableDirection("CRDT")):
             with self.subTest(value=value):
                 with self.assertRaisesRegex(ValueError, "credit_debit_code must be CRDT or DBIT"):
                     self._statement(credit_debit_code=value)
 
     def test_journal_rejects_malformed_direction_with_domain_error(self) -> None:
         """Malformed book direction fails before candidate comparison, including unhashable values."""
-        for value in ("dbit", "", None, 1, [], {}):
+        for value in ("dbit", "", None, 1, [], {}, _UnhashableDirection("DBIT")):
             with self.subTest(value=value):
                 with self.assertRaisesRegex(ValueError, "credit_debit_code must be CRDT or DBIT"):
                     self._journal(credit_debit_code=value)
