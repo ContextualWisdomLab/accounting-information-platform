@@ -339,23 +339,35 @@ class BankStatementStructuredLineOptionalDuePayableAmountAbsenceEvidenceRedTests
                 raise AssertionError("first source line Amount evidence must remain unchanged")
         return projection
 
+    @staticmethod
+    def _direct_amount_bounds(lines: list[str]) -> tuple[int, int]:
+        """Locate the direct Amount group without mistaking nested currency Amount closes."""
+        open_indexes = [
+            index for index, line in enumerate(lines) if line.strip() == "<Amt>"
+        ]
+        if len(open_indexes) != 1:
+            raise AssertionError("second source line requires one direct Amount opener")
+        start = open_indexes[0]
+        direct_indent = lines[start][: len(lines[start]) - len(lines[start].lstrip())]
+        close_indexes = [
+            index
+            for index, line in enumerate(lines[start + 1 :], start + 1)
+            if line.strip() == "</Amt>"
+            and line[: len(line) - len(line.lstrip())] == direct_indent
+        ]
+        if len(close_indexes) != 1:
+            raise AssertionError("second source line requires one direct Amount closer")
+        end = close_indexes[0]
+        if not start < end:
+            raise AssertionError("direct Amount group boundaries are invalid")
+        return start, end
+
     def _extract_second_line_due_payable_line(self, payload: bytes) -> str:
         """Return the exact direct DuePyblAmt line from line two's Amount group."""
         text = payload.decode("utf-8")
         segment, _, _ = self.parent._second_line_segment(text)
         lines = segment.splitlines(keepends=True)
-        amount_open = [
-            index for index, line in enumerate(lines) if line.strip() == "<Amt>"
-        ]
-        amount_close = [
-            index for index, line in enumerate(lines) if line.strip() == "</Amt>"
-        ]
-        if len(amount_open) != 1 or len(amount_close) != 1:
-            raise AssertionError("second source line requires one direct Amount group")
-        start = amount_open[0]
-        end = amount_close[0]
-        if not start < end:
-            raise AssertionError("direct Amount group boundaries are invalid")
+        start, end = self._direct_amount_bounds(lines)
 
         candidates = [
             (index, line)
@@ -382,10 +394,7 @@ class BankStatementStructuredLineOptionalDuePayableAmountAbsenceEvidenceRedTests
         changed_lines = changed_segment.splitlines(keepends=True)
         if any("DuePyblAmt" in line for line in changed_lines):
             raise AssertionError("changed line-two Amount must omit DuePyblAmt")
-        if sum(line.strip() == "<Amt>" for line in changed_lines) != 1:
-            raise AssertionError("direct Amount group must remain after DuePyblAmt omission")
-        if sum(line.strip() == "</Amt>" for line in changed_lines) != 1:
-            raise AssertionError("direct Amount group must remain closed")
+        self._direct_amount_bounds(changed_lines)
         return (text[:segment_start] + changed_segment + text[segment_end:]).encode(
             "utf-8"
         )
@@ -397,12 +406,8 @@ class BankStatementStructuredLineOptionalDuePayableAmountAbsenceEvidenceRedTests
         lines = segment.splitlines(keepends=True)
         if any("DuePyblAmt" in line for line in lines):
             raise AssertionError("DuePyblAmt-absence fixture must not already contain it")
-        open_indexes = [
-            index for index, line in enumerate(lines) if line.strip() == "<Amt>"
-        ]
-        if len(open_indexes) != 1:
-            raise AssertionError("second source line requires one direct Amount opener")
-        insert_at = open_indexes[0] + 1
+        start, _ = self._direct_amount_bounds(lines)
+        insert_at = start + 1
         restored_segment = "".join(
             lines[:insert_at] + [self.due_payable_line] + lines[insert_at:]
         )
