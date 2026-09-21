@@ -345,13 +345,13 @@ def propose_deterministic_match(
             return _abstain(
                 statement,
                 "currency_mismatch",
-                "Verify the statement and book currencies before recording a reconciliation decision."
+                "Verify the statement and book currencies before recording a reconciliation decision.",
             )
         if candidate.amount != statement.amount:
             return _abstain(
                 statement,
                 "amount_mismatch",
-                "Verify the exact statement and journal amounts before recording a reconciliation decision."
+                "Verify the exact statement and journal amounts before recording a reconciliation decision.",
             )
         if candidate.credit_debit_code != statement.credit_debit_code:
             return _abstain(statement, "direction_mismatch", _DIRECTION_MISMATCH_ACTION)
@@ -380,18 +380,18 @@ def propose_deterministic_match(
         return _abstain(
             statement,
             "ambiguous_reference",
-            "Review the competing book candidates and record an explicit reconciliation decision."
+            "Review the competing book candidates and record an explicit reconciliation decision.",
         )
     if same_direction_candidates:
         return _abstain(
             statement,
             "date_window_mismatch",
-            "Review the statement and journal dates or document an explicit reconciliation exception."
+            "Review the statement and journal dates or document an explicit reconciliation exception.",
         )
     if exact_money_candidates:
         return _abstain(statement, "direction_mismatch", _DIRECTION_MISMATCH_ACTION)
     return _abstain(
         statement,
         "no_candidate",
-        "Review unmatched statement evidence and create an authorized exception or adjusting-journal proposal if required."
+        "Review unmatched statement evidence and create an authorized exception or adjusting-journal proposal if required.",
     )
