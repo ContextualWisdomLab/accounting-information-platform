@@ -279,14 +279,32 @@ class BankStatementStructuredReferredDocumentLineOrderEvidenceRedTests(unittest.
             self.line_contract.case.policy.tenant_reference,
             artifact_store=self.line_contract.store,
         )
+        record_id = str(accepted["bank_statement_record_id"])
+        statement = lookup_bank_statement(
+            posting.DATABASE_URL,
+            self.line_contract.case.policy.tenant_reference,
+            record_id,
+        )
         document = lookup_bank_statement_entries(
             posting.DATABASE_URL,
             self.line_contract.case.policy.tenant_reference,
-            str(accepted["bank_statement_record_id"]),
+            record_id,
         )
         entry = document["bank_statement_entries"][0]
         detail = entry["entry_details"][0]
+        changed_entry = self.changed_statement.entries[0]
+        changed_detail = changed_entry.entry_details[0]
 
+        self.assertEqual(
+            statement["source_artifact_hash"],
+            self.changed_statement.source_artifact_hash,
+        )
+        self.assertEqual(
+            statement["normalized_payload_hash"],
+            self.changed_statement.normalized_payload_hash,
+        )
+        self.assertEqual(entry["source_entry_hash"], changed_entry.source_entry_hash)
+        self.assertEqual(detail["source_detail_hash"], changed_detail.source_detail_hash)
         self.assertEqual(
             detail.get(_STRUCTURED_EVIDENCE_KEY),
             self.changed_projection,
