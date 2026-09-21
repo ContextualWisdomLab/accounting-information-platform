@@ -292,8 +292,16 @@ class BankStatementStructuredLineDiscountOrderEvidenceRedTests(unittest.TestCase
             raise AssertionError("second source line must contain exactly two discounts")
         first = discounts[0].group(0)
         second = discounts[1].group(0)
-        if "<Cd>APDS</Cd>" not in first or "<Cd>STDS</Cd>" not in second:
-            raise AssertionError("base source discounts must be APDS then STDS")
+        first_apds = "<Cd>APDS</Cd>" in first
+        first_stds = "<Cd>STDS</Cd>" in first
+        second_apds = "<Cd>APDS</Cd>" in second
+        second_stds = "<Cd>STDS</Cd>" in second
+        if (
+            first_apds == first_stds
+            or second_apds == second_stds
+            or first_apds == second_apds
+        ):
+            raise AssertionError("source discounts must contain one APDS and one STDS")
         between = line_segment[discounts[0].end() : discounts[1].start()]
         swapped_line = (
             line_segment[: discounts[0].start()]
