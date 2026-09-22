@@ -18,7 +18,7 @@ This is the split-side analogue of ADR 0071. Exact monetary conservation is nece
 - Candidate journal population remains an exact built-in tuple and each candidate remains exact repository-owned `BookJournalEvidence` under ADR 0070 and the earlier candidate-evidence decision.
 - Statement source evidence remains owned by `StatementEntryEvidence`; journal source evidence remains owned by `BookJournalEvidence`.
 - Fields used as executable allocation controls are revalidated at the point of use because a frozen Python value object is not a tamper-proof boundary against low-level mutation or deserialization.
-- Exact monetary conservation and distinct journal identity remain mandatory.
+- Exact monetary conservation and distinct journal identity remain mandatory. Conservation must not depend on the process-wide or caller-local `decimal` precision context.
 - This is a repository runtime-domain and provenance decision. ISO 20022 supplies statement vocabulary such as `CdtDbtInd`; it does not prescribe this Python API or split allocation algorithm.
 - Shared `CHANGELOG.md`, `docs/doctoring/STANDARD_TRACEABILITY.md`, and `docs/product-technical-gap-baseline.md` remain the #37 single-writer surface and are not modified in this lane.
 
@@ -54,6 +54,7 @@ Selected. Typed callers provide one exact repository-owned `StatementEntryEviden
 - Every journal candidate identity, amount, currency, and direction is revalidated at use.
 - Every candidate journal currency and direction must equal the admitted statement evidence before conservation is evaluated.
 - Journal identities must remain distinct and candidate amounts must sum to the statement amount exactly. No tolerance, coercion, or rounding is introduced.
+- Split conservation does not use `Decimal` addition under the ambient context. After all monetary inputs have passed exact finite positive built-in `Decimal` admission, the comparison represents each value as its exact integer coefficient at one common base-10 exponent and sums those Python integers. The result is therefore independent of caller-selected `decimal` precision.
 - No database schema or migration changes are required; this decision narrows only the in-memory split proposal contract.
 
 ## Evidence
@@ -66,16 +67,18 @@ Ordinary descendants adapt predecessor split-population, candidate-evidence, Dec
 
 Current-exact review then found that the ADR's typed-contract claim was not actually published: the implementation signature still exposed optional `statement_evidence` plus legacy scalar names to type checkers. Review RED `2a363c1331fd15e3343756c2e65d7435067350e7` adds the same `typing.get_overloads()` contract used by the aggregate API and requires mandatory `StatementEntryEvidence` with no legacy names. Production descendant `9866d45f59cb9bb505d06222e861f7894dfa5982` adds canonical split overloads while preserving the implementation-only sentinels for runtime migration errors. Documentation descendant `fbde16625982ce57ae875a31f35b3085a39388a3` currentizes ADR 0054's Allocation conservation contract with exact split statement evidence, currency/direction agreement, at-use revalidation, legacy rejection semantics, and ADR 0070/0071/0072 ownership. Hosted execution evidence remains exact-head-specific and is not inferred from source inspection.
 
+A later current-exact review exposed a separate arithmetic defect in the conservation proof: `planned_total += journal_amount` was subject to ambient `decimal` precision. RED `d82592b683bc79ae326ab72e4c4f8549fdeff891` fixes the source identities, currency, direction, and repository-owned evidence objects while using `10000000000000000000000000000` plus `1`; at precision 28 the historical arithmetic rounded the overallocated total back to the statement amount. The same RED requires the truly conserved `10000000000000000000000000001` case to remain valid even at precision 2. Causal repair `019fed6ff550e96c9bc6eaf0614dfd5991b41664` removes ambient-context Decimal addition from split conservation and compares exact scaled integer coefficients instead.
+
 ## Compatibility, risks, and effects
 
 This intentionally narrows a public Python call shape. Callers that previously supplied `statement_entry_reference` and `statement_amount` must obtain or construct admitted `StatementEntryEvidence` and pass that value object. The compatibility cost is deliberate: two scalars do not prove the source currency or movement direction that makes a split accounting-consistent.
 
 The planner still does not prove that the in-memory statement or journal evidence belongs to the current authoritative PostgreSQL reconciliation snapshot. Persistence, approval, lifecycle, and close-package owners retain database snapshot binding, tenant scope, lock ordering, recovery, and immutable approval authority.
 
-Cross-currency and opposite-direction splits now fail before monetary conservation can make them look valid. The effect is stricter proposal admission, not new accounting authority.
+Cross-currency and opposite-direction splits now fail before monetary conservation can make them look valid. Split conservation is also independent of caller-selected Decimal precision, so a large-magnitude one-unit excess cannot disappear through context rounding. The effect is stricter proposal admission, not new accounting authority.
 
 ## Follow-up
 
-ADR 0054's Allocation conservation section is code-current with this decision at `fbde16625982ce57ae875a31f35b3085a39388a3`; ADR 0070 continues to own split candidate-population immutability and ADR 0071 owns aggregate statement provenance.
+ADR 0054's Allocation conservation section is code-current with the statement-provenance decision at `fbde16625982ce57ae875a31f35b3085a39388a3`; ADR 0070 continues to own split candidate-population immutability and ADR 0071 owns aggregate statement provenance. The split arithmetic repair is owned by this ADR until the shared allocation contract is rebuilt from integrated truth.
 
-PR #37 remains the canonical single writer for shared `CHANGELOG.md`, `docs/doctoring/STANDARD_TRACEABILITY.md`, and `docs/product-technical-gap-baseline.md`. After protected integration, #37 must rebuild those records from the exact protected tree and trace the progression from scalar split statement fields to exact `StatementEntryEvidence`, including the published overload contract, currency/direction compatibility, and at-use revalidation. This ADR remains Proposed until exact-head review, hosted test/security evidence, and the owner-path documentation gate are satisfied.
+PR #37 remains the canonical single writer for shared `CHANGELOG.md`, `docs/doctoring/STANDARD_TRACEABILITY.md`, and `docs/product-technical-gap-baseline.md`. After protected integration, #37 must rebuild those records from the exact protected tree and trace the progression from scalar split statement fields to exact `StatementEntryEvidence`, including the published overload contract, currency/direction compatibility, at-use revalidation, and context-independent exact conservation. This ADR remains Proposed until exact-head review, hosted test/security evidence, and the owner-path documentation gate are satisfied.
