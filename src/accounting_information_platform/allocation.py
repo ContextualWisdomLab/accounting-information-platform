@@ -17,7 +17,7 @@ from .reconciliation import BookJournalEvidence
 
 def _require_exact_positive(value: object, field_name: str) -> None:
     """Reject money that is not a finite, positive exact Decimal."""
-    if not isinstance(value, Decimal) or not value.is_finite() or value <= 0:
+    if type(value) is not Decimal or not value.is_finite() or value <= 0:
         raise ValueError(
             f"{field_name} must be a positive exact Decimal. Supply a finite "
             "Decimal greater than zero before reconciliation."
