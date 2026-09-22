@@ -6,6 +6,7 @@ import unittest
 from datetime import date, datetime
 
 from accounting_information_platform import (
+    AccountBalance,
     AccountingPolicy,
     AccountingValidationError,
     JournalLineProposal,
@@ -65,7 +66,7 @@ class TrialBalanceDateRuntimeDomainRedTests(unittest.TestCase):
             self.policy,
         )
 
-    def _read(self, through_date: date) -> dict[str, object]:
+    def _read(self, through_date: date) -> dict[str, AccountBalance]:
         """Read the fixed tenant/entity/book scope through one supplied cutoff."""
         return self.ledger.trial_balance(
             tenant_reference=self.policy.tenant_reference,
