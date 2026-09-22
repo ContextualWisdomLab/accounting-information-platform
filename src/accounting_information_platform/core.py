@@ -477,6 +477,8 @@ class PostingLedger:
         _require_calendar_date(reversal_date, "reversal_date")
         _require_reference(journal_reference, "journal reference")
         _require_code(reversal_reason_code, "reversal reason code")
+        if reversal_idempotency_key is not None and type(reversal_idempotency_key) is not str:
+            raise AccountingValidationError("reversal idempotency key must be a string. Supply the reversal command identity as a string, then retry reversal.")
         command_key = (
             f"reversal:{journal_reference}"
             if reversal_idempotency_key is None
