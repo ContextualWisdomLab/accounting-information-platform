@@ -196,7 +196,7 @@ class AccountingPolicy:
         _require_currency(self.transaction_currency)
         _require_currency(self.functional_currency)
         if self.open_period_start > self.open_period_end:
-            raise AccountingValidationError("open fiscal period start must not exceed end. Correct open_period_start/open_period_end in the policy manifest, then retry policy load.")
+            raise AccountingValidationError("open fiscal period start must not exceed end. Correct open_period_start/open_period_end in the policy manifest, then retry close.")
         if not self.accounting_policy_version or not self.posting_rule_version:
             raise AccountingValidationError("accounting policy and posting rule versions are required. Supply accounting_policy_version and posting_rule_version, then retry policy load.")
         normalized_mapping: dict[str, str] = {}
@@ -352,7 +352,7 @@ class AccountBalance:
     @property
     def net_balance(self) -> Decimal:
         """Return debit minus credit for this account."""
-        return self.debit_total - self.credit_total
+        return _exact_decimal_sum((self.debit_total, self.credit_total.copy_negate()))
 
 
 class PostingLedger:
@@ -583,8 +583,8 @@ class PostingLedger:
                     line.chart_account_code, (Decimal("0"), Decimal("0"))
                 )
                 totals[line.chart_account_code] = (
-                    debit_total + line.debit_amount,
-                    credit_total + line.credit_amount,
+                    _exact_decimal_sum((debit_total, line.debit_amount)),
+                    _exact_decimal_sum((credit_total, line.credit_amount)),
                 )
         return {
             account_code: AccountBalance(account_code, debit_total, credit_total)
