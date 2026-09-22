@@ -939,6 +939,7 @@ class PostgresPostingLedger:
     ) -> PostingReceipt:
         """Resolve optional catalog policy and persist *proposal* in one transaction."""
         proposal_uuid = _require_proposal_uuid(proposal.proposal_id)
+        validated_lines = PostingLedger._validated_posting_lines(proposal.lines)
         with self._session() as connection:
             tenant_id = self._require_tenant(connection)
             self._acquire_command_lock(
@@ -958,7 +959,7 @@ class PostgresPostingLedger:
                         "idempotency key was already used with a different payload"
                     )
                 return self._receipt_for_idempotency_key(connection, tenant_id, proposal)
-            if any(line.account_role_code == "retained_earnings" for line in proposal.lines):
+            if any(line.account_role_code == "retained_earnings" for line in validated_lines):
                 raise AccountingValidationError(
                     "retained_earnings is reserved for AIS period-close. "
                     "Post revenue and expense through Billing, then hard-close; "
@@ -968,7 +969,7 @@ class PostgresPostingLedger:
                 policy = self._resolve_accounting_policy(connection, tenant_id, proposal)
             PostingLedger._validate_policy_scope(proposal, policy)
             resolved_lines = tuple(
-                PostingLedger._resolve_line(line, policy) for line in proposal.lines
+                PostingLedger._resolve_line(line, policy) for line in validated_lines
             )
             legal_entity_id = self._require_legal_entity(
                 connection, tenant_id, proposal.legal_entity_reference
