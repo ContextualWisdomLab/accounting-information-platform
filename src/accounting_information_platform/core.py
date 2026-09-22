@@ -197,6 +197,8 @@ class AccountingPolicy:
         _require_code(self.intended_book_role_code, "intended book role code")
         _require_currency(self.transaction_currency)
         _require_currency(self.functional_currency)
+        _require_calendar_date(self.open_period_start, "open_period_start")
+        _require_calendar_date(self.open_period_end, "open_period_end")
         if self.open_period_start > self.open_period_end:
             raise AccountingValidationError("open fiscal period start must not exceed end. Correct open_period_start/open_period_end in the policy manifest, then retry policy load.")
         if not self.accounting_policy_version or not self.posting_rule_version:
