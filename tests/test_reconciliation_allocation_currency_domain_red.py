@@ -16,6 +16,14 @@ from accounting_information_platform.allocation import (
 )
 
 
+class _ExplodingCurrency(str):
+    """Expose caller-controlled whitespace behavior if aggregate currency admits subclasses."""
+
+    def strip(self, chars: str | None = None) -> str:
+        """Fail if aggregate admission executes caller-owned string behavior."""
+        raise RuntimeError("caller-controlled allocation currency must not execute")
+
+
 class ReconciliationAllocationCurrencyDomainRedTests(unittest.TestCase):
     """Require canonical currency syntax on direct and aggregate allocations."""
 
@@ -48,6 +56,18 @@ class ReconciliationAllocationCurrencyDomainRedTests(unittest.TestCase):
                 tenant_account_reference="tenant-001",
                 journal_reference="journal-001",
                 currency_code="krw",
+            )
+
+    def test_aggregate_rejects_currency_subclass_before_caller_behavior(self) -> None:
+        """Aggregate currency admission rejects subclasses before whitespace behavior runs."""
+        with self.assertRaisesRegex(ValueError, "currency_code"):
+            aggregate_allocations(
+                statement_items=(("statement-001", Decimal("1000.00")),),
+                journal_total=Decimal("1000.00"),
+                reconciliation_run_reference="run-001",
+                tenant_account_reference="tenant-001",
+                journal_reference="journal-001",
+                currency_code=_ExplodingCurrency("KRW"),
             )
 
     def test_builtin_three_uppercase_letter_currency_controls_remain_valid(self) -> None:
