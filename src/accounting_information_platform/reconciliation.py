@@ -17,6 +17,7 @@ from .core import AccountingValidationError, _require_currency
 
 
 _CREDIT_DEBIT_CODES = frozenset({"CRDT", "DBIT"})
+_RECONCILIATION_DECISION_CODES = frozenset({"match", "abstain"})
 _RECONCILIATION_DECISION_V1 = "reconciliation-decision/v1"
 _RECONCILIATION_DECISION_V2 = "reconciliation-decision/v2"
 _RECONCILIATION_DECISION_VERSIONS = frozenset(
@@ -199,6 +200,13 @@ class ReconciliationDecision:
         ):
             raise ValueError(
                 "contract_version must be reconciliation-decision/v1 or reconciliation-decision/v2. Use a supported repository-owned reconciliation decision contract."
+            )
+        if (
+            type(self.decision_code) is not str
+            or self.decision_code not in _RECONCILIATION_DECISION_CODES
+        ):
+            raise ValueError(
+                "decision_code must be match or abstain. Rebuild the reconciliation decision from deterministic source evidence."
             )
         if self.decision_code == "match":
             if not isinstance(self.rule_code, str) or not self.rule_code.strip():
