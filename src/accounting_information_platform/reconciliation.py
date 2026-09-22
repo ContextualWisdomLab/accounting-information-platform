@@ -153,11 +153,7 @@ class DeterministicMatchPolicy:
 
     def __post_init__(self) -> None:
         """Reject invalid date-window configuration before matching evidence."""
-        if (
-            isinstance(self.date_window_days, bool)
-            or not isinstance(self.date_window_days, int)
-            or self.date_window_days < 0
-        ):
+        if type(self.date_window_days) is not int or self.date_window_days < 0:
             raise ValueError(
                 "date_window_days must be a non-negative integer. Supply zero or a whole number of days before reconciliation."
             )
