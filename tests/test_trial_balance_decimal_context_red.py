@@ -76,7 +76,7 @@ class TrialBalanceDecimalContextContractTests(unittest.TestCase):
         )
 
     def test_trial_balance_keeps_low_order_units_under_small_precision(self) -> None:
-        """Two posted journals cannot lose one unit while aggregating one account."""
+        """Two posted journals cannot lose one debit unit while aggregating one account."""
         ledger = PostingLedger()
         ledger.post(
             self._proposal(
@@ -110,6 +110,42 @@ class TrialBalanceDecimalContextContractTests(unittest.TestCase):
             )
 
         self.assertEqual(balances["110900"].debit_total, expected)
+
+    def test_trial_balance_keeps_credit_units_under_small_precision(self) -> None:
+        """Two posted journals cannot lose one credit unit on a shared account."""
+        ledger = PostingLedger()
+        ledger.post(
+            self._proposal(
+                proposal_id="019d7b92-1aa0-7a7f-b61c-962c0f4bf812",
+                idempotency_key="trial-balance-credit-large-v1",
+                source_hash_char="d",
+                debit_amount="10000000000000000000000000000",
+                credit_role="usage_revenue",
+            ),
+            self.policy,
+        )
+        ledger.post(
+            self._proposal(
+                proposal_id="019d7b92-1aa0-7a7f-b61c-962c0f4bf813",
+                idempotency_key="trial-balance-credit-one-v1",
+                source_hash_char="e",
+                debit_amount="1",
+                credit_role="usage_revenue",
+            ),
+            self.policy,
+        )
+        expected = Decimal("10000000000000000000000000001")
+
+        with localcontext() as context:
+            context.prec = 2
+            balances = ledger.trial_balance(
+                tenant_reference=self.policy.tenant_reference,
+                legal_entity_reference=self.policy.legal_entity_reference,
+                accounting_book_reference=self.policy.accounting_book_reference,
+                through_date=date(2026, 9, 30),
+            )
+
+        self.assertEqual(balances["410100"].credit_total, expected)
 
     def test_net_balance_is_exact_under_small_precision(self) -> None:
         """AccountBalance.net_balance cannot round an exact low-order unit away."""
