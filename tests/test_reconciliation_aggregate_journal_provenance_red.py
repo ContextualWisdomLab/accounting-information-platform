@@ -61,17 +61,29 @@ class AggregateJournalProvenanceRedTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "BookJournalEvidence"):
             self._plan(journal_evidence=None)
 
-    def test_legacy_scalar_provenance_fails_closed(self) -> None:
-        """Journal total, identity, and currency scalars cannot replace admitted evidence."""
-        with self.assertRaisesRegex(ValueError, "BookJournalEvidence"):
-            aggregate_allocations(
-                statement_items=(("statement-001", Decimal("1000.00")),),
-                journal_total=Decimal("1000.00"),
-                journal_reference="journal-001",
-                currency_code="USD",
-                reconciliation_run_reference="run-001",
-                tenant_account_reference="tenant-001",
-            )
+    def test_legacy_scalar_provenance_fails_after_evidence_admission(self) -> None:
+        """Every legacy journal scalar remains rejected beside valid source evidence."""
+        cases = (
+            {"journal_total": Decimal("1000.00")},
+            {"journal_reference": "journal-001"},
+            {"currency_code": "USD"},
+            {
+                "journal_total": Decimal("1000.00"),
+                "journal_reference": "journal-001",
+                "currency_code": "USD",
+            },
+        )
+        for overrides in cases:
+            with self.subTest(overrides=overrides):
+                with self.assertRaisesRegex(ValueError, "not accepted"):
+                    self._plan(**overrides)
+
+    def test_explicit_none_legacy_keywords_are_not_treated_as_omitted(self) -> None:
+        """Migration wrappers cannot keep old keyword names by forwarding ``None``."""
+        for field_name in ("journal_total", "journal_reference", "currency_code"):
+            with self.subTest(field_name=field_name):
+                with self.assertRaisesRegex(ValueError, "not accepted"):
+                    self._plan(**{field_name: None})
 
     def test_public_overloads_require_book_journal_evidence(self) -> None:
         """Typed callers see one source object rather than independent provenance scalars."""
