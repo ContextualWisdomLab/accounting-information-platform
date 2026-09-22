@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Iterable
 
+from .core import AccountingValidationError, _require_currency
 from .reconciliation import BookJournalEvidence
 
 
@@ -28,6 +29,18 @@ def _require_identity(value: object, field_name: str) -> None:
     """Reject blank identity bindings on reconciliation evidence."""
     if type(value) is not str or not value.strip():
         raise ValueError(f"{field_name} must be a non-empty identity")
+
+
+def _require_allocation_currency(value: object) -> None:
+    """Require allocation currency to use the accounting core's canonical syntax."""
+    if type(value) is not str:
+        raise ValueError("currency_code must be a three-letter uppercase currency code")
+    try:
+        _require_currency(value)
+    except AccountingValidationError as exc:
+        raise ValueError(
+            "currency_code must be a three-letter uppercase currency code"
+        ) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,10 +61,10 @@ class ReconciliationAllocation:
             "reconciliation_run_reference",
             "statement_entry_reference",
             "journal_reference",
-            "currency_code",
         ):
             _require_identity(getattr(self, field_name), field_name)
         _require_exact_positive(self.allocated_amount, "allocated_amount")
+        _require_allocation_currency(self.currency_code)
 
 
 def propose_split_allocations(
@@ -137,7 +150,7 @@ def aggregate_allocations(
 
     _require_exact_positive(journal_total, "journal_total")
     _require_identity(journal_reference, "journal_reference")
-    _require_identity(currency_code, "currency_code")
+    _require_allocation_currency(currency_code)
     if not statement_items:
         raise ValueError("at least one statement item is required for an aggregate allocation")
 
