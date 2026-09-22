@@ -77,11 +77,14 @@ def propose_split_allocations(
 ) -> tuple[ReconciliationAllocation, ...]:
     """Propose one allocation per distinct candidate journal with exact conservation.
 
-    Every candidate journal contributes a positive exact Decimal amount, every
-    journal identity appears at most once, and all candidates share one
-    currency. The returned allocations sum exactly to ``statement_amount``; a
-    duplicate source identity or candidate set whose total is not exactly that
-    amount fails closed rather than returning reviewable allocation evidence.
+    Every candidate must be exact repository-owned ``BookJournalEvidence`` so
+    split planning cannot bypass source-evidence admission or execute
+    caller-defined subclass behavior. Every candidate journal contributes a
+    positive exact Decimal amount, every journal identity appears at most once,
+    and all candidates share one currency. The returned allocations sum exactly
+    to ``statement_amount``; a duplicate or malformed source population, or a
+    candidate set whose total is not exactly that amount, fails closed rather
+    than returning reviewable allocation evidence.
     """
 
     _require_identity(statement_entry_reference, "statement_entry_reference")
@@ -90,6 +93,11 @@ def propose_split_allocations(
     journal_tuple = tuple(candidate_journals)
     if not journal_tuple:
         raise ValueError("at least one candidate journal is required for a split allocation")
+    if any(type(journal) is not BookJournalEvidence for journal in journal_tuple):
+        raise ValueError(
+            "split candidates must be exact BookJournalEvidence. Rebuild candidate "
+            "journals from repository-owned posted-journal evidence before planning."
+        )
     currency_code = journal_tuple[0].currency_code
 
     allocations: list[ReconciliationAllocation] = []
