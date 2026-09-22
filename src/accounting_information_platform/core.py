@@ -144,6 +144,8 @@ class JournalProposal:
         _require_reference(self.legal_entity_reference, "legal entity reference")
         _require_code(self.intended_book_role_code, "intended book role code")
         _require_currency(self.transaction_currency)
+        _require_calendar_date(self.transaction_date, "transaction_date")
+        _require_calendar_date(self.accounting_date, "accounting_date")
         if _HASH_PATTERN.fullmatch(self.source_payload_hash) is None:
             raise AccountingValidationError("source_payload_hash must be canonical sha256. Supply sha256: plus 64 hex characters, then retry ingest.")
         if not self.source_event_references:
@@ -811,6 +813,14 @@ def _require_currency(value: str) -> None:
     """Require a three-letter uppercase currency code."""
     if _CURRENCY_PATTERN.fullmatch(value) is None:
         raise AccountingValidationError("currency code must contain three uppercase letters. Supply a three-letter uppercase ISO currency code, then retry.")
+
+
+def _require_calendar_date(value: date, label: str) -> None:
+    """Require an exact calendar date and reject datetime/subclass behavior."""
+    if type(value) is not date:
+        raise AccountingValidationError(
+            f"{label} must be an exact calendar date. Supply a date value without time or coercion, then retry ingest."
+        )
 
 
 def _require_reference(value: str, label: str) -> None:
