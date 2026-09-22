@@ -22,6 +22,16 @@ _RECONCILIATION_DECISION_V2 = "reconciliation-decision/v2"
 _RECONCILIATION_DECISION_VERSIONS = frozenset(
     {_RECONCILIATION_DECISION_V1, _RECONCILIATION_DECISION_V2}
 )
+_RECONCILIATION_EXCEPTION_CODES = frozenset(
+    {
+        "ambiguous_reference",
+        "amount_mismatch",
+        "currency_mismatch",
+        "direction_mismatch",
+        "date_window_mismatch",
+        "no_candidate",
+    }
+)
 
 
 def _require_credit_debit_code(value: object) -> None:
@@ -246,9 +256,12 @@ class ReconciliationDecision:
                 raise ValueError(
                     "abstain decision allocated_amount must be exactly zero Decimal. Review unmatched evidence and record an explicit exception."
                 )
-            if not isinstance(self.exception_code, str) or not self.exception_code.strip():
+            if (
+                type(self.exception_code) is not str
+                or self.exception_code not in _RECONCILIATION_EXCEPTION_CODES
+            ):
                 raise ValueError(
-                    "abstain decision requires an exception_code. Review unmatched evidence and record an explicit exception."
+                    "abstain decision exception_code must be a supported reconciliation exception code. Use the repository-owned reconciliation exception vocabulary."
                 )
         else:
             raise ValueError(
