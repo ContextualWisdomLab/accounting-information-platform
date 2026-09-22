@@ -18,6 +18,7 @@ it returns evidence for an operator to review (ADR 0054).
 from __future__ import annotations
 
 import unittest
+from datetime import date
 from decimal import Decimal
 
 from accounting_information_platform.reconciliation import BookJournalEvidence
@@ -35,7 +36,7 @@ class AllocationConservationContractTests(unittest.TestCase):
             amount=Decimal(amount),
             currency_code="KRW",
             credit_debit_code="DBIT",
-            accounting_date=None,
+            accounting_date=date(2026, 9, 1),
         )
 
     def test_split_conserves_statement_amount_across_journals(self) -> None:
