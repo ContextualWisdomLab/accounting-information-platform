@@ -196,7 +196,7 @@ class AccountingPolicy:
         _require_currency(self.transaction_currency)
         _require_currency(self.functional_currency)
         if self.open_period_start > self.open_period_end:
-            raise AccountingValidationError("open fiscal period start must not exceed end. Correct open_period_start/open_period_end in the policy manifest, then retry close.")
+            raise AccountingValidationError("open fiscal period start must not exceed end. Correct open_period_start/open_period_end in the policy manifest, then retry policy load.")
         if not self.accounting_policy_version or not self.posting_rule_version:
             raise AccountingValidationError("accounting policy and posting rule versions are required. Supply accounting_policy_version and posting_rule_version, then retry policy load.")
         normalized_mapping: dict[str, str] = {}
