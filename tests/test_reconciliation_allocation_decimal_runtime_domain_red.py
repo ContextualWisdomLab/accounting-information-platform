@@ -3,8 +3,8 @@
 Allocation planning must not execute caller-defined ``Decimal`` subclass behavior
 while deciding whether source or allocated money is finite and positive. Durable
 allocation amounts stay exact repository-owned ``Decimal`` evidence. Aggregate
-book-side money now arrives through admitted ``BookJournalEvidence`` rather than
-an independent caller scalar.
+book and statement money now arrive through admitted source evidence rather than
+independent caller scalars.
 """
 
 from __future__ import annotations
@@ -18,7 +18,10 @@ from accounting_information_platform.allocation import (
     aggregate_allocations,
     propose_split_allocations,
 )
-from accounting_information_platform.reconciliation import BookJournalEvidence
+from accounting_information_platform.reconciliation import (
+    BookJournalEvidence,
+    StatementEntryEvidence,
+)
 
 
 class _ExplodingDecimal(Decimal):
@@ -34,7 +37,7 @@ class ReconciliationAllocationDecimalRuntimeDomainRedTests(unittest.TestCase):
 
     @staticmethod
     def _journal() -> BookJournalEvidence:
-        """Return one otherwise-valid journal candidate for allocation planning."""
+        """Return one otherwise-valid journal source for allocation planning."""
         return BookJournalEvidence(
             journal_reference="journal-001",
             provider_reference=None,
@@ -44,6 +47,21 @@ class ReconciliationAllocationDecimalRuntimeDomainRedTests(unittest.TestCase):
             currency_code="KRW",
             credit_debit_code="CRDT",
             accounting_date=date(2026, 9, 22),
+        )
+
+    @staticmethod
+    def _statement() -> StatementEntryEvidence:
+        """Return one otherwise-valid statement source for aggregate planning."""
+        return StatementEntryEvidence(
+            statement_entry_reference="statement-001",
+            provider_reference=None,
+            end_to_end_reference=None,
+            account_servicer_reference=None,
+            amount=Decimal("1000.00"),
+            currency_code="KRW",
+            credit_debit_code="DBIT",
+            booking_date=date(2026, 9, 22),
+            value_date=date(2026, 9, 22),
         )
 
     def test_allocation_amount_rejects_decimal_subclass_before_numeric_behavior(self) -> None:
@@ -83,14 +101,19 @@ class ReconciliationAllocationDecimalRuntimeDomainRedTests(unittest.TestCase):
                 accounting_date=date(2026, 9, 22),
             )
 
-    def test_aggregate_statement_money_rejects_decimal_subclass(self) -> None:
-        """Statement-side aggregate money retains exact built-in Decimal admission."""
-        with self.assertRaisesRegex(ValueError, "statement statement-001 amount"):
-            aggregate_allocations(
-                statement_items=(("statement-001", _ExplodingDecimal("1000.00")),),
-                journal_evidence=self._journal(),
-                reconciliation_run_reference="run-001",
-                tenant_account_reference="tenant-001",
+    def test_statement_side_money_rejects_decimal_subclass_before_aggregate_planning(self) -> None:
+        """Aggregate statement money must pass statement-evidence admission first."""
+        with self.assertRaisesRegex(ValueError, "amount"):
+            StatementEntryEvidence(
+                statement_entry_reference="statement-001",
+                provider_reference=None,
+                end_to_end_reference=None,
+                account_servicer_reference=None,
+                amount=_ExplodingDecimal("1000.00"),
+                currency_code="KRW",
+                credit_debit_code="DBIT",
+                booking_date=date(2026, 9, 22),
+                value_date=date(2026, 9, 22),
             )
 
     def test_exact_builtin_decimal_controls_remain_valid(self) -> None:
@@ -105,7 +128,7 @@ class ReconciliationAllocationDecimalRuntimeDomainRedTests(unittest.TestCase):
         self.assertEqual(split[0].allocated_amount, Decimal("1000.00"))
 
         aggregate = aggregate_allocations(
-            statement_items=(("statement-001", Decimal("1000.00")),),
+            statement_items=(self._statement(),),
             journal_evidence=self._journal(),
             reconciliation_run_reference="run-001",
             tenant_account_reference="tenant-001",
