@@ -50,6 +50,28 @@ def _require_allocation_currency(value: object) -> None:
         ) from exc
 
 
+def _decimal_as_scaled_integer(value: Decimal, common_exponent: int) -> int:
+    """Return the exact integer coefficient of *value* at *common_exponent*."""
+    parts = value.as_tuple()
+    coefficient = int("".join(str(digit) for digit in parts.digits))
+    signed_coefficient = coefficient * (1 - (2 * parts.sign))
+    return signed_coefficient * (10 ** (int(parts.exponent) - common_exponent))
+
+
+def _exact_decimal_sum_matches(
+    values: tuple[Decimal, ...], expected: Decimal
+) -> bool:
+    """Compare a Decimal population with *expected* without ambient-context rounding."""
+    common_exponent = min(
+        int(value.as_tuple().exponent) for value in (*values, expected)
+    )
+    exact_total = sum(
+        (_decimal_as_scaled_integer(value, common_exponent) for value in values),
+        0,
+    )
+    return exact_total == _decimal_as_scaled_integer(expected, common_exponent)
+
+
 @dataclass(frozen=True, slots=True)
 class ReconciliationAllocation:
     """One immutable, tenant- and run-scoped statement-to-journal allocation."""
@@ -158,7 +180,7 @@ def propose_split_allocations(
     _require_credit_debit_code(statement_direction)
 
     allocations: list[ReconciliationAllocation] = []
-    planned_total = Decimal("0")
+    planned_amounts: list[Decimal] = []
     seen_journal_references: set[str] = set()
     for journal in candidate_journals:
         journal_reference = journal.journal_reference
@@ -185,7 +207,7 @@ def propose_split_allocations(
                 "split journal direction must match statement direction. Supply "
                 "same-direction source evidence before planning a split."
             )
-        planned_total += journal_amount
+        planned_amounts.append(journal_amount)
         allocations.append(
             ReconciliationAllocation(
                 tenant_account_reference=tenant_account_reference,
@@ -197,7 +219,7 @@ def propose_split_allocations(
             )
         )
 
-    if planned_total != statement_total:
+    if not _exact_decimal_sum_matches(tuple(planned_amounts), statement_total):
         raise ValueError(
             "split allocations must conserve the exact statement amount: the "
             "candidate total may not exceed the statement amount. Re-select "
