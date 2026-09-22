@@ -44,7 +44,7 @@ Selected. Typed callers provide one exact repository-owned `StatementEntryEviden
 
 `propose_split_allocations()` must consume repository-owned statement evidence rather than independent statement identity and amount scalars.
 
-- The public typed contract accepts `statement_evidence: StatementEntryEvidence` and an exact built-in tuple of exact `BookJournalEvidence` candidates.
+- The published overload contract requires `statement_evidence: StatementEntryEvidence` and an exact built-in tuple of `BookJournalEvidence` candidates. The overload surface omits the historical scalar keyword names; the implementation keeps them only as runtime rejection sentinels for stale callers.
 - Runtime admission requires `type(statement_evidence) is StatementEntryEvidence` before statement attribute reads.
 - Historical `statement_entry_reference` and `statement_amount` keyword names remain runtime-only sentinels so stale callers receive a repository-owned domain error. Supplying either keyword, including explicit `None`, fails closed even when canonical statement evidence is also present.
 - Statement identity is revalidated immediately before allocation construction.
@@ -64,6 +64,8 @@ Causal production repair `ab5cb7135e0e7addda546db5b6fa72b1080199de` changes spli
 
 Ordinary descendants adapt predecessor split-population, candidate-evidence, Decimal-runtime, and conservation fixtures so each continues to exercise its original invariant through the stronger statement-evidence boundary. `d9bafdf57ebd8fda93af9a54ee1ea58a7c63b713` additionally proves that explicitly supplied legacy keywords, including `None`, cannot be combined with canonical statement evidence. These descendants do not transfer predecessor review or hosted-runtime evidence to this decision.
 
+Current-exact review then found that the ADR's typed-contract claim was not actually published: the implementation signature still exposed optional `statement_evidence` plus legacy scalar names to type checkers. Review RED `2a363c1331fd15e3343756c2e65d7435067350e7` adds the same `typing.get_overloads()` contract used by the aggregate API and requires mandatory `StatementEntryEvidence` with no legacy names. Production descendant `9866d45f59cb9bb505d06222e861f7894dfa5982` adds canonical split overloads while preserving the implementation-only sentinels for runtime migration errors. Documentation descendant `fbde16625982ce57ae875a31f35b3085a39388a3` currentizes ADR 0054's Allocation conservation contract with exact split statement evidence, currency/direction agreement, at-use revalidation, legacy rejection semantics, and ADR 0070/0071/0072 ownership. Hosted execution evidence remains exact-head-specific and is not inferred from source inspection.
+
 ## Compatibility, risks, and effects
 
 This intentionally narrows a public Python call shape. Callers that previously supplied `statement_entry_reference` and `statement_amount` must obtain or construct admitted `StatementEntryEvidence` and pass that value object. The compatibility cost is deliberate: two scalars do not prove the source currency or movement direction that makes a split accounting-consistent.
@@ -74,6 +76,6 @@ Cross-currency and opposite-direction splits now fail before monetary conservati
 
 ## Follow-up
 
-ADR 0054's Allocation conservation section must remain code-current with this decision, while ADR 0070 continues to own split candidate-population immutability and ADR 0071 owns aggregate statement provenance.
+ADR 0054's Allocation conservation section is code-current with this decision at `fbde16625982ce57ae875a31f35b3085a39388a3`; ADR 0070 continues to own split candidate-population immutability and ADR 0071 owns aggregate statement provenance.
 
-PR #37 remains the canonical single writer for shared `CHANGELOG.md`, `docs/doctoring/STANDARD_TRACEABILITY.md`, and `docs/product-technical-gap-baseline.md`. After protected integration, #37 must rebuild those records from the exact protected tree and trace the progression from scalar split statement fields to exact `StatementEntryEvidence`, including currency/direction compatibility and at-use revalidation. This ADR remains Proposed until exact-head review, hosted test/security evidence, and the owner-path documentation gate are satisfied.
+PR #37 remains the canonical single writer for shared `CHANGELOG.md`, `docs/doctoring/STANDARD_TRACEABILITY.md`, and `docs/product-technical-gap-baseline.md`. After protected integration, #37 must rebuild those records from the exact protected tree and trace the progression from scalar split statement fields to exact `StatementEntryEvidence`, including the published overload contract, currency/direction compatibility, and at-use revalidation. This ADR remains Proposed until exact-head review, hosted test/security evidence, and the owner-path documentation gate are satisfied.
