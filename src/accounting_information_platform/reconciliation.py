@@ -85,7 +85,7 @@ def _require_source_date(value: object, field_name: str) -> None:
 
 def _require_review_instruction(value: object) -> None:
     """Reject decision evidence that gives the reviewer no actionable next step."""
-    if not isinstance(value, str) or not value.strip():
+    if type(value) is not str or not value.strip():
         raise ValueError("next_action must be a non-empty review instruction")
 
 
@@ -209,7 +209,7 @@ class ReconciliationDecision:
                 "decision_code must be match or abstain. Rebuild the reconciliation decision from deterministic source evidence."
             )
         if self.decision_code == "match":
-            if not isinstance(self.rule_code, str) or not self.rule_code.strip():
+            if type(self.rule_code) is not str or not self.rule_code.strip():
                 raise ValueError(
                     "match decision requires a non-empty rule_code. Rebuild reviewed evidence from the deterministic or explicitly reviewed rule."
                 )
