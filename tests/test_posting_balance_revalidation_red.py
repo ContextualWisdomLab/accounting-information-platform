@@ -76,6 +76,18 @@ class PostingBalanceRevalidationTests(unittest.TestCase):
 
         self.assertEqual(ledger.journal_count, 0)
 
+    def test_replay_rejects_balance_changed_after_original_post(self) -> None:
+        proposal = self._proposal()
+        ledger = PostingLedger()
+        original_receipt = ledger.post(proposal, self.policy)
+        object.__setattr__(proposal.lines[1], "credit_amount", Decimal("999.99"))
+
+        with self.assertRaisesRegex(AccountingValidationError, "must balance"):
+            ledger.post(proposal, self.policy)
+
+        self.assertEqual(original_receipt.posting_status_code, "posted")
+        self.assertEqual(ledger.journal_count, 1)
+
     def test_post_accepts_unchanged_balanced_proposal(self) -> None:
         ledger = PostingLedger()
 
