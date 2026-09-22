@@ -38,6 +38,14 @@ class _ExplodingAggregateJournal(BookJournalEvidence):
         return super().__getattribute__(name)
 
 
+class _ForgedAggregateJournalAmount(Decimal):
+    """Pretend a mismatched journal amount is equal during conservation comparison."""
+
+    def __ne__(self, other: object) -> bool:
+        """Return false so a mismatched statement total appears conserved."""
+        return False
+
+
 class AggregateJournalEvidenceDomainRedTests(unittest.TestCase):
     """Require one exact ``BookJournalEvidence`` as aggregate book-side provenance."""
 
@@ -56,14 +64,16 @@ class AggregateJournalEvidenceDomainRedTests(unittest.TestCase):
         )
 
     @staticmethod
-    def _plan(journal_evidence: object):
+    def _plan(journal_evidence: object, **overrides: object):
         """Plan one conserved aggregate while varying only book-side object provenance."""
-        return aggregate_allocations(
-            statement_items=(("statement-001", Decimal("1000.00")),),
-            journal_evidence=journal_evidence,  # type: ignore[arg-type]
-            reconciliation_run_reference="run-001",
-            tenant_account_reference="tenant-001",
-        )
+        values: dict[str, object] = {
+            "statement_items": (("statement-001", Decimal("1000.00")),),
+            "journal_evidence": journal_evidence,
+            "reconciliation_run_reference": "run-001",
+            "tenant_account_reference": "tenant-001",
+        }
+        values.update(overrides)
+        return aggregate_allocations(**values)  # type: ignore[arg-type]
 
     def test_exact_book_journal_evidence_drives_aggregate_provenance(self) -> None:
         """Canonical evidence supplies journal identity, money, and currency atomically."""
@@ -73,16 +83,14 @@ class AggregateJournalEvidenceDomainRedTests(unittest.TestCase):
         self.assertEqual(allocations[0].currency_code, "KRW")
         self.assertEqual(allocations[0].allocated_amount, Decimal("1000.00"))
 
-    def test_scalar_only_journal_provenance_fails_closed(self) -> None:
-        """Mutually consistent caller scalars cannot substitute for admitted journal evidence."""
-        with self.assertRaisesRegex(ValueError, "BookJournalEvidence"):
-            aggregate_allocations(
-                statement_items=(("statement-001", Decimal("1000.00")),),
+    def test_legacy_scalars_fail_after_exact_evidence_admission(self) -> None:
+        """Legacy scalar keywords cannot coexist with canonical journal evidence."""
+        with self.assertRaisesRegex(ValueError, "not accepted"):
+            self._plan(
+                self._journal(),
                 journal_total=Decimal("1000.00"),
                 journal_reference="journal-001",
                 currency_code="KRW",
-                reconciliation_run_reference="run-001",
-                tenant_account_reference="tenant-001",
             )
 
     def test_duck_typed_journal_evidence_fails_closed(self) -> None:
@@ -104,6 +112,13 @@ class AggregateJournalEvidenceDomainRedTests(unittest.TestCase):
         )
         _ExplodingAggregateJournal.explode_amount_reads = True
         with self.assertRaisesRegex(ValueError, "BookJournalEvidence"):
+            self._plan(journal)
+
+    def test_tampered_journal_amount_is_revalidated_before_conservation(self) -> None:
+        """Frozen evidence cannot bypass exact-money admission after construction."""
+        journal = self._journal()
+        object.__setattr__(journal, "amount", _ForgedAggregateJournalAmount("999.00"))
+        with self.assertRaisesRegex(ValueError, "positive exact Decimal"):
             self._plan(journal)
 
     def test_public_overloads_require_book_journal_evidence(self) -> None:
