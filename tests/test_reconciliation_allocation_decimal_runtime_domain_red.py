@@ -75,6 +75,8 @@ class ReconciliationAllocationDecimalRuntimeDomainRedTests(unittest.TestCase):
                 journal_total=_ExplodingDecimal("1000.00"),
                 reconciliation_run_reference="run-001",
                 tenant_account_reference="tenant-001",
+                journal_reference="journal-001",
+                currency_code="KRW",
             )
         with self.assertRaisesRegex(ValueError, "statement statement-001 amount"):
             aggregate_allocations(
@@ -82,6 +84,8 @@ class ReconciliationAllocationDecimalRuntimeDomainRedTests(unittest.TestCase):
                 journal_total=Decimal("1000.00"),
                 reconciliation_run_reference="run-001",
                 tenant_account_reference="tenant-001",
+                journal_reference="journal-001",
+                currency_code="KRW",
             )
 
     def test_exact_builtin_decimal_controls_remain_valid(self) -> None:
@@ -100,6 +104,8 @@ class ReconciliationAllocationDecimalRuntimeDomainRedTests(unittest.TestCase):
             journal_total=Decimal("1000.00"),
             reconciliation_run_reference="run-001",
             tenant_account_reference="tenant-001",
+            journal_reference="journal-001",
+            currency_code="KRW",
         )
         self.assertEqual(aggregate[0].allocated_amount, Decimal("1000.00"))
 
