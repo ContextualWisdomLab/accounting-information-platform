@@ -135,8 +135,10 @@ class JournalProposal:
 
     def __post_init__(self) -> None:
         """Validate identity, provenance, exact balancing, and line uniqueness."""
-        if not self.proposal_id or self.proposal_contract_version < 1:
+        if not self.proposal_id:
             raise AccountingValidationError("proposal identity and contract version are required. Supply proposal_id and proposal_contract_version, then retry ingest.")
+        if type(self.proposal_contract_version) is not int or self.proposal_contract_version < 1:
+            raise AccountingValidationError("proposal_contract_version must be a positive integer. Supply a built-in integer proposal_contract_version starting at 1, then retry ingest.")
         _require_proposal_id(self.proposal_id)
         if type(self.idempotency_key) is not str or not self.idempotency_key:
             raise AccountingValidationError("idempotency_key must be a non-empty string. Supply the source-system idempotency_key, then retry ingest.")
