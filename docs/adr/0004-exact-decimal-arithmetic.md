@@ -12,14 +12,18 @@ The published Billing proposal contract keeps amounts as strings. `ingest_journa
 
 General Ledger double-entry validation is mathematical equality over the admitted canonical decimals and must not depend on the process-wide or caller-local `decimal` precision context. Journal proposal debit/credit totals therefore sum exact base-10 coefficients rather than using context-sensitive `Decimal` addition. The same exact sum is returned by the public `debit_total` and `credit_total` properties.
 
+Trial-balance arithmetic is the same accounting-control domain. Per-account debit and credit accumulation and `AccountBalance.net_balance` must preserve every admitted base-10 unit independently of the active `decimal` precision context. The reference core therefore reuses `_exact_decimal_sum()` for both trial-balance sides and for debit-minus-credit rather than relying on ambient-context `Decimal` addition or subtraction. This is exact mathematical aggregation, not a rounding or presentation policy.
+
 ## Runtime evidence
 
 RED `6d37be8cbce89dc2a65e5e2e5d6e6f2e8d54cc1d` keeps proposal identity, currency, source provenance and line semantics fixed while varying only magnitude and ambient precision. It requires a one-unit imbalance (`10000000000000000000000000000 + 1` debit versus `10000000000000000000000000000` credit) to remain invalid at precision 28, and requires the genuinely balanced `10000000000000000000000000001` credit case to remain valid and report exact totals at precision 2.
 
-Causal repair `3635196856ba56b44168102ad85b145cfa4c80d6` introduces `_exact_decimal_sum()` in the General Ledger reference core and uses it only for `JournalProposal` balance admission and its debit/credit total properties. It does not change posting, reversal, period, chart-account, idempotency, Billing, or reconciliation authority. Trial-balance accumulation is a separate control surface and is not silently claimed repaired by this change.
+Causal repair `3635196856ba56b44168102ad85b145cfa4c80d6` introduces `_exact_decimal_sum()` in the General Ledger reference core for `JournalProposal` balance admission and its debit/credit total properties. It does not change posting, reversal, period, chart-account, idempotency, Billing, or reconciliation authority.
+
+Trial-balance RED `681860c47083b6766621ad5b5e41be7ed2a221f3` holds tenant/entity/book scope, posting provenance, chart-account mapping and canonical monetary inputs constant while lowering the active Decimal precision. It requires the shared cash account to retain a low-order debit unit and requires `AccountBalance.net_balance` to return the exact mathematical difference. Production repair `f80b8ea1dcb7800eb5c4b75bc7ae52ede6b0ce7a` reuses `_exact_decimal_sum()` for debit/credit accumulation and net balance. Review repair `23d8fc12c09491c932426c2eb1a0b16db35aada9` removes an unrelated policy-load guidance drift without altering the arithmetic fix. Test-only descendant `96f9fada493f8fd23c0e302258b36fe5e60ea62f` adds the symmetric shared-account credit accumulation oracle so both accumulation sides are directly exercised under low precision.
 
 ## Consequences
 
 Rounding, scale, foreign exchange, and reporting currency treatment require explicit versioned policy rather than implicit language or database defaults. Billing cannot smuggle a binary float through HTTP accept into the ledger.
 
-A journal cannot become apparently balanced, or apparently unbalanced, solely because an embedding caller changed Python's active Decimal precision. Future monetary aggregate paths must either reuse an exact context-independent arithmetic primitive or document an explicit versioned rounding/scale policy before arithmetic is used as accounting authority.
+A journal, trial balance, or account net balance cannot become apparently balanced, unbalanced, or lose a low-order unit solely because an embedding caller changed Python's active Decimal precision. Future monetary aggregate paths must either reuse an exact context-independent arithmetic primitive or document an explicit versioned rounding/scale policy before arithmetic is used as accounting authority.
