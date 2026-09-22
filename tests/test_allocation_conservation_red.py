@@ -22,7 +22,10 @@ import unittest
 from datetime import date
 from decimal import Decimal
 
-from accounting_information_platform.reconciliation import BookJournalEvidence
+from accounting_information_platform.reconciliation import (
+    BookJournalEvidence,
+    StatementEntryEvidence,
+)
 
 
 class AllocationConservationContractTests(unittest.TestCase):
@@ -38,6 +41,19 @@ class AllocationConservationContractTests(unittest.TestCase):
             currency_code="KRW",
             credit_debit_code="DBIT",
             accounting_date=date(2026, 9, 1),
+        )
+
+    def _statement(self, *, reference: str, amount: str):
+        return StatementEntryEvidence(
+            statement_entry_reference=reference,
+            provider_reference="ref-1",
+            end_to_end_reference=None,
+            account_servicer_reference=None,
+            amount=Decimal(amount),
+            currency_code="KRW",
+            credit_debit_code="DBIT",
+            booking_date=date(2026, 9, 1),
+            value_date=date(2026, 9, 1),
         )
 
     def test_split_conserves_statement_amount_across_journals(self) -> None:
@@ -199,8 +215,8 @@ class AllocationConservationContractTests(unittest.TestCase):
         )
 
         statement_items = (
-            ("stmt-001", Decimal("300.00")),
-            ("stmt-002", Decimal("700.00")),
+            self._statement(reference="stmt-001", amount="300.00"),
+            self._statement(reference="stmt-002", amount="700.00"),
         )
         allocations = aggregate_allocations(
             statement_items=statement_items,
@@ -226,8 +242,8 @@ class AllocationConservationContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "distinct statement identities"):
             aggregate_allocations(
                 statement_items=(
-                    ("stmt-001", Decimal("300.00")),
-                    ("stmt-001", Decimal("700.00")),
+                    self._statement(reference="stmt-001", amount="300.00"),
+                    self._statement(reference="stmt-001", amount="700.00"),
                 ),
                 journal_evidence=self._journal(reference="journal-a", amount="1000.00"),
                 reconciliation_run_reference="run-1",
@@ -241,8 +257,8 @@ class AllocationConservationContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             aggregate_allocations(
                 statement_items=(
-                    ("stmt-001", Decimal("300.00")),
-                    ("stmt-002", Decimal("700.00")),
+                    self._statement(reference="stmt-001", amount="300.00"),
+                    self._statement(reference="stmt-002", amount="700.00"),
                 ),
                 journal_evidence=self._journal(reference="journal-a", amount="900.00"),
                 reconciliation_run_reference="run-1",
