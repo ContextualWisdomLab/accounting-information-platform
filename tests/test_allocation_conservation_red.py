@@ -3,13 +3,14 @@
 A bank statement entry that must reconcile against several journal candidates
 (split) produces one allocation per distinct candidate journal and the
 allocations must sum exactly to the statement amount. Several distinct
-statement entries that reconcile to a journal total (aggregate) produce one
-allocation per statement entry and the statement-side total must equal the
-book-side total. Repeating one source identity cannot manufacture extra
-capacity merely because duplicated rows still sum to the target total. Every
-allocation is immutable, tenant- and run-scoped, and carries exact ``Decimal``
-money. A proposal that would consume more than the remaining amount on either
-side fails closed instead of emitting partial evidence.
+statement entries that reconcile to one admitted journal source (aggregate)
+produce one allocation per statement entry and the statement-side total must
+equal the book-side amount carried by that journal evidence. Repeating one
+source identity cannot manufacture extra capacity merely because duplicated rows
+still sum to the target total. Every allocation is immutable, tenant- and
+run-scoped, and carries exact ``Decimal`` money. A proposal that would consume
+more than the remaining amount on either side fails closed instead of emitting
+partial evidence.
 
 The reconciliation domain still never posts, reverses, or approves a journal;
 it returns evidence for an operator to review (ADR 0054).
@@ -185,15 +186,13 @@ class AllocationConservationContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             aggregate_allocations(
                 statement_items=(),
-                journal_total=Decimal("1000.00"),
+                journal_evidence=self._journal(reference="journal-a", amount="1000.00"),
                 reconciliation_run_reference="run-1",
                 tenant_account_reference="tenant-a",
-                journal_reference="journal-a",
-                currency_code="KRW",
             )
 
     def test_aggregate_conserves_total_on_both_sides(self) -> None:
-        """An aggregate of several statements into a journal total conserves exactly."""
+        """Several statements allocated to one admitted journal conserve exactly."""
         from accounting_information_platform.allocation import (
             ReconciliationAllocation,
             aggregate_allocations,
@@ -205,11 +204,9 @@ class AllocationConservationContractTests(unittest.TestCase):
         )
         allocations = aggregate_allocations(
             statement_items=statement_items,
-            journal_total=Decimal("1000.00"),
+            journal_evidence=self._journal(reference="journal-a", amount="1000.00"),
             reconciliation_run_reference="run-1",
             tenant_account_reference="tenant-a",
-            journal_reference="journal-a",
-            currency_code="KRW",
         )
         self.assertIsInstance(allocations, tuple)
         self.assertTrue(all(isinstance(x, ReconciliationAllocation) for x in allocations))
@@ -232,15 +229,13 @@ class AllocationConservationContractTests(unittest.TestCase):
                     ("stmt-001", Decimal("300.00")),
                     ("stmt-001", Decimal("700.00")),
                 ),
-                journal_total=Decimal("1000.00"),
+                journal_evidence=self._journal(reference="journal-a", amount="1000.00"),
                 reconciliation_run_reference="run-1",
                 tenant_account_reference="tenant-a",
-                journal_reference="journal-a",
-                currency_code="KRW",
             )
 
     def test_aggregate_fails_closed_when_sides_disagree(self) -> None:
-        """An aggregate whose book total differs from the statement sum never returns."""
+        """An aggregate whose statement sum differs from admitted journal money never returns."""
         from accounting_information_platform.allocation import aggregate_allocations
 
         with self.assertRaises(ValueError):
@@ -249,11 +244,9 @@ class AllocationConservationContractTests(unittest.TestCase):
                     ("stmt-001", Decimal("300.00")),
                     ("stmt-002", Decimal("700.00")),
                 ),
-                journal_total=Decimal("900.00"),
+                journal_evidence=self._journal(reference="journal-a", amount="900.00"),
                 reconciliation_run_reference="run-1",
                 tenant_account_reference="tenant-a",
-                journal_reference="journal-a",
-                currency_code="KRW",
             )
 
 
