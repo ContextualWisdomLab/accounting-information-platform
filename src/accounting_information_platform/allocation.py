@@ -9,7 +9,7 @@ review; it has no authority to post, reverse, or approve a journal (ADR 0054).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Context, Decimal, DecimalException, Inexact, localcontext
 from typing import overload
 
 from .core import AccountingValidationError, _require_currency
@@ -30,6 +30,33 @@ def _require_exact_positive(value: object, field_name: str) -> None:
             f"{field_name} must be a positive exact Decimal. Supply a finite "
             "Decimal greater than zero before reconciliation."
         )
+
+
+def _sum_exact_positive(values: tuple[Decimal, ...], field_name: str) -> Decimal:
+    """Sum admitted positive Decimals without inheriting caller context precision."""
+    if not values:
+        return Decimal("0")
+
+    minimum_exponent = min(value.as_tuple().exponent for value in values)
+    maximum_adjusted = max(value.adjusted() for value in values)
+    carry_digits = len(str(len(values)))
+    required_precision = max(
+        1,
+        maximum_adjusted - minimum_exponent + 1 + carry_digits,
+    )
+
+    try:
+        with localcontext(Context(prec=required_precision)) as exact_context:
+            exact_context.traps[Inexact] = True
+            total = Decimal("0")
+            for value in values:
+                total += value
+            return total
+    except (DecimalException, ValueError, OverflowError) as exc:
+        raise ValueError(
+            f"{field_name} must be exactly summable without rounding. "
+            "Supply monetary evidence within the supported Decimal arithmetic domain."
+        ) from exc
 
 
 def _require_identity(value: object, field_name: str) -> None:
@@ -158,7 +185,7 @@ def propose_split_allocations(
     _require_credit_debit_code(statement_direction)
 
     allocations: list[ReconciliationAllocation] = []
-    planned_total = Decimal("0")
+    candidate_amounts: list[Decimal] = []
     seen_journal_references: set[str] = set()
     for journal in candidate_journals:
         journal_reference = journal.journal_reference
@@ -185,7 +212,7 @@ def propose_split_allocations(
                 "split journal direction must match statement direction. Supply "
                 "same-direction source evidence before planning a split."
             )
-        planned_total += journal_amount
+        candidate_amounts.append(journal_amount)
         allocations.append(
             ReconciliationAllocation(
                 tenant_account_reference=tenant_account_reference,
@@ -197,6 +224,10 @@ def propose_split_allocations(
             )
         )
 
+    planned_total = _sum_exact_positive(
+        tuple(candidate_amounts),
+        "split candidate amounts",
+    )
     if planned_total != statement_total:
         raise ValueError(
             "split allocations must conserve the exact statement amount: the "
@@ -287,7 +318,7 @@ def aggregate_allocations(
         raise ValueError("at least one statement item is required for an aggregate allocation")
 
     allocations: list[ReconciliationAllocation] = []
-    statement_total = Decimal("0")
+    statement_amounts: list[Decimal] = []
     seen_statement_references: set[str] = set()
     for statement in statement_items:
         if type(statement) is not StatementEntryEvidence:
@@ -319,7 +350,7 @@ def aggregate_allocations(
                 "aggregate statement direction must match journal direction. Supply "
                 "same-direction source evidence before planning an aggregate."
             )
-        statement_total += amount
+        statement_amounts.append(amount)
         allocations.append(
             ReconciliationAllocation(
                 tenant_account_reference=tenant_account_reference,
@@ -331,6 +362,10 @@ def aggregate_allocations(
             )
         )
 
+    statement_total = _sum_exact_positive(
+        tuple(statement_amounts),
+        "aggregate statement amounts",
+    )
     if statement_total != book_total:
         raise ValueError(
             "aggregation sides must agree: the statement-side total must equal "
