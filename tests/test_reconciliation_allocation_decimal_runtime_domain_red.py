@@ -2,8 +2,8 @@
 
 Allocation planning must not execute caller-defined ``Decimal`` subclass behavior
 while deciding whether source or allocated money is finite and positive. Durable
-allocation amounts stay exact repository-owned ``Decimal`` evidence. Aggregate
-money now arrives through admitted statement and journal evidence and is
+allocation amounts stay exact repository-owned ``Decimal`` evidence. Split and
+aggregate money arrive through admitted statement and journal evidence and are
 revalidated at the allocation boundary before arithmetic or comparison.
 """
 
@@ -51,7 +51,7 @@ class ReconciliationAllocationDecimalRuntimeDomainRedTests(unittest.TestCase):
 
     @staticmethod
     def _statement() -> StatementEntryEvidence:
-        """Return one canonical statement source for aggregate planning."""
+        """Return one canonical statement source for allocation planning."""
         return StatementEntryEvidence(
             statement_entry_reference="statement-001",
             provider_reference=None,
@@ -76,12 +76,13 @@ class ReconciliationAllocationDecimalRuntimeDomainRedTests(unittest.TestCase):
                 currency_code="KRW",
             )
 
-    def test_split_statement_total_rejects_decimal_subclass(self) -> None:
-        """Split source money fails before caller-owned Decimal behavior can run."""
-        with self.assertRaisesRegex(ValueError, "statement_amount"):
+    def test_split_statement_money_rejects_post_construction_decimal_subclass(self) -> None:
+        """At-use split validation blocks tampered statement money before subclass behavior."""
+        statement = self._statement()
+        object.__setattr__(statement, "amount", _ExplodingDecimal("1000.00"))
+        with self.assertRaisesRegex(ValueError, "statement_evidence amount"):
             propose_split_allocations(
-                statement_entry_reference="statement-001",
-                statement_amount=_ExplodingDecimal("1000.00"),
+                statement_evidence=statement,
                 candidate_journals=(self._journal(),),
                 reconciliation_run_reference="run-001",
                 tenant_account_reference="tenant-001",
@@ -116,8 +117,7 @@ class ReconciliationAllocationDecimalRuntimeDomainRedTests(unittest.TestCase):
     def test_exact_builtin_decimal_controls_remain_valid(self) -> None:
         """Existing exact built-in Decimal allocation semantics remain unchanged."""
         split = propose_split_allocations(
-            statement_entry_reference="statement-001",
-            statement_amount=Decimal("1000.00"),
+            statement_evidence=self._statement(),
             candidate_journals=(self._journal(),),
             reconciliation_run_reference="run-001",
             tenant_account_reference="tenant-001",
