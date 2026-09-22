@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Iterable, overload
+from typing import overload
 
 from .core import AccountingValidationError, _require_currency
 from .reconciliation import BookJournalEvidence
@@ -74,26 +74,32 @@ def propose_split_allocations(
     *,
     statement_entry_reference: str,
     statement_amount: Decimal,
-    candidate_journals: Iterable[BookJournalEvidence],
+    candidate_journals: tuple[BookJournalEvidence, ...],
     reconciliation_run_reference: str,
     tenant_account_reference: str,
 ) -> tuple[ReconciliationAllocation, ...]:
     """Propose one allocation per distinct candidate journal with exact conservation.
 
-    Every candidate must be exact repository-owned ``BookJournalEvidence`` so
-    split planning cannot bypass source-evidence admission or execute
-    caller-defined subclass behavior. Every candidate journal contributes a
-    positive exact Decimal amount, every journal identity appears at most once,
-    and all candidates share one currency. The returned allocations sum exactly
-    to ``statement_amount``; a duplicate or malformed source population, or a
-    candidate set whose total is not exactly that amount, fails closed rather
-    than returning reviewable allocation evidence.
+    The candidate population itself must be an exact built-in tuple before any
+    iteration so split planning cannot execute caller-defined container behavior
+    or silently snapshot a mutable source population. Every member must then be
+    exact repository-owned ``BookJournalEvidence``. Every candidate journal
+    contributes a positive exact Decimal amount, every journal identity appears
+    at most once, and all candidates share one currency. The returned allocations
+    sum exactly to ``statement_amount``; a duplicate or malformed source
+    population, or a candidate set whose total is not exactly that amount, fails
+    closed rather than returning reviewable allocation evidence.
     """
 
     _require_identity(statement_entry_reference, "statement_entry_reference")
     _require_exact_positive(statement_amount, "statement_amount")
 
-    journal_tuple = tuple(candidate_journals)
+    if type(candidate_journals) is not tuple:
+        raise ValueError(
+            "candidate_journals must be an immutable built-in tuple. Snapshot the "
+            "posted-journal candidate population before planning a split."
+        )
+    journal_tuple = candidate_journals
     if not journal_tuple:
         raise ValueError("at least one candidate journal is required for a split allocation")
     if any(type(journal) is not BookJournalEvidence for journal in journal_tuple):
