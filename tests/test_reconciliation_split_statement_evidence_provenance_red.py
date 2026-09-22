@@ -124,6 +124,26 @@ class SplitStatementEvidenceProvenanceRedTests(unittest.TestCase):
                 tenant_account_reference="tenant-001",
             )
 
+    def test_legacy_statement_keywords_fail_even_when_explicit_none(self) -> None:
+        """A canonical statement cannot be combined with any supplied legacy scalar keyword."""
+        for legacy_kwargs in (
+            {"statement_entry_reference": None},
+            {"statement_amount": None},
+            {
+                "statement_entry_reference": "statement-001",
+                "statement_amount": Decimal("1000.00"),
+            },
+        ):
+            with self.subTest(legacy_kwargs=legacy_kwargs):
+                with self.assertRaisesRegex(ValueError, "statement provenance"):
+                    propose_split_allocations(
+                        statement_evidence=self._statement(),
+                        candidate_journals=self._journals(),
+                        reconciliation_run_reference="run-001",
+                        tenant_account_reference="tenant-001",
+                        **legacy_kwargs,
+                    )
+
     def test_cross_currency_statement_fails_before_conservation(self) -> None:
         """Numerically equal money cannot reconcile KRW journals to a USD statement."""
         with self.assertRaisesRegex(ValueError, "currency"):
