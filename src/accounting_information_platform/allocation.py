@@ -76,73 +76,108 @@ class ReconciliationAllocation:
 
 def propose_split_allocations(
     *,
-    statement_entry_reference: str,
-    statement_amount: Decimal,
+    statement_evidence: StatementEntryEvidence | None = None,
     candidate_journals: tuple[BookJournalEvidence, ...],
     reconciliation_run_reference: str,
     tenant_account_reference: str,
+    statement_entry_reference: object = _LEGACY_ARGUMENT_OMITTED,
+    statement_amount: object = _LEGACY_ARGUMENT_OMITTED,
 ) -> tuple[ReconciliationAllocation, ...]:
-    """Propose one allocation per distinct candidate journal with exact conservation.
+    """Allocate one admitted statement source across admitted journal sources.
 
-    The candidate population itself must be an exact built-in tuple before any
-    iteration so split planning cannot execute caller-defined container behavior
-    or silently snapshot a mutable source population. Every member must then be
-    exact repository-owned ``BookJournalEvidence``. Every candidate journal
-    contributes a positive exact Decimal amount, every journal identity appears
-    at most once, and all candidates share one currency. The returned allocations
-    sum exactly to ``statement_amount``; a duplicate or malformed source
-    population, or a candidate set whose total is not exactly that amount, fails
-    closed rather than returning reviewable allocation evidence.
+    Both sides of a split are repository-owned evidence. Typed callers supply one
+    exact ``StatementEntryEvidence`` and an exact built-in tuple of exact
+    ``BookJournalEvidence`` candidates. The planner admits those object domains
+    before attribute reads, revalidates every identity, amount, currency, and
+    movement direction used by allocation control, then requires each journal to
+    have the same currency and direction as the statement before proving exact
+    monetary conservation.
+
+    Legacy caller-assembled statement identity/amount scalars are not source
+    evidence because they omit the currency and movement direction bound to that
+    money. Their keyword names remain runtime-only sentinels so older calls fail
+    through a repository-owned domain error rather than silently producing
+    reviewable split evidence. Explicit ``None`` is still a supplied legacy
+    keyword and therefore fails closed.
     """
 
-    _require_identity(statement_entry_reference, "statement_entry_reference")
-    _require_exact_positive(statement_amount, "statement_amount")
-
+    if type(statement_evidence) is not StatementEntryEvidence:
+        raise ValueError(
+            "statement_evidence must be exact StatementEntryEvidence. Rebuild the "
+            "split from repository-owned bank-statement evidence before planning."
+        )
+    if any(
+        value is not _LEGACY_ARGUMENT_OMITTED
+        for value in (statement_entry_reference, statement_amount)
+    ):
+        raise ValueError(
+            "split statement provenance must come from StatementEntryEvidence; "
+            "statement_entry_reference and statement_amount are not accepted as "
+            "independent source evidence"
+        )
     if type(candidate_journals) is not tuple:
         raise ValueError(
             "candidate_journals must be an immutable built-in tuple. Snapshot the "
             "posted-journal candidate population before planning a split."
         )
-    journal_tuple = candidate_journals
-    if not journal_tuple:
+    if not candidate_journals:
         raise ValueError("at least one candidate journal is required for a split allocation")
-    if any(type(journal) is not BookJournalEvidence for journal in journal_tuple):
+    if any(type(journal) is not BookJournalEvidence for journal in candidate_journals):
         raise ValueError(
             "split candidates must be exact BookJournalEvidence. Rebuild candidate "
             "journals from repository-owned posted-journal evidence before planning."
         )
-    currency_code = journal_tuple[0].currency_code
+
+    statement_reference = statement_evidence.statement_entry_reference
+    statement_total = statement_evidence.amount
+    statement_currency = statement_evidence.currency_code
+    statement_direction = statement_evidence.credit_debit_code
+    _require_identity(statement_reference, "statement_entry_reference")
+    _require_exact_positive(statement_total, "statement_evidence amount")
+    _require_allocation_currency(statement_currency)
+    _require_credit_debit_code(statement_direction)
 
     allocations: list[ReconciliationAllocation] = []
     planned_total = Decimal("0")
     seen_journal_references: set[str] = set()
-    for journal in journal_tuple:
-        _require_identity(journal.journal_reference, "journal_reference")
-        if journal.journal_reference in seen_journal_references:
+    for journal in candidate_journals:
+        journal_reference = journal.journal_reference
+        journal_amount = journal.amount
+        journal_currency = journal.currency_code
+        journal_direction = journal.credit_debit_code
+        _require_identity(journal_reference, "journal_reference")
+        if journal_reference in seen_journal_references:
             raise ValueError(
                 "split candidates must use distinct journal identities. Remove "
                 "duplicate journal evidence before planning a split."
             )
-        seen_journal_references.add(journal.journal_reference)
-        _require_exact_positive(journal.amount, f"candidate {journal.journal_reference} amount")
-        if journal.currency_code != currency_code:
+        seen_journal_references.add(journal_reference)
+        _require_exact_positive(journal_amount, f"candidate {journal_reference} amount")
+        _require_allocation_currency(journal_currency)
+        _require_credit_debit_code(journal_direction)
+        if journal_currency != statement_currency:
             raise ValueError(
-                "split candidates must share one currency. Supply same-currency "
-                "journal evidence before planning a split."
+                "split journal currency must match statement currency. Supply "
+                "same-currency source evidence before planning a split."
             )
-        planned_total += journal.amount
+        if journal_direction != statement_direction:
+            raise ValueError(
+                "split journal direction must match statement direction. Supply "
+                "same-direction source evidence before planning a split."
+            )
+        planned_total += journal_amount
         allocations.append(
             ReconciliationAllocation(
                 tenant_account_reference=tenant_account_reference,
                 reconciliation_run_reference=reconciliation_run_reference,
-                statement_entry_reference=statement_entry_reference,
-                journal_reference=journal.journal_reference,
-                allocated_amount=journal.amount,
-                currency_code=currency_code,
+                statement_entry_reference=statement_reference,
+                journal_reference=journal_reference,
+                allocated_amount=journal_amount,
+                currency_code=statement_currency,
             )
         )
 
-    if planned_total != statement_amount:
+    if planned_total != statement_total:
         raise ValueError(
             "split allocations must conserve the exact statement amount: the "
             "candidate total may not exceed the statement amount. Re-select "
