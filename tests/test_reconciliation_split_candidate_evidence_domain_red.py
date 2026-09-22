@@ -29,9 +29,11 @@ class _DuckJournalCandidate:
 class _ExplodingJournalCandidate(BookJournalEvidence):
     """Prove subclass-defined attribute behavior cannot enter split planning."""
 
+    explode_currency_reads = False
+
     def __getattribute__(self, name: str):
-        """Raise if split planning reads subclass-owned currency behavior."""
-        if name == "currency_code":
+        """Raise on currency reads only after the canonical constructor has run."""
+        if name == "currency_code" and type(self).explode_currency_reads:
             raise RuntimeError("caller-defined candidate behavior executed")
         return super().__getattribute__(name)
 
@@ -88,6 +90,7 @@ class SplitCandidateEvidenceDomainRedTests(unittest.TestCase):
             credit_debit_code="DBIT",
             accounting_date=date(2026, 9, 1),
         )
+        _ExplodingJournalCandidate.explode_currency_reads = True
         with self.assertRaisesRegex(ValueError, "BookJournalEvidence"):
             self._plan(candidate)
 
