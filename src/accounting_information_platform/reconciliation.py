@@ -42,7 +42,7 @@ def _require_positive_exact_decimal(value: object) -> None:
 
 def _require_identity(value: object, field_name: str) -> None:
     """Reject reconciliation evidence that is not bound to a real source identity."""
-    if not isinstance(value, str) or not value.strip():
+    if type(value) is not str or not value.strip():
         raise ValueError(f"{field_name} must be a non-empty identity")
 
 
