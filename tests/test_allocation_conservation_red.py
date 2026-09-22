@@ -31,27 +31,41 @@ from accounting_information_platform.reconciliation import (
 class AllocationConservationContractTests(unittest.TestCase):
     """Require exact conservation, no double consumption, and fail-closed edges."""
 
-    def _journal(self, *, reference: str, amount: str):
+    def _journal(
+        self,
+        *,
+        reference: str,
+        amount: str,
+        currency_code: str = "KRW",
+        credit_debit_code: str = "DBIT",
+    ):
         return BookJournalEvidence(
             journal_reference=reference,
             provider_reference="ref-1",
             end_to_end_reference=None,
             account_servicer_reference=None,
             amount=Decimal(amount),
-            currency_code="KRW",
-            credit_debit_code="DBIT",
+            currency_code=currency_code,
+            credit_debit_code=credit_debit_code,
             accounting_date=date(2026, 9, 1),
         )
 
-    def _statement(self, *, reference: str, amount: str):
+    def _statement(
+        self,
+        *,
+        reference: str,
+        amount: str,
+        currency_code: str = "KRW",
+        credit_debit_code: str = "DBIT",
+    ):
         return StatementEntryEvidence(
             statement_entry_reference=reference,
             provider_reference="ref-1",
             end_to_end_reference=None,
             account_servicer_reference=None,
             amount=Decimal(amount),
-            currency_code="KRW",
-            credit_debit_code="DBIT",
+            currency_code=currency_code,
+            credit_debit_code=credit_debit_code,
             booking_date=date(2026, 9, 1),
             value_date=date(2026, 9, 1),
         )
@@ -64,8 +78,7 @@ class AllocationConservationContractTests(unittest.TestCase):
         )
 
         allocations = propose_split_allocations(
-            statement_entry_reference="stmt-001",
-            statement_amount=Decimal("1000.00"),
+            statement_evidence=self._statement(reference="stmt-001", amount="1000.00"),
             candidate_journals=(
                 self._journal(reference="journal-a", amount="400.00"),
                 self._journal(reference="journal-b", amount="600.00"),
@@ -91,8 +104,9 @@ class AllocationConservationContractTests(unittest.TestCase):
             with self.subTest(amount=amount):
                 with self.assertRaises(ValueError):
                     propose_split_allocations(
-                        statement_entry_reference="stmt-001",
-                        statement_amount=Decimal("1000.00"),
+                        statement_evidence=self._statement(
+                            reference="stmt-001", amount="1000.00"
+                        ),
                         candidate_journals=(
                             self._journal(reference="journal-a", amount=amount),
                         ),
@@ -106,8 +120,7 @@ class AllocationConservationContractTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             propose_split_allocations(
-                statement_entry_reference="stmt-001",
-                statement_amount=Decimal("1000.00"),
+                statement_evidence=self._statement(reference="stmt-001", amount="1000.00"),
                 candidate_journals=(
                     self._journal(reference="journal-a", amount="450.00"),
                     self._journal(reference="journal-b", amount="600.00"),
@@ -122,8 +135,7 @@ class AllocationConservationContractTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "distinct journal identities"):
             propose_split_allocations(
-                statement_entry_reference="stmt-001",
-                statement_amount=Decimal("1000.00"),
+                statement_evidence=self._statement(reference="stmt-001", amount="1000.00"),
                 candidate_journals=(
                     self._journal(reference="journal-a", amount="400.00"),
                     self._journal(reference="journal-a", amount="600.00"),
@@ -170,25 +182,25 @@ class AllocationConservationContractTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             propose_split_allocations(
-                statement_entry_reference="stmt-001",
-                statement_amount=Decimal("1000.00"),
+                statement_evidence=self._statement(reference="stmt-001", amount="1000.00"),
                 candidate_journals=(),
                 reconciliation_run_reference="run-1",
                 tenant_account_reference="tenant-a",
             )
 
     def test_split_rejects_mixed_currency_candidates(self) -> None:
-        """A split may only plan within one currency."""
+        """A split may only plan within the statement currency."""
         from accounting_information_platform.allocation import propose_split_allocations
 
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "currency"):
             propose_split_allocations(
-                statement_entry_reference="stmt-001",
-                statement_amount=Decimal("1000.00"),
+                statement_evidence=self._statement(reference="stmt-001", amount="1000.00"),
                 candidate_journals=(
                     self._journal(reference="journal-a", amount="400.00"),
-                    self._journal(reference="journal-b", amount="600.00").__replace__(
-                        currency_code="USD"
+                    self._journal(
+                        reference="journal-b",
+                        amount="600.00",
+                        currency_code="USD",
                     ),
                 ),
                 reconciliation_run_reference="run-1",
