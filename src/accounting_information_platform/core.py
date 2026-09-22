@@ -103,8 +103,8 @@ class JournalLineProposal:
 
     def __post_init__(self) -> None:
         """Normalize exact decimals and require exactly one positive side."""
-        if self.line_number < 1:
-            raise AccountingValidationError("line_number must be positive. Supply a line_number starting at 1, then retry ingest.")
+        if type(self.line_number) is not int or self.line_number < 1:
+            raise AccountingValidationError("line_number must be a positive integer. Supply a built-in integer line_number starting at 1, then retry ingest.")
         _require_code(self.account_role_code, "account role code")
         debit_amount = _parse_amount(self.debit_amount)
         credit_amount = _parse_amount(self.credit_amount)
