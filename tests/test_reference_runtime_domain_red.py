@@ -86,6 +86,22 @@ class ReferenceRuntimeDomainRedTests(unittest.TestCase):
             lines=self.proposal.lines,
         )
 
+    def _policy_copy(self) -> AccountingPolicy:
+        """Return a fresh canonical policy so each mutation scenario is isolated."""
+        return AccountingPolicy(
+            tenant_reference=self.policy.tenant_reference,
+            legal_entity_reference=self.policy.legal_entity_reference,
+            accounting_book_reference=self.policy.accounting_book_reference,
+            intended_book_role_code=self.policy.intended_book_role_code,
+            transaction_currency=self.policy.transaction_currency,
+            functional_currency=self.policy.functional_currency,
+            open_period_start=self.policy.open_period_start,
+            open_period_end=self.policy.open_period_end,
+            chart_account_mapping=dict(self.policy.chart_account_mapping),
+            accounting_policy_version=self.policy.accounting_policy_version,
+            posting_rule_version=self.policy.posting_rule_version,
+        )
+
     def test_constructor_rejects_non_string_tenant_reference(self) -> None:
         """Non-string tenant identity must fail through repository validation."""
         with self.assertRaisesRegex(
@@ -162,6 +178,81 @@ class ReferenceRuntimeDomainRedTests(unittest.TestCase):
 
         self.assertEqual(first.line_count, 2)
         self.assertEqual(ledger.journal_count, 1)
+
+    def test_post_revalidates_current_policy_references_before_persistence(self) -> None:
+        """Posting must reject mutated policy identity before it becomes retained evidence."""
+        fields = (
+            ("tenant_reference", "tenant reference"),
+            ("legal_entity_reference", "legal entity reference"),
+            ("accounting_book_reference", "accounting book reference"),
+        )
+        for field_name, label in fields:
+            with self.subTest(field_name=field_name):
+                policy = self._policy_copy()
+                original = getattr(policy, field_name)
+                object.__setattr__(policy, field_name, _HostileReference(original))
+                ledger = PostingLedger()
+
+                with self.assertRaisesRegex(
+                    AccountingValidationError,
+                    f"{label} must be a CWL URN",
+                ):
+                    ledger.post(self.proposal, policy)
+
+                self.assertEqual(ledger.journal_count, 0)
+
+    def test_post_revalidates_current_policy_references_before_cached_replay(self) -> None:
+        """A retained receipt must not hide mutation of current policy scope identity."""
+        fields = (
+            ("tenant_reference", "tenant reference"),
+            ("legal_entity_reference", "legal entity reference"),
+            ("accounting_book_reference", "accounting book reference"),
+        )
+        for field_name, label in fields:
+            with self.subTest(field_name=field_name):
+                ledger = PostingLedger()
+                first = ledger.post(self.proposal, self.policy)
+                policy = self._policy_copy()
+                original = getattr(policy, field_name)
+                object.__setattr__(policy, field_name, _HostileReference(original))
+
+                with self.assertRaisesRegex(
+                    AccountingValidationError,
+                    f"{label} must be a CWL URN",
+                ):
+                    ledger.post(self.proposal, policy)
+
+                self.assertEqual(first.line_count, 2)
+                self.assertEqual(ledger.journal_count, 1)
+
+    def test_reverse_revalidates_current_policy_references_before_hash_or_cache(self) -> None:
+        """Reversal policy identity must be owned before hashing or tenant cache access."""
+        fields = (
+            ("tenant_reference", "tenant reference"),
+            ("legal_entity_reference", "legal entity reference"),
+            ("accounting_book_reference", "accounting book reference"),
+        )
+        for field_name, label in fields:
+            with self.subTest(field_name=field_name):
+                ledger = PostingLedger()
+                posted = ledger.post(self.proposal, self.policy)
+                policy = self._policy_copy()
+                original = getattr(policy, field_name)
+                object.__setattr__(policy, field_name, _HostileReference(original))
+
+                with self.assertRaisesRegex(
+                    AccountingValidationError,
+                    f"{label} must be a CWL URN",
+                ):
+                    ledger.reverse(
+                        posted.journal_reference,
+                        date(2026, 8, 21),
+                        "policy_reference_runtime",
+                        policy,
+                        reversal_idempotency_key="policy-reference-runtime-reversal",
+                    )
+
+                self.assertEqual(ledger.journal_count, 1)
 
     def test_exact_builtin_cwl_references_preserve_replay(self) -> None:
         """Canonical built-in reference strings preserve posting idempotency."""
