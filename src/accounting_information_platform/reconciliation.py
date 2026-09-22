@@ -34,7 +34,7 @@ def _require_credit_debit_code(value: object) -> None:
 
 def _require_positive_exact_decimal(value: object) -> None:
     """Reject monetary evidence that is not a finite, strictly positive Decimal."""
-    if not isinstance(value, Decimal) or not value.is_finite() or value <= 0:
+    if type(value) is not Decimal or not value.is_finite() or value <= 0:
         raise ValueError(
             "amount must be a positive exact Decimal. Supply a finite Decimal greater than zero before reconciliation."
         )
@@ -239,7 +239,7 @@ class ReconciliationDecision:
                     "abstain decision cannot reference a matched journal. Review unmatched evidence and record an explicit exception."
                 )
             if (
-                not isinstance(self.allocated_amount, Decimal)
+                type(self.allocated_amount) is not Decimal
                 or not self.allocated_amount.is_finite()
                 or self.allocated_amount != 0
             ):
