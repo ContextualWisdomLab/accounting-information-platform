@@ -16,7 +16,10 @@ from typing import get_overloads, get_type_hints
 import unittest
 
 from accounting_information_platform.allocation import aggregate_allocations
-from accounting_information_platform.reconciliation import BookJournalEvidence
+from accounting_information_platform.reconciliation import (
+    BookJournalEvidence,
+    StatementEntryEvidence,
+)
 
 
 class AggregateJournalProvenanceRedTests(unittest.TestCase):
@@ -36,11 +39,26 @@ class AggregateJournalProvenanceRedTests(unittest.TestCase):
             accounting_date=date(2026, 9, 22),
         )
 
+    @staticmethod
+    def _statement() -> StatementEntryEvidence:
+        """Return one canonical statement source while journal provenance varies."""
+        return StatementEntryEvidence(
+            statement_entry_reference="statement-001",
+            provider_reference="provider-statement-001",
+            end_to_end_reference=None,
+            account_servicer_reference=None,
+            amount=Decimal("1000.00"),
+            currency_code="USD",
+            credit_debit_code="DBIT",
+            booking_date=date(2026, 9, 22),
+            value_date=date(2026, 9, 22),
+        )
+
     @classmethod
     def _plan(cls, **overrides: object):
         """Plan one conserved aggregate while varying only journal provenance."""
         values: dict[str, object] = {
-            "statement_items": (("statement-001", Decimal("1000.00")),),
+            "statement_items": (cls._statement(),),
             "journal_evidence": cls._journal(),
             "reconciliation_run_reference": "run-001",
             "tenant_account_reference": "tenant-001",

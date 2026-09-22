@@ -13,7 +13,11 @@ from decimal import Decimal
 from typing import overload
 
 from .core import AccountingValidationError, _require_currency
-from .reconciliation import BookJournalEvidence
+from .reconciliation import (
+    BookJournalEvidence,
+    StatementEntryEvidence,
+    _require_credit_debit_code,
+)
 
 
 _LEGACY_ARGUMENT_OMITTED = object()
@@ -151,7 +155,7 @@ def propose_split_allocations(
 @overload
 def aggregate_allocations(
     *,
-    statement_items: tuple[tuple[str, Decimal]],
+    statement_items: tuple[StatementEntryEvidence],
     reconciliation_run_reference: str,
     tenant_account_reference: str,
     journal_evidence: BookJournalEvidence,
@@ -161,7 +165,7 @@ def aggregate_allocations(
 @overload
 def aggregate_allocations(
     *,
-    statement_items: tuple[tuple[str, Decimal], ...],
+    statement_items: tuple[StatementEntryEvidence, ...],
     reconciliation_run_reference: str,
     tenant_account_reference: str,
     journal_evidence: BookJournalEvidence,
@@ -170,7 +174,7 @@ def aggregate_allocations(
 
 def aggregate_allocations(
     *,
-    statement_items: tuple[tuple[str, Decimal], ...],
+    statement_items: tuple[StatementEntryEvidence, ...],
     reconciliation_run_reference: str,
     tenant_account_reference: str,
     journal_evidence: BookJournalEvidence | None = None,
@@ -178,24 +182,21 @@ def aggregate_allocations(
     journal_reference: object = _LEGACY_ARGUMENT_OMITTED,
     currency_code: object = _LEGACY_ARGUMENT_OMITTED,
 ) -> tuple[ReconciliationAllocation, ...]:
-    """Allocate an immutable statement population to one admitted journal source.
+    """Allocate admitted statement evidence to one admitted journal source.
 
-    Typed callers supply one exact repository-owned ``BookJournalEvidence``.
-    Aggregate planning derives the journal identity, book-side amount, and
-    currency atomically from that admitted source instead of accepting mutually
-    consistent caller scalars as provenance. The legacy scalar keyword names
-    remain runtime-only sentinels so older calls fail through a repository-owned
-    domain error rather than silently producing reviewable evidence. Explicit
-    ``None`` is still a supplied legacy keyword and therefore fails closed.
+    Both sides of an aggregate are repository-owned evidence. Typed callers
+    supply an exact built-in tuple of exact ``StatementEntryEvidence`` plus one
+    exact ``BookJournalEvidence``. The planner revalidates every identity, amount,
+    currency, and movement direction that participates in allocation control at
+    the point of use, then requires every statement to have the same currency and
+    direction as the journal before exact conservation is evaluated.
 
-    ``statement_items`` must be an exact built-in tuple whose members are exact
-    built-in two-tuples of statement identity and exact Decimal amount. This
-    prevents mutable or caller-behavior-bearing containers from participating in
-    reviewable aggregate evidence. Each statement identity appears at most once,
-    and the returned total equals the revalidated admitted journal amount exactly.
-    Missing or non-canonical journal evidence, legacy scalar provenance,
-    duplicate source identity, malformed population shape, or disagreeing sides
-    fail closed.
+    Legacy caller-assembled statement identity/amount pairs are not source
+    evidence because they omit the currency and movement direction bound to that
+    money. The legacy journal scalar keyword names remain runtime-only sentinels
+    so older calls fail through a repository-owned domain error rather than
+    silently producing reviewable evidence. Explicit ``None`` is still a supplied
+    legacy keyword and therefore fails closed.
     """
 
     if type(journal_evidence) is not BookJournalEvidence:
@@ -216,12 +217,16 @@ def aggregate_allocations(
     book_total = journal_evidence.amount
     book_reference = journal_evidence.journal_reference
     book_currency = journal_evidence.currency_code
+    book_direction = journal_evidence.credit_debit_code
+    _require_identity(book_reference, "journal_reference")
     _require_exact_positive(book_total, "journal_evidence amount")
+    _require_allocation_currency(book_currency)
+    _require_credit_debit_code(book_direction)
 
     if type(statement_items) is not tuple:
         raise ValueError(
             "statement_items must be an immutable built-in tuple. Snapshot the "
-            "statement allocation population before planning an aggregate."
+            "statement evidence population before planning an aggregate."
         )
     if not statement_items:
         raise ValueError("at least one statement item is required for an aggregate allocation")
@@ -229,13 +234,16 @@ def aggregate_allocations(
     allocations: list[ReconciliationAllocation] = []
     statement_total = Decimal("0")
     seen_statement_references: set[str] = set()
-    for statement_item in statement_items:
-        if type(statement_item) is not tuple or len(statement_item) != 2:
+    for statement in statement_items:
+        if type(statement) is not StatementEntryEvidence:
             raise ValueError(
-                "each statement item must be an exact built-in two-tuple of "
-                "statement identity and exact Decimal amount"
+                "statement_items must contain exact StatementEntryEvidence. Rebuild "
+                "aggregate inputs from repository-owned statement evidence before planning."
             )
-        statement_reference, amount = statement_item
+        statement_reference = statement.statement_entry_reference
+        amount = statement.amount
+        statement_currency = statement.currency_code
+        statement_direction = statement.credit_debit_code
         _require_identity(statement_reference, "statement_entry_reference")
         if statement_reference in seen_statement_references:
             raise ValueError(
@@ -244,6 +252,18 @@ def aggregate_allocations(
             )
         seen_statement_references.add(statement_reference)
         _require_exact_positive(amount, f"statement {statement_reference} amount")
+        _require_allocation_currency(statement_currency)
+        _require_credit_debit_code(statement_direction)
+        if statement_currency != book_currency:
+            raise ValueError(
+                "aggregate statement currency must match journal currency. Supply "
+                "same-currency source evidence before planning an aggregate."
+            )
+        if statement_direction != book_direction:
+            raise ValueError(
+                "aggregate statement direction must match journal direction. Supply "
+                "same-direction source evidence before planning an aggregate."
+            )
         statement_total += amount
         allocations.append(
             ReconciliationAllocation(
