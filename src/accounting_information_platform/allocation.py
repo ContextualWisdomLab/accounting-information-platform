@@ -145,17 +145,20 @@ def aggregate_allocations(
     journal_total: Decimal,
     reconciliation_run_reference: str,
     tenant_account_reference: str,
-    journal_reference: str = "journal-aggregate",
-    currency_code: str = "KRW",
+    journal_reference: str | None = None,
+    currency_code: str | None = None,
 ) -> tuple[ReconciliationAllocation, ...]:
     """Allocate an immutable statement population to one conserved journal total.
 
-    ``statement_items`` must be an exact built-in tuple whose members are exact
-    built-in two-tuples of statement identity and exact Decimal amount. This
-    prevents mutable or caller-behavior-bearing containers from participating in
-    reviewable aggregate evidence. Each statement identity appears at most once,
-    and the returned total equals ``journal_total`` exactly. Duplicate source
-    identity, malformed population shape, or disagreeing sides fail closed.
+    ``journal_reference`` and ``currency_code`` must be supplied explicitly so
+    aggregate planning never manufactures source provenance. ``statement_items``
+    must be an exact built-in tuple whose members are exact built-in two-tuples
+    of statement identity and exact Decimal amount. This prevents mutable or
+    caller-behavior-bearing containers from participating in reviewable
+    aggregate evidence. Each statement identity appears at most once, and the
+    returned total equals ``journal_total`` exactly. Missing source bindings,
+    duplicate source identity, malformed population shape, or disagreeing sides
+    fail closed.
     """
 
     _require_exact_positive(journal_total, "journal_total")
