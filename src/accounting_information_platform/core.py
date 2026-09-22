@@ -378,6 +378,10 @@ class PostingLedger:
 
     def post(self, proposal: JournalProposal, policy: AccountingPolicy) -> PostingReceipt:
         """Resolve and append *proposal* or return its prior idempotent receipt."""
+        if proposal.debit_total != proposal.credit_total:
+            raise AccountingValidationError(
+                "journal proposal must balance. Correct the line amounts so debit totals equal credit totals, then retry ingest."
+            )
         cached_receipt = self._cached_idempotency_receipt(
             proposal.tenant_reference,
             proposal.idempotency_key,
