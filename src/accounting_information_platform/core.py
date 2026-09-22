@@ -148,7 +148,10 @@ class JournalProposal:
         _require_currency(self.transaction_currency)
         _require_calendar_date(self.transaction_date, "transaction_date")
         _require_calendar_date(self.accounting_date, "accounting_date")
-        if _HASH_PATTERN.fullmatch(self.source_payload_hash) is None:
+        if (
+            type(self.source_payload_hash) is not str
+            or _HASH_PATTERN.fullmatch(self.source_payload_hash) is None
+        ):
             raise AccountingValidationError("source_payload_hash must be canonical sha256. Supply sha256: plus 64 hex characters, then retry ingest.")
         if not self.source_event_references:
             raise AccountingValidationError("at least one source event reference is required. Supply at least one source_event_reference, then retry ingest.")
