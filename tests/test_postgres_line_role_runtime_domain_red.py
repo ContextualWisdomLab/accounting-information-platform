@@ -10,7 +10,11 @@ import tests.test_postgres_posting as postgres_posting
 
 
 class _HostileAccountRole(str):
-    """Expose any attempt to hash caller-owned string-subclass behavior."""
+    """Expose caller-owned comparison or hashing before repository admission."""
+
+    def __eq__(self, other: object) -> bool:
+        """Fail if retained-earnings comparison runs before exact-string admission."""
+        raise AssertionError("hostile account-role equality executed")
 
     def __hash__(self) -> int:
         """Fail if PostgreSQL posting reaches mapping/cache behavior before admission."""
@@ -33,7 +37,7 @@ class PostgresLineRoleRuntimeDomainTests(unittest.TestCase):
         self.addCleanup(self.case.tearDown)
 
     def test_first_post_revalidates_current_line_role_before_mapping(self) -> None:
-        """A mutated role subclass fails before chart-account lookup or durable writes."""
+        """A mutated role subclass fails before role comparison, mapping, or durable writes."""
         proposal = self.case._two_line_proposal()
         object.__setattr__(
             proposal.lines[0],
