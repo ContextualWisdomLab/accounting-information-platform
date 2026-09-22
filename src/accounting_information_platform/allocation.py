@@ -173,10 +173,11 @@ def aggregate_allocations(
 
     Typed callers supply exact repository-owned ``StatementEntryEvidence`` values
     and one exact repository-owned ``BookJournalEvidence``. Aggregate planning
-    derives statement identity/amount/currency and journal identity/amount/currency
-    only after those source-evidence boundaries, so caller-assembled scalar pairs
-    cannot become reviewable allocation evidence merely because their numbers add
-    up. All statement sources must use the admitted journal currency.
+    derives statement identity, money, currency and economic direction plus the
+    corresponding journal facts only after those source-evidence boundaries.
+    Caller-assembled scalar pairs therefore cannot become reviewable allocation
+    evidence merely because their numbers add up. Every statement source must
+    share the admitted journal currency and CRDT/DBIT direction.
 
     The outer statement population must itself be an exact built-in tuple. Each
     statement identity appears at most once, and the statement-side exact Decimal
@@ -203,6 +204,7 @@ def aggregate_allocations(
     book_total = journal_evidence.amount
     book_reference = journal_evidence.journal_reference
     book_currency = journal_evidence.currency_code
+    book_direction = journal_evidence.credit_debit_code
 
     if type(statement_items) is not tuple:
         raise ValueError(
@@ -227,6 +229,11 @@ def aggregate_allocations(
             raise ValueError(
                 "aggregate statement and journal evidence must share one currency. "
                 "Reconcile same-currency source evidence before planning allocations."
+            )
+        if statement_item.credit_debit_code != book_direction:
+            raise ValueError(
+                "aggregate statement and journal evidence must share one economic direction. "
+                "Reconcile same-direction source evidence before planning allocations."
             )
         if statement_reference in seen_statement_references:
             raise ValueError(
