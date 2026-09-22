@@ -406,6 +406,9 @@ class PostingLedger:
             raise AccountingValidationError(
                 "journal proposal must balance. Correct the line amounts so debit totals equal credit totals, then retry ingest."
             )
+        _require_reference(policy.tenant_reference, "tenant reference")
+        _require_reference(policy.legal_entity_reference, "legal entity reference")
+        _require_reference(policy.accounting_book_reference, "accounting book reference")
         cached_receipt = self._cached_idempotency_receipt(
             current_proposal.tenant_reference,
             current_proposal.idempotency_key,
@@ -484,6 +487,9 @@ class PostingLedger:
         _require_code(reversal_reason_code, "reversal reason code")
         if reversal_idempotency_key is not None and type(reversal_idempotency_key) is not str:
             raise AccountingValidationError("reversal idempotency key must be a string. Supply the reversal command identity as a string, then retry reversal.")
+        _require_reference(policy.tenant_reference, "tenant reference")
+        _require_reference(policy.legal_entity_reference, "legal entity reference")
+        _require_reference(policy.accounting_book_reference, "accounting book reference")
         command_key = (
             f"reversal:{journal_reference}"
             if reversal_idempotency_key is None
