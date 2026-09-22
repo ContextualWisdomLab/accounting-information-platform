@@ -379,24 +379,44 @@ class PostingLedger:
     def post(self, proposal: JournalProposal, policy: AccountingPolicy) -> PostingReceipt:
         """Resolve and append *proposal* or return its prior idempotent receipt."""
         current_lines = self._validated_posting_lines(proposal.lines)
-        debit_total = _exact_decimal_sum(tuple(line.debit_amount for line in current_lines))
-        credit_total = _exact_decimal_sum(tuple(line.credit_amount for line in current_lines))
-        if debit_total != credit_total:
+        current_proposal = JournalProposal(
+            proposal_id=proposal.proposal_id,
+            proposal_contract_version=proposal.proposal_contract_version,
+            idempotency_key=proposal.idempotency_key,
+            tenant_reference=proposal.tenant_reference,
+            legal_entity_reference=proposal.legal_entity_reference,
+            intended_book_role_code=proposal.intended_book_role_code,
+            transaction_currency=proposal.transaction_currency,
+            transaction_date=proposal.transaction_date,
+            accounting_date=proposal.accounting_date,
+            source_payload_hash=proposal.source_payload_hash,
+            source_event_references=proposal.source_event_references,
+            lines=current_lines,
+        )
+        if current_proposal.debit_total != current_proposal.credit_total:
             raise AccountingValidationError(
                 "journal proposal must balance. Correct the line amounts so debit totals equal credit totals, then retry ingest."
             )
         cached_receipt = self._cached_idempotency_receipt(
-            proposal.tenant_reference,
-            proposal.idempotency_key,
-            proposal.source_payload_hash,
+            current_proposal.tenant_reference,
+            current_proposal.idempotency_key,
+            current_proposal.source_payload_hash,
         )
         if cached_receipt is not None:
             return cached_receipt
-        self._validate_policy_scope(proposal, policy)
-        resolved_lines = tuple(self._resolve_line(line, policy) for line in current_lines)
-        journal_reference = f"urn:cwl:accounting:general_journal:{proposal.proposal_id}"
-        receipt_reference = f"urn:cwl:accounting:posting_receipt:{proposal.proposal_id}"
-        journal_key = self._tenant_cache_key(proposal.tenant_reference, journal_reference)
+        self._validate_policy_scope(current_proposal, policy)
+        resolved_lines = tuple(
+            self._resolve_line(line, policy) for line in current_proposal.lines
+        )
+        journal_reference = (
+            f"urn:cwl:accounting:general_journal:{current_proposal.proposal_id}"
+        )
+        receipt_reference = (
+            f"urn:cwl:accounting:posting_receipt:{current_proposal.proposal_id}"
+        )
+        journal_key = self._tenant_cache_key(
+            current_proposal.tenant_reference, journal_reference
+        )
         existing = self._journals.get(journal_key)
         if existing is not None:
             raise AccountingValidationError(
@@ -404,14 +424,14 @@ class PostingLedger:
             )
         journal = PostedJournal(
             journal_reference=journal_reference,
-            tenant_reference=proposal.tenant_reference,
-            legal_entity_reference=proposal.legal_entity_reference,
+            tenant_reference=current_proposal.tenant_reference,
+            legal_entity_reference=current_proposal.legal_entity_reference,
             accounting_book_reference=policy.accounting_book_reference,
-            accounting_date=proposal.accounting_date,
-            transaction_currency=proposal.transaction_currency,
+            accounting_date=current_proposal.accounting_date,
+            transaction_currency=current_proposal.transaction_currency,
             functional_currency=policy.functional_currency,
-            source_proposal_id=proposal.proposal_id,
-            source_payload_hash=proposal.source_payload_hash,
+            source_proposal_id=current_proposal.proposal_id,
+            source_payload_hash=current_proposal.source_payload_hash,
             accounting_policy_version=policy.accounting_policy_version,
             posting_rule_version=policy.posting_rule_version,
             lines=resolved_lines,
@@ -420,10 +440,10 @@ class PostingLedger:
             receipt_reference=receipt_reference,
             journal_reference=journal_reference,
             posting_status_code="posted",
-            source_proposal_id=proposal.proposal_id,
-            source_payload_hash=proposal.source_payload_hash,
-            tenant_reference=proposal.tenant_reference,
-            legal_entity_reference=proposal.legal_entity_reference,
+            source_proposal_id=current_proposal.proposal_id,
+            source_payload_hash=current_proposal.source_payload_hash,
+            tenant_reference=current_proposal.tenant_reference,
+            legal_entity_reference=current_proposal.legal_entity_reference,
             accounting_book_reference=policy.accounting_book_reference,
             accounting_policy_version=policy.accounting_policy_version,
             posting_rule_version=policy.posting_rule_version,
@@ -431,9 +451,11 @@ class PostingLedger:
         )
         self._journals[journal_key] = journal
         self._receipts_by_idempotency[
-            self._tenant_cache_key(proposal.tenant_reference, proposal.idempotency_key)
+            self._tenant_cache_key(
+                current_proposal.tenant_reference, current_proposal.idempotency_key
+            )
         ] = (
-            proposal.source_payload_hash,
+            current_proposal.source_payload_hash,
             receipt,
         )
         return receipt
