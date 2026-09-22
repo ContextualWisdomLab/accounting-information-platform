@@ -26,7 +26,7 @@ def _require_exact_positive(value: object, field_name: str) -> None:
 
 def _require_identity(value: object, field_name: str) -> None:
     """Reject blank identity bindings on reconciliation evidence."""
-    if not isinstance(value, str) or not value.strip():
+    if type(value) is not str or not value.strip():
         raise ValueError(f"{field_name} must be a non-empty identity")
 
 
