@@ -474,6 +474,7 @@ class PostingLedger:
         reversal_idempotency_key: str | None = None,
     ) -> PostingReceipt:
         """Append or exactly replay the opposite of one original journal."""
+        _require_calendar_date(reversal_date, "reversal_date")
         _require_code(reversal_reason_code, "reversal reason code")
         command_key = (
             f"reversal:{journal_reference}"
