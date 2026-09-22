@@ -74,6 +74,24 @@ class IdempotencyConflictError(AccountingValidationError):
     """Raised when one idempotency key is reused with a different payload."""
 
 
+def _exact_decimal_sum(values: Sequence[Decimal]) -> Decimal:
+    """Return the mathematical Decimal sum without ambient-context rounding."""
+    if not values:
+        return Decimal("0")
+    parts = tuple(value.as_tuple() for value in values)
+    common_exponent = min(int(part.exponent) for part in parts)
+    scaled_total = 0
+    for part in parts:
+        coefficient = int("".join(str(digit) for digit in part.digits))
+        signed_coefficient = -coefficient if part.sign else coefficient
+        scaled_total += signed_coefficient * (
+            10 ** (int(part.exponent) - common_exponent)
+        )
+    sign = 1 if scaled_total < 0 else 0
+    digits = tuple(int(digit) for digit in str(abs(scaled_total))) if scaled_total else (0,)
+    return Decimal((sign, digits, common_exponent))
+
+
 @dataclass(frozen=True, slots=True)
 class JournalLineProposal:
     """One non-negative debit or credit line proposed by an upstream system."""
@@ -137,20 +155,20 @@ class JournalProposal:
         line_numbers = tuple(line.line_number for line in self.lines)
         if len(set(line_numbers)) != len(line_numbers):
             raise AccountingValidationError("journal line numbers must be unique. Supply unique line numbers, then retry ingest.")
-        debit_total = sum((line.debit_amount for line in self.lines), Decimal("0"))
-        credit_total = sum((line.credit_amount for line in self.lines), Decimal("0"))
+        debit_total = _exact_decimal_sum(tuple(line.debit_amount for line in self.lines))
+        credit_total = _exact_decimal_sum(tuple(line.credit_amount for line in self.lines))
         if debit_total != credit_total:
             raise AccountingValidationError("journal proposal must balance. Correct the line amounts so debit totals equal credit totals, then retry ingest.")
 
     @property
     def debit_total(self) -> Decimal:
         """Return the exact total proposed debit amount."""
-        return sum((line.debit_amount for line in self.lines), Decimal("0"))
+        return _exact_decimal_sum(tuple(line.debit_amount for line in self.lines))
 
     @property
     def credit_total(self) -> Decimal:
         """Return the exact total proposed credit amount."""
-        return sum((line.credit_amount for line in self.lines), Decimal("0"))
+        return _exact_decimal_sum(tuple(line.credit_amount for line in self.lines))
 
 
 @dataclass(frozen=True, slots=True)
