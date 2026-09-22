@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
+from inspect import Parameter, signature
+from typing import get_overloads, get_type_hints
 import unittest
 
 from accounting_information_platform.allocation import propose_split_allocations
@@ -143,6 +145,18 @@ class SplitStatementEvidenceProvenanceRedTests(unittest.TestCase):
                         tenant_account_reference="tenant-001",
                         **legacy_kwargs,
                     )
+
+    def test_public_overloads_require_statement_evidence(self) -> None:
+        """Typed callers see canonical statement evidence and no legacy statement scalars."""
+        overloads = get_overloads(propose_split_allocations)
+        self.assertGreaterEqual(len(overloads), 2)
+        for overload_variant in overloads:
+            parameters = signature(overload_variant).parameters
+            type_hints = get_type_hints(overload_variant)
+            self.assertIs(parameters["statement_evidence"].default, Parameter.empty)
+            self.assertIs(type_hints["statement_evidence"], StatementEntryEvidence)
+            for field_name in ("statement_entry_reference", "statement_amount"):
+                self.assertNotIn(field_name, parameters)
 
     def test_cross_currency_statement_fails_before_conservation(self) -> None:
         """Numerically equal money cannot reconcile KRW journals to a USD statement."""
