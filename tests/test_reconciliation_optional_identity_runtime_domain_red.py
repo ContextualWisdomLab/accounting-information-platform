@@ -13,11 +13,13 @@ from accounting_information_platform.reconciliation import StatementEntryEvidenc
 
 class _ExplodingStripStr(str):
     def strip(self, *args: object, **kwargs: object) -> str:
+        """Prove admission rejects the subclass before caller whitespace logic runs."""
         raise RuntimeError("caller-controlled strip must not execute")
 
 
 class _ExplodingEqualityStr(str):
     def __eq__(self, other: object) -> bool:
+        """Prove admission rejects the subclass before caller equality can match."""
         raise RuntimeError("caller-controlled equality must not enter reconciliation")
 
     __hash__ = str.__hash__
