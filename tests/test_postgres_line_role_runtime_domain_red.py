@@ -36,14 +36,26 @@ class PostgresLineRoleRuntimeDomainTests(unittest.TestCase):
         self.addCleanup(self.case.doCleanups)
         self.addCleanup(self.case.tearDown)
 
+    def _reject_command_lock(self) -> list[str]:
+        """Fail if an invalid current line reaches PostgreSQL command serialization."""
+        lock_calls: list[str] = []
+
+        def unexpected_lock(_connection: object, command_scope: str) -> None:
+            lock_calls.append(command_scope)
+            raise AssertionError("command lock acquired before journal-line admission")
+
+        self.case.ledger._acquire_command_lock = unexpected_lock
+        return lock_calls
+
     def test_first_post_revalidates_current_line_role_before_mapping(self) -> None:
-        """A mutated role subclass fails before role comparison, mapping, or durable writes."""
+        """A mutated role subclass fails before lock, role comparison, mapping, or writes."""
         proposal = self.case._two_line_proposal()
         object.__setattr__(
             proposal.lines[0],
             "account_role_code",
             _HostileAccountRole("accounts_receivable"),
         )
+        lock_calls = self._reject_command_lock()
 
         with self.assertRaisesRegex(
             AccountingValidationError,
@@ -51,6 +63,7 @@ class PostgresLineRoleRuntimeDomainTests(unittest.TestCase):
         ):
             self.case.ledger.post(proposal, self.case.policy)
 
+        self.assertEqual(lock_calls, [])
         self.assertEqual(self.case.ledger.journal_count, 0)
         self.assertEqual(self.case._count_table("accounting_core.general_journal"), 0)
         self.assertEqual(self.case._count_table("accounting_core.journal_entry_line"), 0)
@@ -59,7 +72,7 @@ class PostgresLineRoleRuntimeDomainTests(unittest.TestCase):
         )
 
     def test_replay_revalidates_current_line_role_before_cached_receipt(self) -> None:
-        """A mutated replay fails before an existing authoritative receipt is returned."""
+        """A mutated replay fails before command lock or authoritative receipt lookup."""
         proposal = self.case._two_line_proposal()
         first = self.case.ledger.post(proposal, self.case.policy)
         self.assertEqual(self.case.ledger.post(proposal, self.case.policy), first)
@@ -69,6 +82,7 @@ class PostgresLineRoleRuntimeDomainTests(unittest.TestCase):
             "account_role_code",
             _HostileAccountRole("accounts_receivable"),
         )
+        lock_calls = self._reject_command_lock()
 
         with self.assertRaisesRegex(
             AccountingValidationError,
@@ -76,6 +90,7 @@ class PostgresLineRoleRuntimeDomainTests(unittest.TestCase):
         ):
             self.case.ledger.post(proposal, self.case.policy)
 
+        self.assertEqual(lock_calls, [])
         self.assertEqual(self.case.ledger.journal_count, 1)
         self.assertEqual(self.case._count_table("accounting_core.general_journal"), 1)
         self.assertEqual(self.case._count_table("accounting_core.journal_entry_line"), 2)
