@@ -188,6 +188,8 @@ class AllocationConservationContractTests(unittest.TestCase):
                 journal_total=Decimal("1000.00"),
                 reconciliation_run_reference="run-1",
                 tenant_account_reference="tenant-a",
+                journal_reference="journal-a",
+                currency_code="KRW",
             )
 
     def test_aggregate_conserves_total_on_both_sides(self) -> None:
@@ -206,6 +208,8 @@ class AllocationConservationContractTests(unittest.TestCase):
             journal_total=Decimal("1000.00"),
             reconciliation_run_reference="run-1",
             tenant_account_reference="tenant-a",
+            journal_reference="journal-a",
+            currency_code="KRW",
         )
         self.assertIsInstance(allocations, tuple)
         self.assertTrue(all(isinstance(x, ReconciliationAllocation) for x in allocations))
@@ -231,6 +235,8 @@ class AllocationConservationContractTests(unittest.TestCase):
                 journal_total=Decimal("1000.00"),
                 reconciliation_run_reference="run-1",
                 tenant_account_reference="tenant-a",
+                journal_reference="journal-a",
+                currency_code="KRW",
             )
 
     def test_aggregate_fails_closed_when_sides_disagree(self) -> None:
@@ -246,6 +252,8 @@ class AllocationConservationContractTests(unittest.TestCase):
                 journal_total=Decimal("900.00"),
                 reconciliation_run_reference="run-1",
                 tenant_account_reference="tenant-a",
+                journal_reference="journal-a",
+                currency_code="KRW",
             )
 
 
