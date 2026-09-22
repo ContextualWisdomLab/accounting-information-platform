@@ -9,10 +9,12 @@ participate in reviewable allocation evidence.
 
 from __future__ import annotations
 
-import unittest
+from datetime import date
 from decimal import Decimal
+import unittest
 
 from accounting_information_platform.allocation import aggregate_allocations
+from accounting_information_platform.reconciliation import BookJournalEvidence
 
 
 class _ExplodingOuterTuple(tuple):
@@ -35,15 +37,27 @@ class AggregateStatementPopulationDomainRedTests(unittest.TestCase):
     """Require immutable built-in aggregate statement population shapes."""
 
     @staticmethod
-    def _plan(statement_items: object):
+    def _journal() -> BookJournalEvidence:
+        """Return one admitted journal source while statement shape varies."""
+        return BookJournalEvidence(
+            journal_reference="journal-a",
+            provider_reference="provider-a",
+            end_to_end_reference=None,
+            account_servicer_reference=None,
+            amount=Decimal("1000.00"),
+            currency_code="KRW",
+            credit_debit_code="DBIT",
+            accounting_date=date(2026, 9, 22),
+        )
+
+    @classmethod
+    def _plan(cls, statement_items: object):
         """Plan one exact conserved aggregate while varying only population shape."""
         return aggregate_allocations(
             statement_items=statement_items,  # type: ignore[arg-type]
-            journal_total=Decimal("1000.00"),
+            journal_evidence=cls._journal(),
             reconciliation_run_reference="run-1",
             tenant_account_reference="tenant-a",
-            journal_reference="journal-a",
-            currency_code="KRW",
         )
 
     def test_exact_tuple_population_and_pairs_remain_valid(self) -> None:

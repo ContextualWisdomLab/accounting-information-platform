@@ -5,62 +5,69 @@
 
 ## Problem
 
-`aggregate_allocations()` returns reviewable Bank Reconciliation allocation evidence. Before this decision, callers could omit both `journal_reference` and `currency_code`; the planner then manufactured `journal-aggregate` and `KRW`. Exact monetary conservation did not prove either value came from the journal evidence being reconciled.
+`aggregate_allocations()` returns reviewable Bank Reconciliation allocation evidence. The first repair in this decision removed manufactured `journal-aggregate` and `KRW` defaults, but callers could still supply `journal_total`, `journal_reference`, and `currency_code` as three independent scalars. A caller could therefore create a mutually consistent book-side story without presenting the repository-owned posted-journal evidence from which that identity, amount, and currency were admitted.
 
-A synthetic journal identity can make unrelated aggregate proposals appear to share one source, while an assumed currency can label exact money with a value that was never supplied by source evidence. Neither behavior is acceptable provenance for a control object that may later be persisted or reviewed.
+Exact monetary conservation does not prove provenance. A valid aggregate proposal must bind its journal identity, book-side amount, and currency to one admitted journal evidence object before statement-side allocation rows become reviewable evidence.
+
+A frozen Python value object is not a tamper-proof security boundary by itself. Low-level mutation or deserialization can bypass constructor-time validation, so every field that becomes executable allocation control must still be revalidated immediately before that control is used.
 
 ## Constraints
 
 - Bank Reconciliation remains proposal/evidence authority only. This decision grants no journal posting, reversal, approval, period-close, account-selection, or accounting-policy authority.
 - `ReconciliationAllocation` remains exact-`Decimal`, tenant/run/source scoped and immutable.
+- `BookJournalEvidence` remains read-only posted-journal evidence eligible for deterministic reconciliation; accepting that value object does not by itself prove a fresh PostgreSQL snapshot or grant persistence authority.
 - The aggregate statement population remains ADR 0054's exact built-in tuple of exact built-in `(statement_entry_reference, Decimal amount)` pairs; this decision does not redesign that contract.
-- Currency syntax remains the accounting core's exact built-in three-uppercase-letter repository rule. This does not claim a mutable ISO 4217 catalogue.
-- The package is typed (`py.typed`); omission sentinels needed only for repository-owned runtime errors must not be advertised as accepted public provenance types.
-- Existing callers that intentionally aggregate evidence must bind the journal identity and currency explicitly rather than inherit a convenience default.
+- Currency syntax, exact Decimal admission, source identity, CRDT/DBIT direction, accounting date, and optional reference validation remain owned by `BookJournalEvidence` and its reconciliation-domain validators.
+- Constructor-time `BookJournalEvidence` validation is necessary but not sufficient for fields used later as executable allocation controls; the aggregate planner revalidates the derived book amount before conservation comparison.
+- The package is typed (`py.typed`); runtime compatibility sentinels must not be advertised as accepted public provenance types.
+- Split planning already requires exact repository-owned `BookJournalEvidence`; aggregate planning should not use a weaker journal-side provenance boundary.
 
 ## Alternatives considered
 
-### Keep `journal-aggregate` and `KRW` defaults
+### Keep synthetic `journal-aggregate` and `KRW` defaults
 
-Rejected. These values are convenient placeholders, not source evidence. Their presence makes a successfully conserved allocation look more authoritative than the caller actually proved.
+Rejected. These values are convenience placeholders, not source evidence. Their presence makes a successfully conserved allocation look more authoritative than the caller proved.
 
-### Require Python keyword arguments with no runtime defaults
+### Require explicit `journal_total`, `journal_reference`, and `currency_code` scalars
 
-Rejected as the runtime domain boundary. Python would raise `TypeError` before the reconciliation domain can return the same fail-closed `ValueError` family used for malformed journal identity and currency.
+Rejected as the final provenance boundary. Explicit scalars are better than synthetic defaults, but they still allow callers to assemble identity, money, and currency independently without showing that one admitted journal source owns all three values.
 
-### Advertise `str | None` as the public typed contract
+### Accept a journal-shaped protocol or duck-typed object
 
-Rejected. `None` is an implementation sentinel for domain-owned omission errors, not valid reconciliation provenance. Advertising it would cause typed callers to lose a useful diagnostic and defer a malformed binding to runtime.
+Rejected. Allocation planning would execute caller-defined attribute behavior and bypass the `BookJournalEvidence` constructor's exact identity, monetary, currency, direction, and date admission rules.
 
-### Require `str` in typed overloads while retaining `None` only in the runtime implementation
+### Require exact `BookJournalEvidence` and derive the aggregate book side from it
 
-Selected. Typed callers must supply string journal identity and currency. At runtime, omission can still reach repository-owned validation: missing `journal_reference` fails `_require_identity()` and missing `currency_code` fails `_require_allocation_currency()`. No synthetic financial provenance is created, and the sentinel is not part of the accepted type contract.
+Selected. Typed callers provide one exact repository-owned `BookJournalEvidence`. Aggregate planning reads journal identity, amount, and currency only after exact-type admission, then revalidates the derived book amount before comparing the immutable statement population against it. The old scalar keyword names remain runtime-only compatibility sentinels so legacy calls fail through a repository-owned `ValueError` rather than silently becoming accepted evidence. A private unique omission sentinel distinguishes a genuinely omitted legacy keyword from an explicitly forwarded `None`.
 
 ## Decision
 
-`aggregate_allocations()` must not synthesize journal source provenance.
+`aggregate_allocations()` must consume one exact `BookJournalEvidence` as the journal-side source for a successful plan.
 
-- Public overloads require `journal_reference: str` and `currency_code: str`; omission and explicit `None` are not accepted typed calls.
-- The runtime implementation defaults these two arguments only to the absence sentinel `None`, solely so omitted bindings fail through repository-owned domain validation rather than Python argument binding.
-- Validation occurs before statement-population iteration and before any `ReconciliationAllocation` is returned.
-- Explicit valid values preserve existing exact conservation, distinct-statement identity and immutable result semantics.
+- Public overloads require `journal_evidence: BookJournalEvidence`; `journal_total`, `journal_reference`, and `currency_code` are not part of the accepted typed contract.
+- Runtime admission checks `type(journal_evidence) is BookJournalEvidence` before reading any journal attributes, preventing duck-typed or subclass-defined behavior from entering allocation planning.
+- Journal identity, book-side amount, and currency are derived atomically from `journal_evidence`.
+- The derived book-side amount is revalidated as an exact finite positive built-in `Decimal` before conservation comparison, so post-construction mutation cannot introduce caller-defined numeric comparison behavior.
+- Legacy scalar provenance keywords are rejected even when their values are mutually consistent or explicitly `None`; only true omission through the private sentinel is accepted by the implementation shim.
+- Statement-population shape, distinct-statement identity, exact Decimal conservation, tenant/run scope, and immutable allocation output remain unchanged.
+- No schema, migration, approval, Posting, Period Close, Accounting Policy, Billing truth, or LLM authority changes are introduced.
 
 ## Evidence
 
-The realistic RED is `dea57479af8a9fa5f17d9adaa4c1aec095711433` on parent #158 exact `530f179b6e3493916bfe920285caf3d040b7f3f8`. It keeps one `1000.00` exact-Decimal statement item, one `1000.00` journal total, tenant/run scope and all population shape invariants constant. Explicit `journal-001` / `USD` remains the positive control; omission of only the journal identity or only the currency must fail closed. Parent behavior returns allocations with the synthetic defaults instead.
+The first RED in this ADR lineage is `dea57479af8a9fa5f17d9adaa4c1aec095711433` on parent #158 exact `530f179b6e3493916bfe920285caf3d040b7f3f8`. It demonstrated that aggregate planning manufactured journal identity/currency when they were omitted. Runtime repair `b49dc34c81c4e9f4c7232bd5e3ea480980fa6861` removed those synthetic defaults. Current-exact review then found that `str | None` leaked into the typed API; RED `723a05e729224b58add1e471d67b55f87e9bdcbe` and repair `feeffa7b2e0ef7131071d92cca49b9cfe51ee7ac` narrowed the typed contract to required strings.
 
-The causal runtime repair is `b49dc34c81c4e9f4c7232bd5e3ea480980fa6861`. It replaces the two synthetic defaults with `None`, routes omission through the existing journal-identity and allocation-currency validators, and documents the explicit-binding contract. No schema, migration, persistence approval, Posting, Period Close, Accounting Policy, Billing truth, or LLM authority changes.
+The next control finding is that three explicit scalars still do not prove one admitted journal source. RED `30d93402c2312fa0a8e4c0c3e3ce1f34afa48f9a` keeps one exact `1000.00` statement item, tenant/run scope, and conservation target fixed while varying only book-side provenance. Parent #159 exact `9eaf743aae6ac510f87fd4d13b7998f7374142b0` accepts scalar-only provenance and has no `journal_evidence` API. The RED requires exact `BookJournalEvidence`, rejects scalar-only, duck-typed, and subclass sources, and requires typed overloads to publish only the evidence-object contract.
 
-Consumer fixtures that exercised aggregate conservation or numeric-domain behavior without source bindings are adapted by ordinary descendants `167167485720429c04b48f73007f9144ecacc53b` and `20817992b324bf96631be32df52af4ff0bafe33c` to supply explicit `journal-001`/`journal-a` and `KRW`. Their accounting assertions are otherwise unchanged.
+Causal production repair `2e2f65c40c35b4bda1de8f86c144fd14c7c9df7e` adds exact `BookJournalEvidence` admission before attribute reads, derives journal identity/amount/currency from that value object, and keeps old scalar keyword names only as runtime rejection sentinels. Ordinary consumer-fixture descendants then adapt conservation, statement-population, Decimal, currency, and predecessor provenance tests to the same journal-evidence source without changing their statement-side accounting assertions.
 
-Current-exact review then identified that the first runtime repair exposed `str | None` in the typed signature even though `None` always fails. RED `723a05e729224b58add1e471d67b55f87e9bdcbe` inspects the published overload registry and requires every accepted overload to expose required `str` journal/currency bindings. Repair `feeffa7b2e0ef7131071d92cca49b9cfe51ee7ac` adds required-string overloads while preserving the runtime sentinel and repository-owned `ValueError` path.
+Current-exact review of `5f2e7f930cfba8b964f6bf5777e08a9b33efb143` then found three related gaps. First, legacy-keyword tests omitted `journal_evidence`, so they exited at the evidence-type guard and could not prove the legacy rejection branch. Second, `None` was both the default and a possible explicitly forwarded legacy value, so wrappers could retain an old keyword name without rejection. Third, constructor-time validation alone did not protect the journal amount from post-construction mutation before the conservation comparison. Production repair `525155a8d670fd3300cd81ecd261e123dbc3376b` introduces a private omission sentinel, rejects every explicitly supplied legacy keyword including `None`, and revalidates the derived book amount before conservation. Test repairs `9298608dd8081fe08846bf76fb8ae818b046ac36` and `e8c940b72cf2990355e18a9a5848ced19647758b` exercise each legacy keyword beside valid evidence, explicit-`None` forwarding, and a tampered `Decimal` subclass that would otherwise make mismatched totals appear conserved.
 
 ## Risks and effects
 
-This intentionally narrows a public Python call shape: callers relying on implicit `journal-aggregate` or `KRW` now fail closed. Typed callers forwarding optional configuration also receive a type-checking diagnostic instead of seeing `None` presented as supported provenance. That is a compatibility cost, but it exposes missing provenance instead of silently manufacturing it.
+This intentionally narrows a public Python call shape. Callers that previously supplied journal total, identity, and currency independently must construct or obtain admitted `BookJournalEvidence` and pass that single value object instead. Migration wrappers must also remove the legacy keyword names rather than forwarding them as `None`. The compatibility cost is deliberate: exact conservation should not make caller-assembled or ambiguously omitted source provenance look equivalent to repository-admitted journal evidence.
 
-The change does not prove that the supplied journal reference or currency was loaded from PostgreSQL-owned authority; it only removes the planner's ability to invent them. Persistence and close-package owners remain responsible for binding reviewed allocation evidence to their authoritative database snapshots and controls.
+This still does not prove that a supplied `BookJournalEvidence` came from the current PostgreSQL-owned snapshot. Persistence, approval, lifecycle, and close-package owners remain responsible for binding reviewed allocation evidence to authoritative database state, lock ordering, tenant scope, and recovery controls. This ADR only closes the in-memory proposal boundary that previously accepted weaker journal-side provenance than split planning.
 
 ## Follow-up
 
-PR #37 remains the canonical single writer for shared `CHANGELOG.md`, `docs/doctoring/STANDARD_TRACEABILITY.md`, and `docs/product-technical-gap-baseline.md`. After this decision reaches protected integration through the Bank Reconciliation owner path, #37 must rebuild those records from the exact protected tree and record the removal of synthetic aggregate journal provenance plus the required-string typed compatibility contract. Until then this ADR stays Proposed and mutable-branch evidence must not be promoted to integrated product truth.
+PR #37 remains the canonical single writer for shared `CHANGELOG.md`, `docs/doctoring/STANDARD_TRACEABILITY.md`, and `docs/product-technical-gap-baseline.md`. After this decision reaches protected integration through the Bank Reconciliation owner path, #37 must rebuild those records from the exact protected tree and record the progression from synthetic aggregate provenance to explicit scalars and finally exact `BookJournalEvidence` admission plus runtime revalidation. Until then this ADR stays Proposed and mutable-branch evidence must not be promoted to integrated product truth.

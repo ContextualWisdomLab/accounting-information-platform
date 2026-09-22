@@ -2,7 +2,9 @@
 
 Allocation planning must not execute caller-defined ``Decimal`` subclass behavior
 while deciding whether source or allocated money is finite and positive. Durable
-allocation amounts stay exact repository-owned ``Decimal`` evidence.
+allocation amounts stay exact repository-owned ``Decimal`` evidence. Aggregate
+book-side money now arrives through admitted ``BookJournalEvidence`` rather than
+an independent caller scalar.
 """
 
 from __future__ import annotations
@@ -32,7 +34,7 @@ class ReconciliationAllocationDecimalRuntimeDomainRedTests(unittest.TestCase):
 
     @staticmethod
     def _journal() -> BookJournalEvidence:
-        """Return one otherwise-valid journal candidate for split planning."""
+        """Return one otherwise-valid journal candidate for allocation planning."""
         return BookJournalEvidence(
             journal_reference="journal-001",
             provider_reference=None,
@@ -67,25 +69,28 @@ class ReconciliationAllocationDecimalRuntimeDomainRedTests(unittest.TestCase):
                 tenant_account_reference="tenant-001",
             )
 
-    def test_aggregate_money_rejects_decimal_subclasses(self) -> None:
-        """Aggregate journal and statement money use the same exact runtime domain."""
-        with self.assertRaisesRegex(ValueError, "journal_total"):
-            aggregate_allocations(
-                statement_items=(("statement-001", Decimal("1000.00")),),
-                journal_total=_ExplodingDecimal("1000.00"),
-                reconciliation_run_reference="run-001",
-                tenant_account_reference="tenant-001",
+    def test_book_side_money_rejects_decimal_subclass_before_aggregate_planning(self) -> None:
+        """Aggregate book money must pass journal-evidence admission before planning."""
+        with self.assertRaisesRegex(ValueError, "amount"):
+            BookJournalEvidence(
                 journal_reference="journal-001",
+                provider_reference=None,
+                end_to_end_reference=None,
+                account_servicer_reference=None,
+                amount=_ExplodingDecimal("1000.00"),
                 currency_code="KRW",
+                credit_debit_code="CRDT",
+                accounting_date=date(2026, 9, 22),
             )
+
+    def test_aggregate_statement_money_rejects_decimal_subclass(self) -> None:
+        """Statement-side aggregate money retains exact built-in Decimal admission."""
         with self.assertRaisesRegex(ValueError, "statement statement-001 amount"):
             aggregate_allocations(
                 statement_items=(("statement-001", _ExplodingDecimal("1000.00")),),
-                journal_total=Decimal("1000.00"),
+                journal_evidence=self._journal(),
                 reconciliation_run_reference="run-001",
                 tenant_account_reference="tenant-001",
-                journal_reference="journal-001",
-                currency_code="KRW",
             )
 
     def test_exact_builtin_decimal_controls_remain_valid(self) -> None:
@@ -101,11 +106,9 @@ class ReconciliationAllocationDecimalRuntimeDomainRedTests(unittest.TestCase):
 
         aggregate = aggregate_allocations(
             statement_items=(("statement-001", Decimal("1000.00")),),
-            journal_total=Decimal("1000.00"),
+            journal_evidence=self._journal(),
             reconciliation_run_reference="run-001",
             tenant_account_reference="tenant-001",
-            journal_reference="journal-001",
-            currency_code="KRW",
         )
         self.assertEqual(aggregate[0].allocated_amount, Decimal("1000.00"))
 

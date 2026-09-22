@@ -16,6 +16,9 @@ from .core import AccountingValidationError, _require_currency
 from .reconciliation import BookJournalEvidence
 
 
+_LEGACY_ARGUMENT_OMITTED = object()
+
+
 def _require_exact_positive(value: object, field_name: str) -> None:
     """Reject money that is not a finite, positive exact Decimal."""
     if type(value) is not Decimal or not value.is_finite() or value <= 0:
@@ -143,11 +146,9 @@ def propose_split_allocations(
 def aggregate_allocations(
     *,
     statement_items: tuple[tuple[str, Decimal]],
-    journal_total: Decimal,
     reconciliation_run_reference: str,
     tenant_account_reference: str,
-    journal_reference: str,
-    currency_code: str,
+    journal_evidence: BookJournalEvidence,
 ) -> tuple[ReconciliationAllocation]: ...
 
 
@@ -155,40 +156,62 @@ def aggregate_allocations(
 def aggregate_allocations(
     *,
     statement_items: tuple[tuple[str, Decimal], ...],
-    journal_total: Decimal,
     reconciliation_run_reference: str,
     tenant_account_reference: str,
-    journal_reference: str,
-    currency_code: str,
+    journal_evidence: BookJournalEvidence,
 ) -> tuple[ReconciliationAllocation, ...]: ...
 
 
 def aggregate_allocations(
     *,
     statement_items: tuple[tuple[str, Decimal], ...],
-    journal_total: Decimal,
     reconciliation_run_reference: str,
     tenant_account_reference: str,
-    journal_reference: str | None = None,
-    currency_code: str | None = None,
+    journal_evidence: BookJournalEvidence | None = None,
+    journal_total: object = _LEGACY_ARGUMENT_OMITTED,
+    journal_reference: object = _LEGACY_ARGUMENT_OMITTED,
+    currency_code: object = _LEGACY_ARGUMENT_OMITTED,
 ) -> tuple[ReconciliationAllocation, ...]:
-    """Allocate an immutable statement population to one conserved journal total.
+    """Allocate an immutable statement population to one admitted journal source.
 
-    Typed callers must supply ``journal_reference`` and ``currency_code`` as
-    strings. The runtime keeps absence sentinels only so omitted bindings fail
-    through repository-owned domain validation instead of manufacturing source
-    provenance. ``statement_items`` must be an exact built-in tuple whose
-    members are exact built-in two-tuples of statement identity and exact
-    Decimal amount. This prevents mutable or caller-behavior-bearing containers
-    from participating in reviewable aggregate evidence. Each statement identity
-    appears at most once, and the returned total equals ``journal_total``
-    exactly. Missing source bindings, duplicate source identity, malformed
-    population shape, or disagreeing sides fail closed.
+    Typed callers supply one exact repository-owned ``BookJournalEvidence``.
+    Aggregate planning derives the journal identity, book-side amount, and
+    currency atomically from that admitted source instead of accepting mutually
+    consistent caller scalars as provenance. The legacy scalar keyword names
+    remain runtime-only sentinels so older calls fail through a repository-owned
+    domain error rather than silently producing reviewable evidence. Explicit
+    ``None`` is still a supplied legacy keyword and therefore fails closed.
+
+    ``statement_items`` must be an exact built-in tuple whose members are exact
+    built-in two-tuples of statement identity and exact Decimal amount. This
+    prevents mutable or caller-behavior-bearing containers from participating in
+    reviewable aggregate evidence. Each statement identity appears at most once,
+    and the returned total equals the revalidated admitted journal amount exactly.
+    Missing or non-canonical journal evidence, legacy scalar provenance,
+    duplicate source identity, malformed population shape, or disagreeing sides
+    fail closed.
     """
 
-    _require_exact_positive(journal_total, "journal_total")
-    _require_identity(journal_reference, "journal_reference")
-    _require_allocation_currency(currency_code)
+    if type(journal_evidence) is not BookJournalEvidence:
+        raise ValueError(
+            "journal_evidence must be exact BookJournalEvidence. Rebuild the "
+            "aggregate from repository-owned posted-journal evidence before planning."
+        )
+    if any(
+        value is not _LEGACY_ARGUMENT_OMITTED
+        for value in (journal_total, journal_reference, currency_code)
+    ):
+        raise ValueError(
+            "aggregate journal provenance must come from BookJournalEvidence; "
+            "journal_total, journal_reference, and currency_code are not accepted "
+            "as independent source evidence"
+        )
+
+    book_total = journal_evidence.amount
+    book_reference = journal_evidence.journal_reference
+    book_currency = journal_evidence.currency_code
+    _require_exact_positive(book_total, "journal_evidence amount")
+
     if type(statement_items) is not tuple:
         raise ValueError(
             "statement_items must be an immutable built-in tuple. Snapshot the "
@@ -221,13 +244,13 @@ def aggregate_allocations(
                 tenant_account_reference=tenant_account_reference,
                 reconciliation_run_reference=reconciliation_run_reference,
                 statement_entry_reference=statement_reference,
-                journal_reference=journal_reference,
+                journal_reference=book_reference,
                 allocated_amount=amount,
-                currency_code=currency_code,
+                currency_code=book_currency,
             )
         )
 
-    if statement_total != journal_total:
+    if statement_total != book_total:
         raise ValueError(
             "aggregation sides must agree: the statement-side total must equal "
             "the journal-side total exactly. Investigate the unmatched evidence "
