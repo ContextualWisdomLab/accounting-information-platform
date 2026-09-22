@@ -65,7 +65,7 @@ def _require_optional_identity(value: object, field_name: str) -> None:
 
 def _require_source_currency(value: object) -> None:
     """Require reconciliation currency to use the accounting core's canonical syntax."""
-    if not isinstance(value, str):
+    if type(value) is not str:
         raise ValueError(
             "currency_code must be a three-letter uppercase currency code"
         )
