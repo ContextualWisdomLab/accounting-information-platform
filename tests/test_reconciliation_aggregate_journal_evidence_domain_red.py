@@ -3,7 +3,8 @@
 Aggregate allocation planning must consume repository-owned posted-journal
 evidence, not caller-supplied journal totals, identities, and currencies that can
 be made mutually consistent without proving they came from one admitted journal
-source. The statement population and exact monetary conservation remain unchanged.
+source. The statement side is held at canonical ``StatementEntryEvidence`` while
+journal provenance varies.
 """
 
 from __future__ import annotations
@@ -15,7 +16,10 @@ from typing import get_overloads, get_type_hints
 import unittest
 
 from accounting_information_platform.allocation import aggregate_allocations
-from accounting_information_platform.reconciliation import BookJournalEvidence
+from accounting_information_platform.reconciliation import (
+    BookJournalEvidence,
+    StatementEntryEvidence,
+)
 
 
 class _DuckAggregateJournal:
@@ -56,10 +60,25 @@ class AggregateJournalEvidenceDomainRedTests(unittest.TestCase):
         )
 
     @staticmethod
-    def _plan(journal_evidence: object):
+    def _statement() -> StatementEntryEvidence:
+        """Hold the statement side at one canonical admitted source."""
+        return StatementEntryEvidence(
+            statement_entry_reference="statement-001",
+            provider_reference="provider-001",
+            end_to_end_reference=None,
+            account_servicer_reference=None,
+            amount=Decimal("1000.00"),
+            currency_code="KRW",
+            credit_debit_code="CRDT",
+            booking_date=date(2026, 9, 22),
+            value_date=date(2026, 9, 22),
+        )
+
+    @classmethod
+    def _plan(cls, journal_evidence: object):
         """Plan one conserved aggregate while varying only book-side object provenance."""
         return aggregate_allocations(
-            statement_items=(("statement-001", Decimal("1000.00")),),
+            statement_items=(cls._statement(),),
             journal_evidence=journal_evidence,  # type: ignore[arg-type]
             reconciliation_run_reference="run-001",
             tenant_account_reference="tenant-001",
@@ -77,7 +96,7 @@ class AggregateJournalEvidenceDomainRedTests(unittest.TestCase):
         """Mutually consistent caller scalars cannot substitute for admitted journal evidence."""
         with self.assertRaisesRegex(ValueError, "BookJournalEvidence"):
             aggregate_allocations(
-                statement_items=(("statement-001", Decimal("1000.00")),),
+                statement_items=(self._statement(),),
                 journal_total=Decimal("1000.00"),
                 journal_reference="journal-001",
                 currency_code="KRW",
