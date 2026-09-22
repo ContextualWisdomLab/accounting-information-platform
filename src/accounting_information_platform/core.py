@@ -839,6 +839,6 @@ def _require_calendar_date(value: date, label: str) -> None:
 
 
 def _require_reference(value: str, label: str) -> None:
-    """Require an opaque CWL URN reference rather than embedded business data."""
-    if _REFERENCE_PATTERN.fullmatch(value) is None:
+    """Require an exact built-in opaque CWL URN reference."""
+    if type(value) is not str or _REFERENCE_PATTERN.fullmatch(value) is None:
         raise AccountingValidationError(f"{label} must be a CWL URN. Supply an opaque urn:cwl: reference, then retry.")
