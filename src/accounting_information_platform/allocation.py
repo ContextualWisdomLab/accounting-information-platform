@@ -74,6 +74,26 @@ class ReconciliationAllocation:
         _require_allocation_currency(self.currency_code)
 
 
+@overload
+def propose_split_allocations(
+    *,
+    statement_evidence: StatementEntryEvidence,
+    candidate_journals: tuple[BookJournalEvidence],
+    reconciliation_run_reference: str,
+    tenant_account_reference: str,
+) -> tuple[ReconciliationAllocation]: ...
+
+
+@overload
+def propose_split_allocations(
+    *,
+    statement_evidence: StatementEntryEvidence,
+    candidate_journals: tuple[BookJournalEvidence, ...],
+    reconciliation_run_reference: str,
+    tenant_account_reference: str,
+) -> tuple[ReconciliationAllocation, ...]: ...
+
+
 def propose_split_allocations(
     *,
     statement_evidence: StatementEntryEvidence | None = None,
