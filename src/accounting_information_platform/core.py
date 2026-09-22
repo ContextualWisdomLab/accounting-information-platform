@@ -378,7 +378,10 @@ class PostingLedger:
 
     def post(self, proposal: JournalProposal, policy: AccountingPolicy) -> PostingReceipt:
         """Resolve and append *proposal* or return its prior idempotent receipt."""
-        if proposal.debit_total != proposal.credit_total:
+        current_lines = self._validated_posting_lines(proposal.lines)
+        debit_total = _exact_decimal_sum(tuple(line.debit_amount for line in current_lines))
+        credit_total = _exact_decimal_sum(tuple(line.credit_amount for line in current_lines))
+        if debit_total != credit_total:
             raise AccountingValidationError(
                 "journal proposal must balance. Correct the line amounts so debit totals equal credit totals, then retry ingest."
             )
@@ -390,7 +393,7 @@ class PostingLedger:
         if cached_receipt is not None:
             return cached_receipt
         self._validate_policy_scope(proposal, policy)
-        resolved_lines = tuple(self._resolve_line(line, policy) for line in proposal.lines)
+        resolved_lines = tuple(self._resolve_line(line, policy) for line in current_lines)
         journal_reference = f"urn:cwl:accounting:general_journal:{proposal.proposal_id}"
         receipt_reference = f"urn:cwl:accounting:posting_receipt:{proposal.proposal_id}"
         journal_key = self._tenant_cache_key(proposal.tenant_reference, journal_reference)
@@ -662,6 +665,31 @@ class PostingLedger:
             line_count=len(journal.lines),
             reversal_of_journal_reference=journal.reversal_of_journal_reference,
         )
+
+    @staticmethod
+    def _validated_posting_lines(
+        lines: Sequence[JournalLineProposal],
+    ) -> tuple[JournalLineProposal, ...]:
+        """Snapshot and revalidate current proposal line semantics before posting."""
+        if len(lines) < 2:
+            raise AccountingValidationError(
+                "journal proposal requires at least two lines. Supply at least two journal lines, then retry ingest."
+            )
+        validated_lines = tuple(
+            JournalLineProposal(
+                line_number=line.line_number,
+                account_role_code=line.account_role_code,
+                debit_amount=line.debit_amount,
+                credit_amount=line.credit_amount,
+            )
+            for line in lines
+        )
+        line_numbers = tuple(line.line_number for line in validated_lines)
+        if len(set(line_numbers)) != len(line_numbers):
+            raise AccountingValidationError(
+                "journal line numbers must be unique. Supply unique line numbers, then retry ingest."
+            )
+        return validated_lines
 
     @staticmethod
     def _resolve_line(
