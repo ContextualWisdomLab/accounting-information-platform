@@ -8,6 +8,8 @@ bindings. Exact conserved statement money is insufficient provenance by itself.
 from __future__ import annotations
 
 from decimal import Decimal
+from inspect import Parameter, signature
+from typing import get_overloads, get_type_hints
 import unittest
 
 from accounting_information_platform.allocation import aggregate_allocations
@@ -48,6 +50,17 @@ class AggregateJournalProvenanceRedTests(unittest.TestCase):
         """The planner cannot assume a currency for reviewable evidence."""
         with self.assertRaisesRegex(ValueError, "currency_code"):
             self._plan(journal_reference="journal-001")
+
+    def test_public_overloads_require_string_provenance(self) -> None:
+        """Typed callers cannot treat omission or ``None`` as accepted provenance."""
+        overloads = get_overloads(aggregate_allocations)
+        self.assertGreaterEqual(len(overloads), 2)
+        for overload_variant in overloads:
+            parameters = signature(overload_variant).parameters
+            type_hints = get_type_hints(overload_variant)
+            for field_name in ("journal_reference", "currency_code"):
+                self.assertIs(parameters[field_name].default, Parameter.empty)
+                self.assertIs(type_hints[field_name], str)
 
 
 if __name__ == "__main__":
