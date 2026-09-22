@@ -13,11 +13,14 @@ from decimal import Decimal
 from typing import overload
 
 from .core import AccountingValidationError, _require_currency
-from .reconciliation import BookJournalEvidence, StatementEntryEvidence
+from .reconciliation import (
+    BookJournalEvidence,
+    StatementEntryEvidence,
+    _require_credit_debit_code,
+)
 
 
 _LEGACY_ARGUMENT_OMITTED = object()
-_CREDIT_DEBIT_CODES = frozenset({"CRDT", "DBIT"})
 
 
 def _require_exact_positive(value: object, field_name: str) -> None:
@@ -45,12 +48,6 @@ def _require_allocation_currency(value: object) -> None:
         raise ValueError(
             "currency_code must be a three-letter uppercase currency code"
         ) from exc
-
-
-def _require_allocation_direction(value: object, field_name: str) -> None:
-    """Require an exact canonical movement direction before allocation comparison."""
-    if type(value) is not str or value not in _CREDIT_DEBIT_CODES:
-        raise ValueError(f"{field_name} must be CRDT or DBIT")
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,7 +221,7 @@ def aggregate_allocations(
     _require_identity(book_reference, "journal_reference")
     _require_exact_positive(book_total, "journal_evidence amount")
     _require_allocation_currency(book_currency)
-    _require_allocation_direction(book_direction, "journal_evidence credit_debit_code")
+    _require_credit_debit_code(book_direction)
 
     if type(statement_items) is not tuple:
         raise ValueError(
@@ -256,9 +253,7 @@ def aggregate_allocations(
         seen_statement_references.add(statement_reference)
         _require_exact_positive(amount, f"statement {statement_reference} amount")
         _require_allocation_currency(statement_currency)
-        _require_allocation_direction(
-            statement_direction, f"statement {statement_reference} credit_debit_code"
-        )
+        _require_credit_debit_code(statement_direction)
         if statement_currency != book_currency:
             raise ValueError(
                 "aggregate statement currency must match journal currency. Supply "
