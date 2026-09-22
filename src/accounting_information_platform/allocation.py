@@ -16,6 +16,9 @@ from .core import AccountingValidationError, _require_currency
 from .reconciliation import BookJournalEvidence
 
 
+_LEGACY_ARGUMENT_OMITTED = object()
+
+
 def _require_exact_positive(value: object, field_name: str) -> None:
     """Reject money that is not a finite, positive exact Decimal."""
     if type(value) is not Decimal or not value.is_finite() or value <= 0:
@@ -165,9 +168,9 @@ def aggregate_allocations(
     reconciliation_run_reference: str,
     tenant_account_reference: str,
     journal_evidence: BookJournalEvidence | None = None,
-    journal_total: object | None = None,
-    journal_reference: object | None = None,
-    currency_code: object | None = None,
+    journal_total: object = _LEGACY_ARGUMENT_OMITTED,
+    journal_reference: object = _LEGACY_ARGUMENT_OMITTED,
+    currency_code: object = _LEGACY_ARGUMENT_OMITTED,
 ) -> tuple[ReconciliationAllocation, ...]:
     """Allocate an immutable statement population to one admitted journal source.
 
@@ -176,15 +179,17 @@ def aggregate_allocations(
     currency atomically from that admitted source instead of accepting mutually
     consistent caller scalars as provenance. The legacy scalar keyword names
     remain runtime-only sentinels so older calls fail through a repository-owned
-    domain error rather than silently producing reviewable evidence.
+    domain error rather than silently producing reviewable evidence. Explicit
+    ``None`` is still a supplied legacy keyword and therefore fails closed.
 
     ``statement_items`` must be an exact built-in tuple whose members are exact
     built-in two-tuples of statement identity and exact Decimal amount. This
     prevents mutable or caller-behavior-bearing containers from participating in
     reviewable aggregate evidence. Each statement identity appears at most once,
-    and the returned total equals the admitted journal amount exactly. Missing or
-    non-canonical journal evidence, legacy scalar provenance, duplicate source
-    identity, malformed population shape, or disagreeing sides fail closed.
+    and the returned total equals the revalidated admitted journal amount exactly.
+    Missing or non-canonical journal evidence, legacy scalar provenance,
+    duplicate source identity, malformed population shape, or disagreeing sides
+    fail closed.
     """
 
     if type(journal_evidence) is not BookJournalEvidence:
@@ -193,7 +198,7 @@ def aggregate_allocations(
             "aggregate from repository-owned posted-journal evidence before planning."
         )
     if any(
-        value is not None
+        value is not _LEGACY_ARGUMENT_OMITTED
         for value in (journal_total, journal_reference, currency_code)
     ):
         raise ValueError(
@@ -205,6 +210,7 @@ def aggregate_allocations(
     book_total = journal_evidence.amount
     book_reference = journal_evidence.journal_reference
     book_currency = journal_evidence.currency_code
+    _require_exact_positive(book_total, "journal_evidence amount")
 
     if type(statement_items) is not tuple:
         raise ValueError(
