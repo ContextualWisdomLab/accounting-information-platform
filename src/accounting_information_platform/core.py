@@ -604,6 +604,9 @@ class PostingLedger:
     ) -> dict[str, AccountBalance]:
         """Aggregate posted lines in one tenant/entity/book scope through a date."""
         _require_calendar_date(through_date, "through_date")
+        _require_reference(tenant_reference, "tenant reference")
+        _require_reference(legal_entity_reference, "legal entity reference")
+        _require_reference(accounting_book_reference, "accounting book reference")
         totals: dict[str, tuple[Decimal, Decimal]] = {}
         for journal in self._journals.values():
             if (
