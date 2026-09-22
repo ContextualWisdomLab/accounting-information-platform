@@ -48,7 +48,7 @@ def _require_identity(value: object, field_name: str) -> None:
 
 def _require_optional_identity(value: object, field_name: str) -> None:
     """Require optional source identities to be absent or non-empty strings."""
-    if value is not None and (not isinstance(value, str) or not value.strip()):
+    if value is not None and (type(value) is not str or not value.strip()):
         raise ValueError(f"{field_name} must be None or a non-empty identity")
 
 
