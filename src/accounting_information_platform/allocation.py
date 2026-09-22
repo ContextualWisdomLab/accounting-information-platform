@@ -148,24 +148,37 @@ def aggregate_allocations(
     journal_reference: str = "journal-aggregate",
     currency_code: str = "KRW",
 ) -> tuple[ReconciliationAllocation, ...]:
-    """Allocate distinct statement entries to a journal total conserving both sides.
+    """Allocate an immutable statement population to one conserved journal total.
 
-    Each statement identity appears at most once and contributes its own
-    allocation. The returned total equals ``journal_total`` exactly. Duplicate
-    source identity or disagreeing sides fail closed instead of emitting
-    reviewable aggregate evidence.
+    ``statement_items`` must be an exact built-in tuple whose members are exact
+    built-in two-tuples of statement identity and exact Decimal amount. This
+    prevents mutable or caller-behavior-bearing containers from participating in
+    reviewable aggregate evidence. Each statement identity appears at most once,
+    and the returned total equals ``journal_total`` exactly. Duplicate source
+    identity, malformed population shape, or disagreeing sides fail closed.
     """
 
     _require_exact_positive(journal_total, "journal_total")
     _require_identity(journal_reference, "journal_reference")
     _require_allocation_currency(currency_code)
+    if type(statement_items) is not tuple:
+        raise ValueError(
+            "statement_items must be an immutable built-in tuple. Snapshot the "
+            "statement allocation population before planning an aggregate."
+        )
     if not statement_items:
         raise ValueError("at least one statement item is required for an aggregate allocation")
 
     allocations: list[ReconciliationAllocation] = []
     statement_total = Decimal("0")
     seen_statement_references: set[str] = set()
-    for statement_reference, amount in statement_items:
+    for statement_item in statement_items:
+        if type(statement_item) is not tuple or len(statement_item) != 2:
+            raise ValueError(
+                "each statement item must be an exact built-in two-tuple of "
+                "statement identity and exact Decimal amount"
+            )
+        statement_reference, amount = statement_item
         _require_identity(statement_reference, "statement_entry_reference")
         if statement_reference in seen_statement_references:
             raise ValueError(
