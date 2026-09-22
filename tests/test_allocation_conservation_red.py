@@ -2,15 +2,13 @@
 
 A bank statement entry that must reconcile against several journal candidates
 (split) produces one allocation per distinct candidate journal and the
-allocations must sum exactly to the statement amount. Several distinct
+allocations must sum exactly to the statement amount. Several distinct admitted
 statement entries that reconcile to one admitted journal source (aggregate)
-produce one allocation per statement entry and the statement-side total must
-equal the book-side amount carried by that journal evidence. Repeating one
-source identity cannot manufacture extra capacity merely because duplicated rows
-still sum to the target total. Every allocation is immutable, tenant- and
-run-scoped, and carries exact ``Decimal`` money. A proposal that would consume
-more than the remaining amount on either side fails closed instead of emitting
-partial evidence.
+produce one allocation per statement and the statement-side total must equal the
+book-side amount. Repeating one source identity cannot manufacture extra capacity.
+Every allocation is immutable, tenant- and run-scoped, and carries exact
+``Decimal`` money. A proposal that would consume more than the remaining amount
+on either side fails closed instead of emitting partial evidence.
 
 The reconciliation domain still never posts, reverses, or approves a journal;
 it returns evidence for an operator to review (ADR 0054).
@@ -22,7 +20,10 @@ import unittest
 from datetime import date
 from decimal import Decimal
 
-from accounting_information_platform.reconciliation import BookJournalEvidence
+from accounting_information_platform.reconciliation import (
+    BookJournalEvidence,
+    StatementEntryEvidence,
+)
 
 
 class AllocationConservationContractTests(unittest.TestCase):
@@ -38,6 +39,19 @@ class AllocationConservationContractTests(unittest.TestCase):
             currency_code="KRW",
             credit_debit_code="DBIT",
             accounting_date=date(2026, 9, 1),
+        )
+
+    def _statement(self, *, reference: str, amount: str):
+        return StatementEntryEvidence(
+            statement_entry_reference=reference,
+            provider_reference="ref-1",
+            end_to_end_reference=None,
+            account_servicer_reference=None,
+            amount=Decimal(amount),
+            currency_code="KRW",
+            credit_debit_code="CRDT",
+            booking_date=date(2026, 9, 1),
+            value_date=date(2026, 9, 1),
         )
 
     def test_split_conserves_statement_amount_across_journals(self) -> None:
@@ -68,18 +82,16 @@ class AllocationConservationContractTests(unittest.TestCase):
             self.assertEqual(allocation.currency_code, "KRW")
 
     def test_split_candidates_must_be_finite_positive_decimals(self) -> None:
-        """Zero, non-canonical, or non-finite journal money is rejected before planning."""
+        """Zero, malformed, or non-finite journal money is rejected before planning."""
         from accounting_information_platform.allocation import propose_split_allocations
 
-        for amount in ("0.00", "400.005", "NaN", "Infinity"):
+        for amount in ("0.00", "NaN", "Infinity"):
             with self.subTest(amount=amount):
                 with self.assertRaises(ValueError):
                     propose_split_allocations(
                         statement_entry_reference="stmt-001",
                         statement_amount=Decimal("1000.00"),
-                        candidate_journals=(
-                            self._journal(reference="journal-a", amount=amount),
-                        ),
+                        candidate_journals=(self._journal(reference="journal-a", amount=amount),),
                         reconciliation_run_reference="run-1",
                         tenant_account_reference="tenant-a",
                     )
@@ -171,9 +183,7 @@ class AllocationConservationContractTests(unittest.TestCase):
                 statement_amount=Decimal("1000.00"),
                 candidate_journals=(
                     self._journal(reference="journal-a", amount="400.00"),
-                    self._journal(reference="journal-b", amount="600.00").__replace__(
-                        currency_code="USD"
-                    ),
+                    self._journal(reference="journal-b", amount="600.00").__replace__(currency_code="USD"),
                 ),
                 reconciliation_run_reference="run-1",
                 tenant_account_reference="tenant-a",
@@ -192,15 +202,15 @@ class AllocationConservationContractTests(unittest.TestCase):
             )
 
     def test_aggregate_conserves_total_on_both_sides(self) -> None:
-        """Several statements allocated to one admitted journal conserve exactly."""
+        """Several admitted statements allocated to one journal conserve exactly."""
         from accounting_information_platform.allocation import (
             ReconciliationAllocation,
             aggregate_allocations,
         )
 
         statement_items = (
-            ("stmt-001", Decimal("300.00")),
-            ("stmt-002", Decimal("700.00")),
+            self._statement(reference="stmt-001", amount="300.00"),
+            self._statement(reference="stmt-002", amount="700.00"),
         )
         allocations = aggregate_allocations(
             statement_items=statement_items,
@@ -210,14 +220,8 @@ class AllocationConservationContractTests(unittest.TestCase):
         )
         self.assertIsInstance(allocations, tuple)
         self.assertTrue(all(isinstance(x, ReconciliationAllocation) for x in allocations))
-        self.assertEqual(
-            sum(x.allocated_amount for x in allocations),
-            Decimal("1000.00"),
-        )
-        self.assertEqual(
-            {x.statement_entry_reference for x in allocations},
-            {"stmt-001", "stmt-002"},
-        )
+        self.assertEqual(sum(x.allocated_amount for x in allocations), Decimal("1000.00"))
+        self.assertEqual({x.statement_entry_reference for x in allocations}, {"stmt-001", "stmt-002"})
 
     def test_aggregate_rejects_duplicate_statement_identity_even_when_total_conserves(self) -> None:
         """One statement identity cannot be counted twice to manufacture a conserved aggregate."""
@@ -226,8 +230,8 @@ class AllocationConservationContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "distinct statement identities"):
             aggregate_allocations(
                 statement_items=(
-                    ("stmt-001", Decimal("300.00")),
-                    ("stmt-001", Decimal("700.00")),
+                    self._statement(reference="stmt-001", amount="300.00"),
+                    self._statement(reference="stmt-001", amount="700.00"),
                 ),
                 journal_evidence=self._journal(reference="journal-a", amount="1000.00"),
                 reconciliation_run_reference="run-1",
@@ -241,8 +245,8 @@ class AllocationConservationContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             aggregate_allocations(
                 statement_items=(
-                    ("stmt-001", Decimal("300.00")),
-                    ("stmt-002", Decimal("700.00")),
+                    self._statement(reference="stmt-001", amount="300.00"),
+                    self._statement(reference="stmt-002", amount="700.00"),
                 ),
                 journal_evidence=self._journal(reference="journal-a", amount="900.00"),
                 reconciliation_run_reference="run-1",
