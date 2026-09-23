@@ -81,7 +81,9 @@ class PostingProposalEnvelopeRevalidationTests(unittest.TestCase):
         object.__setattr__(proposal, "idempotency_key", "")
         ledger = PostingLedger()
 
-        with self.assertRaisesRegex(AccountingValidationError, "idempotency_key is required"):
+        with self.assertRaisesRegex(
+            AccountingValidationError, "idempotency_key must be a non-empty string"
+        ):
             ledger.post(proposal, self.policy)
 
         self.assertEqual(ledger.journal_count, 0)
