@@ -194,6 +194,59 @@ class PostgresProposalEnvelopeRuntimeDomainTests(unittest.TestCase):
         )
         self.assertEqual(self.case._count_table("accounting_integration.outbox_event"), 1)
 
+    def test_first_post_revalidates_current_source_event_population_before_lock(self) -> None:
+        """Current source-event population must be admitted before command serialization."""
+        proposal = self.case._two_line_proposal()
+        object.__setattr__(proposal, "source_event_references", ())
+        lock_calls = self._reject_command_lock()
+
+        with self.assertRaisesRegex(
+            AccountingValidationError,
+            "at least one source event reference is required",
+        ):
+            self.case.ledger.post(proposal, self.case.policy)
+
+        self.assertEqual(lock_calls, [])
+        self.assertEqual(self.case.ledger.journal_count, 0)
+        self.assertEqual(
+            self.case._count_table("accounting_integration.journal_proposal_record"),
+            0,
+        )
+        self.assertEqual(self.case._count_table("accounting_core.general_journal"), 0)
+        self.assertEqual(self.case._count_table("accounting_core.journal_entry_line"), 0)
+        self.assertEqual(
+            self.case._count_table("accounting_integration.posting_receipt"), 0
+        )
+        self.assertEqual(self.case._count_table("accounting_integration.outbox_event"), 0)
+
+    def test_replay_revalidates_current_source_event_population_before_cached_receipt(self) -> None:
+        """Invalid current source events cannot be hidden by retained-receipt replay."""
+        proposal = self.case._two_line_proposal()
+        first = self.case.ledger.post(proposal, self.case.policy)
+        self.assertEqual(self.case.ledger.post(proposal, self.case.policy), first)
+
+        object.__setattr__(proposal, "source_event_references", ())
+        lock_calls = self._reject_command_lock()
+
+        with self.assertRaisesRegex(
+            AccountingValidationError,
+            "at least one source event reference is required",
+        ):
+            self.case.ledger.post(proposal, self.case.policy)
+
+        self.assertEqual(lock_calls, [])
+        self.assertEqual(self.case.ledger.journal_count, 1)
+        self.assertEqual(
+            self.case._count_table("accounting_integration.journal_proposal_record"),
+            1,
+        )
+        self.assertEqual(self.case._count_table("accounting_core.general_journal"), 1)
+        self.assertEqual(self.case._count_table("accounting_core.journal_entry_line"), 2)
+        self.assertEqual(
+            self.case._count_table("accounting_integration.posting_receipt"), 1
+        )
+        self.assertEqual(self.case._count_table("accounting_integration.outbox_event"), 1)
+
     def test_unchanged_exact_contract_version_replays_normally(self) -> None:
         """Exact built-in positive contract versions preserve idempotent replay."""
         proposal = self.case._two_line_proposal()
