@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime
+from unittest.mock import patch
 
 from accounting_information_platform import AccountingValidationError
 
@@ -289,6 +290,70 @@ class PostgresProposalEnvelopeRuntimeDomainTests(unittest.TestCase):
             self.case.ledger.post(proposal, self.case.policy)
 
         self.assertEqual(lock_calls, [])
+        self.assertEqual(self.case.ledger.journal_count, 1)
+        self.assertEqual(
+            self.case._count_table("accounting_integration.journal_proposal_record"),
+            1,
+        )
+        self.assertEqual(self.case._count_table("accounting_core.general_journal"), 1)
+        self.assertEqual(self.case._count_table("accounting_core.journal_entry_line"), 2)
+        self.assertEqual(
+            self.case._count_table("accounting_integration.posting_receipt"), 1
+        )
+        self.assertEqual(self.case._count_table("accounting_integration.outbox_event"), 1)
+
+    def test_first_post_revalidates_current_transaction_date_before_session(self) -> None:
+        """Current transaction date must be admitted before opening PostgreSQL."""
+        proposal = self.case._two_line_proposal()
+        object.__setattr__(proposal, "transaction_date", datetime(2026, 9, 1, 0, 0, 0))
+
+        with patch.object(
+            self.case.ledger,
+            "_session",
+            side_effect=AssertionError(
+                "PostgreSQL session opened before proposal-envelope admission"
+            ),
+        ) as session:
+            with self.assertRaisesRegex(
+                AccountingValidationError,
+                "transaction_date must be an exact calendar date",
+            ):
+                self.case.ledger.post(proposal, self.case.policy)
+            session.assert_not_called()
+
+        self.assertEqual(self.case.ledger.journal_count, 0)
+        self.assertEqual(
+            self.case._count_table("accounting_integration.journal_proposal_record"),
+            0,
+        )
+        self.assertEqual(self.case._count_table("accounting_core.general_journal"), 0)
+        self.assertEqual(self.case._count_table("accounting_core.journal_entry_line"), 0)
+        self.assertEqual(
+            self.case._count_table("accounting_integration.posting_receipt"), 0
+        )
+        self.assertEqual(self.case._count_table("accounting_integration.outbox_event"), 0)
+
+    def test_replay_revalidates_current_transaction_date_before_session(self) -> None:
+        """Replay must reject a changed transaction date before opening PostgreSQL."""
+        proposal = self.case._two_line_proposal()
+        first = self.case.ledger.post(proposal, self.case.policy)
+        self.assertEqual(self.case.ledger.post(proposal, self.case.policy), first)
+        object.__setattr__(proposal, "transaction_date", datetime(2026, 9, 1, 0, 0, 0))
+
+        with patch.object(
+            self.case.ledger,
+            "_session",
+            side_effect=AssertionError(
+                "PostgreSQL session opened before proposal-envelope admission"
+            ),
+        ) as session:
+            with self.assertRaisesRegex(
+                AccountingValidationError,
+                "transaction_date must be an exact calendar date",
+            ):
+                self.case.ledger.post(proposal, self.case.policy)
+            session.assert_not_called()
+
         self.assertEqual(self.case.ledger.journal_count, 1)
         self.assertEqual(
             self.case._count_table("accounting_integration.journal_proposal_record"),
