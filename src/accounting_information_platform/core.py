@@ -75,9 +75,7 @@ class IdempotencyConflictError(AccountingValidationError):
 
 
 def _exact_decimal_sum(values: Sequence[Decimal]) -> Decimal:
-    """Return the mathematical Decimal sum without ambient-context rounding."""
-    if not values:
-        return Decimal("0")
+    """Return the mathematical Decimal sum for a non-empty sequence."""
     parts = tuple(value.as_tuple() for value in values)
     common_exponent = min(int(part.exponent) for part in parts)
     scaled_total = 0
@@ -406,10 +404,6 @@ class PostingLedger:
             source_event_references=proposal.source_event_references,
             lines=current_lines,
         )
-        if current_proposal.debit_total != current_proposal.credit_total:
-            raise AccountingValidationError(
-                "journal proposal must balance. Correct the line amounts so debit totals equal credit totals, then retry ingest."
-            )
         _require_reference(policy.tenant_reference, "tenant reference")
         _require_reference(policy.legal_entity_reference, "legal entity reference")
         _require_reference(policy.accounting_book_reference, "accounting book reference")
