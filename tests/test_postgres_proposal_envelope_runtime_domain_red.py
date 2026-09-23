@@ -141,6 +141,59 @@ class PostgresProposalEnvelopeRuntimeDomainTests(unittest.TestCase):
         )
         self.assertEqual(self.case._count_table("accounting_integration.outbox_event"), 1)
 
+    def test_first_post_revalidates_current_source_payload_hash_before_lock(self) -> None:
+        """Current provenance must be admitted before PostgreSQL serialization."""
+        proposal = self.case._two_line_proposal()
+        object.__setattr__(proposal, "source_payload_hash", "sha256:not-canonical")
+        lock_calls = self._reject_command_lock()
+
+        with self.assertRaisesRegex(
+            AccountingValidationError,
+            "source_payload_hash must be canonical sha256",
+        ):
+            self.case.ledger.post(proposal, self.case.policy)
+
+        self.assertEqual(lock_calls, [])
+        self.assertEqual(self.case.ledger.journal_count, 0)
+        self.assertEqual(
+            self.case._count_table("accounting_integration.journal_proposal_record"),
+            0,
+        )
+        self.assertEqual(self.case._count_table("accounting_core.general_journal"), 0)
+        self.assertEqual(self.case._count_table("accounting_core.journal_entry_line"), 0)
+        self.assertEqual(
+            self.case._count_table("accounting_integration.posting_receipt"), 0
+        )
+        self.assertEqual(self.case._count_table("accounting_integration.outbox_event"), 0)
+
+    def test_replay_revalidates_current_source_payload_hash_before_cached_receipt(self) -> None:
+        """Invalid current provenance cannot be hidden by retained-receipt replay."""
+        proposal = self.case._two_line_proposal()
+        first = self.case.ledger.post(proposal, self.case.policy)
+        self.assertEqual(self.case.ledger.post(proposal, self.case.policy), first)
+
+        object.__setattr__(proposal, "source_payload_hash", "sha256:not-canonical")
+        lock_calls = self._reject_command_lock()
+
+        with self.assertRaisesRegex(
+            AccountingValidationError,
+            "source_payload_hash must be canonical sha256",
+        ):
+            self.case.ledger.post(proposal, self.case.policy)
+
+        self.assertEqual(lock_calls, [])
+        self.assertEqual(self.case.ledger.journal_count, 1)
+        self.assertEqual(
+            self.case._count_table("accounting_integration.journal_proposal_record"),
+            1,
+        )
+        self.assertEqual(self.case._count_table("accounting_core.general_journal"), 1)
+        self.assertEqual(self.case._count_table("accounting_core.journal_entry_line"), 2)
+        self.assertEqual(
+            self.case._count_table("accounting_integration.posting_receipt"), 1
+        )
+        self.assertEqual(self.case._count_table("accounting_integration.outbox_event"), 1)
+
     def test_unchanged_exact_contract_version_replays_normally(self) -> None:
         """Exact built-in positive contract versions preserve idempotent replay."""
         proposal = self.case._two_line_proposal()
