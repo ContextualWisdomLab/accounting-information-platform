@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime
 
 from accounting_information_platform import AccountingValidationError
 
@@ -231,6 +232,59 @@ class PostgresProposalEnvelopeRuntimeDomainTests(unittest.TestCase):
         with self.assertRaisesRegex(
             AccountingValidationError,
             "at least one source event reference is required",
+        ):
+            self.case.ledger.post(proposal, self.case.policy)
+
+        self.assertEqual(lock_calls, [])
+        self.assertEqual(self.case.ledger.journal_count, 1)
+        self.assertEqual(
+            self.case._count_table("accounting_integration.journal_proposal_record"),
+            1,
+        )
+        self.assertEqual(self.case._count_table("accounting_core.general_journal"), 1)
+        self.assertEqual(self.case._count_table("accounting_core.journal_entry_line"), 2)
+        self.assertEqual(
+            self.case._count_table("accounting_integration.posting_receipt"), 1
+        )
+        self.assertEqual(self.case._count_table("accounting_integration.outbox_event"), 1)
+
+    def test_first_post_revalidates_current_accounting_date_before_lock(self) -> None:
+        """Current fiscal-effective date must be a calendar date before serialization."""
+        proposal = self.case._two_line_proposal()
+        object.__setattr__(proposal, "accounting_date", datetime(2026, 9, 1, 0, 0, 0))
+        lock_calls = self._reject_command_lock()
+
+        with self.assertRaisesRegex(
+            AccountingValidationError,
+            "accounting_date must be an exact calendar date",
+        ):
+            self.case.ledger.post(proposal, self.case.policy)
+
+        self.assertEqual(lock_calls, [])
+        self.assertEqual(self.case.ledger.journal_count, 0)
+        self.assertEqual(
+            self.case._count_table("accounting_integration.journal_proposal_record"),
+            0,
+        )
+        self.assertEqual(self.case._count_table("accounting_core.general_journal"), 0)
+        self.assertEqual(self.case._count_table("accounting_core.journal_entry_line"), 0)
+        self.assertEqual(
+            self.case._count_table("accounting_integration.posting_receipt"), 0
+        )
+        self.assertEqual(self.case._count_table("accounting_integration.outbox_event"), 0)
+
+    def test_replay_revalidates_current_accounting_date_before_cached_receipt(self) -> None:
+        """A replay cannot hide a non-calendar current accounting date."""
+        proposal = self.case._two_line_proposal()
+        first = self.case.ledger.post(proposal, self.case.policy)
+        self.assertEqual(self.case.ledger.post(proposal, self.case.policy), first)
+
+        object.__setattr__(proposal, "accounting_date", datetime(2026, 9, 1, 0, 0, 0))
+        lock_calls = self._reject_command_lock()
+
+        with self.assertRaisesRegex(
+            AccountingValidationError,
+            "accounting_date must be an exact calendar date",
         ):
             self.case.ledger.post(proposal, self.case.policy)
 
