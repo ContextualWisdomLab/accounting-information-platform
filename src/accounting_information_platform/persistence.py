@@ -956,6 +956,12 @@ class PostgresPostingLedger:
             source_event_references=proposal.source_event_references,
             lines=validated_lines,
         )
+        if policy is not None:
+            _require_reference(policy.tenant_reference, "tenant reference")
+            _require_reference(policy.legal_entity_reference, "legal entity reference")
+            _require_reference(
+                policy.accounting_book_reference, "accounting book reference"
+            )
         proposal_uuid = _require_proposal_uuid(current_proposal.proposal_id)
         with self._session() as connection:
             tenant_id = self._require_tenant(connection)
