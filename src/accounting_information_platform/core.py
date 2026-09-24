@@ -74,6 +74,22 @@ class IdempotencyConflictError(AccountingValidationError):
     """Raised when one idempotency key is reused with a different payload."""
 
 
+def _exact_decimal_sum(values: Sequence[Decimal]) -> Decimal:
+    """Return the mathematical Decimal sum for a non-empty sequence."""
+    parts = tuple(value.as_tuple() for value in values)
+    common_exponent = min(int(part.exponent) for part in parts)
+    scaled_total = 0
+    for part in parts:
+        coefficient = int("".join(str(digit) for digit in part.digits))
+        signed_coefficient = -coefficient if part.sign else coefficient
+        scaled_total += signed_coefficient * (
+            10 ** (int(part.exponent) - common_exponent)
+        )
+    sign = 1 if scaled_total < 0 else 0
+    digits = tuple(int(digit) for digit in str(abs(scaled_total))) if scaled_total else (0,)
+    return Decimal((sign, digits, common_exponent))
+
+
 @dataclass(frozen=True, slots=True)
 class JournalLineProposal:
     """One non-negative debit or credit line proposed by an upstream system."""
@@ -85,8 +101,12 @@ class JournalLineProposal:
 
     def __post_init__(self) -> None:
         """Normalize exact decimals and require exactly one positive side."""
-        if self.line_number < 1:
-            raise AccountingValidationError("line_number must be positive. Supply a line_number starting at 1, then retry ingest.")
+        if type(self.line_number) is not int or self.line_number < 1:
+            raise AccountingValidationError("line_number must be a positive integer. Supply a built-in integer line_number starting at 1, then retry ingest.")
+        if type(self.account_role_code) is not str:
+            raise AccountingValidationError(
+                "account role code must be a built-in string. Supply a lower snake_case account role code as a built-in string, then retry ingest."
+            )
         _require_code(self.account_role_code, "account role code")
         debit_amount = _parse_amount(self.debit_amount)
         credit_amount = _parse_amount(self.credit_amount)
@@ -117,16 +137,23 @@ class JournalProposal:
 
     def __post_init__(self) -> None:
         """Validate identity, provenance, exact balancing, and line uniqueness."""
-        if not self.proposal_id or self.proposal_contract_version < 1:
+        if type(self.proposal_id) is not str or not self.proposal_id:
             raise AccountingValidationError("proposal identity and contract version are required. Supply proposal_id and proposal_contract_version, then retry ingest.")
+        if type(self.proposal_contract_version) is not int or self.proposal_contract_version < 1:
+            raise AccountingValidationError("proposal_contract_version must be a positive integer. Supply a built-in integer proposal_contract_version starting at 1, then retry ingest.")
         _require_proposal_id(self.proposal_id)
-        if not self.idempotency_key:
-            raise AccountingValidationError("idempotency_key is required. Supply the source-system idempotency_key, then retry ingest.")
+        if type(self.idempotency_key) is not str or not self.idempotency_key:
+            raise AccountingValidationError("idempotency_key must be a non-empty string. Supply the source-system idempotency_key, then retry ingest.")
         _require_reference(self.tenant_reference, "tenant reference")
         _require_reference(self.legal_entity_reference, "legal entity reference")
         _require_code(self.intended_book_role_code, "intended book role code")
         _require_currency(self.transaction_currency)
-        if _HASH_PATTERN.fullmatch(self.source_payload_hash) is None:
+        _require_calendar_date(self.transaction_date, "transaction_date")
+        _require_calendar_date(self.accounting_date, "accounting_date")
+        if (
+            type(self.source_payload_hash) is not str
+            or _HASH_PATTERN.fullmatch(self.source_payload_hash) is None
+        ):
             raise AccountingValidationError("source_payload_hash must be canonical sha256. Supply sha256: plus 64 hex characters, then retry ingest.")
         if not self.source_event_references:
             raise AccountingValidationError("at least one source event reference is required. Supply at least one source_event_reference, then retry ingest.")
@@ -137,20 +164,20 @@ class JournalProposal:
         line_numbers = tuple(line.line_number for line in self.lines)
         if len(set(line_numbers)) != len(line_numbers):
             raise AccountingValidationError("journal line numbers must be unique. Supply unique line numbers, then retry ingest.")
-        debit_total = sum((line.debit_amount for line in self.lines), Decimal("0"))
-        credit_total = sum((line.credit_amount for line in self.lines), Decimal("0"))
+        debit_total = _exact_decimal_sum(tuple(line.debit_amount for line in self.lines))
+        credit_total = _exact_decimal_sum(tuple(line.credit_amount for line in self.lines))
         if debit_total != credit_total:
             raise AccountingValidationError("journal proposal must balance. Correct the line amounts so debit totals equal credit totals, then retry ingest.")
 
     @property
     def debit_total(self) -> Decimal:
         """Return the exact total proposed debit amount."""
-        return sum((line.debit_amount for line in self.lines), Decimal("0"))
+        return _exact_decimal_sum(tuple(line.debit_amount for line in self.lines))
 
     @property
     def credit_total(self) -> Decimal:
         """Return the exact total proposed credit amount."""
-        return sum((line.credit_amount for line in self.lines), Decimal("0"))
+        return _exact_decimal_sum(tuple(line.credit_amount for line in self.lines))
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,6 +204,8 @@ class AccountingPolicy:
         _require_code(self.intended_book_role_code, "intended book role code")
         _require_currency(self.transaction_currency)
         _require_currency(self.functional_currency)
+        _require_calendar_date(self.open_period_start, "open_period_start")
+        _require_calendar_date(self.open_period_end, "open_period_end")
         if self.open_period_start > self.open_period_end:
             raise AccountingValidationError("open fiscal period start must not exceed end. Correct open_period_start/open_period_end in the policy manifest, then retry policy load.")
         if not self.accounting_policy_version or not self.posting_rule_version:
@@ -334,7 +363,7 @@ class AccountBalance:
     @property
     def net_balance(self) -> Decimal:
         """Return debit minus credit for this account."""
-        return self.debit_total - self.credit_total
+        return _exact_decimal_sum((self.debit_total, self.credit_total.copy_negate()))
 
 
 class PostingLedger:
@@ -360,18 +389,44 @@ class PostingLedger:
 
     def post(self, proposal: JournalProposal, policy: AccountingPolicy) -> PostingReceipt:
         """Resolve and append *proposal* or return its prior idempotent receipt."""
+        current_lines = self._validated_posting_lines(proposal.lines)
+        current_proposal = JournalProposal(
+            proposal_id=proposal.proposal_id,
+            proposal_contract_version=proposal.proposal_contract_version,
+            idempotency_key=proposal.idempotency_key,
+            tenant_reference=proposal.tenant_reference,
+            legal_entity_reference=proposal.legal_entity_reference,
+            intended_book_role_code=proposal.intended_book_role_code,
+            transaction_currency=proposal.transaction_currency,
+            transaction_date=proposal.transaction_date,
+            accounting_date=proposal.accounting_date,
+            source_payload_hash=proposal.source_payload_hash,
+            source_event_references=proposal.source_event_references,
+            lines=current_lines,
+        )
+        _require_reference(policy.tenant_reference, "tenant reference")
+        _require_reference(policy.legal_entity_reference, "legal entity reference")
+        _require_reference(policy.accounting_book_reference, "accounting book reference")
         cached_receipt = self._cached_idempotency_receipt(
-            proposal.tenant_reference,
-            proposal.idempotency_key,
-            proposal.source_payload_hash,
+            current_proposal.tenant_reference,
+            current_proposal.idempotency_key,
+            current_proposal.source_payload_hash,
         )
         if cached_receipt is not None:
             return cached_receipt
-        self._validate_policy_scope(proposal, policy)
-        resolved_lines = tuple(self._resolve_line(line, policy) for line in proposal.lines)
-        journal_reference = f"urn:cwl:accounting:general_journal:{proposal.proposal_id}"
-        receipt_reference = f"urn:cwl:accounting:posting_receipt:{proposal.proposal_id}"
-        journal_key = self._tenant_cache_key(proposal.tenant_reference, journal_reference)
+        self._validate_policy_scope(current_proposal, policy)
+        resolved_lines = tuple(
+            self._resolve_line(line, policy) for line in current_proposal.lines
+        )
+        journal_reference = (
+            f"urn:cwl:accounting:general_journal:{current_proposal.proposal_id}"
+        )
+        receipt_reference = (
+            f"urn:cwl:accounting:posting_receipt:{current_proposal.proposal_id}"
+        )
+        journal_key = self._tenant_cache_key(
+            current_proposal.tenant_reference, journal_reference
+        )
         existing = self._journals.get(journal_key)
         if existing is not None:
             raise AccountingValidationError(
@@ -379,14 +434,14 @@ class PostingLedger:
             )
         journal = PostedJournal(
             journal_reference=journal_reference,
-            tenant_reference=proposal.tenant_reference,
-            legal_entity_reference=proposal.legal_entity_reference,
+            tenant_reference=current_proposal.tenant_reference,
+            legal_entity_reference=current_proposal.legal_entity_reference,
             accounting_book_reference=policy.accounting_book_reference,
-            accounting_date=proposal.accounting_date,
-            transaction_currency=proposal.transaction_currency,
+            accounting_date=current_proposal.accounting_date,
+            transaction_currency=current_proposal.transaction_currency,
             functional_currency=policy.functional_currency,
-            source_proposal_id=proposal.proposal_id,
-            source_payload_hash=proposal.source_payload_hash,
+            source_proposal_id=current_proposal.proposal_id,
+            source_payload_hash=current_proposal.source_payload_hash,
             accounting_policy_version=policy.accounting_policy_version,
             posting_rule_version=policy.posting_rule_version,
             lines=resolved_lines,
@@ -395,10 +450,10 @@ class PostingLedger:
             receipt_reference=receipt_reference,
             journal_reference=journal_reference,
             posting_status_code="posted",
-            source_proposal_id=proposal.proposal_id,
-            source_payload_hash=proposal.source_payload_hash,
-            tenant_reference=proposal.tenant_reference,
-            legal_entity_reference=proposal.legal_entity_reference,
+            source_proposal_id=current_proposal.proposal_id,
+            source_payload_hash=current_proposal.source_payload_hash,
+            tenant_reference=current_proposal.tenant_reference,
+            legal_entity_reference=current_proposal.legal_entity_reference,
             accounting_book_reference=policy.accounting_book_reference,
             accounting_policy_version=policy.accounting_policy_version,
             posting_rule_version=policy.posting_rule_version,
@@ -406,9 +461,11 @@ class PostingLedger:
         )
         self._journals[journal_key] = journal
         self._receipts_by_idempotency[
-            self._tenant_cache_key(proposal.tenant_reference, proposal.idempotency_key)
+            self._tenant_cache_key(
+                current_proposal.tenant_reference, current_proposal.idempotency_key
+            )
         ] = (
-            proposal.source_payload_hash,
+            current_proposal.source_payload_hash,
             receipt,
         )
         return receipt
@@ -423,7 +480,14 @@ class PostingLedger:
         reversal_idempotency_key: str | None = None,
     ) -> PostingReceipt:
         """Append or exactly replay the opposite of one original journal."""
+        _require_calendar_date(reversal_date, "reversal_date")
+        _require_reference(journal_reference, "journal reference")
         _require_code(reversal_reason_code, "reversal reason code")
+        if reversal_idempotency_key is not None and type(reversal_idempotency_key) is not str:
+            raise AccountingValidationError("reversal idempotency key must be a string. Supply the reversal command identity as a string, then retry reversal.")
+        _require_reference(policy.tenant_reference, "tenant reference")
+        _require_reference(policy.legal_entity_reference, "legal entity reference")
+        _require_reference(policy.accounting_book_reference, "accounting book reference")
         command_key = (
             f"reversal:{journal_reference}"
             if reversal_idempotency_key is None
@@ -551,6 +615,10 @@ class PostingLedger:
         through_date: date,
     ) -> dict[str, AccountBalance]:
         """Aggregate posted lines in one tenant/entity/book scope through a date."""
+        _require_calendar_date(through_date, "through_date")
+        _require_reference(tenant_reference, "tenant reference")
+        _require_reference(legal_entity_reference, "legal entity reference")
+        _require_reference(accounting_book_reference, "accounting book reference")
         totals: dict[str, tuple[Decimal, Decimal]] = {}
         for journal in self._journals.values():
             if (
@@ -565,8 +633,8 @@ class PostingLedger:
                     line.chart_account_code, (Decimal("0"), Decimal("0"))
                 )
                 totals[line.chart_account_code] = (
-                    debit_total + line.debit_amount,
-                    credit_total + line.credit_amount,
+                    _exact_decimal_sum((debit_total, line.debit_amount)),
+                    _exact_decimal_sum((credit_total, line.credit_amount)),
                 )
         return {
             account_code: AccountBalance(account_code, debit_total, credit_total)
@@ -640,6 +708,31 @@ class PostingLedger:
             line_count=len(journal.lines),
             reversal_of_journal_reference=journal.reversal_of_journal_reference,
         )
+
+    @staticmethod
+    def _validated_posting_lines(
+        lines: Sequence[JournalLineProposal],
+    ) -> tuple[JournalLineProposal, ...]:
+        """Snapshot and revalidate current proposal line semantics before posting."""
+        if len(lines) < 2:
+            raise AccountingValidationError(
+                "journal proposal requires at least two lines. Supply at least two journal lines, then retry ingest."
+            )
+        validated_lines = tuple(
+            JournalLineProposal(
+                line_number=line.line_number,
+                account_role_code=line.account_role_code,
+                debit_amount=line.debit_amount,
+                credit_amount=line.credit_amount,
+            )
+            for line in lines
+        )
+        line_numbers = tuple(line.line_number for line in validated_lines)
+        if len(set(line_numbers)) != len(line_numbers):
+            raise AccountingValidationError(
+                "journal line numbers must be unique. Supply unique line numbers, then retry ingest."
+            )
+        return validated_lines
 
     @staticmethod
     def _resolve_line(
@@ -741,7 +834,15 @@ def _require_currency(value: str) -> None:
         raise AccountingValidationError("currency code must contain three uppercase letters. Supply a three-letter uppercase ISO currency code, then retry.")
 
 
+def _require_calendar_date(value: date, label: str) -> None:
+    """Require an exact calendar date and reject datetime/subclass behavior."""
+    if type(value) is not date:
+        raise AccountingValidationError(
+            f"{label} must be an exact calendar date. Supply a date value without time or coercion, then retry ingest."
+        )
+
+
 def _require_reference(value: str, label: str) -> None:
-    """Require an opaque CWL URN reference rather than embedded business data."""
-    if _REFERENCE_PATTERN.fullmatch(value) is None:
+    """Require an exact built-in opaque CWL URN reference."""
+    if type(value) is not str or _REFERENCE_PATTERN.fullmatch(value) is None:
         raise AccountingValidationError(f"{label} must be a CWL URN. Supply an opaque urn:cwl: reference, then retry.")

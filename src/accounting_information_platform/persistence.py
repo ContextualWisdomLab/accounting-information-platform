@@ -510,7 +510,10 @@ class PostgresPostingLedger:
         with self._session() as connection:
             tenant_id = self._require_tenant(connection)
             legal_entity_id = self._require_legal_entity(
-                connection, tenant_id, legal_entity_reference, "the journal-reversal list"
+                connection,
+                tenant_id,
+                legal_entity_reference,
+                "the journal-reversal list",
             )
             period_id_value: object = _SQL_SKIP_UUID
             skip_period = True
@@ -938,11 +941,26 @@ class PostgresPostingLedger:
         self, proposal: JournalProposal, policy: AccountingPolicy | None
     ) -> PostingReceipt:
         """Resolve optional catalog policy and persist *proposal* in one transaction."""
-        proposal_uuid = _require_proposal_uuid(proposal.proposal_id)
+        validated_lines = PostingLedger._validated_posting_lines(proposal.lines)
+        current_proposal = JournalProposal(
+            proposal_id=proposal.proposal_id,
+            proposal_contract_version=proposal.proposal_contract_version,
+            idempotency_key=proposal.idempotency_key,
+            tenant_reference=proposal.tenant_reference,
+            legal_entity_reference=proposal.legal_entity_reference,
+            intended_book_role_code=proposal.intended_book_role_code,
+            transaction_currency=proposal.transaction_currency,
+            transaction_date=proposal.transaction_date,
+            accounting_date=proposal.accounting_date,
+            source_payload_hash=proposal.source_payload_hash,
+            source_event_references=proposal.source_event_references,
+            lines=validated_lines,
+        )
+        proposal_uuid = _require_proposal_uuid(current_proposal.proposal_id)
         with self._session() as connection:
             tenant_id = self._require_tenant(connection)
             self._acquire_command_lock(
-                connection, f"proposal:{proposal.idempotency_key}"
+                connection, f"proposal:{current_proposal.idempotency_key}"
             )
             prior = connection.execute(
                 """
@@ -950,28 +968,36 @@ class PostgresPostingLedger:
                 FROM accounting_integration.journal_proposal_record
                 WHERE tenant_account_id = %s AND idempotency_key = %s
                 """,
-                (tenant_id, proposal.idempotency_key),
+                (tenant_id, current_proposal.idempotency_key),
             ).fetchone()
             if prior is not None:
-                if prior[0] != proposal.source_payload_hash:
+                if prior[0] != current_proposal.source_payload_hash:
                     raise IdempotencyConflictError(
                         "idempotency key was already used with a different payload"
                     )
-                return self._receipt_for_idempotency_key(connection, tenant_id, proposal)
-            if any(line.account_role_code == "retained_earnings" for line in proposal.lines):
+                return self._receipt_for_idempotency_key(
+                    connection, tenant_id, current_proposal
+                )
+            if any(
+                line.account_role_code == "retained_earnings"
+                for line in current_proposal.lines
+            ):
                 raise AccountingValidationError(
                     "retained_earnings is reserved for AIS period-close. "
                     "Post revenue and expense through Billing, then hard-close; "
                     "no journal was written."
                 )
             if policy is None:
-                policy = self._resolve_accounting_policy(connection, tenant_id, proposal)
-            PostingLedger._validate_policy_scope(proposal, policy)
+                policy = self._resolve_accounting_policy(
+                    connection, tenant_id, current_proposal
+                )
+            PostingLedger._validate_policy_scope(current_proposal, policy)
             resolved_lines = tuple(
-                PostingLedger._resolve_line(line, policy) for line in proposal.lines
+                PostingLedger._resolve_line(line, policy)
+                for line in current_proposal.lines
             )
             legal_entity_id = self._require_legal_entity(
-                connection, tenant_id, proposal.legal_entity_reference
+                connection, tenant_id, current_proposal.legal_entity_reference
             )
             book_id = self._require_book(
                 connection,
@@ -981,17 +1007,23 @@ class PostgresPostingLedger:
                 policy.accounting_book_reference,
             )
             period_id = self._require_open_book_period(
-                connection, tenant_id, book_id, proposal.accounting_date
+                connection, tenant_id, book_id, current_proposal.accounting_date
             )
-            journal_reference = f"urn:cwl:accounting:general_journal:{proposal.proposal_id}"
+            journal_reference = (
+                "urn:cwl:accounting:general_journal:"
+                f"{current_proposal.proposal_id}"
+            )
             receipt = PostingReceipt(
-                receipt_reference=f"urn:cwl:accounting:posting_receipt:{proposal.proposal_id}",
+                receipt_reference=(
+                    "urn:cwl:accounting:posting_receipt:"
+                    f"{current_proposal.proposal_id}"
+                ),
                 journal_reference=journal_reference,
                 posting_status_code="posted",
-                source_proposal_id=proposal.proposal_id,
-                source_payload_hash=proposal.source_payload_hash,
-                tenant_reference=proposal.tenant_reference,
-                legal_entity_reference=proposal.legal_entity_reference,
+                source_proposal_id=current_proposal.proposal_id,
+                source_payload_hash=current_proposal.source_payload_hash,
+                tenant_reference=current_proposal.tenant_reference,
+                legal_entity_reference=current_proposal.legal_entity_reference,
                 accounting_book_reference=policy.accounting_book_reference,
                 accounting_policy_version=policy.accounting_policy_version,
                 posting_rule_version=policy.posting_rule_version,
@@ -1009,9 +1041,9 @@ class PostgresPostingLedger:
                 (
                     tenant_id,
                     proposal_uuid,
-                    proposal.proposal_contract_version,
-                    proposal.idempotency_key,
-                    proposal.source_payload_hash,
+                    current_proposal.proposal_contract_version,
+                    current_proposal.idempotency_key,
+                    current_proposal.source_payload_hash,
                 ),
             ).fetchone()[0]
             journal_id = self._insert_journal(
@@ -1021,7 +1053,7 @@ class PostgresPostingLedger:
                 book_id=book_id,
                 period_id=period_id,
                 journal_reference=journal_reference,
-                proposal=proposal,
+                proposal=current_proposal,
                 policy=policy,
                 proposal_record_id=proposal_record_id,
                 lines=resolved_lines,
