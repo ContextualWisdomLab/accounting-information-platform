@@ -14,7 +14,10 @@ from datetime import date
 from decimal import Decimal
 
 from accounting_information_platform.allocation import propose_split_allocations
-from accounting_information_platform.reconciliation import BookJournalEvidence
+from accounting_information_platform.reconciliation import (
+    BookJournalEvidence,
+    StatementEntryEvidence,
+)
 
 
 class _ExplodingCandidatePopulation:
@@ -27,6 +30,21 @@ class _ExplodingCandidatePopulation:
 
 class SplitCandidatePopulationDomainRedTests(unittest.TestCase):
     """Require an exact immutable tuple before split population iteration."""
+
+    @staticmethod
+    def _statement() -> StatementEntryEvidence:
+        """Build one canonical bank-statement evidence control."""
+        return StatementEntryEvidence(
+            statement_entry_reference="stmt-001",
+            provider_reference="provider-statement-1",
+            end_to_end_reference=None,
+            account_servicer_reference=None,
+            amount=Decimal("1000.00"),
+            currency_code="KRW",
+            credit_debit_code="DBIT",
+            booking_date=date(2026, 9, 1),
+            value_date=date(2026, 9, 1),
+        )
 
     @staticmethod
     def _journal() -> BookJournalEvidence:
@@ -46,8 +64,7 @@ class SplitCandidatePopulationDomainRedTests(unittest.TestCase):
     def _plan(candidate_journals: object):
         """Hold accounting facts constant while varying only population container type."""
         return propose_split_allocations(
-            statement_entry_reference="stmt-001",
-            statement_amount=Decimal("1000.00"),
+            statement_evidence=SplitCandidatePopulationDomainRedTests._statement(),
             candidate_journals=candidate_journals,  # type: ignore[arg-type]
             reconciliation_run_reference="run-1",
             tenant_account_reference="tenant-a",
