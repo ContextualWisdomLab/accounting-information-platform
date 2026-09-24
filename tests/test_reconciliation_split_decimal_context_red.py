@@ -88,6 +88,42 @@ class SplitDecimalContextContractTests(unittest.TestCase):
             ),
         )
 
+    def test_split_rejects_exponent_gap_beyond_exact_comparison_bound(self) -> None:
+        """Exact comparison fails closed before an excessive power-of-ten expansion."""
+        statement = self._statement("1")
+        candidates = (
+            self._journal("journal-unit", "1"),
+            self._journal("journal-subscale", "1E-39"),
+        )
+
+        with self.assertRaisesRegex(ValueError, "exponent gap"):
+            propose_split_allocations(
+                statement_evidence=statement,
+                candidate_journals=candidates,
+                reconciliation_run_reference="run-exponent-gap",
+                tenant_account_reference="tenant-exponent-gap",
+            )
+
+    def test_split_accepts_exact_comparison_at_exponent_gap_bound(self) -> None:
+        """The supported exponent-gap boundary still preserves exact conservation."""
+        statement = self._statement("1.00000000000000000000000000000000000001")
+        candidates = (
+            self._journal("journal-unit", "1"),
+            self._journal("journal-boundary", "1E-38"),
+        )
+
+        allocations = propose_split_allocations(
+            statement_evidence=statement,
+            candidate_journals=candidates,
+            reconciliation_run_reference="run-exponent-boundary",
+            tenant_account_reference="tenant-exponent-boundary",
+        )
+
+        self.assertEqual(
+            tuple(allocation.allocated_amount for allocation in allocations),
+            (Decimal("1"), Decimal("1E-38")),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
