@@ -19,6 +19,7 @@ This is the split-side analogue of ADR 0071. Exact monetary conservation is nece
 - Statement source evidence remains owned by `StatementEntryEvidence`; journal source evidence remains owned by `BookJournalEvidence`.
 - Fields used as executable allocation controls are revalidated at the point of use because a frozen Python value object is not a tamper-proof boundary against low-level mutation or deserialization.
 - Exact monetary conservation and distinct journal identity remain mandatory. Conservation must not depend on the process-wide or caller-local `decimal` precision context.
+- Exact comparison must also bound power-of-ten alignment work before constructing scaled Python integers. The implementation uses a maximum exponent spread of 38 for this internal comparison step; larger spreads fail closed instead of allocating an integer proportional to an attacker-controlled exponent. This is a computational safety bound, not rounding, tolerance, currency policy, or a replacement for ADR 0004's canonical amount/storage rules.
 - This is a repository runtime-domain and provenance decision. ISO 20022 supplies statement vocabulary such as `CdtDbtInd`; it does not prescribe this Python API or split allocation algorithm.
 - Shared `CHANGELOG.md`, `docs/doctoring/STANDARD_TRACEABILITY.md`, and `docs/product-technical-gap-baseline.md` remain the #37 single-writer surface and are not modified in this lane.
 
@@ -36,9 +37,13 @@ Rejected. This reconstructs more source fields at the call site but still allows
 
 Rejected. Split planning would execute caller-defined attribute behavior and bypass the repository admission already performed by `StatementEntryEvidence`.
 
+### Keep unbounded exact-integer exponent alignment
+
+Rejected. Exactness does not justify unbounded CPU or memory work. A finite positive `Decimal` can carry an exponent far outside the supported accounting envelope, and expanding every value to the smallest exponent with `10 ** gap` lets caller-controlled representation size determine planner availability. The comparison must reject an unsupported exponent spread before expansion rather than round, truncate, or attempt unbounded exact arithmetic.
+
 ### Require exact `StatementEntryEvidence`
 
-Selected. Typed callers provide one exact repository-owned `StatementEntryEvidence`. The planner admits its exact type before attribute reads, revalidates statement identity, exact money, canonical currency, and CRDT/DBIT direction, requires every admitted journal candidate to match statement currency and direction, and then proves exact monetary conservation.
+Selected. Typed callers provide one exact repository-owned `StatementEntryEvidence`. The planner admits its exact type before attribute reads, revalidates statement identity, exact money, canonical currency, and CRDT/DBIT direction, requires every admitted journal candidate to match statement currency and direction, and then proves exact monetary conservation inside the bounded exact-comparison domain.
 
 ## Decision
 
@@ -54,7 +59,7 @@ Selected. Typed callers provide one exact repository-owned `StatementEntryEviden
 - Every journal candidate identity, amount, currency, and direction is revalidated at use.
 - Every candidate journal currency and direction must equal the admitted statement evidence before conservation is evaluated.
 - Journal identities must remain distinct and candidate amounts must sum to the statement amount exactly. No tolerance, coercion, or rounding is introduced.
-- Split conservation does not use `Decimal` addition under the ambient context. After all monetary inputs have passed exact finite positive built-in `Decimal` admission, the comparison represents each value as its exact integer coefficient at one common base-10 exponent and sums those Python integers. The result is therefore independent of caller-selected `decimal` precision.
+- Split conservation does not use `Decimal` addition under the ambient context. After all monetary inputs have passed exact finite positive built-in `Decimal` admission, the comparator reads every base-10 exponent first. If the largest exponent is more than 38 places above the smallest, it raises a domain `ValueError` before any power-of-ten expansion. Within the supported bound, it represents each value as its exact integer coefficient at one common base-10 exponent and sums those Python integers. The result remains independent of caller-selected `decimal` precision.
 - No database schema or migration changes are required; this decision narrows only the in-memory split proposal contract.
 
 ## Evidence
@@ -69,16 +74,18 @@ Current-exact review then found that the ADR's typed-contract claim was not actu
 
 A later current-exact review exposed a separate arithmetic defect in the conservation proof: `planned_total += journal_amount` was subject to ambient `decimal` precision. RED `d82592b683bc79ae326ab72e4c4f8549fdeff891` fixes the source identities, currency, direction, and repository-owned evidence objects while using `10000000000000000000000000000` plus `1`; at precision 28 the historical arithmetic rounded the overallocated total back to the statement amount. The same RED requires the truly conserved `10000000000000000000000000001` case to remain valid even at precision 2. Causal repair `019fed6ff550e96c9bc6eaf0614dfd5991b41664` removes ambient-context Decimal addition from split conservation and compares exact scaled integer coefficients instead.
 
+Review of that exact-integer repair then found a separate availability defect: the comparator aligned values with `10 ** exponent_gap` without bounding the gap, while repository-owned evidence admitted any finite positive built-in `Decimal`. RED `45812f695089b502ff3dbadc8a84bd302c12beba` adds a safe executable boundary case: a gap of 39 (`1` beside `1E-39`) must fail with a domain exponent-gap error before expansion, while an exactly conserved gap of 38 remains valid. Causal production repair `2238af129f0eafc8ac55b8c8a3e7e02b475d2f56` reads all exponents first, rejects spreads greater than 38, and only then performs exact integer scaling. The selected bound contains the work amplification without adding tolerance or rounding. Hosted RED/GREEN evidence is reacquired on the resulting exact head; predecessor runs are not transferred.
+
 ## Compatibility, risks, and effects
 
 This intentionally narrows a public Python call shape. Callers that previously supplied `statement_entry_reference` and `statement_amount` must obtain or construct admitted `StatementEntryEvidence` and pass that value object. The compatibility cost is deliberate: two scalars do not prove the source currency or movement direction that makes a split accounting-consistent.
 
 The planner still does not prove that the in-memory statement or journal evidence belongs to the current authoritative PostgreSQL reconciliation snapshot. Persistence, approval, lifecycle, and close-package owners retain database snapshot binding, tenant scope, lock ordering, recovery, and immutable approval authority.
 
-Cross-currency and opposite-direction splits now fail before monetary conservation can make them look valid. Split conservation is also independent of caller-selected Decimal precision, so a large-magnitude one-unit excess cannot disappear through context rounding. The effect is stricter proposal admission, not new accounting authority.
+Cross-currency and opposite-direction splits fail before monetary conservation can make them look valid. Split conservation is independent of caller-selected Decimal precision, so a large-magnitude one-unit excess cannot disappear through context rounding. Inputs whose exact representations would require more than 38 decimal-exponent places of alignment now fail closed before integer expansion; this is an availability guard, not a change to the represented value or an accounting rounding rule. The effect is stricter proposal admission, not new accounting authority.
 
 ## Follow-up
 
-ADR 0054's Allocation conservation section is code-current with the statement-provenance decision at `fbde16625982ce57ae875a31f35b3085a39388a3`; ADR 0070 continues to own split candidate-population immutability and ADR 0071 owns aggregate statement provenance. The split arithmetic repair is owned by this ADR until the shared allocation contract is rebuilt from integrated truth.
+ADR 0054's Allocation conservation section is code-current with the statement-provenance decision at `fbde16625982ce57ae875a31f35b3085a39388a3`; ADR 0070 continues to own split candidate-population immutability and ADR 0071 owns aggregate statement provenance. The split arithmetic and bounded-alignment repairs are owned by this ADR until the shared allocation contract is rebuilt from integrated truth. Direct child #164 must ordinary-adopt this repaired owner exact before its aggregate use of the shared comparator can claim current evidence.
 
-PR #37 remains the canonical single writer for shared `CHANGELOG.md`, `docs/doctoring/STANDARD_TRACEABILITY.md`, and `docs/product-technical-gap-baseline.md`. After protected integration, #37 must rebuild those records from the exact protected tree and trace the progression from scalar split statement fields to exact `StatementEntryEvidence`, including the published overload contract, currency/direction compatibility, at-use revalidation, and context-independent exact conservation. This ADR remains Proposed until exact-head review, hosted test/security evidence, and the owner-path documentation gate are satisfied.
+PR #37 remains the canonical single writer for shared `CHANGELOG.md`, `docs/doctoring/STANDARD_TRACEABILITY.md`, and `docs/product-technical-gap-baseline.md`. After protected integration, #37 must rebuild those records from the exact protected tree and trace the progression from scalar split statement fields to exact `StatementEntryEvidence`, including the published overload contract, currency/direction compatibility, at-use revalidation, context-independent exact conservation, and the bounded exponent-alignment availability control. This ADR remains Proposed until exact-head review, hosted test/security evidence, and the owner-path documentation gate are satisfied.
