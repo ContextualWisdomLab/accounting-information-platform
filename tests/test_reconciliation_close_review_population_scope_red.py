@@ -404,11 +404,14 @@ class ReconciliationCloseReviewPopulationScopeTests(unittest.TestCase):
             )
 
     def test_decision_statement_identity_must_be_nonempty(self) -> None:
-        """A decision without immutable statement identity cannot enter close evidence."""
+        """Tampered decision identity cannot bypass close-review population admission."""
+        decision = self._match("stmt-001")
+        object.__setattr__(decision, "statement_entry_reference", " ")
+
         with self.assertRaisesRegex(ValueError, "decision identities"):
             read_model.build_reconciliation_close_review(
                 self._input(
-                    decisions=(self._match(" "),),
+                    decisions=(decision,),
                     expected=("stmt-001",),
                 )
             )
