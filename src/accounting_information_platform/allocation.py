@@ -315,7 +315,7 @@ def aggregate_allocations(
         raise ValueError("at least one statement item is required for an aggregate allocation")
 
     allocations: list[ReconciliationAllocation] = []
-    statement_total = Decimal("0")
+    statement_amounts: list[Decimal] = []
     seen_statement_references: set[str] = set()
     for statement in statement_items:
         if type(statement) is not StatementEntryEvidence:
@@ -347,7 +347,7 @@ def aggregate_allocations(
                 "aggregate statement direction must match journal direction. Supply "
                 "same-direction source evidence before planning an aggregate."
             )
-        statement_total += amount
+        statement_amounts.append(amount)
         allocations.append(
             ReconciliationAllocation(
                 tenant_account_reference=tenant_account_reference,
@@ -359,7 +359,7 @@ def aggregate_allocations(
             )
         )
 
-    if statement_total != book_total:
+    if not _exact_decimal_sum_matches(tuple(statement_amounts), book_total):
         raise ValueError(
             "aggregation sides must agree: the statement-side total must equal "
             "the journal-side total exactly. Investigate the unmatched evidence "
