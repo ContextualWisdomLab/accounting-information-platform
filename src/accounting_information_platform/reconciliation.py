@@ -43,6 +43,12 @@ def _require_identity(value: object, field_name: str) -> None:
         raise ValueError(f"{field_name} must be a non-empty identity")
 
 
+def _require_review_instruction(value: object) -> None:
+    """Reject decision evidence that gives the reviewer no actionable next step."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("next_action must be a non-empty review instruction")
+
+
 @dataclass(frozen=True, slots=True)
 class StatementEntryEvidence:
     """Immutable normalized statement evidence considered for reconciliation."""
@@ -108,7 +114,9 @@ class ReconciliationDecision:
     every match references exactly one journal. Reviewed split evidence must opt
     into ``reconciliation-decision/v2`` explicitly before carrying more than one
     distinct journal reference. Every decision remains bound to non-empty source
-    identities. Deterministic proposal generation remains v1.
+    identities and an actionable operator next step. Match evidence also retains
+    the non-empty rule that produced it. Deterministic proposal generation remains
+    v1.
     """
 
     statement_entry_reference: str
@@ -124,11 +132,16 @@ class ReconciliationDecision:
     def __post_init__(self) -> None:
         """Reject forged or silently incompatible reconciliation evidence."""
         _require_identity(self.statement_entry_reference, "statement_entry_reference")
+        _require_review_instruction(self.next_action)
         if self.contract_version not in _RECONCILIATION_DECISION_VERSIONS:
             raise ValueError(
                 "contract_version must be reconciliation-decision/v1 or reconciliation-decision/v2. Use a supported repository-owned reconciliation decision contract."
             )
         if self.decision_code == "match":
+            if not isinstance(self.rule_code, str) or not self.rule_code.strip():
+                raise ValueError(
+                    "match decision requires a non-empty rule_code. Rebuild reviewed evidence from the deterministic or explicitly reviewed rule."
+                )
             if (
                 self.contract_version == _RECONCILIATION_DECISION_V1
                 and len(self.matched_journal_references) != 1
@@ -164,6 +177,10 @@ class ReconciliationDecision:
                     "match decision cannot carry an exception_code. Rebuild the deterministic proposal from source evidence."
                 )
         elif self.decision_code == "abstain":
+            if self.rule_code is not None:
+                raise ValueError(
+                    "abstain decision cannot carry a rule_code. Preserve the failed or unresolved condition as exception evidence instead."
+                )
             if self.matched_journal_references:
                 raise ValueError(
                     "abstain decision cannot reference a matched journal. Review unmatched evidence and record an explicit exception."
