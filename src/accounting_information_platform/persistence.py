@@ -25,6 +25,7 @@ from .core import (
     PostingLedger,
     PostingReceipt,
     _reversal_command_hash,
+    _require_calendar_date,
     _require_code,
     _require_currency,
     _require_proposal_id,
@@ -2745,6 +2746,7 @@ class PostgresPostingLedger:
         reversal_idempotency_key: str | None = None,
     ) -> PostingReceipt:
         """Append the exact opposite of one original journal and preserve lineage."""
+        _require_calendar_date(reversal_date, "reversal_date")
         _require_code(reversal_reason_code, "reversal reason code")
         command_key = (
             f"reversal:{journal_reference}"
