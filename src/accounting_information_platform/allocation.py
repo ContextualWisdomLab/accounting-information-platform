@@ -21,6 +21,7 @@ from .reconciliation import (
 
 
 _LEGACY_ARGUMENT_OMITTED = object()
+_MAX_EXACT_COMPARISON_EXPONENT_GAP = 38
 
 
 def _require_exact_positive(value: object, field_name: str) -> None:
@@ -61,10 +62,15 @@ def _decimal_as_scaled_integer(value: Decimal, common_exponent: int) -> int:
 def _exact_decimal_sum_matches(
     values: tuple[Decimal, ...], expected: Decimal
 ) -> bool:
-    """Compare a Decimal population with *expected* without ambient-context rounding."""
-    common_exponent = min(
+    """Compare exact Decimals while bounding power-of-ten alignment work."""
+    exponents = tuple(
         int(value.as_tuple().exponent) for value in (*values, expected)
     )
+    common_exponent = min(exponents)
+    if max(exponents) - common_exponent > _MAX_EXACT_COMPARISON_EXPONENT_GAP:
+        raise ValueError(
+            "allocation Decimal exponent gap exceeds the supported exact-comparison range"
+        )
     exact_total = sum(
         (_decimal_as_scaled_integer(value, common_exponent) for value in values),
         0,
