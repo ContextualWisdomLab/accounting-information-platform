@@ -23,6 +23,10 @@ concurrency:
 jobs:
   exact-head-sast:
     name: Exact-head SAST
+    # Central required SAST Semgrep (same pinned image, p/default, WARNING+ERROR)
+    # already runs this check on pull requests that target the default branch.
+    # Skip the local duplicate there; keep it for pushes and other base branches.
+    if: github.event_name != 'pull_request' || github.base_ref != github.event.repository.default_branch
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

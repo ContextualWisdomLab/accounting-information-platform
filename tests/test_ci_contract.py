@@ -69,6 +69,21 @@ class AccountingCiContractTests(unittest.TestCase):
         self.assertIn("--error", sast_job)
         self.assertIn("--metrics=off", sast_job)
 
+    def test_local_sast_skips_only_default_branch_pull_requests(self) -> None:
+        """Central org SAST owns default-branch PRs; local SAST covers other events."""
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        sast_job = workflow.split("  exact-head-sast:", 1)[1].split(
+            "  exact-head-security:", 1
+        )[0]
+        self.assertIn(
+            "if: github.event_name != 'pull_request' || "
+            "github.base_ref != github.event.repository.default_branch",
+            sast_job,
+        )
+        self.assertNotIn("needs: exact-head-sast", workflow)
+
     def test_ci_runs_non_vacuous_trivy_secret_gate_on_the_verified_exact_head(self) -> None:
         """Trivy must prove the repository-root traversal used by the clean secret scan."""
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
